@@ -1,0 +1,20 @@
+[general]
+status_path = "/data/private/calendar/status"
+
+[pair default_calendar]
+a = "local_default"
+b = "remote_default"
+collections = null
+conflict_resolution = null
+
+[storage local_default]
+type = "filesystem"
+path = "/data/private/calendar/vdir/default"
+fileext = ".ics"
+
+[storage remote_default]
+type = "caldav"
+url.fetch = ["command", "printenv", "CALDAV_URL"]
+username.fetch = ["command", "printenv", "CALDAV_USERNAME"]
+password.fetch = ["command", "printenv", "CALDAV_PASSWORD"]
+item_types = ["VEVENT"]

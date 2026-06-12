@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__APP_TITLE__ Workspace</title>
+  <link rel="stylesheet" href="/assets/shell.css">
+  <link rel="stylesheet" href="/assets/workspace.bundle.css">
+</head>
+<body class="app-body">
+  <div class="app-shell workspace-shell">
+    <header class="workspace-topbar">
+      <div class="topbar-left">
+        <a class="topbar-brand" href="/workspace">
+          <span class="brand-mark">A</span>
+          <strong>__APP_TITLE__</strong>
+        </a>
+        <span class="topbar-breadcrumb" id="topbar-breadcrumb">Workspace</span>
+      </div>
+      <div class="topbar-right">
+        <a class="topbar-icon-link" href="/admin" title="Admin">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.75.75 0 0 1 7 8.25v-3.5a.75.75 0 0 1 1.5 0Z"/></svg>
+        </a>
+        __API_DOCS_LINK__
+      </div>
+    </header>
+
+    <main class="workspace-container">
+
+      <div class="workspace-layout">
+        <aside class="workspace-sidebar" id="workspace-sidebar">
+          <div class="workspace-panel-head">
+            <div class="panel-actions file-actions">
+              <button class="icon-button" id="new-file" type="button" title="New file" aria-label="New file"></button>
+              <button class="icon-button" id="new-folder" type="button" title="New folder" aria-label="New folder"></button>
+              <button class="icon-button" id="upload-files" type="button" title="Upload files" aria-label="Upload files"></button>
+              <button class="icon-button" id="upload-folder" type="button" title="Upload folder" aria-label="Upload folder"></button>
+              <button class="icon-button" id="open-trash" type="button" title="Trash" aria-label="Trash"></button>
+              <button class="icon-button" id="refresh-tree" type="button" title="Refresh" aria-label="Refresh"></button>
+              <button class="icon-button" id="toggle-sidebar" type="button" title="Close sidebar">‹</button>
+            </div>
+            <input id="upload-file-input" type="file" multiple hidden>
+            <input id="upload-folder-input" type="file" multiple webkitdirectory hidden>
+          </div>
+          <div class="workspace-toolbar">
+            <input id="file-search" placeholder="Search files">
+            <button class="icon-button" id="show-hidden" type="button" title="Show hidden files" aria-label="Show hidden files" aria-pressed="false"></button>
+          </div>
+          <div class="breadcrumb-bar">
+            <span class="meta breadcrumb" id="current-folder">Workspace</span>
+          </div>
+          <div class="file-list" id="file-list"></div>
+        </aside>
+
+        <section class="workspace-main">
+          <div class="editor-bar">
+            <div class="editor-title">
+              <strong id="editor-file-name">No file selected</strong>
+              <span class="draft-status idle" id="draft-status" style="display: none;">No draft</span>
+            </div>
+            <div class="editor-actions">
+              <button class="icon-button" id="undo-action" type="button" title="Undo" aria-label="Undo" disabled></button>
+              <button class="icon-button" id="redo-action" type="button" title="Redo" aria-label="Redo" disabled></button>
+              <div class="segmented segmented-2 editor-mode-tabs" id="editor-mode-tabs">
+                <button class="segment active" id="mode-write" type="button">Write</button>
+                <button class="segment" id="mode-source" type="button">Source</button>
+              </div>
+              <button class="button secondary button-with-icon" id="run-active-file" type="button" disabled></button>
+              <button class="button secondary button-with-icon" id="save-as-file" type="button" disabled></button>
+              <button class="button primary button-with-icon" id="save-file" type="button" disabled></button>
+            </div>
+          </div>
+          <div class="editor-tab-strip hidden" id="editor-tab-strip"></div>
+          <div class="editor-shell">
+            <div class="editor-surface mode-write" id="editor-surface">
+              <div class="milkdown-pane" id="milkdown-pane">
+                <div class="editor-empty-state" id="editor-empty">
+                  <p><strong>No file selected</strong></p>
+                  <p>Select a file from the sidebar to start editing</p>
+                </div>
+                <div class="markdown-toolbar" id="markdown-toolbar" aria-label="Markdown formatting tools">
+                  <button class="icon-button markdown-tool" id="md-bold" type="button" title="Bold" aria-label="Bold"><strong>B</strong></button>
+                  <button class="icon-button markdown-tool" id="md-italic" type="button" title="Italic" aria-label="Italic"><em>I</em></button>
+                  <button class="icon-button markdown-tool" id="md-strike" type="button" title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
+                  <button class="icon-button markdown-tool" id="md-code" type="button" title="Inline code" aria-label="Inline code"><span class="markdown-code-symbol">&lt;/&gt;</span></button>
+                  <span class="toolbar-separator"></span>
+                  <button class="button secondary compact-action" id="md-insert-table" type="button" title="Insert table">Table</button>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-insert-row-above" type="button" title="Insert row above" aria-label="Insert row above"></button>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-insert-row-below" type="button" title="Insert row below" aria-label="Insert row below"></button>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-delete-row" type="button" title="Delete row" aria-label="Delete row"></button>
+                  <span class="toolbar-separator"></span>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-insert-column-left" type="button" title="Insert column left" aria-label="Insert column left"></button>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-insert-column-right" type="button" title="Insert column right" aria-label="Insert column right"></button>
+                  <button class="icon-button markdown-tool markdown-table-tool" id="md-delete-column" type="button" title="Delete column" aria-label="Delete column"></button>
+                </div>
+                <div class="milkdown-root" id="milkdown-editor"></div>
+              </div>
+              <div class="code-editor-pane" id="code-editor-pane">
+                <div class="code-editor-root" id="code-editor"></div>
+              </div>
+              <div class="csv-pane" id="csv-pane">
+                <div class="csv-toolbar">
+                  <button class="icon-button" id="csv-insert-row-above" type="button" title="Insert row above" aria-label="Insert row above"></button>
+                  <button class="icon-button" id="csv-insert-row-below" type="button" title="Insert row below" aria-label="Insert row below"></button>
+                  <button class="icon-button" id="csv-delete-row" type="button" title="Delete row" aria-label="Delete row" disabled></button>
+                  <span class="toolbar-separator"></span>
+                  <button class="icon-button" id="csv-insert-column-left" type="button" title="Insert column left" aria-label="Insert column left"></button>
+                  <button class="icon-button" id="csv-insert-column-right" type="button" title="Insert column right" aria-label="Insert column right"></button>
+                  <button class="icon-button" id="csv-delete-column" type="button" title="Delete column" aria-label="Delete column" disabled></button>
+                </div>
+                <div class="csv-table-wrap">
+                  <table class="csv-table" id="csv-table"></table>
+                </div>
+              </div>
+              <div class="unsupported-pane" id="unsupported-pane"></div>
+              <div class="editor-source">
+                <textarea id="editor-text" spellcheck="true" placeholder="Start typing..." disabled></textarea>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="chat-pane" id="chat-pane">
+          <div class="workspace-panel-head">
+            <div class="segmented segmented-2 chat-tabs" id="workspace-chat-tabs">
+              <button class="segment active" id="jobs-tab" type="button">Jobs</button>
+              <button class="segment" id="chat-tab" type="button">Chat</button>
+            </div>
+            <div class="panel-actions">
+              <span class="meta" id="chat-status">Ready</span>
+              <button class="icon-button" id="toggle-chat" type="button" title="Close chat">›</button>
+            </div>
+          </div>
+          <div class="workspace-jobs-panel" id="workspace-jobs-panel">
+            <button class="button primary button-with-icon" id="new-workspace-job" type="button"></button>
+            <div class="workspace-job-list" id="workspace-job-list"></div>
+          </div>
+          <div class="workspace-chat-panel hidden" id="workspace-chat-panel">
+            <div class="chat-feed" id="chat-feed">
+              <div class="chat-message meta">Select or create a job.</div>
+            </div>
+            <div class="chat-working-indicator hidden" id="chat-working-indicator" role="status" aria-live="polite">
+              <span class="working-label">Assistant is working</span>
+              <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+            </div>
+            <form class="chat-composer" id="chat-form">
+              <div class="context-chips">
+                <label class="check-row"><input id="include-active-file" type="checkbox">Active file</label>
+                <label class="check-row"><input id="include-file-content" type="checkbox">File content</label>
+              </div>
+              <textarea id="chat-input" placeholder="Start a workspace job" required></textarea>
+              <div class="chat-composer-actions">
+                <button class="button secondary hidden" id="open-job-file" type="button"></button>
+                <button class="button primary button-with-icon" id="send-job-message" type="submit"></button>
+              </div>
+            </form>
+          </div>
+        </aside>
+        <button class="sidebar-toggle-collapsed" id="sidebar-expand" style="display: none;" title="Show files">›</button>
+        <button class="sidebar-toggle-collapsed right" id="chat-expand" style="display: none;" title="Show chat">‹</button>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="/assets/workspace.bundle.js"></script>
+</body>
+</html>

@@ -1,0 +1,292 @@
+# =============================================================================
+# Assistant — Application Configuration
+# =============================================================================
+#
+# This tracked file contains all operational defaults. You should not need to
+# edit it for normal deployments — set secrets and identity in .env instead.
+#
+# Environment variables from .env override specific values at runtime.
+# See .env.example for the full list of supported overrides.
+#
+# Override precedence (highest wins):
+#   1. Environment variable (from .env via docker-compose)
+#   2. This file (config/agent.yaml)
+#   3. Code-level fallback defaults
+#
+# =============================================================================
+
+agent:
+  app:
+    name: assistant
+    base_url: http://localhost:8000
+    referer_url: https://assistant.local
+    timezone: UTC
+
+  # Agent identity — override via AGENT_NAME / AGENT_EMAIL env vars.
+  # When blank, name defaults to capitalized app name ("Assistant") and
+  # email is derived from SMTP_FROM → SMTP_USERNAME → "assistant@local".
+  identity:
+    name:
+    email:
+
+  # Admin contact — override via ADMIN_NAME / ADMIN_EMAIL env vars.
+  admin:
+    name:
+    email:
+
+  # Organization details — override via ORG_NAME / ORG_SECURITY_EMAIL /
+  # ORG_INTERNAL_EMAIL_DOMAINS env vars.
+  org:
+    name:
+    security_email:
+    internal_email_domains: []
+
+  database:
+    host: postgres
+    port: 5432
+    name: assistant
+    user: assistant
+
+  llm:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.6
+    fallback_model: openai/gpt-5.4
+    base_url: https://openrouter.ai/api/v1
+    temperature: 0.2
+    max_tokens_per_call: 4096
+
+  limits:
+    max_iterations_per_task: 50
+    max_tokens_per_task: 1000000
+    message_history_window: 8
+    max_prompt_chars: 400000
+    summarization_model: openai/gpt-4.1-mini
+    summarization_max_tokens: 2000
+    summarization_timeout_seconds: 30
+    summarization_keep_recent: 6
+    summarization_max_input_chars: 80000
+    max_daily_cost_usd: 10.00
+    tool_timeout_default_seconds: 120
+    tool_timeout_command_seconds: 300
+    max_emails_per_hour: 10
+    poll_interval_seconds: 60
+
+  task_agent:
+    poll_interval_seconds: 2
+
+  # Email account settings — override credentials and hosts via IMAP_* / SMTP_*
+  # env vars. Operational defaults (folders, limits, behavior) can stay here.
+  email:
+    imap_host:
+    imap_port: 993
+    imap_username:
+    imap_password:
+    imap_folder: INBOX
+    imap_archive_folder: Archive
+    imap_sent_folder: Sent
+    imap_poll_interval_seconds: 60
+    smtp_host:
+    smtp_port: 587
+    smtp_username:
+    smtp_password:
+    smtp_from:
+    save_to_sent: true
+    max_attachment_count: 5
+    max_attachment_bytes: 10485760
+    max_total_attachment_bytes: 20971520
+    allowed_recipient_domains: []
+    context_body_preview_chars: 600
+    initial_context_prior_full_body_char_limit: 1200
+    max_initial_context_body_chars: 20000
+    actionable_senders: []
+    subject_threading_fallback: false
+
+  supervisor:
+    stall_threshold_minutes: 15
+    max_task_duration_minutes: 60
+    review_model: openai/gpt-4.1-mini
+    recent_log_limit: 5
+
+  filesystem:
+    shared_root: /data/share
+    require_mount: true
+    shared_file_umask: "0002"
+    max_read_bytes: 102400
+    trash_directory: /data/share/.trash
+
+  tool_result_cache:
+    enabled: true
+    root: .assistant/cache/tool-results
+    min_bytes: 4096
+    retention_days: 7
+
+  artifacts:
+    enabled: true
+    raw_root: /data/private/artifacts
+    processed_root: processed
+    max_attachment_bytes: 26214400
+    allowed_attachment_extensions:
+      - .csv
+      - .docx
+      - .epub
+      - .htm
+      - .html
+      - .json
+      - .md
+      - .pdf
+      - .pptx
+      - .txt
+      - .xls
+      - .xlsx
+      - .xml
+    clamav:
+      enabled: true
+      required: true
+      host: clamav
+      port: 3310
+      timeout_seconds: 30
+
+  prompt:
+    agent_file: AGENT.md
+    max_context_file_bytes: 65536
+
+  memory:
+    recent_prompt_limit: 10
+    steward:
+      enabled: true
+      model: openai/gpt-4.1-mini
+      mode: best_effort
+      max_iterations: 4
+      timeout_seconds: 45
+      max_tokens_per_call: 1600
+      max_injected_memories: 8
+      max_writes_per_job: 5
+      max_transcript_bytes: 30000
+      min_importance: 4
+      min_confidence: 0.55
+
+  context:
+    search_days: 30
+
+  embeddings:
+    enabled: true
+    base_url: http://ollama:11434
+    model: embeddinggemma
+    dimensions:
+    timeout_seconds: 20
+
+  workspace:
+    max_conversion_bytes: 26214400
+    convertible_document_extensions:
+      - .doc
+      - .docx
+      - .odp
+      - .ods
+      - .odt
+      - .pdf
+      - .ppt
+      - .pptx
+      - .xls
+      - .xlsm
+      - .xlsx
+    index:
+      enabled: true
+      poll_interval_seconds: 60
+      chunk_chars: 3500
+      candidate_limit: 3000
+
+  conversion:
+    pandoc_path: pandoc
+    pdf_engine: weasyprint
+    timeout_seconds: 120
+    max_input_bytes: 26214400
+
+  reminders:
+    default_timezone:
+    scheduler_poll_interval_seconds: 2
+    max_due_per_tick: 25
+
+  calendar:
+    enabled: false
+    timezone:
+    sync:
+      command:
+        - vdirsyncer
+        - sync
+      timeout_seconds: 120
+      before_read: false
+      before_write: true
+      after_write: true
+    store:
+      vdir_path: /data/private/calendar/vdir
+      default_calendar: default
+    policy:
+      allow_read_event_details: false
+    limits:
+      max_occurrences_per_event: 500
+
+  projects:
+    enabled: true
+    scheduler_poll_interval_seconds: 2
+    max_tasks: 25
+    max_projects_per_tick: 25
+
+  deep_research:
+    enabled: true
+    model:
+    search_model: perplexity/sonar-pro
+    max_tool_calls: 40
+    max_iterations: 30
+    poll_interval_seconds: 2
+    timeout_seconds: 180
+
+  heartbeat:
+    enabled: true
+    poll_interval_seconds: 300
+    stale_threshold_minutes: 30
+    deep_research_stale_minutes: 60
+    project_stale_minutes: 60
+    admin_digest_interval_hours: 0
+
+  sandbox:
+    enabled: true
+    base_url: http://sandbox:8080
+    default_timeout_seconds: 300
+    hard_kill_grace_seconds: 30
+    max_attempts: 3
+    retry_backoff_seconds: 1
+
+  search:
+    enabled: true
+    model: openai/gpt-4.1-mini
+    engine: auto
+    max_results: 5
+    max_total_results: 15
+    search_context_size: medium
+    allowed_domains: []
+    excluded_domains: []
+
+  fusion:
+    enabled: true
+    analysis_models: []
+    model:
+    max_tool_calls: 8
+    max_completion_tokens:
+    temperature:
+
+  api:
+    # Bind host for the uvicorn server inside the container.
+    # 127.0.0.1 is the safe default — external access is controlled by
+    # AGENT_API_PUBLISHED_HOST in docker-compose.yml (also defaults to 127.0.0.1).
+    bind_host: 127.0.0.1
+    port: 8000
+    docs_enabled: false
+    openapi_enabled: false
+    # Set to false to disable the /admin and /workspace browser UIs (returns 404).
+    # The /api/* endpoints remain available regardless of these settings.
+    # See docs/security.md before exposing this service on a public network.
+    dashboard_enabled: true
+    workspace_enabled: true
+    # Maximum bytes allowed for a single workspace upload (PUT /api/workspace/upload).
+    # Default: 524288000 = 500 MB. Set to 0 to disable the limit.
+    max_upload_bytes: 524288000
