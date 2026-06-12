@@ -205,6 +205,30 @@ class CalendarGatewayTest(unittest.TestCase):
             with self.assertRaisesRegex(CalendarError, "managed calendar event not found"):
                 gateway.delete_event("external@example.test")
 
+    def test_create_event_with_attendees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vdir_path = Path(temp_dir) / "vdir"
+            db = FakeCalendarDatabase()
+            gateway = CalendarGateway(db, calendar_config(str(vdir_path)), {"id": 15, "thread_id": "thread"})
+
+            created = gateway.create_event(
+                title="Team meeting",
+                start="2026-06-10T14:00:00Z",
+                end="2026-06-10T15:00:00Z",
+                attendees=["alice@example.com", "bob@example.com"],
+            )
+            event_id = created["event"]["event_id"]
+            created_path = next((vdir_path / "main").glob("*local-calendar-gateway.ics"))
+            content = created_path.read_text(encoding="utf-8")
+
+            self.assertIn("ATTENDEE:mailto:alice@example.com", content)
+            self.assertIn("ATTENDEE:mailto:bob@example.com", content)
+
+            updated = gateway.update_event(event_id, attendees=["charlie@example.com"])
+            updated_content = created_path.read_text(encoding="utf-8")
+            self.assertIn("ATTENDEE:mailto:charlie@example.com", updated_content)
+            self.assertNotIn("ATTENDEE:mailto:alice@example.com", updated_content)
+
 
 if __name__ == "__main__":
     unittest.main()

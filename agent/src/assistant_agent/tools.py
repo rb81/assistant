@@ -2241,6 +2241,7 @@ class ToolRuntime:
         location: str = "",
         all_day: bool = False,
         transparency: str = "OPAQUE",
+        attendees: Optional[list[str]] = None,
         metadata: Optional[dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -2256,6 +2257,7 @@ class ToolRuntime:
                 location=location,
                 all_day=all_day,
                 transparency=transparency,
+                attendees=attendees,
                 metadata=metadata,
                 idempotency_key=idempotency_key,
             )
@@ -2272,6 +2274,7 @@ class ToolRuntime:
         location: Optional[str] = None,
         all_day: Optional[bool] = None,
         transparency: Optional[str] = None,
+        attendees: Optional[list[str]] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         if not self.config.get_bool("agent.calendar.enabled", False):
@@ -2286,6 +2289,7 @@ class ToolRuntime:
                 location=location,
                 all_day=all_day,
                 transparency=transparency,
+                attendees=attendees,
                 metadata=metadata,
             )
         except (CalendarError, ValueError) as exc:
