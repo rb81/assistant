@@ -281,7 +281,7 @@ LEFT JOIN emails te ON te.id = j.trigger_email_id
 
 
 CANCELLABLE_JOB_STATUSES = {"queued", "running", "waiting", "needs_review"}
-REQUEUEABLE_JOB_STATUSES = {"failed", "cancelled", "waiting", "needs_review"}
+REQUEUEABLE_JOB_STATUSES = {"failed", "cancelled", "waiting", "needs_review", "completed"}
 
 WORKSPACE_BINARY_EXTENSIONS = {
     ".7z",
@@ -1743,7 +1743,7 @@ def job_poll(job_id: int, after_sequence: int = 0) -> dict[str, Any]:
 
 @app.post("/api/jobs/{job_id}/instructions")
 def add_instruction(job_id: int, request: InstructionRequest) -> dict[str, str]:
-    row = db.fetch_one("SELECT id FROM jobs WHERE id = %s", (job_id,))
+    row = db.fetch_one("SELECT id, status FROM jobs WHERE id = %s", (job_id,))
     if row is None:
         raise HTTPException(status_code=404, detail="job not found")
     db.execute(
@@ -1751,6 +1751,25 @@ def add_instruction(job_id: int, request: InstructionRequest) -> dict[str, str]:
         (job_id, request.instruction, "dashboard"),
     )
     db.log_event(job_id, "supervisor_note", output_data={"instruction": request.instruction, "created_by": "dashboard"})
+    
+    # Automatically requeue jobs in terminal states so the instruction can be processed
+    if row["status"] in ("completed", "failed", "cancelled"):
+        db.execute(
+            """
+            UPDATE jobs
+            SET status = 'queued',
+                run_at = now(),
+                locked_at = NULL,
+                locked_by = NULL,
+                last_error = NULL,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (job_id,),
+        )
+        db.log_event(job_id, "status_change", output_data={"status": "queued", "reason": "requeued by admin instruction"})
+        return {"status": "requeued"}
+    
     return {"status": "created"}
 
 

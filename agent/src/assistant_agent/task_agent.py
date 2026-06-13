@@ -893,11 +893,14 @@ class TaskAgent:
             input_data = row.get("input_data") or {}
             line = ""
             if event_type == "tool_result" and tool == "reminder_create":
-                line = self.prior_reminder_line("Created", output.get("reminder") or {}, output)
+                reminder = output.get("reminder")
+                line = self.prior_reminder_line("Created", reminder if isinstance(reminder, dict) else {}, output)
             elif event_type == "tool_result" and tool == "reminder_update":
-                line = self.prior_reminder_line("Updated", output.get("reminder") or {}, output)
+                reminder = output.get("reminder")
+                line = self.prior_reminder_line("Updated", reminder if isinstance(reminder, dict) else {}, output)
             elif event_type == "tool_result" and tool == "reminder_cancel":
-                line = self.prior_reminder_line("Cancelled", output.get("reminder") or {}, output)
+                reminder = output.get("reminder")
+                line = self.prior_reminder_line("Cancelled", reminder if isinstance(reminder, dict) else {}, output)
             elif event_type == "tool_result" and tool == "email_send":
                 recipients = list(output.get("to") or input_data.get("to") or [])
                 status = output.get("status") or "completed"
