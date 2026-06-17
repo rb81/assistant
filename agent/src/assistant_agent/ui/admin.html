@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__APP_TITLE__ Dashboard</title>
+  <link rel="stylesheet" href="/assets/shell.css">
+</head>
+<body class="app-body">
+  <div class="app-shell workspace-shell dashboard-shell">
+    <header class="workspace-topbar">
+      <div class="topbar-left">
+        <a class="topbar-brand" href="/admin">
+          <span class="brand-mark">A</span>
+          <strong>__APP_TITLE__</strong>
+        </a>
+        <span class="topbar-breadcrumb">Dashboard</span>
+      </div>
+      <div class="topbar-right">
+        <a class="topbar-icon-link" href="/workspace" title="Workspace" aria-label="Workspace">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.75 2.5A1.75 1.75 0 0 0 0 4.25v7.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 16 11.75v-6.5A1.75 1.75 0 0 0 14.25 3.5H8.62a.75.75 0 0 1-.53-.22l-.84-.84A1.75 1.75 0 0 0 6.01 2.5Zm-.25 4h13v5.25a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25Z"/></svg>
+        </a>
+        __API_DOCS_LINK__
+      </div>
+    </header>
+
+    <main class="dashboard-main">
+      <section class="dashboard-list-view" id="list-view">
+        <div class="dashboard-toolbar">
+          <div class="segmented dashboard-tabs segmented-6" role="tablist" aria-label="Dashboard views">
+            <button class="segment active" id="jobs-view-button" type="button">Jobs</button>
+            <button class="segment" id="reminders-view-button" type="button">Reminders</button>
+            <button class="segment" id="projects-view-button" type="button">Projects</button>
+            <button class="segment" id="memories-view-button" type="button">Memories</button>
+            <button class="segment" id="notes-view-button" type="button">Notes</button>
+            <button class="segment" id="contacts-view-button" type="button">Contacts</button>
+          </div>
+          <div class="dashboard-actions">
+            <select id="status-filter" aria-label="Job status">
+              <option value="">All jobs</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="waiting">Waiting</option>
+              <option value="needs_review">Needs review</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <select class="hidden" id="reminder-status-filter" aria-label="Reminder status">
+              <option value="">All reminders</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="queued">Queued</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <select class="hidden" id="project-status-filter" aria-label="Project status">
+              <option value="">All projects</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <input class="hidden" id="note-query" placeholder="Search notes">
+            <input class="hidden" id="contact-query" placeholder="Search contacts">
+            <button class="button" id="refresh" type="button">Refresh</button>
+            <button class="button primary" id="create-record" type="button">New Job</button>
+          </div>
+        </div>
+
+        <div class="dashboard-summary-row" id="dashboard-summary"></div>
+
+        <div class="dashboard-filter-row hidden" id="memory-filters">
+          <input id="memory-query" placeholder="Search memories">
+          <input id="memory-tag" placeholder="Tag">
+          <input id="memory-scope" placeholder="Scope">
+          <input id="memory-kind" placeholder="Kind">
+          <select id="memory-pinned">
+            <option value="">Pinned: any</option>
+            <option value="true">Pinned only</option>
+            <option value="false">Unpinned only</option>
+          </select>
+          <label class="check-row"><input id="memory-include-expired" type="checkbox">Include expired</label>
+        </div>
+
+        <div class="dashboard-filter-row hidden" id="note-filters">
+          <input id="note-tag" placeholder="Tag">
+        </div>
+
+        <div class="table-shell">
+          <table class="data-table">
+            <thead id="table-head"></thead>
+            <tbody id="table-body"></tbody>
+          </table>
+          <div class="empty-state hidden" id="table-empty">No records.</div>
+        </div>
+
+        <div class="pagination-bar">
+          <span class="meta" id="pagination-summary"></span>
+          <div class="pagination-actions">
+            <button class="button" id="page-prev" type="button">Previous</button>
+            <button class="button" id="page-next" type="button">Next</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-detail-view hidden" id="detail-view">
+        <div class="detail-toolbar">
+          <button class="button" id="back-to-list" type="button">← Back</button>
+          <div class="detail-toolbar-title" id="detail-title" style="flex:1;min-width:0"></div>
+          <div class="actions" id="detail-actions"></div>
+        </div>
+        <div class="detail-grid" id="detail"></div>
+      </section>
+
+      <section class="dashboard-form-view hidden" id="form-view">
+        <div class="form-shell">
+          <div class="detail-toolbar">
+            <button class="button" id="cancel-create" type="button">← Cancel</button>
+            <div class="detail-toolbar-title" id="form-title" style="flex:1;min-width:0"></div>
+          </div>
+          <div class="detail-card" id="form-content"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/assets/admin.js"></script>
+</body>
+</html>

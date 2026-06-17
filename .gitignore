@@ -1,0 +1,54 @@
+# Local runtime data and persistent container state
+data/
+
+# Local environment/config files and secrets
+.env
+.env.*
+!.env.example
+config/AGENT.md
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend dependencies and generated browser bundles
+agent/frontend/node_modules/
+agent/src/assistant_agent/ui/assets/workspace.bundle.css
+agent/src/assistant_agent/ui/assets/workspace.bundle.js
+agent/src/assistant_agent/ui/assets/workspace.*.js
+agent/src/assistant_agent/ui/assets/workspace.*.ttf
+agent/src/assistant_agent/ui/assets/workspace.*.woff
+agent/src/assistant_agent/ui/assets/workspace.*.woff2
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs and temporary files
+*.log
+tmp/
+.tmp/
+temp/
+.temp/
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db

@@ -1,0 +1,300 @@
+name: assistant
+
+x-agent-secrets: &agent-secrets
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-REPLACE-WITH-A-STRONG-PASSWORD}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  AGENT_APP_BASE_URL: ${AGENT_APP_BASE_URL:-}
+  AGENT_API_DOCS_ENABLED: ${AGENT_API_DOCS_ENABLED:-}
+  AGENT_API_OPENAPI_ENABLED: ${AGENT_API_OPENAPI_ENABLED:-}
+  AGENT_API_DASHBOARD_ENABLED: ${AGENT_API_DASHBOARD_ENABLED:-}
+  AGENT_API_WORKSPACE_ENABLED: ${AGENT_API_WORKSPACE_ENABLED:-}
+  AGENT_API_MAX_UPLOAD_BYTES: ${AGENT_API_MAX_UPLOAD_BYTES:-}
+  AGENT_NAME: ${AGENT_NAME:-}
+  AGENT_EMAIL: ${AGENT_EMAIL:-}
+  ADMIN_NAME: ${ADMIN_NAME:-}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+  ORG_NAME: ${ORG_NAME:-}
+  ORG_SECURITY_EMAIL: ${ORG_SECURITY_EMAIL:-}
+  ORG_INTERNAL_EMAIL_DOMAINS: ${ORG_INTERNAL_EMAIL_DOMAINS:-}
+  AGENT_TIMEZONE: ${AGENT_TIMEZONE:-}
+  AGENT_LLM_MODEL: ${AGENT_LLM_MODEL:-}
+  AGENT_LLM_FALLBACK_MODEL: ${AGENT_LLM_FALLBACK_MODEL:-}
+  AGENT_MAX_DAILY_COST_USD: ${AGENT_MAX_DAILY_COST_USD:-}
+  AGENT_MAX_EMAILS_PER_HOUR: ${AGENT_MAX_EMAILS_PER_HOUR:-}
+  AGENT_IMAP_POLL_INTERVAL: ${AGENT_IMAP_POLL_INTERVAL:-}
+  CALENDAR_ENABLED: ${CALENDAR_ENABLED:-}
+  CALENDAR_TIMEZONE: ${CALENDAR_TIMEZONE:-}
+  IMAP_HOST: ${IMAP_HOST:-}
+  IMAP_PORT: ${IMAP_PORT:-993}
+  IMAP_USERNAME: ${IMAP_USERNAME:-}
+  IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+  IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
+  IMAP_ARCHIVE_FOLDER: ${IMAP_ARCHIVE_FOLDER:-Archive}
+  IMAP_SENT_FOLDER: ${IMAP_SENT_FOLDER:-Sent}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+  EMAIL_ALLOWED_RECIPIENT_DOMAINS: ${EMAIL_ALLOWED_RECIPIENT_DOMAINS:-}
+  EMAIL_ACTIONABLE_SENDERS: ${EMAIL_ACTIONABLE_SENDERS:-}
+  CALDAV_URL: ${CALDAV_URL:-}
+  CALDAV_USERNAME: ${CALDAV_USERNAME:-}
+  CALDAV_PASSWORD: ${CALDAV_PASSWORD:-}
+  VDIRSYNCER_CONFIG: /app/config/vdirsyncer/config
+
+x-agent-config-volume: &agent-config-volume
+  type: bind
+  source: ./config
+  target: /app/config
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-agent-common: &agent-common
+  build: ./agent
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    <<: *agent-secrets
+    AGENT_CONFIG: /app/config/agent.yaml
+  volumes:
+    - *agent-config-volume
+  networks:
+    - app_net
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: assistant
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-REPLACE-WITH-A-STRONG-PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant -d assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - app_net
+
+  clamav:
+    image: clamav/clamav:stable_base
+    restart: unless-stopped
+    volumes:
+      - ./data/clamav:/var/lib/clamav
+    networks:
+      - app_net
+
+  agent-api:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sandbox:
+        condition: service_started
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: api
+      AGENT_API_BIND_HOST: ${AGENT_API_BIND_HOST:-0.0.0.0}
+      AGENT_API_ALLOW_PUBLIC_BIND: ${AGENT_API_ALLOW_PUBLIC_BIND:-true}
+    volumes:
+      - ./data/share:/data/share
+      - *agent-config-volume
+    ports:
+      - "${AGENT_API_PUBLISHED_HOST:-127.0.0.1}:${AGENT_API_PUBLISHED_PORT:-8000}:8000"
+    networks:
+      - app_net
+      - sandbox_net
+
+  downloader:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: downloader
+    volumes:
+      - ./data/share:/data/share
+      - ./data/private/artifacts:/data/private/artifacts
+      - *agent-config-volume
+
+  task-agent:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sandbox:
+        condition: service_started
+      ollama:
+        condition: service_started
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: task-agent
+    volumes:
+      - ./data/share:/data/share
+      - ./data/private/calendar:/data/private/calendar
+      - *agent-config-volume
+    networks:
+      - app_net
+      - sandbox_net
+    deploy:
+      replicas: ${TASK_AGENT_WORKERS:-1}
+
+  workspace-indexer:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: workspace-indexer
+    volumes:
+      - ./data/share:/data/share
+      - *agent-config-volume
+
+  reminder-scheduler:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: reminder-scheduler
+
+  project-scheduler:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: project-scheduler
+
+  deep-research-agent:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: deep-research-agent
+    volumes:
+      - ./data/share:/data/share
+      - *agent-config-volume
+
+  supervisor:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: supervisor
+
+  heartbeat:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *agent-secrets
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_ROLE: heartbeat
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ./data/ollama:/root/.ollama
+    networks:
+      - app_net
+
+  ollama-model-puller:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        attempt=1
+        while [ "$$attempt" -le 60 ]; do
+          if ollama list >/dev/null 2>&1; then
+            ollama pull embeddinggemma
+            exit 0
+          fi
+          attempt=$$((attempt + 1))
+          sleep 2
+        done
+        echo "Ollama did not become ready within 120 seconds" >&2
+        exit 1
+    networks:
+      - app_net
+
+  # Production defaults for command execution:
+  # - broker stays on sandbox_net only
+  # - each command runs in a fresh container on its own bridge network
+  # - run containers get internet and only ./data/share mounted
+  # Use a Compose override file to opt into gVisor/runsc after validating networking.
+  sandbox:
+    image: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
+    build: ./sandbox
+    restart: unless-stopped
+    environment:
+      SANDBOX_SHARED_ROOT: /data/share
+      SANDBOX_SHARED_ROOT_HOST: ${SANDBOX_SHARED_ROOT_HOST:-${PWD}/data/share}
+      SANDBOX_ISOLATION_MODE: ${SANDBOX_ISOLATION_MODE:-container}
+      SANDBOX_RUN_IMAGE: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
+      SANDBOX_RUN_NETWORK_MODE: ${SANDBOX_RUN_NETWORK_MODE:-per_run_bridge}
+      SANDBOX_RUN_CAP_DROP: ${SANDBOX_RUN_CAP_DROP:-NET_RAW}
+      SANDBOX_RUN_CPUS: ${SANDBOX_RUN_CPUS:-2}
+      SANDBOX_RUN_MEMORY_BYTES: ${SANDBOX_RUN_MEMORY_BYTES:-2147483648}
+      SANDBOX_RUN_PIDS_LIMIT: ${SANDBOX_RUN_PIDS_LIMIT:-512}
+      SHARED_FILE_UMASK: "0002"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+    cpus: 2
+    volumes:
+      - ./data/share:/data/share
+      # The Docker socket is required so the sandbox broker can create and
+      # destroy ephemeral per-command containers for isolated execution.
+      # This is a high-privilege mount — see docs/security.md for details.
+      # To eliminate this exposure, set agent.sandbox.enabled: false in
+      # config/agent.yaml (disables the command_execute tool entirely).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sandbox_net
+
+networks:
+  app_net:
+  sandbox_net:
+    internal: true
