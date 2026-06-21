@@ -96,7 +96,9 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
         "tools": {"reminder_create", "reminder_list", "reminder_update", "reminder_cancel"},
         "text": (
             "Use for future tasks; do not wait inside the current job for the future time. "
-            "Keep tasks specific enough for the future job to execute without guessing. "
+            "Include detailed notes with as much context as warranted by the task — reference related notes, "
+            "projects, emails, jobs, or reminders that may need reviewing before or after execution. "
+            "Keep tasks specific and comprehensive enough for the future job to execute independently without guessing. "
             "Use a stable idempotency_key per reminder intent. Reuse the same key only when retrying "
             "the same reminder; use distinct keys for distinct reminders."
         ),
@@ -3049,14 +3051,14 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "reminder_create",
-            "description": "Schedule a future task. The reminder scheduler queues it as a normal job when due; do not wait inside the current job.",
+            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "task": {
                         "type": "string",
-                        "description": "Full executable instruction for the future job, including recipients and expected action when relevant.",
+                        "description": "Full executable instruction for the future job with detailed context. Include: (1) specific actions to take, (2) relevant recipients/stakeholders, (3) references to related notes, projects, emails, jobs, or reminders that should be reviewed, (4) any background information needed to execute without guessing. Be as detailed as warranted by the task complexity.",
                     },
                     "run_at": {
                         "type": "string",
