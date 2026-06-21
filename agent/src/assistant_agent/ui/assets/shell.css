@@ -1710,6 +1710,10 @@ a {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.segmented-7 {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
 .editor-mode-tabs {
   min-width: 140px;
 }
@@ -2021,7 +2025,8 @@ a {
   }
 
   .dashboard-tabs.segmented-5,
-  .dashboard-tabs.segmented-6 {
+  .dashboard-tabs.segmented-6,
+  .dashboard-tabs.segmented-7 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

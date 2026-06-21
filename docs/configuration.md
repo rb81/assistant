@@ -83,6 +83,30 @@ The `CALDAV_*` values are different: they are account/provider values passed int
 
 `CALDAV_URL` should be the direct CalDAV URL for the single calendar collection Assistant should sync. The bundled `config/vdirsyncer/config` uses `collections = null`, so it does not perform collection discovery.
 
+## Entity Registry
+
+The entity registry automatically categorizes all objects (memories, notes, reminders, projects, contacts, jobs, emails, calendar events) into high-level entities representing major areas, topics, or projects in the user's life.
+
+Configuration in `agent.yaml`:
+
+```yaml
+agent:
+  entities:
+    enabled: true                  # Enable entity registry and auto-linking
+    max_per_object: 3             # Max entities per object (prefer 1-2)
+    auto_link_on_create: true     # Auto-link when objects created
+```
+
+Environment overrides:
+
+- `AGENT_ENTITIES_ENABLED` — set to `false` to disable entity registry
+- `AGENT_ENTITIES_MAX_PER_OBJECT` — override max entities per object
+- `AGENT_ENTITIES_AUTO_LINK_ON_CREATE` — set to `false` to disable auto-linking
+
+The entity linker uses the memory steward model (`agent.memory.steward.model`) for classification. Auto-linking is best-effort and never blocks object creation.
+
+When enabled, objects are automatically analyzed and linked to 1-3 high-level entities. The system prefers reusing existing entities over creating new ones, and entities are meant to be broad and meaningful (e.g., "IntelliGulf", "Personal Finance") rather than granular (e.g., "Meeting Notes", "Tuesday Tasks").
+
 `DATABASE_URL` is still accepted as an advanced override, but the normal path is to set `POSTGRES_PASSWORD`; Assistant builds the PostgreSQL URL from local `config/agent.yaml` database defaults plus that password.
 
 ## `config/agent.yaml`: operational defaults
@@ -97,7 +121,7 @@ The `CALDAV_*` values are different: they are account/provider values passed int
 - email behavior defaults such as folder names, attachment limits, and sent-folder behavior
 - filesystem paths, shared workspace behavior, and umask
 - calendar sync, private vdir storage, and managed-event policy
-- artifact processing, ClamAV, prompt context paths, memory, notes, workspace indexing, reminders, projects, deep research, heartbeat, sandbox, search, and fusion defaults
+- artifact processing, ClamAV, prompt context paths, memory, notes, entities, workspace indexing, reminders, projects, deep research, heartbeat, sandbox, search, and fusion defaults
 
 **Every setting in this file can be overridden via environment variables in `.env`.** For normal deployments you should not need to edit this file — use `.env` for both secrets/identity and operational overrides. See [docs/env-overrides.md](env-overrides.md) for the complete list of available environment variable overrides.
 

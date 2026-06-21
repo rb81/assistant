@@ -86,6 +86,15 @@ Asynchronous research execution and event timeline.
 
 Managed-event ownership and audit history.
 
+## Entity Registry
+
+- `entities`
+- `entity_object_links`
+
+High-level entity groupings (projects, topics, areas of life) that any object in the system can be linked to. The entity registry enables automatic organization and cross-object retrieval via LLM-powered entity resolution.
+
+Unlike the polymorphic `linked_entities` JSONB column in memories/notes (which stores URN-style references to domain objects like contacts/projects/reminders), the entity registry uses a dedicated junction table and provides bidirectional linking with cascade deletion support.
+
 ## Operational and Diagnostics Tables
 
 - `runtime_state`

@@ -6,6 +6,7 @@ from typing import Any, Optional
 from .config import AppConfig, agent_name
 from .context_store import ContextStore
 from .database import Database
+from .entity_linker import EntityLinker
 from .entity_resolver import EntityRef, EntityResolver, ResolutionResult
 from .llm_client import LlmClient
 from .memory_store import MemoryStore, cosine_similarity
@@ -431,7 +432,13 @@ class MemorySteward:
                 if entity_links:
                     self._set_memory_entity_links(row["id"], entity_links)
 
+                # Auto-link memory to high-level entities
+                self._auto_link_object("memory", row["id"], content, normalized.get("tags"))
+
                 created.append(row["id"])
+
+            # Auto-link the job itself to entities
+            self._auto_link_job(job)
 
             # Run mini-reflection if high-signal tools were used
             self._maybe_mini_reflect(job, messages, outcome, summary, resolution)
@@ -783,6 +790,40 @@ class MemorySteward:
             )
             reaped_ids.append(row["id"])
         return {"reaped_count": len(reaped_ids), "reaped_ids": reaped_ids}
+
+    def _auto_link_object(
+        self,
+        object_type: str,
+        object_id: int,
+        content: str,
+        tags: Optional[list[str]] = None,
+    ) -> None:
+        """Best-effort auto-link an object to high-level entities via EntityLinker."""
+        if not self.config.get_bool("agent.entities.auto_link_on_create", True):
+            return
+        try:
+            linker = EntityLinker(self.db, self.config)
+            summary = linker.build_content_summary(content=content, tags=tags)
+            linker.link_object(object_type, object_id, summary, linked_by="memory-steward")
+        except Exception as exc:
+            LOGGER.debug("auto-link failed for %s/%s: %s", object_type, object_id, exc)
+
+    def _auto_link_job(self, job: dict[str, Any]) -> None:
+        """Best-effort auto-link a job to high-level entities."""
+        if not self.config.get_bool("agent.entities.auto_link_on_create", True):
+            return
+        task_summary = str(job.get("task_summary") or "").strip()
+        if not task_summary:
+            return
+        try:
+            linker = EntityLinker(self.db, self.config)
+            summary = linker.build_content_summary(
+                title=task_summary,
+                extra={"thread": job.get("thread_id", "")},
+            )
+            linker.link_object("job", int(job["id"]), summary, linked_by="memory-steward")
+        except Exception as exc:
+            LOGGER.debug("auto-link failed for job/%s: %s", job.get("id"), exc)
 
     def duplicate_exists(self, content: str) -> bool:
         rows = self.store.keyword_search(content[:200], limit=5)

@@ -1525,6 +1525,8 @@ class ToolRuntime:
                     (_Jsonb(clean_links), row["id"]),
                 )
                 row = store.get(row["id"]) or row
+        # Auto-link note to high-level entities
+        self._auto_link_entity("note", int(row["id"]), title=title or "", content=content, tags=tags)
         return {"note": {key: row.get(key) for key in ("id", "title", "tags", "status", "linked_entities", "metadata", "created_at", "updated_at")}}
 
     def note_search(self, query: str = "", tags: Optional[list[str]] = None, entity_filter: Optional[dict[str, Any]] = None, limit: int = 10, include_resolved: bool = False) -> dict[str, Any]:
@@ -1617,6 +1619,25 @@ class ToolRuntime:
             row = store.get(note_id) or row
         return {"note": {key: row.get(key) for key in ("id", "title", "tags", "status", "linked_entities", "metadata", "updated_at")}}
 
+    def _auto_link_entity(
+        self,
+        object_type: str,
+        object_id: int,
+        title: str = "",
+        content: str = "",
+        tags: Optional[list[str]] = None,
+    ) -> None:
+        """Best-effort auto-link an object to high-level entities via EntityLinker."""
+        if not self.config.get_bool("agent.entities.auto_link_on_create", True):
+            return
+        try:
+            from .entity_linker import EntityLinker
+            linker = EntityLinker(self.db, self.config)
+            summary = linker.build_content_summary(title=title, content=content, tags=tags)
+            linker.link_object(object_type, object_id, summary, linked_by="agent")
+        except Exception as exc:
+            LOGGER.debug("auto-link entity failed for %s/%s: %s", object_type, object_id, exc)
+
     def _clean_entity_links(self, raw_links: list[Any]) -> list[dict[str, Any]]:
         """Validate and clean entity link dicts, preserving optional label."""
         valid_types = {"contact", "project", "reminder", "job", "thread"}
@@ -1676,6 +1697,12 @@ class ToolRuntime:
             )
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
+        # Auto-link contact to high-level entities
+        self._auto_link_entity(
+            "contact", int(row["id"]),
+            title="%s %s" % (first_name.strip(), last_name.strip()),
+            content="Company: %s, Title: %s, Notes: %s" % (company, title, notes),
+        )
         return {"contact": row}
 
     def contact_update(
@@ -1823,6 +1850,12 @@ class ToolRuntime:
         )
         if row is None:
             raise ToolError("scheduled reminder not found")
+        # Auto-link reminder to high-level entities
+        self._auto_link_entity(
+            "reminder", int(row["id"]),
+            title=clean_title,
+            content=clean_task,
+        )
         result = {"reminder": self._reminder_result(row)}
         if clean_idempotency_key:
             result["idempotency_key"] = clean_idempotency_key
@@ -2038,6 +2071,13 @@ class ToolRuntime:
                         Jsonb(json_safe({"project_id": project["id"], "original_job_id": self.job["id"]})),
                     ),
                 )
+        # Auto-link project to high-level entities
+        task_descriptions = "; ".join(t["title"] for t in clean_tasks[:5])
+        self._auto_link_entity(
+            "project", int(project["id"]),
+            title=clean_title,
+            content=task_descriptions,
+        )
         return {"project": project, "tasks": created_tasks}
 
     def _project_workspace_path(self, project_id: int, title: str) -> str:

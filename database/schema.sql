@@ -543,6 +543,32 @@ CREATE TABLE manual_events (
 
 CREATE INDEX manual_events_created_idx ON manual_events(created_at);
 
+CREATE TABLE entities (
+  id bigserial PRIMARY KEY,
+  name text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  created_by text NOT NULL DEFAULT 'system',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT entities_name_unique UNIQUE(name)
+);
+
+CREATE TABLE entity_object_links (
+  id bigserial PRIMARY KEY,
+  entity_id bigint NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  object_type text NOT NULL CHECK (object_type IN (
+    'memory', 'note', 'reminder', 'project', 'project_task',
+    'job', 'contact', 'email', 'calendar_event'
+  )),
+  object_id bigint NOT NULL,
+  linked_by text NOT NULL DEFAULT 'agent',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(entity_id, object_type, object_id)
+);
+
+CREATE INDEX entity_object_links_entity_idx ON entity_object_links(entity_id, object_type);
+CREATE INDEX entity_object_links_object_idx ON entity_object_links(object_type, object_id);
+
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
 BEGIN
@@ -618,5 +644,10 @@ EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER workspace_document_conversions_set_updated_at
 BEFORE UPDATE ON workspace_document_conversions
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER entities_set_updated_at
+BEFORE UPDATE ON entities
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();

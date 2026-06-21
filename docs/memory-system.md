@@ -11,7 +11,73 @@ The memory system has two tiers:
 
 Both tiers support **entity-linked recall** — structural links to domain objects (contacts, projects, reminders, jobs) that enable deterministic retrieval independent of embedding similarity.
 
-## Entity-Linked Recall
+## Entity Registry
+
+The **Entity Registry** is a first-class categorical organization system that automatically links all objects (memories, notes, reminders, projects, contacts, jobs, emails, calendar events) to high-level entities representing major areas, topics, or projects in the user's life.
+
+### High-Level Entities vs. Entity-Linked Recall
+
+The system has two complementary entity systems that serve different purposes:
+
+1. **Entity Registry (`entities` + `entity_object_links`)** — High-level categorical groupings
+   - Examples: "IntelliGulf", "Personal Finance", "Health & Fitness", "Family"
+   - Purpose: Organize ALL objects into broad, meaningful categories
+   - Implementation: Dedicated tables with junction links
+   - Managed by: `EntityStore` + `EntityLinker` (LLM-powered auto-classification)
+
+2. **Entity-Linked Recall (`linked_entities` JSONB)** — Domain object cross-references
+   - Examples: Contact #42, Project #7, Reminder #88, Job #123
+   - Purpose: Structural links between memories/notes and specific domain objects
+   - Implementation: JSONB column with polymorphic URN-style references
+   - Managed by: `EntityResolver` (deterministic resolution from context)
+
+### How Entity Registry Works
+
+When objects are created (memories, notes, reminders, projects, contacts), the system automatically:
+
+1. Calls the configured mini model (memory steward model) to determine which high-level entities the object belongs to
+2. Prefers linking to existing entities over creating new ones
+3. Creates new entities only when nothing in the existing list fits
+4. Links up to 3 entities per object (prefers 1-2)
+
+**Design Principles:**
+- **Best-effort**: Linking failures never block object creation
+- **High-level**: Entities should be broad and meaningful, not granular ("Personal Finance" ✓, "Tuesday Tasks" ✗)
+- **Prefer existing**: Always reuse entities rather than creating near-duplicates
+- **Bidirectional**: Can query objects by entity OR entities by object
+
+### Configuration
+
+```yaml
+agent:
+  entities:
+    enabled: true                  # Enable entity registry
+    max_per_object: 3             # Max entities per object
+    auto_link_on_create: true     # Auto-link when objects created
+```
+
+### API Endpoints
+
+- `GET /api/entities` — List all entities with object counts
+- `POST /api/entities` — Create entity
+- `GET /api/entities/{id}` — Get entity details + linked objects
+- `PUT /api/entities/{id}` — Update entity
+- `DELETE /api/entities/{id}` — Delete with cascade (preview available)
+- `POST /api/entities/{id}/merge` — Merge entity into another
+
+### Cascade Deletion
+
+The entity registry supports intelligent cascade deletion:
+- **Exclusive objects** (linked ONLY to this entity) are physically deleted
+- **Shared objects** (linked to multiple entities) are merely unlinked
+- `GET /api/entities/{id}/delete-preview` shows what would happen before confirming
+
+### When to Use Which System
+
+- **Use Entity Registry** for: Broad categorization, cross-object organization, "show me everything related to IntelliGulf"
+- **Use Entity-Linked Recall** for: Specific memory/note relationships, deterministic recall, "notes about Alice Chen"
+
+## Entity-Linked Recall (Domain Objects)
 
 ### Problem
 

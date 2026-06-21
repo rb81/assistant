@@ -250,6 +250,11 @@ agent:
     poll_interval_seconds: 2
     timeout_seconds: 180
 
+  entities:
+    enabled: true
+    max_per_object: 3
+    auto_link_on_create: true
+
   heartbeat:
     enabled: true
     poll_interval_seconds: 300

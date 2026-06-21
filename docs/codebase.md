@@ -21,6 +21,8 @@ This document helps contributors navigate the repository quickly.
 - `database.py` — DB helpers and queue operations.
 - `email_ingest.py` — IMAP downloader + actionable job creation.
 - `memory_manager.py` / `memory_store.py` — memory stewardship and storage.
+- `entity_store.py` / `entity_linker.py` — entity registry storage and LLM-powered auto-classification.
+- `entity_resolver.py` — polymorphic entity reference resolution for entity-linked recall.
 - `note_store.py` — notes persistence/search.
 - `workspace_index.py` — workspace indexing + semantic search backend.
 - `projects.py` — project scheduler/orchestration.

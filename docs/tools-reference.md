@@ -65,6 +65,8 @@ Notes:
 
 Notes are private to explicit tool access and never injected into prompt context.
 
+**Auto-Entity Linking**: When enabled (`agent.entities.auto_link_on_create`), newly created memories and notes are automatically linked to 1-3 high-level entities via LLM classification. This grouping is best-effort and never blocks object creation.
+
 ## Contacts Tools
 
 - `contact_search`
@@ -75,6 +77,8 @@ Notes are private to explicit tool access and never injected into prompt context
 
 Contacts are deliberately separate from memory records.
 
+**Auto-Entity Linking**: When enabled, newly created contacts are automatically linked to high-level entities based on name, company, title, and notes fields.
+
 ## Reminders Tools
 
 - `reminder_create`
@@ -83,6 +87,8 @@ Contacts are deliberately separate from memory records.
 - `reminder_cancel`
 
 Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
+
+**Auto-Entity Linking**: When enabled, newly created reminders are automatically linked to high-level entities based on title and task description.
 
 ## Projects and Deep Research Tools
 
@@ -97,6 +103,8 @@ Deep research:
 - `deep_research_status`
 
 `project_create` and `deep_research_request` are async request tools; parent job transitions to `waiting`.
+
+**Auto-Entity Linking**: When enabled, newly created projects are automatically linked to high-level entities based on project title and first few task descriptions.
 
 ## Command and Calendar Tools
 

@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 from .config import agent_email, app_display_name, database_url, load_config, message_id_domain
 from .contact_store import ContactStore
 from .database import Database, json_safe
+from .entity_store import EntityStore
 from .document_text import DocumentTextExtractor
 from .memory_store import MEMORY_COLUMNS, MemoryStore
 from .notifications import compute_review_diagnostics
@@ -2465,4 +2466,111 @@ def emails(limit: int = 50) -> dict[str, Any]:
         (limit,),
     )
     return {"emails": rows}
+
+
+# ---------------------------------------------------------------------------
+# Entity Registry API
+# ---------------------------------------------------------------------------
+
+
+class EntityCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=1000)
+
+
+class EntityUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+
+
+class EntityMergeRequest(BaseModel):
+    target_entity_id: int = Field(..., ge=1)
+
+
+def entity_store() -> EntityStore:
+    return EntityStore(db)
+
+
+def raise_entity_error(exc: ValueError) -> None:
+    message = str(exc)
+    if "not found" in message:
+        raise HTTPException(status_code=404, detail=message) from exc
+    if "already exists" in message:
+        raise HTTPException(status_code=409, detail=message) from exc
+    raise HTTPException(status_code=400, detail=message) from exc
+
+
+@app.get("/api/entities")
+def entities_list() -> dict[str, Any]:
+    rows = entity_store().list_all()
+    return {"entities": rows}
+
+
+@app.post("/api/entities")
+def entity_create(request: EntityCreateRequest) -> dict[str, Any]:
+    try:
+        row = entity_store().create(
+            name=request.name,
+            description=request.description,
+            created_by="dashboard",
+        )
+    except ValueError as exc:
+        raise_entity_error(exc)
+    return {"entity": row}
+
+
+@app.get("/api/entities/{entity_id}")
+def entity_detail(entity_id: int) -> dict[str, Any]:
+    store = entity_store()
+    entity = store.get(entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    objects = store.get_objects_for_entity(entity_id)
+    return {"entity": entity, "objects": objects}
+
+
+@app.put("/api/entities/{entity_id}")
+def entity_update(entity_id: int, request: EntityUpdateRequest) -> dict[str, Any]:
+    fields = model_fields_set(request)
+    if not fields:
+        raise HTTPException(status_code=400, detail="at least one field must be provided")
+    try:
+        row = entity_store().update(
+            entity_id=entity_id,
+            name=request.name if "name" in fields else None,
+            description=request.description if "description" in fields else None,
+        )
+    except ValueError as exc:
+        raise_entity_error(exc)
+    return {"entity": row}
+
+
+@app.get("/api/entities/{entity_id}/delete-preview")
+def entity_delete_preview(entity_id: int) -> dict[str, Any]:
+    try:
+        preview = entity_store().delete_preview(entity_id)
+    except ValueError as exc:
+        raise_entity_error(exc)
+    return preview
+
+
+@app.delete("/api/entities/{entity_id}")
+def entity_delete(entity_id: int) -> dict[str, Any]:
+    try:
+        result = entity_store().delete_cascade(entity_id)
+    except ValueError as exc:
+        raise_entity_error(exc)
+    return result
+
+
+@app.post("/api/entities/{entity_id}/merge")
+def entity_merge(entity_id: int, request: EntityMergeRequest) -> dict[str, Any]:
+    try:
+        result = entity_store().merge(
+            source_entity_id=entity_id,
+            target_entity_id=request.target_entity_id,
+        )
+    except ValueError as exc:
+        raise_entity_error(exc)
+    return result
 

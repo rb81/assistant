@@ -130,6 +130,20 @@ Transcript includes command, timing, exit status, stdout, stderr, and sandbox me
 - `PATCH /api/reminders/{reminder_id}`
 - `DELETE /api/reminders/{reminder_id}`
 
+### Entities
+
+- `GET /api/entities` — list all entities with object counts per type
+- `POST /api/entities` — create new entity
+- `GET /api/entities/{entity_id}` — get entity details and linked objects
+- `PUT /api/entities/{entity_id}` — update entity name/description
+- `GET /api/entities/{entity_id}/delete-preview` — preview cascade deletion impact
+- `DELETE /api/entities/{entity_id}` — delete entity with cascade (exclusive objects deleted, shared objects unlinked)
+- `POST /api/entities/{entity_id}/merge` — merge source entity into target entity
+
+Entity creation accepts `name` (required) and optional `description`. Update operations use partial update semantics.
+
+Merge operation moves all object links from source entity to target entity (skipping duplicates) and then deletes the source.
+
 ### Projects and emails
 
 - `GET /api/projects`

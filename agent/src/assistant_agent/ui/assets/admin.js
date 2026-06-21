@@ -4,6 +4,7 @@ let selectedProjectId = null;
 let selectedMemoryId = null;
 let selectedNoteId = null;
 let selectedContactId = null;
+let selectedEntityId = null;
 let currentView = "jobs";
 let currentScreen = "list";
 let activeJobTab = "overview";
@@ -26,7 +27,8 @@ const rowsByView = {
   projects: [],
   memories: [],
   notes: [],
-  contacts: []
+  contacts: [],
+  entities: []
 };
 
 const pageByView = {
@@ -35,7 +37,8 @@ const pageByView = {
   projects: 1,
   memories: 1,
   notes: 1,
-  contacts: 1
+  contacts: 1,
+  entities: 1
 };
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -226,6 +229,7 @@ function viewLabel(view = currentView) {
   if (view === "memories") return "Memory";
   if (view === "notes") return "Note";
   if (view === "contacts") return "Contact";
+  if (view === "entities") return "Entity";
   return "Job";
 }
 
@@ -235,12 +239,13 @@ function tableColumnsFor(view) {
   if (view === "memories") return ["Content", "Tags", "Updated"];
   if (view === "notes") return ["Title", "Tags", "Updated"];
   if (view === "contacts") return ["Name", "Email", "Company", "Updated"];
+  if (view === "entities") return ["Name", "Description", "Objects", "Created"];
   return ["Status", "Task", "Cost", "Updated"];
 }
 
 function setActiveViewButton(view) {
   currentView = view;
-  for (const id of ["jobs", "reminders", "projects", "memories", "notes", "contacts"]) {
+  for (const id of ["jobs", "reminders", "projects", "memories", "notes", "contacts", "entities"]) {
     document.getElementById(`${id}-view-button`).classList.toggle("active", id === view);
   }
   document.getElementById("status-filter").classList.toggle("hidden", view !== "jobs");
@@ -344,12 +349,20 @@ async function loadContacts(options = {}) {
   renderTable({resetScroll: !options.preservePage || Boolean(options.resetScroll)});
 }
 
+async function loadEntities(options = {}) {
+  const data = await api("/api/entities");
+  rowsByView.entities = data.entities || [];
+  if (!options.preservePage) pageByView.entities = 1;
+  renderTable({resetScroll: !options.preservePage || Boolean(options.resetScroll)});
+}
+
 async function loadCurrentList(options = {}) {
   if (currentView === "reminders") return loadReminders(options);
   if (currentView === "projects") return loadProjects(options);
   if (currentView === "memories") return loadMemories(options);
   if (currentView === "notes") return loadNotes(options);
   if (currentView === "contacts") return loadContacts(options);
+  if (currentView === "entities") return loadEntities(options);
   return loadJobs(options);
 }
 
@@ -468,12 +481,27 @@ function contactRow(contact) {
   `;
 }
 
+function entityRow(entity) {
+  const active = entity.id === selectedEntityId ? " active" : "";
+  const totalObjects = Number(entity.total_objects || 0);
+  const desc = truncateText(entity.description || "—", 80);
+  return `
+    <tr class="table-row${active}" data-view="entities" data-id="${h(entity.id)}" tabindex="0">
+      <td><strong>${h(entity.name)}</strong></td>
+      <td class="muted-cell">${h(desc)}</td>
+      <td class="muted-cell">${h(totalObjects)}</td>
+      <td class="muted-cell">${h(shortDate(entity.created_at))}</td>
+    </tr>
+  `;
+}
+
 function rowHtmlFor(view, row) {
   if (view === "reminders") return reminderRow(row);
   if (view === "projects") return projectRow(row);
   if (view === "memories") return memoryRow(row);
   if (view === "notes") return noteRow(row);
   if (view === "contacts") return contactRow(row);
+  if (view === "entities") return entityRow(row);
   return jobRow(row);
 }
 
@@ -561,6 +589,7 @@ async function openRecord(view, id) {
   if (view === "memories") return loadMemoryDetail(id);
   if (view === "notes") return loadNoteDetail(id);
   if (view === "contacts") return loadContactDetail(id);
+  if (view === "entities") return loadEntityDetail(id);
   return loadJobDetail(id);
 }
 
@@ -1542,6 +1571,7 @@ function showCreateForm() {
   else if (currentView === "memories") content.innerHTML = createMemoryFormHtml();
   else if (currentView === "notes") content.innerHTML = createNoteFormHtml();
   else if (currentView === "contacts") content.innerHTML = createContactFormHtml();
+  else if (currentView === "entities") content.innerHTML = createEntityFormHtml();
   else content.innerHTML = createJobFormHtml();
   document.getElementById("create-form").onsubmit = submitCreateForm;
 }
@@ -1594,6 +1624,18 @@ async function submitCreateForm(event) {
     });
     selectedContactId = data.contact.id;
     await setView("contacts", {resetPage: true});
+  } else if (currentView === "entities") {
+    const form = event.target;
+    const data = await api("/api/entities", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        name: form.elements.name.value.trim(),
+        description: form.elements.description.value.trim() || null
+      })
+    });
+    selectedEntityId = data.entity.id;
+    await setView("entities", {resetPage: true});
   } else {
     const subject = document.getElementById("subject").value;
     const body = document.getElementById("body").value;
@@ -1780,6 +1822,171 @@ function scheduleContactLoad() {
   }, 250);
 }
 
+// --- Entity management ---
+
+function entityObjectCard(obj) {
+  return `
+    <details class="event-row">
+      <summary>
+        <span class="pill">${h(obj.object_type)}</span>
+        <strong>#${h(obj.object_id)}</strong>
+        <span class="meta">Linked by ${h(obj.linked_by || "unknown")} · ${h(shortDate(obj.created_at))}</span>
+      </summary>
+      <pre>${h(JSON.stringify(obj, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function entityDetailHtml(data) {
+  const entity = data.entity;
+  const objects = data.objects || [];
+  const objectCounts = entity.object_counts || {};
+  const countChips = Object.entries(objectCounts)
+    .map(([type, count]) => `<span class="pill">${h(type)}: ${h(count)}</span>`)
+    .join("") || `<span class="meta">No linked objects</span>`;
+
+  // Group objects by type
+  const grouped = {};
+  for (const obj of objects) {
+    const type = obj.object_type || "unknown";
+    if (!grouped[type]) grouped[type] = [];
+    grouped[type].push(obj);
+  }
+  const objectSections = Object.entries(grouped).map(([type, items]) => `
+    <div class="section-block">
+      <div class="section-heading">
+        <h2>${h(type)}</h2>
+        <span class="meta">${h(items.length)} linked</span>
+      </div>
+      <div class="event-list">${items.map(entityObjectCard).join("")}</div>
+    </div>
+  `).join("") || "";
+
+  // Build merge select from all entities (loaded from list)
+  const allEntities = rowsByView.entities || [];
+  const mergeOptions = allEntities
+    .filter(e => e.id !== entity.id)
+    .map(e => `<option value="${h(e.id)}">${h(e.name)} (#${e.id})</option>`)
+    .join("");
+
+  return `
+    <div class="detail-card">
+      ${entity.description ? `<pre>${h(entity.description)}</pre>` : ""}
+      <div class="summary-grid cols-3">
+        <div class="summary-item"><span>ID</span><strong>#${h(entity.id)}</strong></div>
+        <div class="summary-item"><span>Created By</span><strong>${h(entity.created_by || "-")}</strong></div>
+        <div class="summary-item"><span>Total Objects</span><strong>${h(entity.total_objects || 0)}</strong></div>
+        <div class="summary-item"><span>Created</span><strong>${h(shortDate(entity.created_at))}</strong></div>
+        <div class="summary-item"><span>Updated</span><strong>${h(shortDate(entity.updated_at))}</strong></div>
+      </div>
+      <div style="margin-top:.75rem">${countChips}</div>
+    </div>
+
+    <div class="section-block">
+      <div class="section-heading"><h2>Edit Entity</h2></div>
+      <form class="stack-form" onsubmit="saveEntity(event, ${entity.id})">
+        <label class="full-field">Name<input name="name" value="${h(entity.name)}" required></label>
+        <label class="full-field">Description<textarea name="description">${h(entity.description || "")}</textarea></label>
+        <div class="actions">
+          <button class="button primary" type="submit">Save Entity</button>
+        </div>
+      </form>
+    </div>
+
+    ${mergeOptions ? `
+    <div class="section-block">
+      <div class="section-heading"><h2>Merge Into Another Entity</h2></div>
+      <form class="stack-form" onsubmit="mergeEntity(event, ${entity.id})">
+        <label class="full-field">Target Entity
+          <select name="target_entity_id" required>
+            <option value="">Select target…</option>
+            ${mergeOptions}
+          </select>
+        </label>
+        <p class="meta">All linked objects from this entity will be moved to the target. This entity will be deleted.</p>
+        <div class="actions">
+          <button class="button danger" type="submit">Merge &amp; Delete This Entity</button>
+        </div>
+      </form>
+    </div>
+    ` : ""}
+
+    ${objectSections || emptyState("No linked objects.")}
+  `;
+}
+
+async function loadEntityDetail(id) {
+  stopJobPoll();
+  currentView = "entities";
+  selectedEntityId = id;
+  setActiveViewButton("entities");
+  const response = await fetch(`/api/entities/${id}`);
+  if (response.status === 404) {
+    selectedEntityId = null;
+    await setView("entities", {resetPage: false});
+    return;
+  }
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const entity = data.entity;
+  setScreen("detail");
+  setDetailTitle(`<div><strong>${h(entity.name)}</strong><span class="pill">#${h(entity.id)}</span></div>`);
+  setDetailActions(`<button class="button danger" type="button" onclick="deleteEntity(${entity.id})">Delete Entity</button>`);
+  setDetail(entityDetailHtml(data));
+  await loadEntities({preservePage: true});
+}
+
+async function saveEntity(event, id) {
+  event.preventDefault();
+  const form = event.target;
+  await api(`/api/entities/${id}`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      name: form.elements.name.value.trim(),
+      description: form.elements.description.value.trim() || null
+    })
+  });
+  await loadEntityDetail(id);
+}
+
+async function deleteEntity(id) {
+  // Fetch delete preview first
+  const preview = await api(`/api/entities/${id}/delete-preview`);
+  const warning = preview.warning || `This will unlink ${preview.total_unlinks || 0} objects and delete ${preview.total_deletions || 0} records.`;
+  if (!confirm(`Delete entity "${preview.entity?.name || id}"?\n\n${warning}`)) return;
+  await api(`/api/entities/${id}`, {method: "DELETE"});
+  selectedEntityId = null;
+  await setView("entities", {resetPage: false});
+}
+
+async function mergeEntity(event, id) {
+  event.preventDefault();
+  const form = event.target;
+  const targetId = Number(form.elements.target_entity_id.value);
+  if (!targetId) return;
+  if (!confirm(`Merge entity #${id} into entity #${targetId}? This entity will be deleted.`)) return;
+  await api(`/api/entities/${id}/merge`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({target_entity_id: targetId})
+  });
+  selectedEntityId = targetId;
+  await loadEntityDetail(targetId);
+}
+
+function createEntityFormHtml() {
+  return `
+    <form id="create-form" class="stack-form">
+      <label class="full-field">Name<input name="name" placeholder="Entity name (person, project, company…)" required></label>
+      <label class="full-field">Description<textarea name="description" placeholder="Optional description"></textarea></label>
+      <div class="actions">
+        <button class="button primary" type="submit">Create Entity</button>
+      </div>
+    </form>
+  `;
+}
+
 function bindEvents() {
   document.getElementById("jobs-view-button").onclick = () => setView("jobs", {resetPage: false});
   document.getElementById("reminders-view-button").onclick = () => setView("reminders", {resetPage: false});
@@ -1787,6 +1994,7 @@ function bindEvents() {
   document.getElementById("memories-view-button").onclick = () => setView("memories", {resetPage: false});
   document.getElementById("notes-view-button").onclick = () => setView("notes", {resetPage: false});
   document.getElementById("contacts-view-button").onclick = () => setView("contacts", {resetPage: false});
+  document.getElementById("entities-view-button").onclick = () => setView("entities", {resetPage: false});
   document.getElementById("create-record").onclick = showCreateForm;
   document.getElementById("cancel-create").onclick = () => setView(currentView, {resetPage: false});
   document.getElementById("back-to-list").onclick = () => setView(currentView, {resetPage: false});
