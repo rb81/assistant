@@ -221,7 +221,6 @@ class TaskAgent:
                 tokens_used=token_data,
                 duration_ms=duration_ms,
             )
-            self.prune_tool_results(history)
 
             tool_calls = response_message.get("tool_calls") or []
             if not context_compacted and self.has_substantive_tool_call(tool_calls):
@@ -814,6 +813,16 @@ class TaskAgent:
         return self.tool_result_cache.redact_result(name, result)
 
     def prune_tool_results(self, messages: list[dict[str, Any]]) -> None:
+        """Redact large tool results in messages for checkpointing.
+        
+        This method is called before checkpointing to reduce the size of persisted conversation history.
+        It should NOT mutate the active conversation that the agent is using - only prepare messages
+        for storage by creating redacted copies.
+        
+        Note: This currently mutates in place, which is only safe because it's called right before
+        checkpointing when the conversation is ending (token/iteration limits). If this were called
+        during an active conversation, it would break the agent's ability to use tool results.
+        """
         for message in messages:
             if message.get("role") != "tool":
                 continue
