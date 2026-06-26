@@ -86,6 +86,7 @@ services:
 
   clamav:
     image: clamav/clamav:stable_base
+    platform: linux/amd64
     restart: unless-stopped
     volumes:
       - ./data/clamav:/var/lib/clamav
