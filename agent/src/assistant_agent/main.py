@@ -76,6 +76,21 @@ def run_role(role: str) -> None:
             LOGGER.error("configuration error: %s", error)
         raise SystemExit(78)
 
+    # Log warnings for degraded capabilities
+    if role in ("task-agent", "all"):
+        from .validation import admin_configured, smtp_configured
+        if not smtp_configured(config):
+            LOGGER.warning(
+                "task-agent running without SMTP configuration: email_send, request_input email, "
+                "and admin failure notifications will be unavailable. The agent can still function "
+                "via the workspace and dashboard."
+            )
+        if not admin_configured(config):
+            LOGGER.warning(
+                "task-agent running without ADMIN_EMAIL configuration: admin notifications and "
+                "request_input recipient='admin' will be unavailable."
+            )
+
     if role == "api":
         port = config.get_int("agent.api.port", 8000)
         host = config.get("agent.api.bind_host", "0.0.0.0")

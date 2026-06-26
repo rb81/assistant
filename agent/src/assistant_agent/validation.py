@@ -137,11 +137,9 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if role in ("task-agent", "all") and config.get_bool("agent.fusion.enabled", False) and not openrouter_configured(config):
         errors.append("OpenRouter fusion is enabled but OpenRouter is not configured")
 
-    if role in ("task-agent", "all") and not admin_configured(config):
-        errors.append("task-agent requires ADMIN_EMAIL because request_input can email the admin")
-
-    if role in ("task-agent", "all") and not smtp_configured(config):
-        errors.append("task-agent requires SMTP config so request_input can send email")
+    # Note: ADMIN_EMAIL and SMTP are recommended for task-agent but not required.
+    # The agent can function via the workspace/dashboard without email.
+    # Runtime methods handle missing email config gracefully by logging notes instead of crashing.
 
     if role in ("deep-research-agent", "deep-research-cron", "all") and config.get_bool("agent.deep_research.enabled", True):
         if not search_configured(config):
