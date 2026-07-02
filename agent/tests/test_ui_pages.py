@@ -53,6 +53,14 @@ class UiPageRenderTest(unittest.TestCase):
         self.assertIn('id="reminder-status-filter"', html)
         self.assertIn('id="project-status-filter"', html)
 
+    def test_workspace_renders_upload_progress(self) -> None:
+        html = render_ui_page("workspace.html", self.config())
+
+        self.assertIn('id="upload-progress"', html)
+        self.assertIn('id="upload-progress-cancel"', html)
+        self.assertIn('id="upload-progress-count"', html)
+        self.assertIn('id="upload-progress-fill"', html)
+
 
 if __name__ == "__main__":
     unittest.main()

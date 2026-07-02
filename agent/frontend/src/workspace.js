@@ -78,11 +78,16 @@ let workspaceVersionPollTimer = null;
 let workspaceVersionInFlight = false;
 let lastWorkspaceVersion = null;
 let externalCheckInFlight = false;
+let uploadInProgress = false;
+let uploadCancelRequested = false;
 let chatRenderState = {jobId: null, messageCount: 0};
 
 const AUTOSAVE_INTERVAL_MS = 30000;
 const WORKSPACE_JOB_POLL_MS = 2500;
 const WORKSPACE_VERSION_POLL_MS = 4000;
+const UPLOAD_CONCURRENCY = 3;
+const UPLOAD_BATCH_FILE_WARNING = 50;
+const UPLOAD_BATCH_BYTES_WARNING = 200 * 1024 * 1024;
 const HISTORY_LIMIT = 100;
 const STORAGE_KEYS = {
   folder: "workspace:currentFolder",
@@ -2372,6 +2377,10 @@ async function checkOpenTabsForExternalChanges() {
 }
 
 async function pollWorkspaceVersion() {
+  // Skip while a batch upload is draining so version polling does not compete
+  // for the browser's per-origin connection pool and trigger repeated tree
+  // refreshes mid-upload. The batch does a single refresh when it completes.
+  if (uploadInProgress) return;
   if (workspaceVersionInFlight) return;
   workspaceVersionInFlight = true;
   try {
@@ -2981,28 +2990,111 @@ async function deleteItem(path, isDir) {
   }
 }
 
-async function uploadFilesToFolder(files, folder = currentFolder) {
-  const selectedFiles = Array.from(files || []);
-  if (!selectedFiles.length) return;
-  let uploaded = 0;
-  const failures = [];
-  for (const file of selectedFiles) {
-    const relative = fmt(file.webkitRelativePath || file.name).replace(/^\/+|\/+$/g, "");
-    if (!relative) continue;
-    const targetPath = joinPath(folder || ".", relative);
-    try {
-      await api(`/api/workspace/upload?path=${encodeURIComponent(targetPath)}`, {
-        method: "PUT",
-        body: file
-      });
-      uploaded += 1;
-    } catch (error) {
-      failures.push(`${relative}: ${humanReadableError(error)}`);
-    }
+function uploadRelativePath(file) {
+  return fmt(file.webkitRelativePath || file.name).replace(/^\/+|\/+$/g, "");
+}
+
+function formatUploadSize(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function setUploadProgress(done, total, currentName) {
+  const count = document.getElementById("upload-progress-count");
+  const current = document.getElementById("upload-progress-current");
+  const fill = document.getElementById("upload-progress-fill");
+  if (count) count.textContent = `${done} / ${total}`;
+  if (current) current.textContent = currentName || "";
+  if (fill) fill.style.width = total ? `${Math.round((done / total) * 100)}%` : "0%";
+}
+
+function showUploadProgress(total) {
+  uploadCancelRequested = false;
+  const panel = document.getElementById("upload-progress");
+  setUploadProgress(0, total, "");
+  const cancel = document.getElementById("upload-progress-cancel");
+  if (cancel) {
+    cancel.disabled = false;
+    cancel.onclick = () => {
+      uploadCancelRequested = true;
+      cancel.disabled = true;
+    };
   }
+  if (panel) {
+    panel.classList.remove("hidden");
+    panel.setAttribute("aria-hidden", "false");
+  }
+}
+
+function hideUploadProgress() {
+  const panel = document.getElementById("upload-progress");
+  if (panel) {
+    panel.classList.add("hidden");
+    panel.setAttribute("aria-hidden", "true");
+  }
+  const cancel = document.getElementById("upload-progress-cancel");
+  if (cancel) cancel.onclick = null;
+}
+
+async function uploadFilesToFolder(files, folder = currentFolder) {
+  const selectedFiles = Array.from(files || []).filter(file => uploadRelativePath(file));
+  if (!selectedFiles.length) return;
+
+  const totalBytes = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+  if (selectedFiles.length > UPLOAD_BATCH_FILE_WARNING || totalBytes > UPLOAD_BATCH_BYTES_WARNING) {
+    const proceed = window.confirm(
+      `Upload ${selectedFiles.length} files (${formatUploadSize(totalBytes)})? ` +
+      "Large batches may take a while to finish."
+    );
+    if (!proceed) return;
+  }
+
+  const total = selectedFiles.length;
+  const queue = selectedFiles.slice();
+  const failures = [];
+  let uploaded = 0;
+  let processed = 0;
+
+  // Upload with bounded concurrency so a large batch drains quickly without
+  // exhausting the browser's ~6 connections-per-origin limit (which would
+  // otherwise starve the UI's own requests and appear to freeze the page).
+  const worker = async () => {
+    while (queue.length && !uploadCancelRequested) {
+      const file = queue.shift();
+      const relative = uploadRelativePath(file);
+      const targetPath = joinPath(folder || ".", relative);
+      setUploadProgress(processed, total, relative);
+      try {
+        await api(`/api/workspace/upload?path=${encodeURIComponent(targetPath)}`, {
+          method: "PUT",
+          body: file
+        });
+        uploaded += 1;
+      } catch (error) {
+        failures.push(`${relative}: ${humanReadableError(error)}`);
+      }
+      processed += 1;
+      setUploadProgress(processed, total, "");
+    }
+  };
+
+  uploadInProgress = true;
+  showUploadProgress(total);
+  try {
+    await Promise.all(Array.from({length: Math.min(UPLOAD_CONCURRENCY, total)}, worker));
+  } finally {
+    uploadInProgress = false;
+    hideUploadProgress();
+  }
+
   await loadTree(folder || currentFolder);
+  const skipped = total - processed;
   if (uploaded) showSuccess(`Uploaded ${uploaded} ${uploaded === 1 ? "item" : "items"}`);
   if (failures.length) showError(`Upload failed: ${failures.slice(0, 2).join("; ")}`);
+  if (skipped > 0 && !failures.length) {
+    showError(`Upload cancelled — ${skipped} ${skipped === 1 ? "item" : "items"} skipped`);
+  }
 }
 
 function chooseUploadFiles(folder = currentFolder) {
