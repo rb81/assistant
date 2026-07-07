@@ -161,6 +161,19 @@
       </div>
     </main>
   </div>
+  <div class="upload-progress hidden" id="upload-progress" role="status" aria-live="polite" aria-hidden="true">
+    <div class="upload-progress-card">
+      <div class="upload-progress-head">
+        <strong id="upload-progress-title">Uploading files</strong>
+        <button class="button secondary compact-action" id="upload-progress-cancel" type="button">Cancel</button>
+      </div>
+      <div class="upload-progress-track"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
+      <div class="upload-progress-meta">
+        <span id="upload-progress-count">0 / 0</span>
+        <span class="upload-progress-current" id="upload-progress-current"></span>
+      </div>
+    </div>
+  </div>
   <script type="module" src="/assets/workspace.bundle.js"></script>
 </body>
 </html>

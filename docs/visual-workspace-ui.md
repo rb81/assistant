@@ -30,6 +30,7 @@ The workspace sidebar supports common file-manager actions while staying under t
 - Right-click context menus support opening, renaming, moving, duplicating, copying paths, and moving files or folders to trash.
 - Move and duplicate use `/api/workspace/path` and `/api/workspace/copy`, backed by the same runtime safety checks as agent file tools.
 - Folder pickers use recursive `/api/workspace/tree` listings.
+- Uploads `PUT` one entry at a time to `/api/workspace/upload`, but run with bounded concurrency so a large batch drains without exhausting the browser's per-origin connection limit. A progress indicator (`#upload-progress`) shows the count and current file and can cancel the remaining queue; workspace version polling pauses during a batch and does a single tree refresh when it finishes. Large selections prompt for confirmation before starting.
 
 Do not load Milkdown from a CDN. Docker builds the browser bundle in the `ui-build` stage and copies the compiled assets into the Python image. Local frontend source lives under `agent/frontend`; generated workspace bundles are ignored by Git.
 
