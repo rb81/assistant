@@ -42,7 +42,10 @@ export function latestJob(thread) {
 }
 
 export function isProcessing(thread) {
-  return PROCESSING.has(latestJob(thread).status);
+  const latest = latestJob(thread);
+  // A job with its reply already written is "answered" even while the backend
+  // finishes wrap-up work — the chat should not present it as still working.
+  return PROCESSING.has(latest.status) && !replyOf(latest);
 }
 
 export function userMessageOf(job) {

@@ -54,6 +54,18 @@ test("title truncates the first user message", () => {
   assert.ok(threadTitle(thread).endsWith("…"));
 });
 
+test("a running job with its reply written counts as answered, not processing", () => {
+  const thread = {
+    rootId: 1,
+    jobs: [
+      job(1, "2026-07-18T10:00:00Z",
+        { workspace_message: "hey", final_response: "Hey! How can I help?" },
+        "running")
+    ]
+  };
+  assert.equal(isProcessing(thread), false);
+});
+
 test("processing state and accessors", () => {
   const thread = {
     rootId: 1,

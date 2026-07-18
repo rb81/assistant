@@ -41,14 +41,18 @@ export function App() {
     refresh();
   }, [refresh]);
 
-  // Live polling of the newest processing job in the active thread.
+  // Live polling of the newest processing job in the active thread. Polling
+  // runs until the job is truly terminal; the reply usually arrives earlier
+  // (final_response is written before backend wrap-up finishes).
   const activeJob = activeThread ? latestJob(activeThread) : null;
   const activeJobId = activeJob && PROCESSING.has(activeJob.status) ? activeJob.id : null;
+  const awaitingReply = Boolean(activeJobId) && !replyOf(activeJob);
 
   useEffect(() => {
     if (!activeJobId) return undefined;
     let stopped = false;
     let afterSequence = 0;
+    let replyShown = false;
     const token = ++pollRef.current;
 
     const tick = async () => {
@@ -66,7 +70,11 @@ export function App() {
         }
         const status = data.job.status;
         const finalResponse = (data.job.metadata || {}).final_response;
-        if (finalResponse || TERMINAL.has(status)) {
+        if (finalResponse && !replyShown) {
+          replyShown = true;
+          await refresh(); // show the reply and unlock the composer now
+        }
+        if (TERMINAL.has(status)) {
           await refresh();
           return;
         }
@@ -83,12 +91,26 @@ export function App() {
     };
   }, [activeJobId, refresh]);
 
+  // The API rejects follow-ups (409) until the parent job fully terminates,
+  // which can lag the visible reply by ~15s of wrap-up. Retry quietly.
+  const sendFollowUpWithRetry = async (jobId, text) => {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        return await sendFollowUp(jobId, text);
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) throw err;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    throw new ApiError("Arqis is still wrapping up the previous message — try again in a moment.", 409);
+  };
+
   const send = async text => {
     setSending(true);
     try {
       let data;
       if (activeThread) {
-        data = await sendFollowUp(latestJob(activeThread).id, text);
+        data = await sendFollowUpWithRetry(latestJob(activeThread).id, text);
       } else {
         data = await createJob(text);
       }
@@ -97,11 +119,7 @@ export function App() {
       await refresh();
       if (!activeThread && data?.job?.id) setSelected(data.job.id);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        await refresh(); // job still processing — state will show "working"
-      } else {
-        setError(err.message); // draft is preserved
-      }
+      setError(err.message); // draft is preserved
     } finally {
       setSending(false);
     }
@@ -117,7 +135,7 @@ export function App() {
   }, [feedKey]);
 
   const showConversation = selected !== null;
-  const composerDisabled = sending || Boolean(activeJobId);
+  const composerDisabled = sending || awaitingReply;
 
   return (
     <div class={`chat-app ${showConversation ? "show-conversation" : ""}`}>
@@ -158,7 +176,7 @@ export function App() {
             </svg>
           </IconButton>
           <h1>{activeThread ? threadTitle(activeThread) : "New chat"}</h1>
-          {activeJob ? <StatusPill status={activeJob.status} /> : null}
+          {activeJob && !replyOf(activeJob) ? <StatusPill status={activeJob.status} /> : null}
         </header>
         <Banner message={showConversation ? error : ""} onRetry={refresh} />
         {showConversation ? (
@@ -172,7 +190,7 @@ export function App() {
             {activeThread?.jobs.map(job => {
               const reply = replyOf(job);
               const logs = liveLogs[job.id] || [];
-              const processing = PROCESSING.has(job.status);
+              const processing = PROCESSING.has(job.status) && !reply;
               return (
                 <>
                   <Bubble role="user" text={userMessageOf(job)} time={job.created_at} />
