@@ -946,7 +946,11 @@ def workspace_job_body(request: WorkspaceJobRequest) -> str:
     return "\n".join(parts)
 
 
-def create_workspace_job(request: WorkspaceJobRequest, parent_job_id: Optional[int] = None) -> dict[str, Any]:
+def create_workspace_job(
+    request: WorkspaceJobRequest,
+    parent_job_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
+) -> dict[str, Any]:
     subject = f"Workspace: {request.active_path}" if request.active_path else "Workspace chat"
     job = db.create_manual_job(
         subject,
@@ -954,6 +958,7 @@ def create_workspace_job(request: WorkspaceJobRequest, parent_job_id: Optional[i
         "workspace@local",
         agent_address=agent_email(config),
         message_domain=message_id_domain(config),
+        thread_id=thread_id,
     )
     metadata = workspace_job_metadata(request, parent_job_id=parent_job_id)
     db.execute(
@@ -1484,7 +1489,7 @@ def workspace_job_message(job_id: int, request: WorkspaceJobRequest) -> dict[str
         raise HTTPException(status_code=404, detail="workspace job not found")
     if parent["status"] in {"queued", "running", "waiting"}:
         raise HTTPException(status_code=409, detail="job is still processing")
-    return {"job": create_workspace_job(request, parent_job_id=job_id)}
+    return {"job": create_workspace_job(request, parent_job_id=job_id, thread_id=parent.get("thread_id"))}
 
 
 @app.post("/api/workspace/script-runs")
