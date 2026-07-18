@@ -1,0 +1,45 @@
+/* Arqis design tokens — shared foundation for chat (phase 1), workspace (2), admin (3). */
+:root {
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-raised: #eef0f4;
+  --border: #d8dbe2;
+  --text: #171922;
+  --text-muted: #676d7c;
+  --accent: #3b5bdb;
+  --accent-soft: #e3e9fb;
+  --accent-contrast: #ffffff;
+  --danger: #c92a2a;
+  --ok: #2b8a3e;
+  --warn: #b8860b;
+
+  --radius: 16px;
+  --radius-small: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+
+  --pad-safe-top: env(safe-area-inset-top, 0px);
+  --pad-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10121a;
+    --surface: #181b26;
+    --surface-raised: #222634;
+    --border: #2e3344;
+    --text: #e8eaf2;
+    --text-muted: #9aa1b5;
+    --accent: #7aa2f7;
+    --accent-soft: #253150;
+    --accent-contrast: #0d1020;
+    --danger: #ff6b6b;
+    --ok: #69db7c;
+    --warn: #e6b422;
+  }
+}
