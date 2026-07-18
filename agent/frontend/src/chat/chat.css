@@ -28,6 +28,7 @@ body.chat-body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   background: var(--bg);
 }
 
@@ -62,6 +63,7 @@ body.chat-body {
   font-size: 17px;
   margin: 0;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -114,10 +116,11 @@ body.chat-body {
   gap: var(--space-2);
 }
 
-.thread-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.thread-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .thread-item time { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
 .thread-snippet {
   flex: 1;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 13px;
   overflow: hidden;

@@ -147,9 +147,9 @@ export function EmptyState({ title, hint }) {
   );
 }
 
-export function IconButton({ label, onClick, children }) {
+export function IconButton({ label, onClick, children, extraClass = "" }) {
   return (
-    <button type="button" class="icon-button" aria-label={label} title={label} onClick={onClick}>
+    <button type="button" class={`icon-button ${extraClass}`} aria-label={label} title={label} onClick={onClick}>
       {children}
     </button>
   );
