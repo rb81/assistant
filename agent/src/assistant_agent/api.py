@@ -10,7 +10,7 @@ from typing import Any, Optional, Union
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
@@ -1062,6 +1062,29 @@ def workspace_index() -> str:
     if not config.get_bool("agent.api.workspace_enabled", True):
         raise HTTPException(status_code=404, detail="not found")
     return render_ui_page("workspace.html")
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_index() -> str:
+    if not config.get_bool("agent.api.workspace_enabled", True):
+        raise HTTPException(status_code=404, detail="not found")
+    return render_ui_page("chat.html")
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def chat_manifest() -> Response:
+    if not config.get_bool("agent.api.workspace_enabled", True):
+        raise HTTPException(status_code=404, detail="not found")
+    content = (UI_ROOT / "manifest.webmanifest").read_text(encoding="utf-8")
+    content = content.replace("__APP_TITLE__", app_display_name(config))
+    return Response(content, media_type="application/manifest+json")
+
+
+@app.get("/sw.js", include_in_schema=False)
+def chat_service_worker() -> FileResponse:
+    if not config.get_bool("agent.api.workspace_enabled", True):
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(UI_ROOT / "sw.js", media_type="text/javascript")
 
 
 @app.get("/api/stats")
