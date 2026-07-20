@@ -28,13 +28,13 @@ export function StatusPill({ status }) {
   return <span class={`status-pill status-${status}`}>{STATUS_LABELS[status] || status}</span>;
 }
 
-export function Bubble({ role, html, text, time }) {
+export function Bubble({ role, html, text, time, streaming }) {
   return (
     <div class={`bubble-row ${role}`}>
       <div class={`bubble ${role}`}>
         {html
           ? <div class="bubble-markdown" dangerouslySetInnerHTML={{ __html: html }} />
-          : <p class="bubble-text">{text}</p>}
+          : <p class="bubble-text">{text}{streaming ? <span class="stream-cursor" aria-hidden="true" /> : null}</p>}
         {time ? <time class="bubble-time">{relativeTime(time)}</time> : null}
       </div>
     </div>

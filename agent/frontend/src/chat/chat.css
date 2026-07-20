@@ -186,6 +186,17 @@ body.chat-body {
 .bubble-markdown a { color: var(--accent); }
 .bubble.user .bubble-markdown a { color: inherit; }
 
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: blink 1s step-start infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
 /* ---------- progress steps ---------- */
 .steps {
   align-self: flex-start;
