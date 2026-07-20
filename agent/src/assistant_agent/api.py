@@ -921,9 +921,14 @@ def safe_zip_destination(root: Path, member_name: str) -> Path:
     return destination
 
 
-def workspace_job_metadata(request: WorkspaceJobRequest, parent_job_id: Optional[int] = None) -> dict[str, Any]:
+def workspace_job_metadata(
+    request: WorkspaceJobRequest,
+    parent_job_id: Optional[int] = None,
+    source: str = "workspace",
+    extra_metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {
-        "source": "workspace",
+        "source": source,
         "workspace_message": request.message,
         "workspace_active_path": request.active_path or "",
         "workspace_include_active_file": request.include_active_file,
@@ -931,6 +936,8 @@ def workspace_job_metadata(request: WorkspaceJobRequest, parent_job_id: Optional
     }
     if parent_job_id is not None:
         metadata["parent_job_id"] = parent_job_id
+    if extra_metadata:
+        metadata.update(extra_metadata)
     return metadata
 
 
@@ -950,8 +957,11 @@ def create_workspace_job(
     request: WorkspaceJobRequest,
     parent_job_id: Optional[int] = None,
     thread_id: Optional[str] = None,
+    source: str = "workspace",
+    subject_override: Optional[str] = None,
+    extra_metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    subject = f"Workspace: {request.active_path}" if request.active_path else "Workspace chat"
+    subject = subject_override or (f"Workspace: {request.active_path}" if request.active_path else "Workspace chat")
     job = db.create_manual_job(
         subject,
         workspace_job_body(request),
@@ -960,7 +970,7 @@ def create_workspace_job(
         message_domain=message_id_domain(config),
         thread_id=thread_id,
     )
-    metadata = workspace_job_metadata(request, parent_job_id=parent_job_id)
+    metadata = workspace_job_metadata(request, parent_job_id=parent_job_id, source=source, extra_metadata=extra_metadata)
     db.execute(
         "UPDATE jobs SET metadata = metadata || %s, updated_at = now() WHERE id = %s",
         (Jsonb(json_safe(metadata)), job["id"]),
