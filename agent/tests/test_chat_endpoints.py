@@ -70,6 +70,9 @@ class FakeChatDb:
         return None
 
     def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        if "FROM jobs WHERE id = ANY" in sql:
+            ids = params[0]
+            return [self.jobs[i] for i in ids if i in self.jobs]
         if "FROM chat_messages" in sql and "session_id = %s" in sql:
             session_id = params[0]
             rows = [m for m in self.messages if m["session_id"] == session_id]
@@ -210,6 +213,49 @@ class ChatEndpointsTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self.api.chat_session_messages(12345)
         self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_job_ref_final_response_folds_into_llm_context(self) -> None:
+        session = self.fake_store.create_session("t")
+        self.fake_store.create_message(session["id"], "user", content="check my calendar")
+        self.fake_store.create_message(
+            session["id"], "assistant", kind="job_ref", content="On it — I'll work on this now.", job_id=42
+        )
+        self.fake_db.jobs[42] = {"id": 42, "status": "completed", "metadata": {"final_response": "You have a 3pm meeting."}}
+
+        captured: dict[str, Any] = {}
+
+        def fake_generate(config, history, user_message):
+            captured["history"] = history
+            yield {"type": "delta", "text": "Got it!"}
+            yield {"type": "done", "usage": None}
+
+        with patch.object(self.api.chat_responder, "generate_reply_events", side_effect=fake_generate):
+            response = self.api.chat_send_message(str(session["id"]), self.api.ChatMessageRequest(message="what did you find?"))
+            collect_stream(response)
+
+        job_ref_row = next(row for row in captured["history"] if row.get("kind") == "job_ref")
+        self.assertEqual(job_ref_row["content"], "You have a 3pm meeting.")
+
+    def test_job_ref_without_final_response_keeps_ack_text(self) -> None:
+        session = self.fake_store.create_session("t")
+        self.fake_store.create_message(session["id"], "user", content="check my calendar")
+        self.fake_store.create_message(
+            session["id"], "assistant", kind="job_ref", content="On it — I'll work on this now.", job_id=42
+        )
+        self.fake_db.jobs[42] = {"id": 42, "status": "failed", "metadata": {}}
+
+        captured: dict[str, Any] = {}
+
+        def fake_generate(config, history, user_message):
+            captured["history"] = history
+            yield {"type": "done", "usage": None}
+
+        with patch.object(self.api.chat_responder, "generate_reply_events", side_effect=fake_generate):
+            response = self.api.chat_send_message(str(session["id"]), self.api.ChatMessageRequest(message="any update?"))
+            collect_stream(response)
+
+        job_ref_row = next(row for row in captured["history"] if row.get("kind") == "job_ref")
+        self.assertEqual(job_ref_row["content"], "On it — I'll work on this now.")
 
 
 class UsageCostChatTest(unittest.TestCase):

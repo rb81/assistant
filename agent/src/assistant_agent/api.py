@@ -428,6 +428,30 @@ def chat_escalation_body(user_message: str, transcript: str) -> str:
     return "%s\n\nConversation so far:\n%s" % (user_message, transcript)
 
 
+def enrich_job_ref_content(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold a completed escalated job's final response into its job_ref row's
+    content for LLM context, so a later casual turn (or a re-escalation's
+    condensed transcript) sees what the job actually produced instead of the
+    frozen acknowledgment text. Does not touch the chat_messages table."""
+    job_ids = [row["job_id"] for row in history if row.get("kind") == "job_ref" and row.get("job_id")]
+    if not job_ids:
+        return history
+    jobs = db.fetch_all("SELECT id, metadata FROM jobs WHERE id = ANY(%s::bigint[])", (job_ids,))
+    final_responses = {
+        job["id"]: (job.get("metadata") or {}).get("final_response")
+        for job in jobs
+        if (job.get("metadata") or {}).get("final_response")
+    }
+    if not final_responses:
+        return history
+    return [
+        {**row, "content": final_responses[row["job_id"]]}
+        if row.get("kind") == "job_ref" and row.get("job_id") in final_responses
+        else row
+        for row in history
+    ]
+
+
 def chat_message_events(
     session: dict[str, Any],
     history: list[dict[str, Any]],
@@ -1204,11 +1228,12 @@ def chat_send_message(session_id: str, request: ChatMessageRequest) -> Streaming
 
     user_message = request.message.strip()
     store.create_message(session["id"], "user", kind="chat", content=user_message)
+    llm_history = enrich_job_ref_content(history)
 
     def stream() -> Iterator[str]:
         if is_new:
             yield sse_pack({"type": "session", "session_id": session["id"]})
-        for event in chat_message_events(session, history, user_message):
+        for event in chat_message_events(session, llm_history, user_message):
             yield sse_pack(event)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
