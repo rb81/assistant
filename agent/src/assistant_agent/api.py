@@ -1,12 +1,14 @@
 import hashlib
 import io
+import json
+import logging
 import mimetypes
 import shlex
 import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Iterator, Optional, Union
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
+from . import chat_responder
+from .chat_store import ChatStore
 from .config import agent_email, app_display_name, database_url, load_config, message_id_domain
 from .contact_store import ContactStore
 from .database import Database, json_safe
@@ -32,6 +36,7 @@ from .workspace_index import WorkspaceIndex
 
 
 config = load_config()
+LOGGER = logging.getLogger("assistant.api")
 docs_url = "/docs" if config.get_bool("agent.api.docs_enabled", False) else None
 redoc_url = "/redoc" if config.get_bool("agent.api.docs_enabled", False) else None
 openapi_url = "/openapi.json" if config.get_bool("agent.api.openapi_enabled", False) else None
@@ -190,6 +195,10 @@ class WorkspaceScriptRunRequest(BaseModel):
     command: list[str] = Field(default_factory=list)
     workdir: Optional[str] = Field(None, max_length=2000)
     timeout_seconds: Optional[int] = Field(None, ge=1, le=3600)
+
+
+class ChatMessageRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=20000)
 
 
 USAGE_NUMBER_PATTERN = r"^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$"
@@ -405,6 +414,62 @@ def contact_store() -> ContactStore:
     return ContactStore(db)
 
 
+def chat_store() -> ChatStore:
+    return ChatStore(db)
+
+
+def sse_pack(event: dict[str, Any]) -> str:
+    return "data: %s\n\n" % json.dumps(event, default=str)
+
+
+def chat_escalation_body(user_message: str, transcript: str) -> str:
+    if not transcript:
+        return user_message
+    return "%s\n\nConversation so far:\n%s" % (user_message, transcript)
+
+
+def chat_message_events(
+    session: dict[str, Any],
+    history: list[dict[str, Any]],
+    user_message: str,
+) -> Iterator[dict[str, Any]]:
+    """Drive chat_responder for one turn, persisting rows and yielding client-facing events."""
+    store = chat_store()
+    accumulated = ""
+    try:
+        for event in chat_responder.generate_reply_events(config, history, user_message):
+            kind = event.get("type")
+            if kind == "delta":
+                accumulated += event["text"]
+                yield {"type": "delta", "text": event["text"]}
+            elif kind == "escalated":
+                transcript = chat_responder.condense_transcript(history + [{"role": "user", "content": user_message}])
+                job_request = WorkspaceJobRequest(message=chat_escalation_body(user_message, transcript))
+                job = create_workspace_job(
+                    job_request,
+                    source="chat_escalation",
+                    subject_override="Chat: %s" % event["task_summary"][:80],
+                    extra_metadata={"chat_session_id": session["id"]},
+                )
+                ack = "On it — I'll work on this now."
+                store.create_message(session["id"], "assistant", kind="job_ref", content=ack, job_id=job["id"])
+                yield {"type": "escalated", "job_id": job["id"], "text": ack}
+                return
+            elif kind == "error":
+                yield {"type": "error", "message": event["message"]}
+                return
+            elif kind == "done":
+                store.create_message(
+                    session["id"], "assistant", kind="chat", content=accumulated,
+                    tokens_used=event.get("usage"),
+                )
+                yield {"type": "done"}
+                return
+    except Exception as exc:
+        LOGGER.exception("chat stream failed for session %s", session["id"])
+        yield {"type": "error", "message": str(exc)}
+
+
 def clean_status_filter(value: Optional[str], allowed: set[str], label: str) -> Optional[str]:
     clean = str(value or "").strip().lower()
     if not clean:
@@ -429,6 +494,7 @@ def int_value(value: Any) -> int:
 def usage_cost_summary() -> dict[str, Any]:
     task_cost = usage_number_sql("tl", "cost")
     research_cost = usage_number_sql("dre", "cost")
+    chat_cost = usage_number_sql("cm", "cost")
     row = db.fetch_one(
         """
         WITH log_costs AS (
@@ -448,6 +514,15 @@ def usage_cost_summary() -> dict[str, Any]:
           FROM deep_research_events dre
           JOIN deep_research_runs drr ON drr.id = dre.run_id
           WHERE dre.tokens_used IS NOT NULL
+
+          UNION ALL
+
+          SELECT
+            NULL::bigint AS job_id,
+            cm.created_at,
+            %(chat_cost)s AS cost
+          FROM chat_messages cm
+          WHERE cm.tokens_used IS NOT NULL
         ),
         job_costs AS (
           SELECT
@@ -468,7 +543,7 @@ def usage_cost_summary() -> dict[str, Any]:
           (SELECT COUNT(*) FROM job_costs WHERE cost > 0) AS charged_job_count,
           (SELECT COUNT(*) FROM log_costs) AS api_call_count
         """
-        % {"task_cost": task_cost, "research_cost": research_cost}
+        % {"task_cost": task_cost, "research_cost": research_cost, "chat_cost": chat_cost}
     )
     return {
         "currency": "USD",
@@ -1095,6 +1170,63 @@ def chat_service_worker() -> FileResponse:
     if not config.get_bool("agent.api.workspace_enabled", True):
         raise HTTPException(status_code=404, detail="not found")
     return FileResponse(UI_ROOT / "sw.js", media_type="text/javascript")
+
+
+@app.post("/api/chat/sessions/{session_id}/messages")
+def chat_send_message(session_id: str, request: ChatMessageRequest) -> StreamingResponse:
+    if not config.get_bool("agent.api.workspace_enabled", True):
+        raise HTTPException(status_code=404, detail="not found")
+    store = chat_store()
+    limit = config.get_int("agent.chat.rate_limit_per_minute", 20)
+    if store.count_recent_user_messages(60) >= limit:
+        raise HTTPException(status_code=429, detail="slow down — too many messages, try again in a minute")
+
+    is_new = session_id == "new"
+    if is_new:
+        session = store.create_session(store.title_from_message(request.message))
+    else:
+        try:
+            numeric_id = int(session_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        session = store.get_session(numeric_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="chat session not found")
+
+    max_history = config.get_int("agent.chat.max_history_messages", 20)
+    history = store.recent_messages(session["id"], max_history)
+    if history:
+        latest = history[-1]
+        if latest.get("kind") == "job_ref" and latest.get("job_id"):
+            job = db.fetch_one("SELECT status FROM jobs WHERE id = %s", (latest["job_id"],))
+            if job and job["status"] in {"queued", "running", "waiting"}:
+                raise HTTPException(status_code=409, detail="a job is still processing for this session")
+
+    user_message = request.message.strip()
+    store.create_message(session["id"], "user", kind="chat", content=user_message)
+
+    def stream() -> Iterator[str]:
+        if is_new:
+            yield sse_pack({"type": "session", "session_id": session["id"]})
+        for event in chat_message_events(session, history, user_message):
+            yield sse_pack(event)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/chat/sessions")
+def chat_sessions(limit: int = 50) -> dict[str, Any]:
+    clean_limit = min(max(limit, 1), 100)
+    return {"sessions": chat_store().list_sessions(clean_limit)}
+
+
+@app.get("/api/chat/sessions/{session_id}/messages")
+def chat_session_messages(session_id: int) -> dict[str, Any]:
+    store = chat_store()
+    session = store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="chat session not found")
+    return {"session": session, "messages": store.list_messages(session_id)}
 
 
 @app.get("/api/stats")
