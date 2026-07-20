@@ -68,3 +68,37 @@ export function snippetOf(thread) {
   const text = (replyOf(latest) || userMessageOf(latest)).replace(/\s+/g, " ").trim();
   return text.length > 90 ? `${text.slice(0, 89).trimEnd()}…` : text;
 }
+
+export function sessionTitle(session) {
+  const text = String(session.title || "").trim();
+  return text || "New chat";
+}
+
+export function sessionProcessing(session) {
+  return session.last_message_kind === "job_ref" && PROCESSING.has(session.last_job_status) && !(
+    (session.last_job_metadata || {}).final_response
+  );
+}
+
+export function sessionSnippet(session) {
+  if (sessionProcessing(session)) return "Arqis is working…";
+  const text = String(session.last_message_content || "").replace(/\s+/g, " ").trim();
+  return text.length > 90 ? `${text.slice(0, 89).trimEnd()}…` : text;
+}
+
+export function sessionStatus(session) {
+  return session.last_message_kind === "job_ref" ? session.last_job_status : null;
+}
+
+function activityOf(item) {
+  if (item.type === "session") {
+    return new Date(item.session.last_message_at || item.session.updated_at || item.session.created_at).getTime();
+  }
+  return new Date(latestJob(item.thread).created_at).getTime();
+}
+
+export function mergeConversations(sessions, jobs) {
+  const jobItems = groupThreads(jobs).map(thread => ({ type: "job", id: `job:${thread.rootId}`, thread }));
+  const sessionItems = sessions.map(session => ({ type: "session", id: `session:${session.id}`, session }));
+  return [...jobItems, ...sessionItems].sort((a, b) => activityOf(b) - activityOf(a));
+}
