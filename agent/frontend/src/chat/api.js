@@ -37,3 +37,5 @@ export const sendFollowUp = (jobId, message) =>
   request(`/api/workspace/jobs/${jobId}/messages`, json({ message }));
 export const pollJob = (jobId, afterSequence = 0) =>
   request(`/api/jobs/${jobId}/poll?after_sequence=${afterSequence}`);
+export const listChatSessions = () => request("/api/chat/sessions?limit=100");
+export const getChatSessionMessages = sessionId => request(`/api/chat/sessions/${sessionId}/messages`);
