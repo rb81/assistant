@@ -6,7 +6,10 @@ export async function* parseSSE(body) {
   let buffer = "";
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode(); // flush any pending multi-byte sequence
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     let boundary;
     while ((boundary = buffer.indexOf("\n\n")) !== -1) {
@@ -17,6 +20,21 @@ export async function* parseSSE(body) {
       const payload = dataLine.slice("data:".length).trim();
       if (!payload) continue;
       yield JSON.parse(payload);
+    }
+  }
+  // Stream ended without a trailing blank line after the final frame — try to
+  // salvage it rather than silently dropping it. If it's truncated mid-write
+  // (invalid JSON), there's nothing salvageable; drop it silently, same as
+  // any other malformed frame.
+  const dataLine = buffer.split("\n").find(line => line.startsWith("data:"));
+  if (dataLine) {
+    const payload = dataLine.slice("data:".length).trim();
+    if (payload) {
+      try {
+        yield JSON.parse(payload);
+      } catch {
+        /* incomplete/truncated final frame — nothing salvageable */
+      }
     }
   }
 }

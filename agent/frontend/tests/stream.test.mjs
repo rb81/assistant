@@ -41,3 +41,17 @@ test("multiple events in a single chunk are all parsed", async () => {
   for await (const event of parseSSE(body)) events.push(event);
   assert.deepEqual(events, [{ type: "delta", text: "a" }, { type: "delta", text: "b" }]);
 });
+
+test("salvages a final frame with no trailing blank line", async () => {
+  const body = fakeBody(['data: {"type":"done"}']); // no trailing \n\n — connection closed right after
+  const events = [];
+  for await (const event of parseSSE(body)) events.push(event);
+  assert.deepEqual(events, [{ type: "done" }]);
+});
+
+test("silently drops a truncated final frame with invalid JSON", async () => {
+  const body = fakeBody(['data: {"type":"don']); // truncated mid-write, never valid JSON
+  const events = [];
+  for await (const event of parseSSE(body)) events.push(event);
+  assert.deepEqual(events, []);
+});
