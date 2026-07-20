@@ -234,7 +234,7 @@ class ChatEndpointsTest(unittest.TestCase):
             collect_stream(response)
 
         job_ref_row = next(row for row in captured["history"] if row.get("kind") == "job_ref")
-        self.assertEqual(job_ref_row["content"], "You have a 3pm meeting.")
+        self.assertEqual(job_ref_row["content"], "[Completed by the full task pipeline] You have a 3pm meeting.")
 
     def test_job_ref_without_final_response_keeps_ack_text(self) -> None:
         session = self.fake_store.create_session("t")

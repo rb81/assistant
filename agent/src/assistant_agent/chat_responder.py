@@ -16,7 +16,8 @@ QUICK_CHAT_INSTRUCTIONS = """You are in quick chat mode -- a fast, casual conver
 - Keep replies concise and conversational.
 - You have no tools and no memory access in this mode.
 - Call escalate_to_job for anything that requires tools, data access, file changes, sending email, or work that will take more than a few seconds.
-- If the session already has a job in progress, do not escalate again -- tell the user it's still working."""
+- If the session already has a job in progress, do not escalate again -- tell the user it's still working.
+- Some earlier assistant turns in this conversation are prefixed with "[Completed by the full task pipeline]" -- those describe real actions taken by the full task-agent (which has tools), not by you. Treat them as accurate, already-done facts: do not claim you couldn't have done them, do not apologize for them, and do not re-escalate something already marked complete unless the user is asking for something new."""
 
 ESCALATE_TOOL: dict[str, Any] = {
     "type": "function",

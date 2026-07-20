@@ -108,6 +108,12 @@ class BuildMessagesTest(unittest.TestCase):
             messages = build_messages(config, [{"role": "user", "content": "   "}], "hi")
         self.assertEqual(len(messages), 2)  # system + new user message only
 
+    def test_system_prompt_includes_completed_task_framing_instruction(self) -> None:
+        config = make_config()
+        with patch("assistant_agent.chat_responder.load_agent_prompt", return_value="persona"):
+            messages = build_messages(config, [], "hi")
+        self.assertIn("Completed by the full task pipeline", messages[0]["content"])
+
 
 class CondenseTranscriptTest(unittest.TestCase):
     def test_caps_to_max_turns_and_max_chars(self) -> None:

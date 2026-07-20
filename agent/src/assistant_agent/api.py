@@ -432,7 +432,10 @@ def enrich_job_ref_content(history: list[dict[str, Any]]) -> list[dict[str, Any]
     """Fold a completed escalated job's final response into its job_ref row's
     content for LLM context, so a later casual turn (or a re-escalation's
     condensed transcript) sees what the job actually produced instead of the
-    frozen acknowledgment text. Does not touch the chat_messages table."""
+    frozen acknowledgment text. Prefixed with "[Completed by the full task
+    pipeline]" so the quick-chat model (which has no tools) understands this
+    was accomplished by the full agent, not by itself. Does not touch the
+    chat_messages table."""
     job_ids = [row["job_id"] for row in history if row.get("kind") == "job_ref" and row.get("job_id")]
     if not job_ids:
         return history
@@ -445,7 +448,7 @@ def enrich_job_ref_content(history: list[dict[str, Any]]) -> list[dict[str, Any]
     if not final_responses:
         return history
     return [
-        {**row, "content": final_responses[row["job_id"]]}
+        {**row, "content": "[Completed by the full task pipeline] %s" % final_responses[row["job_id"]]}
         if row.get("kind") == "job_ref" and row.get("job_id") in final_responses
         else row
         for row in history
