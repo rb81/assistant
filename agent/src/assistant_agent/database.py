@@ -241,10 +241,11 @@ class Database:
         from_address: str = "dashboard@local",
         agent_address: str = "agent@local",
         message_domain: str = "assistant.local",
+        thread_id: Optional[str] = None,
     ) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         message_id = "<manual-%s@%s>" % (int(now.timestamp() * 1000000), message_domain)
-        thread_id = message_id
+        thread_id = thread_id or message_id
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(

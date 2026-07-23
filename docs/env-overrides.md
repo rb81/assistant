@@ -215,6 +215,16 @@ AGENT_SANDBOX_ENABLED=false
 
 ---
 
+## Chat (direct-chat fast path)
+
+| Environment Variable | YAML Path | Type | Default |
+|---|---|---|---|
+| `AGENT_CHAT_MODEL` | `agent.chat.model` | string | _(empty, uses AGENT_LLM_MODEL)_ |
+| `AGENT_CHAT_MAX_HISTORY_MESSAGES` | `agent.chat.max_history_messages` | int | `20` |
+| `AGENT_CHAT_RATE_LIMIT_PER_MINUTE` | `agent.chat.rate_limit_per_minute` | int | `20` |
+
+---
+
 ## Memory
 
 | Environment Variable | YAML Path | Type | Default |
