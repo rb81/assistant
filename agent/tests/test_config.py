@@ -203,6 +203,24 @@ class ConfigTest(unittest.TestCase):
         self.assertIsNone(config.get("agent.calendar.provider.username"))
         self.assertIsNone(config.get("agent.calendar.provider.password"))
 
+    def test_chat_env_overrides_map_to_config(self) -> None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
+            config_file.write("agent: {}\n")
+            config_file.flush()
+
+            env = {
+                "AGENT_CONFIG": config_file.name,
+                "AGENT_CHAT_MODEL": "openai/gpt-4.1-mini",
+                "AGENT_CHAT_MAX_HISTORY_MESSAGES": "12",
+                "AGENT_CHAT_RATE_LIMIT_PER_MINUTE": "5",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                config = load_config()
+
+        self.assertEqual(config.get("agent.chat.model"), "openai/gpt-4.1-mini")
+        self.assertEqual(config.get_int("agent.chat.max_history_messages", 0), 12)
+        self.assertEqual(config.get_int("agent.chat.rate_limit_per_minute", 0), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
