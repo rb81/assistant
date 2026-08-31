@@ -18,7 +18,7 @@ json_module.Jsonb = lambda value: value
 sys.modules.setdefault("psycopg.types", types.ModuleType("psycopg.types"))
 sys.modules.setdefault("psycopg.types.json", json_module)
 
-from assistant_agent.calendar_gateway import CalendarError, CalendarGateway
+from assistant_agent.calendar_gateway import CalendarError, CalendarGateway, reset_calendar_cache
 from assistant_agent.config import AppConfig
 
 
@@ -70,6 +70,34 @@ class FakeCalendarDatabase:
             }
             self.events.append(row)
             return row
+        if normalized.startswith("UPDATE calendar_managed_events SET uid"):
+            (
+                uid,
+                calendar_name,
+                relative_path,
+                summary,
+                starts_at,
+                ends_at,
+                file_hash,
+                updated_by_job_id,
+                metadata,
+                assistant_id,
+            ) = params
+            row = next(event for event in self.events if event["assistant_id"] == assistant_id and event["status"] == "active")
+            row.update(
+                {
+                    "uid": uid,
+                    "calendar_name": calendar_name,
+                    "relative_path": relative_path,
+                    "summary": summary,
+                    "starts_at": starts_at,
+                    "ends_at": ends_at,
+                    "file_hash": file_hash,
+                    "updated_by_job_id": updated_by_job_id,
+                    "metadata": metadata,
+                }
+            )
+            return row
         if normalized.startswith("UPDATE calendar_managed_events SET calendar_name"):
             (
                 calendar_name,
@@ -119,12 +147,17 @@ def calendar_config(vdir_path: str, allow_details: bool = False) -> AppConfig:
                     "enabled": True,
                     "store": {"vdir_path": vdir_path, "default_calendar": "main"},
                     "sync": {"command": [], "before_read": False, "before_write": False, "after_write": False},
+                    "cache": {"ttl_seconds": 0},
                     "policy": {"allow_read_event_details": allow_details},
                     "limits": {"max_occurrences_per_event": 20},
                 },
             }
         }
     )
+
+
+def unfold_ics(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").replace("\n ", "").replace("\n\t", "")
 
 
 def write_external_event(vdir_path: Path) -> None:
@@ -151,6 +184,8 @@ def write_external_event(vdir_path: Path) -> None:
 
 
 class CalendarGatewayTest(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_calendar_cache()
     def test_list_busy_redacts_non_managed_details_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             vdir_path = Path(temp_dir) / "vdir"
@@ -181,6 +216,8 @@ class CalendarGatewayTest(unittest.TestCase):
 
             self.assertIn("X-ASSISTANT-MANAGED:TRUE", content)
             self.assertIn(event_id, content)
+            self.assertIn("--- Assistant Marker (do not remove) ---", unfold_ics(content))
+            self.assertIn("Assistant ID: %s" % event_id, unfold_ics(content))
             self.assertEqual(db.audit[0]["action"], "created")
             # Verify Apple-compatible VALARM sentinel is always present
             self.assertIn("X-APPLE-DEFAULT-ALARM:TRUE", content)
@@ -242,6 +279,47 @@ class CalendarGatewayTest(unittest.TestCase):
             unfolded_update = updated_content.replace("\n ", "")
             self.assertIn("ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;ROLE=REQ-PARTICIPANT:mailto:charlie@example.com", unfolded_update)
             self.assertNotIn("alice@example.com", updated_content)
+
+    def test_identifies_managed_event_after_uid_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vdir_path = Path(temp_dir) / "vdir"
+            db = FakeCalendarDatabase()
+            gateway = CalendarGateway(db, calendar_config(str(vdir_path)), {"id": 21, "thread_id": "thread"})
+
+            created = gateway.create_event(
+                title="Planning",
+                start="2026-06-11T10:00:00Z",
+                end="2026-06-11T11:00:00Z",
+                description="Bring the deck",
+                attendees=["alice@example.com"],
+            )
+            event_id = created["event"]["event_id"]
+            original_path = next((vdir_path / "main").glob("*local-calendar-gateway.ics"))
+            original = original_path.read_text(encoding="utf-8")
+
+            rewritten = original
+            rewritten = rewritten.replace("UID:%s@local-calendar-gateway" % event_id, "UID:provider-rewritten-uid")
+            rewritten = rewritten.replace("X-ASSISTANT-MANAGED:TRUE\r\n", "")
+            rewritten = rewritten.replace("X-ASSISTANT-ID:%s\r\n" % event_id, "")
+            rewritten = rewritten.replace("X-ASSISTANT-ORIGIN:local-calendar-gateway\r\n", "")
+            rewritten = rewritten.replace("SUMMARY:Planning", "SUMMARY:Planning (updated)")
+            rewritten = rewritten.replace("mailto:alice@example.com", "mailto:bob@example.com")
+            original_path.unlink()
+            rewritten_path = vdir_path / "main" / "provider-rewritten-uid.ics"
+            rewritten_path.write_text(rewritten, encoding="utf-8")
+            reset_calendar_cache()
+
+            listed = gateway.list_events("2026-06-11T00:00:00Z", "2026-06-12T00:00:00Z", managed_only=True)
+            self.assertEqual(len(listed["events"]), 1)
+            self.assertEqual(listed["events"][0]["event_id"], event_id)
+            self.assertEqual(listed["events"][0]["title"], "Planning (updated)")
+            self.assertEqual(listed["events"][0]["description"], "Bring the deck")
+            self.assertEqual(db.events[0]["uid"], "provider-rewritten-uid")
+
+            updated = gateway.update_event(event_id, title="Planning (final)")
+            self.assertEqual(updated["event"]["event_id"], event_id)
+            self.assertEqual(updated["event"]["title"], "Planning (final)")
+            self.assertIn("Assistant ID: %s" % event_id, unfold_ics(rewritten_path.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

@@ -234,6 +234,7 @@ def load_config() -> AppConfig:
         ("AGENT_CALENDAR_SYNC_AFTER_WRITE", "agent.calendar.sync.after_write", bool),
         ("AGENT_CALENDAR_STORE_VDIR_PATH", "agent.calendar.store.vdir_path", str),
         ("AGENT_CALENDAR_STORE_DEFAULT_CALENDAR", "agent.calendar.store.default_calendar", str),
+        ("AGENT_CALENDAR_CACHE_TTL_SECONDS", "agent.calendar.cache.ttl_seconds", int),
         ("AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS", "agent.calendar.policy.allow_read_event_details", bool),
         ("AGENT_CALENDAR_LIMITS_MAX_OCCURRENCES_PER_EVENT", "agent.calendar.limits.max_occurrences_per_event", int),
         

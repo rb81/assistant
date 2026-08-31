@@ -3312,7 +3312,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_list_busy",
-            "description": "List busy windows from the local calendar store for a time range. Non-managed event details are redacted unless calendar detail reading is explicitly enabled in configuration.",
+            "description": "List busy windows from the local calendar store for a time range. Reads sync first unless disabled. Non-managed event details are redacted unless calendar detail reading is explicitly enabled in configuration.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3332,7 +3332,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_list_events",
-            "description": "List calendar events from the local store. Use managed_only=true when preparing to update or delete an event created by the assistant.",
+            "description": "List calendar events from the local store. Reads sync first unless disabled. Use managed_only=true when preparing to update or delete an event created by the assistant. Managed events stay identifiable even if a provider rewrites the UID.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3352,7 +3352,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_create_event",
-            "description": "Create an assistant-managed event in the local calendar store. The gateway records ownership and writes a managed marker before syncing.",
+            "description": "Create an assistant-managed event in the local calendar store. The gateway records ownership and writes a description marker before syncing.",
             "parameters": {
                 "type": "object",
                 "properties": {

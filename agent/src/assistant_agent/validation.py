@@ -216,7 +216,7 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
             },
             "sync": {
                 "command_configured": bool(config.get_list("agent.calendar.sync.command")),
-                "before_read": config.get_bool("agent.calendar.sync.before_read", False),
+                "before_read": config.get_bool("agent.calendar.sync.before_read", True),
                 "before_write": config.get_bool("agent.calendar.sync.before_write", True),
                 "after_write": config.get_bool("agent.calendar.sync.after_write", True),
             },

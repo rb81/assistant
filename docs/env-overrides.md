@@ -295,11 +295,12 @@ AGENT_SANDBOX_ENABLED=false
 | `CALENDAR_TIMEZONE` | `agent.calendar.timezone` | string | _(empty, uses AGENT_TIMEZONE)_ |
 | `AGENT_CALENDAR_DEFAULT_ALERT_MINUTES` | `agent.calendar.default_alert_minutes` | int | `15` |
 | `AGENT_CALENDAR_SYNC_TIMEOUT_SECONDS` | `agent.calendar.sync.timeout_seconds` | int | `120` |
-| `AGENT_CALENDAR_SYNC_BEFORE_READ` | `agent.calendar.sync.before_read` | bool | `false` |
+| `AGENT_CALENDAR_SYNC_BEFORE_READ` | `agent.calendar.sync.before_read` | bool | `true` |
 | `AGENT_CALENDAR_SYNC_BEFORE_WRITE` | `agent.calendar.sync.before_write` | bool | `true` |
 | `AGENT_CALENDAR_SYNC_AFTER_WRITE` | `agent.calendar.sync.after_write` | bool | `true` |
 | `AGENT_CALENDAR_STORE_VDIR_PATH` | `agent.calendar.store.vdir_path` | string | `/data/private/calendar/vdir` |
 | `AGENT_CALENDAR_STORE_DEFAULT_CALENDAR` | `agent.calendar.store.default_calendar` | string | `default` |
+| `AGENT_CALENDAR_CACHE_TTL_SECONDS` | `agent.calendar.cache.ttl_seconds` | int | `45` |
 | `AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS` | `agent.calendar.policy.allow_read_event_details` | bool | `false` |
 | `AGENT_CALENDAR_LIMITS_MAX_OCCURRENCES_PER_EVENT` | `agent.calendar.limits.max_occurrences_per_event` | int | `500` |
 

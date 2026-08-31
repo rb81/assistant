@@ -224,12 +224,14 @@ agent:
         - vdirsyncer
         - sync
       timeout_seconds: 120
-      before_read: false
+      before_read: true
       before_write: true
       after_write: true
     store:
       vdir_path: /data/private/calendar/vdir
       default_calendar: default
+    cache:
+      ttl_seconds: 45
     policy:
       allow_read_event_details: false
     limits:

@@ -20,11 +20,62 @@ ASSISTANT_MANAGED_PROPERTY = "X-ASSISTANT-MANAGED"
 ASSISTANT_ID_PROPERTY = "X-ASSISTANT-ID"
 ASSISTANT_ORIGIN_PROPERTY = "X-ASSISTANT-ORIGIN"
 ASSISTANT_ORIGIN_VALUE = "local-calendar-gateway"
+ASSISTANT_MARKER_HEADER = "--- Assistant Marker (do not remove) ---"
+ASSISTANT_MARKER_ID_RE = re.compile(
+    r"--- Assistant Marker \(do not remove\) ---\s*(?:\n|\\n)\s*Assistant ID:\s*([0-9a-fA-F-]{36})",
+    re.IGNORECASE,
+)
 WEEKDAY_INDEXES = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+DEFAULT_CACHE_TTL_SECONDS = 45
 
 
 class CalendarError(Exception):
     pass
+
+
+def extract_assistant_id_from_description(description: str) -> str:
+    match = ASSISTANT_MARKER_ID_RE.search(str(description or ""))
+    return match.group(1).strip() if match else ""
+
+
+def strip_assistant_marker(description: str) -> str:
+    text = str(description or "")
+    text = ASSISTANT_MARKER_ID_RE.sub("", text)
+    return text.strip()
+
+
+def apply_assistant_marker(description: str, assistant_id: str) -> str:
+    body = strip_assistant_marker(description)
+    marker = "%s\nAssistant ID: %s" % (ASSISTANT_MARKER_HEADER, assistant_id)
+    if not body:
+        return marker
+    return "%s\n\n%s" % (body.rstrip(), marker)
+
+
+class _CalendarCache:
+    def __init__(self) -> None:
+        self.file_events: dict[str, tuple[int, int, list[CalendarEvent]]] = {}
+        self.managed_rows: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self.list_results: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+        self.last_sync_at: Optional[datetime] = None
+        self.last_sync_reason: str = ""
+
+    def clear_events(self) -> None:
+        self.file_events.clear()
+        self.list_results.clear()
+
+    def clear_all(self) -> None:
+        self.clear_events()
+        self.managed_rows.clear()
+
+
+_CALENDAR_CACHE = _CalendarCache()
+
+
+def reset_calendar_cache() -> None:
+    _CALENDAR_CACHE.clear_all()
+    _CALENDAR_CACHE.last_sync_at = None
+    _CALENDAR_CACHE.last_sync_reason = ""
 
 
 @dataclass
@@ -78,10 +129,15 @@ class CalendarEvent:
         return self.status.upper() != "CANCELLED" and self.transparency.upper() != "TRANSPARENT"
 
     def marker_id(self) -> str:
+        description_id = extract_assistant_id_from_description(self.description)
+        if description_id:
+            return description_id
         values = self.props.get(ASSISTANT_ID_PROPERTY) or []
         return values[0].value.strip() if values else ""
 
     def has_managed_marker(self) -> bool:
+        if bool(extract_assistant_id_from_description(self.description)):
+            return True
         marker_values = self.props.get(ASSISTANT_MANAGED_PROPERTY) or []
         origin_values = self.props.get(ASSISTANT_ORIGIN_PROPERTY) or []
         marker = marker_values[0].value.strip().upper() if marker_values else ""
@@ -97,6 +153,8 @@ class CalendarGateway:
         self.vdir_root = Path(config.get("agent.calendar.store.vdir_path", "/data/private/calendar/vdir")).resolve()
         self.default_calendar = self._clean_calendar_name(config.get("agent.calendar.store.default_calendar", "default"))
         self.max_occurrences_per_event = max(config.get_int("agent.calendar.limits.max_occurrences_per_event", 500), 1)
+        self.cache_ttl_seconds = max(config.get_int("agent.calendar.cache.ttl_seconds", DEFAULT_CACHE_TTL_SECONDS), 0)
+        self._cache = _CALENDAR_CACHE
 
     def sync(self, reason: str = "manual") -> dict[str, Any]:
         command = self._sync_command()
@@ -126,10 +184,17 @@ class CalendarGateway:
         if completed.returncode != 0:
             detail = result["stderr_tail"] or result["stdout_tail"] or "exit status %s" % completed.returncode
             raise CalendarError("calendar sync failed: %s" % detail)
+        self._cache.clear_events()
+        self._cache.last_sync_at = datetime.now(timezone.utc)
+        self._cache.last_sync_reason = reason
         return result
 
     def list_busy(self, start: str, end: str, include_details: bool = False) -> dict[str, Any]:
         range_start, range_end = self._range(start, end)
+        cache_key = ("busy", str(self.vdir_root), range_start.isoformat(), range_end.isoformat(), bool(include_details), self._allow_details())
+        cached = self._cached_list_result(cache_key)
+        if cached is not None:
+            return cached
         self._sync_before_read()
         allow_details = self._allow_details() and bool(include_details)
         busy = []
@@ -155,10 +220,21 @@ class CalendarGateway:
                 item["title"] = "Busy"
             busy.append(item)
         busy.sort(key=lambda item: (item["start"], item["end"], item["calendar"]))
-        return {"start": range_start.isoformat(), "end": range_end.isoformat(), "busy": busy}
+        result = {
+            "start": range_start.isoformat(),
+            "end": range_end.isoformat(),
+            "busy": busy,
+            "sync": self._sync_status(),
+        }
+        self._store_list_result(cache_key, result)
+        return result
 
     def list_events(self, start: str, end: str, managed_only: bool = False) -> dict[str, Any]:
         range_start, range_end = self._range(start, end)
+        cache_key = ("events", str(self.vdir_root), range_start.isoformat(), range_end.isoformat(), bool(managed_only), self._allow_details())
+        cached = self._cached_list_result(cache_key)
+        if cached is not None:
+            return cached
         self._sync_before_read()
         allow_details = self._allow_details()
         events = []
@@ -180,10 +256,20 @@ class CalendarGateway:
                 "title": occurrence.summary if visible_details else "Busy",
             }
             if visible_details:
-                item.update({"description": occurrence.description, "location": occurrence.location})
+                item.update({
+                    "description": strip_assistant_marker(occurrence.description),
+                    "location": occurrence.location,
+                })
             events.append(item)
         events.sort(key=lambda item: (item["start"], item["end"], item["calendar"]))
-        return {"start": range_start.isoformat(), "end": range_end.isoformat(), "events": events}
+        result = {
+            "start": range_start.isoformat(),
+            "end": range_end.isoformat(),
+            "events": events,
+            "sync": self._sync_status(),
+        }
+        self._store_list_result(cache_key, result)
+        return result
 
     def create_event(
         self,
@@ -250,6 +336,7 @@ class CalendarGateway:
             metadata=db_metadata,
         )
         self._audit(assistant_id, "created", {"event": self._public_managed_row(row)})
+        self._invalidate_after_write()
         sync_result = self._sync_after_write()
         return {"event": self._public_managed_row(row), "sync": sync_result}
 
@@ -290,7 +377,7 @@ class CalendarGateway:
         next_summary = str(title).strip() if title is not None else event.summary
         if not next_summary:
             raise CalendarError("event title cannot be empty")
-        next_description = str(description) if description is not None else event.description
+        next_description = str(description) if description is not None else strip_assistant_marker(event.description)
         next_location = str(location) if location is not None else event.location
         next_transparency = str(transparency) if transparency is not None else event.transparency or "OPAQUE"
         next_attendees = self._clean_attendees(attendees) if attendees is not None else event.attendees
@@ -323,6 +410,7 @@ class CalendarGateway:
             metadata=next_metadata,
         )
         self._audit(clean_id, "updated", {"event": self._public_managed_row(updated)})
+        self._invalidate_after_write()
         sync_result = self._sync_after_write()
         return {"event": self._public_managed_row(updated), "sync": sync_result}
 
@@ -337,6 +425,7 @@ class CalendarGateway:
         event.path.unlink()
         updated = self._mark_deleted(clean_id)
         self._audit(clean_id, "deleted", {"deleted_path": deleted_path})
+        self._invalidate_after_write()
         sync_result = self._sync_after_write()
         return {"event": self._public_managed_row(updated), "deleted_path": deleted_path, "sync": sync_result}
 
@@ -349,8 +438,36 @@ class CalendarGateway:
         return []
 
     def _sync_before_read(self) -> None:
-        if self.config.get_bool("agent.calendar.sync.before_read", False):
+        if self.config.get_bool("agent.calendar.sync.before_read", True):
             self.sync("before_read")
+
+    def _sync_status(self) -> dict[str, Any]:
+        last_sync_at = self._cache.last_sync_at
+        return {
+            "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
+            "last_sync_reason": self._cache.last_sync_reason or None,
+            "before_read": self.config.get_bool("agent.calendar.sync.before_read", True),
+        }
+
+    def _cached_list_result(self, key: tuple[Any, ...]) -> Optional[dict[str, Any]]:
+        if self.cache_ttl_seconds <= 0:
+            return None
+        entry = self._cache.list_results.get(key)
+        if entry is None:
+            return None
+        stored_at, payload = entry
+        if datetime.now(timezone.utc).timestamp() - stored_at > self.cache_ttl_seconds:
+            self._cache.list_results.pop(key, None)
+            return None
+        return payload
+
+    def _store_list_result(self, key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+        if self.cache_ttl_seconds <= 0:
+            return
+        self._cache.list_results[key] = (datetime.now(timezone.utc).timestamp(), payload)
+
+    def _invalidate_after_write(self) -> None:
+        self._cache.clear_all()
 
     def _sync_before_write(self) -> None:
         if self.config.get_bool("agent.calendar.sync.before_write", True):
@@ -423,14 +540,15 @@ class CalendarGateway:
         return dirs
 
     def _events(self) -> list[CalendarEvent]:
-        managed = self._managed_rows_by_uid()
+        managed_by_uid, managed_by_id = self._managed_indexes()
         events = []
         for calendar_name, directory in self._calendar_dirs():
             for path in sorted(directory.glob("*.ics"), key=lambda item: item.name.lower()):
                 try:
-                    events.extend(self._parse_ics_file(path, calendar_name, managed))
+                    events.extend(self._parse_ics_file(path, calendar_name, managed_by_uid, managed_by_id))
                 except CalendarError:
                     continue
+        self._reconcile_managed_uids(events)
         return events
 
     def _occurrences(self, start: datetime, end: datetime) -> list[CalendarOccurrence]:
@@ -520,8 +638,40 @@ class CalendarGateway:
         self,
         path: Path,
         calendar_name: str,
-        managed_rows: dict[str, dict[str, Any]],
+        managed_by_uid: dict[str, dict[str, Any]],
+        managed_by_id: dict[str, dict[str, Any]],
     ) -> list[CalendarEvent]:
+        cache_key = str(path.resolve())
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise CalendarError("unable to read calendar file") from exc
+        cached = self._cache.file_events.get(cache_key)
+        if cached and cached[0] == int(stat.st_mtime_ns) and cached[1] == int(stat.st_size):
+            events = []
+            for event in cached[2]:
+                cloned = CalendarEvent(
+                    uid=event.uid,
+                    calendar_name=calendar_name,
+                    path=path,
+                    props=event.props,
+                    raw_text=event.raw_text,
+                    start=event.start,
+                    end=event.end,
+                    all_day=event.all_day,
+                    summary=event.summary,
+                    description=event.description,
+                    location=event.location,
+                    status=event.status,
+                    transparency=event.transparency,
+                    rrule=event.rrule,
+                    exdates=event.exdates,
+                    attendees=list(event.attendees),
+                )
+                cloned.managed_id = self._resolve_managed_id(cloned, managed_by_uid, managed_by_id)
+                events.append(cloned)
+            return events
+
         raw = path.read_text(encoding="utf-8", errors="replace")
         events = []
         for lines in self._vevent_blocks(raw):
@@ -557,10 +707,9 @@ class CalendarGateway:
                 exdates=self._parse_exdates(props, all_day),
                 attendees=self._parse_attendees(props),
             )
-            managed_row = managed_rows.get(uid)
-            if managed_row:
-                event.managed_id = str(managed_row["assistant_id"])
+            event.managed_id = self._resolve_managed_id(event, managed_by_uid, managed_by_id)
             events.append(event)
+        self._cache.file_events[cache_key] = (int(stat.st_mtime_ns), int(stat.st_size), events)
         return events
 
     def _vevent_blocks(self, raw: str) -> list[list[str]]:
@@ -726,8 +875,8 @@ class CalendarGateway:
             "%s:%s" % (ASSISTANT_ORIGIN_PROPERTY, ASSISTANT_ORIGIN_VALUE),
         ])
         
-        if description:
-            lines.append("DESCRIPTION:%s" % self._escape_text(description))
+        marked_description = apply_assistant_marker(description, assistant_id)
+        lines.append("DESCRIPTION:%s" % self._escape_text(marked_description))
         if location:
             lines.append("LOCATION:%s" % self._escape_text(location))
         
@@ -867,9 +1016,67 @@ class CalendarGateway:
     def _relative_path(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.vdir_root))
 
+    def _managed_indexes(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        now = datetime.now(timezone.utc).timestamp()
+        cache_key = str(self.vdir_root)
+        cached = self._cache.managed_rows.get(cache_key)
+        if cached and now - cached[0] <= self.cache_ttl_seconds:
+            rows = cached[1]
+        else:
+            rows = self.db.fetch_all("SELECT * FROM calendar_managed_events WHERE status = 'active'")
+            self._cache.managed_rows[cache_key] = (now, rows)
+        by_uid = {str(row.get("uid")): row for row in rows if row.get("uid")}
+        by_id = {str(row.get("assistant_id")): row for row in rows if row.get("assistant_id")}
+        return by_uid, by_id
+
     def _managed_rows_by_uid(self) -> dict[str, dict[str, Any]]:
-        rows = self.db.fetch_all("SELECT * FROM calendar_managed_events WHERE status = 'active'")
-        return {str(row.get("uid")): row for row in rows}
+        by_uid, _by_id = self._managed_indexes()
+        return by_uid
+
+    def _resolve_managed_id(
+        self,
+        event: CalendarEvent,
+        managed_by_uid: dict[str, dict[str, Any]],
+        managed_by_id: dict[str, dict[str, Any]],
+    ) -> Optional[str]:
+        marker_id = event.marker_id()
+        if marker_id and marker_id in managed_by_id:
+            return marker_id
+        row = managed_by_uid.get(event.uid)
+        if row:
+            return str(row["assistant_id"])
+        return None
+
+    def _reconcile_managed_uids(self, events: list[CalendarEvent]) -> None:
+        by_uid, by_id = self._managed_indexes()
+        for event in events:
+            if not event.managed_id:
+                continue
+            row = by_id.get(event.managed_id)
+            if row is None:
+                continue
+            current_uid = str(row.get("uid") or "")
+            current_path = str(row.get("relative_path") or "")
+            next_path = self._relative_path(event.path)
+            if current_uid == event.uid and current_path == next_path:
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            updated = self._update_managed_event(
+                assistant_id=event.managed_id,
+                path=event.path,
+                calendar_name=event.calendar_name,
+                summary=event.summary or str(row.get("summary") or ""),
+                starts_at=event.start,
+                ends_at=event.end,
+                file_hash=self._sha256_text(event.raw_text),
+                metadata=metadata,
+                uid=event.uid,
+            )
+            by_id[event.managed_id] = updated
+            if current_uid:
+                by_uid.pop(current_uid, None)
+            by_uid[event.uid] = updated
+            self._cache.managed_rows[str(self.vdir_root)] = (datetime.now(timezone.utc).timestamp(), list(by_id.values()))
 
     def _managed_by_idempotency_key(self, key: str) -> Optional[dict[str, Any]]:
         row = self.db.fetch_one(
@@ -892,8 +1099,9 @@ class CalendarGateway:
         )
 
     def _managed_event_from_row(self, row: dict[str, Any]) -> CalendarEvent:
+        assistant_id = str(row.get("assistant_id") or "")
         uid = str(row.get("uid") or "")
-        events = [event for event in self._events() if event.uid == uid]
+        events = [event for event in self._events() if event.managed_id == assistant_id or event.uid == uid]
         if not events:
             raise CalendarError("managed calendar event file is missing; run sync and try again")
         return events[0]
@@ -957,35 +1165,68 @@ class CalendarGateway:
         ends_at: datetime,
         file_hash: str,
         metadata: dict[str, Any],
+        uid: Optional[str] = None,
     ) -> dict[str, Any]:
-        row = self.db.fetch_one(
-            """
-            UPDATE calendar_managed_events
-            SET calendar_name = %s,
-                relative_path = %s,
-                summary = %s,
-                starts_at = %s,
-                ends_at = %s,
-                file_hash = %s,
-                updated_by_job_id = %s,
-                metadata = %s,
-                updated_at = now()
-            WHERE assistant_id = %s
-              AND status = 'active'
-            RETURNING *
-            """,
-            (
-                calendar_name,
-                self._relative_path(path),
-                summary,
-                starts_at,
-                ends_at,
-                file_hash,
-                self.job["id"],
-                Jsonb(json_safe(metadata)),
-                assistant_id,
-            ),
-        )
+        if uid is None:
+            row = self.db.fetch_one(
+                """
+                UPDATE calendar_managed_events
+                SET calendar_name = %s,
+                    relative_path = %s,
+                    summary = %s,
+                    starts_at = %s,
+                    ends_at = %s,
+                    file_hash = %s,
+                    updated_by_job_id = %s,
+                    metadata = %s,
+                    updated_at = now()
+                WHERE assistant_id = %s
+                  AND status = 'active'
+                RETURNING *
+                """,
+                (
+                    calendar_name,
+                    self._relative_path(path),
+                    summary,
+                    starts_at,
+                    ends_at,
+                    file_hash,
+                    self.job["id"],
+                    Jsonb(json_safe(metadata)),
+                    assistant_id,
+                ),
+            )
+        else:
+            row = self.db.fetch_one(
+                """
+                UPDATE calendar_managed_events
+                SET uid = %s,
+                    calendar_name = %s,
+                    relative_path = %s,
+                    summary = %s,
+                    starts_at = %s,
+                    ends_at = %s,
+                    file_hash = %s,
+                    updated_by_job_id = %s,
+                    metadata = %s,
+                    updated_at = now()
+                WHERE assistant_id = %s
+                  AND status = 'active'
+                RETURNING *
+                """,
+                (
+                    uid,
+                    calendar_name,
+                    self._relative_path(path),
+                    summary,
+                    starts_at,
+                    ends_at,
+                    file_hash,
+                    self.job["id"],
+                    Jsonb(json_safe(metadata)),
+                    assistant_id,
+                ),
+            )
         if row is None:
             raise CalendarError("managed calendar event was not updated")
         return row

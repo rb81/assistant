@@ -252,7 +252,16 @@ CalDAV provider <-> configured sync command <-> private vdir store <-> calendar 
 
 The assistant does not receive the CalDAV password and does not write arbitrary `.ics` files. It can use `calendar_list_busy` and `calendar_list_events` through the gateway, and writes go through `calendar_create_event`, `calendar_update_event`, and `calendar_delete_event`.
 
-Writes are managed-only. Created events receive local ownership metadata and iCalendar markers, and update/delete operations require both the database record and marker to match. Non-managed calendar events can contribute to free/busy results, but the gateway refuses to edit or delete them.
+Writes are managed-only. Created events receive a stable assistant ID in the event description:
+
+```text
+--- Assistant Marker (do not remove) ---
+Assistant ID: <uuid>
+```
+
+The gateway also still writes `X-ASSISTANT-*` properties for older clients. Update/delete operations match on that description marker first, then fall back to UID/`X-ASSISTANT-ID`. If a provider rewrites the UID or strips custom properties, the local database is updated to the new UID so later edits still work. Non-managed calendar events can contribute to free/busy results, but the gateway refuses to edit or delete them.
+
+`agent.calendar.sync.before_read` now defaults to `true`, so `calendar_list_events` and `calendar_list_busy` pull remote changes before reading. `agent.calendar.cache.ttl_seconds` (default `45`) caches parsed `.ics` files, managed-event rows, and recent list results between those reads.
 
 Keep the vdir store under `/data/private/calendar/vdir` or another path outside `/data/share`; `/data/share` is visible through normal file tools. The default Compose setup mounts `./data/private/calendar` into the task-agent container for this purpose.
 
