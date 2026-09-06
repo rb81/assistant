@@ -229,6 +229,7 @@ def load_config() -> AppConfig:
         ("CALENDAR_TIMEZONE", "agent.calendar.timezone", str),
         ("AGENT_CALENDAR_DEFAULT_ALERT_MINUTES", "agent.calendar.default_alert_minutes", int),
         ("AGENT_CALENDAR_SYNC_TIMEOUT_SECONDS", "agent.calendar.sync.timeout_seconds", int),
+        ("AGENT_CALENDAR_SYNC_DISCOVERY_PAIR", "agent.calendar.sync.discovery_pair", str),
         ("AGENT_CALENDAR_SYNC_BEFORE_READ", "agent.calendar.sync.before_read", bool),
         ("AGENT_CALENDAR_SYNC_BEFORE_WRITE", "agent.calendar.sync.before_write", bool),
         ("AGENT_CALENDAR_SYNC_AFTER_WRITE", "agent.calendar.sync.after_write", bool),

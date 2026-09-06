@@ -1,9 +1,11 @@
 import sys
+import subprocess
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from typing import Any, Optional
+from unittest.mock import patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 psycopg_module = types.ModuleType("psycopg")
@@ -138,7 +140,7 @@ class FakeCalendarDatabase:
             self.audit.append({"assistant_id": assistant_id, "job_id": job_id, "action": action, "payload": payload})
 
 
-def calendar_config(vdir_path: str, allow_details: bool = False) -> AppConfig:
+def calendar_config(vdir_path: str, allow_details: bool = False, command: Optional[list[str]] = None) -> AppConfig:
     return AppConfig(
         {
             "agent": {
@@ -146,7 +148,7 @@ def calendar_config(vdir_path: str, allow_details: bool = False) -> AppConfig:
                 "calendar": {
                     "enabled": True,
                     "store": {"vdir_path": vdir_path, "default_calendar": "main"},
-                    "sync": {"command": [], "before_read": False, "before_write": False, "after_write": False},
+                    "sync": {"command": command or [], "timeout_seconds": 10, "before_read": False, "before_write": False, "after_write": False},
                     "cache": {"ttl_seconds": 0},
                     "policy": {"allow_read_event_details": allow_details},
                     "limits": {"max_occurrences_per_event": 20},
@@ -186,6 +188,68 @@ def write_external_event(vdir_path: Path) -> None:
 class CalendarGatewayTest(unittest.TestCase):
     def setUp(self) -> None:
         reset_calendar_cache()
+
+    def test_sync_discovers_after_vdirsyncer_config_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vdir_path = Path(temp_dir) / "vdir"
+            gateway = CalendarGateway(
+                FakeCalendarDatabase(),
+                calendar_config(str(vdir_path), command=["vdirsyncer", "sync"]),
+                {"id": 30, "thread_id": "thread"},
+            )
+            discovery_required = subprocess.CompletedProcess(
+                ["vdirsyncer", "sync"],
+                1,
+                "",
+                "Detected change in config file, please run vdirsyncer discover default_calendar",
+            )
+            success = subprocess.CompletedProcess(["vdirsyncer", "sync"], 0, "synced", "")
+
+            with patch(
+                "assistant_agent.calendar_gateway.subprocess.run",
+                side_effect=[discovery_required, discovery_required, subprocess.CompletedProcess(["vdirsyncer", "discover", "default_calendar"], 0, "discovered", ""), success],
+            ) as run:
+                result = gateway.sync("before_read")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ["vdirsyncer", "sync"],
+                ["vdirsyncer", "sync"],
+                ["vdirsyncer", "discover", "default_calendar"],
+                ["vdirsyncer", "sync"],
+            ])
+            self.assertTrue(all(call.kwargs["cwd"] == str(gateway.vdir_root.parent) for call in run.call_args_list))
+            self.assertTrue(all(call.kwargs["timeout"] == 10 for call in run.call_args_list))
+
+    def test_sync_does_not_discover_for_authentication_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gateway = CalendarGateway(
+                FakeCalendarDatabase(),
+                calendar_config(str(Path(temp_dir) / "vdir"), command=["vdirsyncer", "sync"]),
+                {"id": 31, "thread_id": "thread"},
+            )
+            failure = subprocess.CompletedProcess(["vdirsyncer", "sync"], 1, "", "401 Unauthorized")
+
+            with patch("assistant_agent.calendar_gateway.subprocess.run", return_value=failure) as run:
+                with self.assertRaisesRegex(CalendarError, "401 Unauthorized"):
+                    gateway.sync()
+
+            run.assert_called_once()
+
+    def test_sync_does_not_discover_for_unrelated_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gateway = CalendarGateway(
+                FakeCalendarDatabase(),
+                calendar_config(str(Path(temp_dir) / "vdir"), command=["vdirsyncer", "sync"]),
+                {"id": 32, "thread_id": "thread"},
+            )
+            failure = subprocess.CompletedProcess(["vdirsyncer", "sync"], 1, "", "connection refused")
+
+            with patch("assistant_agent.calendar_gateway.subprocess.run", return_value=failure) as run:
+                with self.assertRaisesRegex(CalendarError, "connection refused"):
+                    gateway.sync()
+
+            run.assert_called_once()
     def test_list_busy_redacts_non_managed_details_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             vdir_path = Path(temp_dir) / "vdir"

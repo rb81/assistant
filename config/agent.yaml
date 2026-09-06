@@ -224,6 +224,7 @@ agent:
         - vdirsyncer
         - sync
       timeout_seconds: 120
+      discovery_pair: default_calendar
       before_read: true
       before_write: true
       after_write: true

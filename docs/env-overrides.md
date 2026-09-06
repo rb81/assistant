@@ -295,6 +295,7 @@ AGENT_SANDBOX_ENABLED=false
 | `CALENDAR_TIMEZONE` | `agent.calendar.timezone` | string | _(empty, uses AGENT_TIMEZONE)_ |
 | `AGENT_CALENDAR_DEFAULT_ALERT_MINUTES` | `agent.calendar.default_alert_minutes` | int | `15` |
 | `AGENT_CALENDAR_SYNC_TIMEOUT_SECONDS` | `agent.calendar.sync.timeout_seconds` | int | `120` |
+| `AGENT_CALENDAR_SYNC_DISCOVERY_PAIR` | `agent.calendar.sync.discovery_pair` | string | `default_calendar` |
 | `AGENT_CALENDAR_SYNC_BEFORE_READ` | `agent.calendar.sync.before_read` | bool | `true` |
 | `AGENT_CALENDAR_SYNC_BEFORE_WRITE` | `agent.calendar.sync.before_write` | bool | `true` |
 | `AGENT_CALENDAR_SYNC_AFTER_WRITE` | `agent.calendar.sync.after_write` | bool | `true` |

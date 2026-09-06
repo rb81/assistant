@@ -186,6 +186,7 @@ class ConfigTest(unittest.TestCase):
                 "AGENT_CONFIG": config_file.name,
                 "CALENDAR_ENABLED": "true",
                 "CALENDAR_TIMEZONE": "America/New_York",
+                "AGENT_CALENDAR_SYNC_DISCOVERY_PAIR": "custom_pair",
                 "CALENDAR_VDIR_PATH": "/tmp/should-not-apply",
                 "CALDAV_URL": "https://calendar-provider.example/.well-known/caldav",
                 "CALDAV_USERNAME": "user@example.com",
@@ -197,6 +198,7 @@ class ConfigTest(unittest.TestCase):
         # CALENDAR_ENABLED and CALENDAR_TIMEZONE are supported overrides
         self.assertTrue(config.get_bool("agent.calendar.enabled", False))
         self.assertEqual(config.get("agent.calendar.timezone"), "America/New_York")
+        self.assertEqual(config.get("agent.calendar.sync.discovery_pair"), "custom_pair")
         # But vdir_path and CALDAV_* are NOT mapped into agent config
         self.assertIsNone(config.get("agent.calendar.store.vdir_path"))
         self.assertIsNone(config.get("agent.calendar.provider.url"))

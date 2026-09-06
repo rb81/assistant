@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import re
 import shlex
@@ -152,6 +153,7 @@ class CalendarGateway:
         self.job = job
         self.vdir_root = Path(config.get("agent.calendar.store.vdir_path", "/data/private/calendar/vdir")).resolve()
         self.default_calendar = self._clean_calendar_name(config.get("agent.calendar.store.default_calendar", "default"))
+        self.discovery_pair = self._clean_calendar_name(config.get("agent.calendar.sync.discovery_pair", "default_calendar"))
         self.max_occurrences_per_event = max(config.get_int("agent.calendar.limits.max_occurrences_per_event", 500), 1)
         self.cache_ttl_seconds = max(config.get_int("agent.calendar.cache.ttl_seconds", DEFAULT_CACHE_TTL_SECONDS), 0)
         self._cache = _CALENDAR_CACHE
@@ -161,8 +163,24 @@ class CalendarGateway:
         if not command:
             return {"status": "skipped", "reason": "calendar sync command is not configured"}
         timeout = max(self.config.get_int("agent.calendar.sync.timeout_seconds", 120), 1)
+        completed = self._run_calendar_command(command, timeout, "calendar sync")
+        if self._needs_discovery(completed, command):
+            with self._discovery_lock():
+                completed = self._run_calendar_command(command, timeout, "calendar sync")
+                if self._needs_discovery(completed, command):
+                    discovery_command = self._discovery_command(command)
+                    if discovery_command is None:
+                        return self._finish_sync(completed, reason)
+                    discovery = self._run_calendar_command(discovery_command, timeout, "calendar discovery")
+                    if discovery.returncode != 0:
+                        detail = (discovery.stderr or "")[-4000:] or (discovery.stdout or "")[-4000:] or "exit status %s" % discovery.returncode
+                        raise CalendarError("calendar discovery failed: %s" % detail)
+                    completed = self._run_calendar_command(command, timeout, "calendar sync")
+        return self._finish_sync(completed, reason)
+
+    def _run_calendar_command(self, command: list[str], timeout: int, operation: str) -> subprocess.CompletedProcess[str]:
         try:
-            completed = subprocess.run(
+            return subprocess.run(
                 command,
                 cwd=str(self.vdir_root.parent),
                 capture_output=True,
@@ -171,9 +189,46 @@ class CalendarGateway:
                 check=False,
             )
         except FileNotFoundError as exc:
-            raise CalendarError("calendar sync command was not found: %s" % command[0]) from exc
+            raise CalendarError("%s command was not found: %s" % (operation, command[0])) from exc
         except subprocess.TimeoutExpired as exc:
-            raise CalendarError("calendar sync timed out after %s second(s)" % timeout) from exc
+            raise CalendarError("%s timed out after %s second(s)" % (operation, timeout)) from exc
+
+    @staticmethod
+    def _needs_discovery(completed: subprocess.CompletedProcess[str], command: list[str]) -> bool:
+        if completed.returncode == 0 or len(command) != 2 or command[1] != "sync":
+            return False
+        output = "%s\n%s" % (completed.stdout or "", completed.stderr or "")
+        normalized = output.lower()
+        return "detected change in config file" in normalized and "run" in normalized and "discover" in normalized
+
+    def _discovery_command(self, command: list[str]) -> Optional[list[str]]:
+        if len(command) != 2 or command[1] != "sync":
+            return None
+        return [command[0], "discover", self.discovery_pair]
+
+    def _discovery_lock(self):
+        lock_path = self.vdir_root.parent / ".vdirsyncer-discovery.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            handle.close()
+            raise CalendarError("calendar discovery lock failed") from exc
+
+        class _Lock:
+            def __enter__(self_nonlocal):
+                return handle
+
+            def __exit__(self_nonlocal, exc_type, exc_value, traceback):
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()
+
+        return _Lock()
+
+    def _finish_sync(self, completed: subprocess.CompletedProcess[str], reason: str) -> dict[str, Any]:
         result = {
             "status": "ok" if completed.returncode == 0 else "failed",
             "reason": reason,

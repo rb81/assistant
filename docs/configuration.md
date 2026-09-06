@@ -273,4 +273,10 @@ Configure calendar runtime behavior in `config/agent.yaml` under `agent.calendar
 
 The default Compose environment sets `VDIRSYNCER_CONFIG=/app/config/vdirsyncer/config`. That tracked config writes local events to `/data/private/calendar/vdir/default`, stores sync state in `/data/private/calendar/status`, and reads CalDAV account values from `CALDAV_URL`, `CALDAV_USERNAME`, and `CALDAV_PASSWORD`.
 
+When vdirsyncer detects that its configuration changed, such as after a CalDAV password rotation, the calendar gateway automatically runs discovery for the configured sync pair and retries the sync once. The local calendar name (`agent.calendar.store.default_calendar`, default `default`) is separate from the vdirsyncer pair name (`agent.calendar.sync.discovery_pair`, default `default_calendar`). This runs inside `task-agent` using the same environment and persistent `/data/private/calendar` volume, so rebuilding containers does not require a host-side command. Authentication failures such as HTTP 401 remain configuration errors and are reported without repeated discovery. If automatic discovery fails, the manual fallback is:
+
+```bash
+docker compose exec task-agent vdirsyncer discover default_calendar
+```
+
 To start fresh locally, `scripts/reset-databases.sh` clears calendar ownership/audit records with the database reset. Add `--discard-calendar-sync` when you also want to delete the local vdir files and vdirsyncer status. This does not delete remote calendar events.
