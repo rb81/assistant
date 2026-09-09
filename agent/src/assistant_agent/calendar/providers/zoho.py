@@ -15,7 +15,7 @@ To obtain a refresh token, follow the setup guide in docs/calendar-providers.md.
 
 import logging
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -50,18 +50,38 @@ def _dt_to_zoho(dt: datetime, all_day: bool) -> str:
 
 
 def _zoho_to_dt(value: str) -> tuple[datetime, bool]:
-    """Parse a Zoho datetime string into (datetime, all_day)."""
+    """Parse a Zoho datetime string into (datetime, all_day).
+
+    Zoho returns timed values as compact ISO without colons, with either a
+    trailing Z or a numeric offset, for example:
+      20260910T090000Z
+      20260910T090000+0400
+      20260910T090000+04:00
+    All-day values are YYYYMMDD.
+    """
     value = str(value or "").strip()
     if not value:
         raise ValueError("empty Zoho datetime string")
     # All-day format: YYYYMMDD (8 chars, no T)
     if len(value) == 8 and "T" not in value:
-        from datetime import date, time as dtime
-        d = date.fromisoformat(value)
+        from datetime import time as dtime
+        d = datetime.strptime(value, "%Y%m%d").date()
         return datetime.combine(d, dtime.min, tzinfo=timezone.utc), True
-    # Full: 20260610T140000Z
-    dt = datetime.strptime(value[:15], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
-    return dt, False
+    if len(value) < 15:
+        raise ValueError("invalid Zoho datetime string")
+    naive = datetime.strptime(value[:15], "%Y%m%dT%H%M%S")
+    suffix = value[15:].strip()
+    if not suffix or suffix == "Z":
+        return naive.replace(tzinfo=timezone.utc), False
+    sign_char = suffix[0]
+    if sign_char not in "+-":
+        raise ValueError("invalid Zoho datetime offset")
+    digits = suffix[1:].replace(":", "")
+    if len(digits) < 4 or not digits[:4].isdigit():
+        raise ValueError("invalid Zoho datetime offset")
+    sign = 1 if sign_char == "+" else -1
+    tz = timezone(timedelta(hours=sign * int(digits[:2]), minutes=sign * int(digits[2:4])))
+    return naive.replace(tzinfo=tz).astimezone(timezone.utc), False
 
 
 def _parse_attendees(raw: list[dict[str, Any]]) -> list[Attendee]:

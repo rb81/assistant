@@ -14,7 +14,7 @@ def default_timezone(config: AppConfig) -> tuple[tzinfo, str]:
         return timezone.utc, "UTC"
 
 
-def parse_datetime(value: str, config: AppConfig) -> datetime:
+def parse_datetime(value: str, config: AppConfig, timezone_name: Optional[str] = None) -> datetime:
     text = str(value or "").strip()
     if not text:
         raise ValueError("datetime value is required")
@@ -25,7 +25,14 @@ def parse_datetime(value: str, config: AppConfig) -> datetime:
     except ValueError as exc:
         raise ValueError("datetime must be ISO 8601, for example 2026-06-04T17:00:00+04:00") from exc
     if parsed.tzinfo is None:
-        zone, _ = default_timezone(config)
+        override = str(timezone_name or "").strip()
+        if override:
+            try:
+                zone = ZoneInfo(override)
+            except ZoneInfoNotFoundError:
+                zone = timezone.utc
+        else:
+            zone, _ = default_timezone(config)
         parsed = parsed.replace(tzinfo=zone)
     return parsed.astimezone(timezone.utc)
 

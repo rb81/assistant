@@ -535,8 +535,8 @@ class CalendarRouter:
         return self._provider_configs.get(name)
 
     def _range(self, start: str, end: str) -> tuple[datetime, datetime]:
-        range_start = parse_datetime(start, self._config)
-        range_end = parse_datetime(end, self._config)
+        range_start = parse_datetime(start, self._config, timezone_name=self._timezone_name())
+        range_end = parse_datetime(end, self._config, timezone_name=self._timezone_name())
         if range_end <= range_start:
             raise CalendarError("range end must be after start")
         return range_start, range_end
@@ -550,10 +550,13 @@ class CalendarRouter:
 
     def _event_start(self, value: str, all_day: bool) -> datetime:
         if not all_day:
-            return parse_datetime(value, self._config)
+            return parse_datetime(value, self._config, timezone_name=self._timezone_name())
         from datetime import date, time
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo(self._timezone_name())
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            tz = ZoneInfo(self._timezone_name())
+        except ZoneInfoNotFoundError:
+            tz = timezone.utc
         d = date.fromisoformat(str(value)[:10])
         return datetime.combine(d, time.min, tzinfo=tz).astimezone(timezone.utc)
 

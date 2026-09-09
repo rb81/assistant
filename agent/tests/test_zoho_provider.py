@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from assistant_agent.calendar.models import CalendarEvent, CreateEventRequest, ProviderConfig, UpdateEventRequest
-from assistant_agent.calendar.providers.zoho import ZohoCalendarProvider
+from assistant_agent.calendar.providers.zoho import ZohoCalendarProvider, _zoho_to_dt
 
 
 class _FakeTokenStore:
@@ -164,6 +164,57 @@ def test_default_calendar_alias_resolves_to_primary_uid() -> None:
     # 1) resolve calendars list, 2) list events using resolved UID
     assert calls[0][1] == "/calendars"
     assert calls[1][1] == "/calendars/calendar-uid-primary/events"
+
+
+def test_zoho_to_dt_parses_numeric_offset() -> None:
+    start, all_day = _zoho_to_dt("20260910T090000+0400")
+    end, _ = _zoho_to_dt("20260910T120000+0400")
+    assert all_day is False
+    assert start == datetime(2026, 9, 10, 5, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
+
+
+def test_zoho_to_dt_parses_colon_offset_and_zulu() -> None:
+    offseted, _ = _zoho_to_dt("20260910T090000+04:00")
+    zulu, _ = _zoho_to_dt("20260910T090000Z")
+    assert offseted == datetime(2026, 9, 10, 5, 0, tzinfo=timezone.utc)
+    assert zulu == datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
+
+
+def test_zoho_to_dt_parses_all_day() -> None:
+    value, all_day = _zoho_to_dt("20260910")
+    assert all_day is True
+    assert value == datetime(2026, 9, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def test_list_events_honors_zoho_offset_in_dateandtime() -> None:
+    provider = _provider()
+
+    def fake_request(method, path, params=None, body=None, retry_on_auth=True):
+        return {
+            "events": [
+                {
+                    "uid": "evt-dubai@zoho.com",
+                    "title": "Morning block",
+                    "dateandtime": {
+                        "timezone": "Asia/Dubai",
+                        "start": "20260910T090000+0400",
+                        "end": "20260910T120000+0400",
+                    },
+                }
+            ]
+        }
+
+    with patch.object(provider, "_request", side_effect=fake_request):
+        events = provider.list_events(
+            "calendar-uid-1",
+            datetime(2026, 9, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 9, 10, 23, 59, tzinfo=timezone.utc),
+        )
+
+    assert len(events) == 1
+    assert events[0].start == datetime(2026, 9, 10, 5, 0, tzinfo=timezone.utc)
+    assert events[0].end == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
 
 
 def test_invalid_oauth_scope_raises_provider_auth_error() -> None:

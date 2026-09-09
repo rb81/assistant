@@ -194,13 +194,13 @@ class TestLoadProviderConfigs:
     def test_no_env_vars_returns_empty(self):
         from assistant_agent.calendar.router import _load_provider_configs
 
-        assert _load_provider_configs() == []
+        assert _load_provider_configs(_make_config()) == []
 
     def test_google_provider_loaded(self):
         from assistant_agent.calendar.router import _load_provider_configs
 
         os.environ.update(self.GOOGLE_VARS)
-        configs = _load_provider_configs()
+        configs = _load_provider_configs(_make_config())
         assert len(configs) == 1
         assert configs[0].name == "google"
         assert configs[0].provider_type == "google"
@@ -209,7 +209,7 @@ class TestLoadProviderConfigs:
         from assistant_agent.calendar.router import _load_provider_configs
 
         os.environ.update(self.OUTLOOK_VARS)
-        configs = _load_provider_configs()
+        configs = _load_provider_configs(_make_config())
         assert len(configs) == 1
         assert configs[0].name == "outlook"
 
@@ -218,7 +218,7 @@ class TestLoadProviderConfigs:
 
         os.environ.update(self.GOOGLE_VARS)
         os.environ.update(self.OUTLOOK_VARS)
-        configs = _load_provider_configs()
+        configs = _load_provider_configs(_make_config())
         names = [c.name for c in configs]
         assert "google" in names
         assert "outlook" in names
@@ -232,7 +232,7 @@ class TestLoadProviderConfigs:
             "CALENDAR_GOOGLE_2_CLIENT_SECRET": "g2-secret",
             "CALENDAR_GOOGLE_2_REFRESH_TOKEN": "g2-refresh",
         })
-        configs = _load_provider_configs()
+        configs = _load_provider_configs(_make_config())
         names = [c.name for c in configs]
         assert "google" in names
         assert "google_2" in names
@@ -242,7 +242,7 @@ class TestLoadProviderConfigs:
 
         os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "g-id"
         # Missing CLIENT_SECRET and REFRESH_TOKEN
-        assert _load_provider_configs() == []
+        assert _load_provider_configs(_make_config()) == []
 
     def test_zoho_api_base_stored_in_extra(self):
         from assistant_agent.calendar.router import _load_provider_configs
@@ -251,9 +251,10 @@ class TestLoadProviderConfigs:
             "CALENDAR_ZOHO_CLIENT_ID": "z-id",
             "CALENDAR_ZOHO_CLIENT_SECRET": "z-secret",
             "CALENDAR_ZOHO_REFRESH_TOKEN": "z-refresh",
-            "CALENDAR_ZOHO_API_BASE": "https://calendar.zoho.eu/api/v1",
         })
-        configs = _load_provider_configs()
+        configs = _load_provider_configs(_make_config({
+            "agent.calendar.zoho.api_base": "https://calendar.zoho.eu/api/v1",
+        }))
         assert len(configs) == 1
         assert configs[0].extra.get("api_base") == "https://calendar.zoho.eu/api/v1"
 
@@ -587,6 +588,127 @@ class TestCalendarRouterCreateEvent:
                 end="2026-09-15T15:00:00+00:00",
                 provider="nonexistent",
             )
+
+
+# ---------------------------------------------------------------------------
+# Timezone parsing for timed events and busy ranges
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarRouterTimezone:
+    def setup_method(self):
+        from assistant_agent.calendar.router import CalendarRouter
+        CalendarRouter._token_store = None
+
+    def _router_with_tz(self, extras: dict[str, Any], provider_mock=None):
+        router, db, _, _, mock_prov = _make_router_with_mock_provider(provider_mock)
+        router._config = _make_config(extras)
+        db.fetch_all.return_value = []
+        return router, db, mock_prov
+
+    def test_timed_event_naive_start_uses_calendar_timezone(self):
+        mock_event = MagicMock()
+        mock_event.provider_event_id = "prov-evt-tz"
+        mock_event.start = datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
+        mock_event.end = datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
+        mock_prov = MagicMock()
+        mock_prov.create_event.return_value = mock_event
+        router, db, _ = self._router_with_tz(
+            {
+                "agent.calendar.timezone": "Asia/Dubai",
+                "agent.app.timezone": "",
+                "agent.reminders.default_timezone": "UTC",
+            },
+            mock_prov,
+        )
+        db.fetch_one.return_value = {
+            "assistant_id": str(uuid.uuid4()),
+            "provider_name": "google",
+            "provider_event_id": "prov-evt-tz",
+            "calendar_id": "primary",
+            "summary": "TZ Event",
+            "starts_at": datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc),
+            "ends_at": datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc),
+            "status": "active",
+            "metadata": {},
+        }
+
+        router.create_event(
+            title="TZ Event",
+            start="2026-06-04T17:00:00",
+            end="2026-06-04T18:00:00",
+        )
+        request = mock_prov.create_event.call_args.args[0]
+        assert request.start == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
+        assert request.end == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
+
+    def test_list_busy_naive_range_uses_calendar_timezone(self):
+        mock_prov = MagicMock()
+        mock_prov.get_free_busy.return_value = []
+        router, _, mock_prov = self._router_with_tz(
+            {
+                "agent.calendar.timezone": "Asia/Dubai",
+                "agent.app.timezone": "",
+                "agent.reminders.default_timezone": "UTC",
+            },
+            mock_prov,
+        )
+
+        result = router.list_busy("2026-06-04T17:00:00", "2026-06-04T18:00:00")
+        kwargs = mock_prov.get_free_busy.call_args.kwargs
+        assert kwargs["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
+        assert kwargs["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
+        assert result["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc).isoformat()
+        assert result["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc).isoformat()
+
+    def test_explicit_offset_still_honored(self):
+        mock_prov = MagicMock()
+        mock_prov.get_free_busy.return_value = []
+        router, _, mock_prov = self._router_with_tz(
+            {
+                "agent.calendar.timezone": "UTC",
+                "agent.app.timezone": "UTC",
+            },
+            mock_prov,
+        )
+
+        router.list_busy("2026-06-04T17:00:00+04:00", "2026-06-04T18:00:00+04:00")
+        kwargs = mock_prov.get_free_busy.call_args.kwargs
+        assert kwargs["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
+        assert kwargs["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
+
+    def test_zulu_suffix_still_honored(self):
+        mock_prov = MagicMock()
+        mock_prov.get_free_busy.return_value = []
+        router, _, mock_prov = self._router_with_tz(
+            {
+                "agent.calendar.timezone": "Asia/Dubai",
+                "agent.app.timezone": "",
+            },
+            mock_prov,
+        )
+
+        router.list_busy("2026-06-04T17:00:00Z", "2026-06-04T18:00:00Z")
+        kwargs = mock_prov.get_free_busy.call_args.kwargs
+        assert kwargs["start"] == datetime(2026, 6, 4, 17, 0, tzinfo=timezone.utc)
+        assert kwargs["end"] == datetime(2026, 6, 4, 18, 0, tzinfo=timezone.utc)
+
+    def test_falls_back_to_app_timezone_when_calendar_timezone_unset(self):
+        mock_prov = MagicMock()
+        mock_prov.get_free_busy.return_value = []
+        router, _, mock_prov = self._router_with_tz(
+            {
+                "agent.calendar.timezone": "",
+                "agent.app.timezone": "Asia/Dubai",
+                "agent.reminders.default_timezone": "UTC",
+            },
+            mock_prov,
+        )
+
+        router.list_busy("2026-06-04T17:00:00", "2026-06-04T18:00:00")
+        kwargs = mock_prov.get_free_busy.call_args.kwargs
+        assert kwargs["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
+        assert kwargs["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
