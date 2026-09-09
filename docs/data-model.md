@@ -84,7 +84,7 @@ Asynchronous research execution and event timeline.
 - `calendar_managed_events`
 - `calendar_event_audit`
 
-Managed-event ownership and audit history.
+Managed-event ownership and audit history. `calendar_managed_events` records events created by the assistant across any provider, with columns `provider_name` (e.g. `google`, `outlook`, `zoho`), `provider_event_id` (the remote event ID returned by the API), and `calendar_id` (the target calendar within the provider). Update and delete operations match exclusively on rows in this table; the assistant refuses to modify events it did not create.
 
 ## Entity Registry
 

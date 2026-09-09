@@ -61,7 +61,6 @@ Default bind mounts:
 - `./data/postgres` → PostgreSQL data
 - `./data/share` → shared workspace
 - `./data/private/artifacts` → private inbound artifacts
-- `./data/private/calendar` → private calendar sync state
 - `./data/ollama` → Ollama model cache
 - `./data/clamav` → ClamAV signatures/state
 - `./config` (read-only) → `/app/config`

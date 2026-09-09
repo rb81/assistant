@@ -34,7 +34,6 @@ Compose bind-mounts runtime data under `./data` by default:
 - `./data/postgres` — PostgreSQL files.
 - `./data/share` — shared workspace visible to file tools.
 - `./data/private/artifacts` — private raw/processed artifact storage.
-- `./data/private/calendar` — private calendar sync data.
 - `./data/ollama` — local Ollama model/cache storage.
 - `./data/clamav` — ClamAV signatures/state.
 

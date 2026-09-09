@@ -13,15 +13,11 @@ Options:
   -y, --yes, --force  Skip the confirmation prompt.
   --no-restart        Do not restart app services that were running before reset.
   --discard-imap-position
-                      Clear IMAP checkpoints too. Old mailbox messages may be
-                      downloaded again when the downloader restarts.
-  --discard-calendar-sync
-                      Clear local calendar sync files and vdirsyncer status too.
-                      Remote calendar data is not deleted.
+                       Clear IMAP checkpoints too. Old mailbox messages may be
+                       downloaded again when the downloader restarts.
   -h, --help          Show this help text.
 
-This script does not delete data/share, data/ollama, or config files. It preserves
-local calendar sync files unless --discard-calendar-sync is provided.
+This script does not delete data/share, data/ollama, or config files.
 By default it preserves only IMAP last-UID checkpoints so old mailbox messages
 are not immediately re-imported into the fresh database.
 EOF
@@ -30,7 +26,6 @@ EOF
 assume_yes=0
 restart_services=1
 preserve_imap_position=1
-discard_calendar_sync=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -42,9 +37,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --discard-imap-position)
       preserve_imap_position=0
-      ;;
-    --discard-calendar-sync)
-      discard_calendar_sync=1
       ;;
     -h|--help)
       usage
@@ -109,8 +101,7 @@ This will permanently erase every PostgreSQL record in the Assistant Compose dat
 emails, jobs, logs, memories, reminders, projects, research runs, and runtime state.
 
 It will NOT delete shared workspace files, config files, attachments on disk,
-local calendar sync files, or the Ollama model cache unless the matching discard
-flag was provided.
+or the Ollama model cache.
 EOF
   printf 'Type RESET to continue: '
   read -r confirmation
@@ -192,12 +183,6 @@ SQL
   done <<< "$saved_imap_state"
 fi
 
-if [ "$discard_calendar_sync" -eq 1 ]; then
-  echo "Clearing local calendar sync files..."
-  rm -rf data/private/calendar/vdir data/private/calendar/status
-  mkdir -p data/private/calendar/vdir/default data/private/calendar/status
-fi
-
 echo "Verifying user data tables are empty..."
 non_empty_counts="$("${compose_cmd[@]}" exec -T postgres sh -c '
   set -eu
@@ -241,8 +226,4 @@ elif [ "$postgres_was_running" -eq 0 ] && [ "${#running_writers[@]}" -eq 0 ]; th
   "${compose_cmd[@]}" stop postgres
 fi
 
-if [ "$discard_calendar_sync" -eq 1 ]; then
-  echo "Database reset complete. Shared files were left untouched. Local calendar sync files were cleared."
-else
-  echo "Database reset complete. Shared files and local calendar sync files were left untouched."
-fi
+echo "Database reset complete. Shared files were left untouched."

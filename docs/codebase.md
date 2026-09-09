@@ -28,6 +28,7 @@ This document helps contributors navigate the repository quickly.
 - `projects.py` — project scheduler/orchestration.
 - `deep_research.py` — deep research async worker.
 - `reminders.py` — reminder scheduling and recurrence handling.
+- `calendar/` — OAuth calendar providers (`google`, `outlook`, `zoho`) and `CalendarRouter`.
 - `supervisor.py` — running/review job oversight.
 - `heartbeat.py` — rule-based health checks and notifications.
 - `llm_client.py` — OpenRouter/OpenAI-compatible chat client.
@@ -46,6 +47,7 @@ Tests are under `agent/tests/` and cover:
 - config and validation behavior,
 - polling/supervisor loops,
 - reminder/tool behavior,
+- calendar router and provider configuration,
 - mailbox/threading handling,
 - prompt context and UI pages,
 - sandbox retry handling,

@@ -307,13 +307,15 @@ CREATE INDEX reminders_job_id_idx ON reminders(job_id);
 
 CREATE TABLE calendar_managed_events (
   assistant_id text PRIMARY KEY,
-  uid text NOT NULL UNIQUE,
-  calendar_name text NOT NULL,
-  relative_path text NOT NULL,
+  -- Provider plugin columns (replaces the old CalDAV/vdirsyncer file-based columns)
+  provider_name text NOT NULL,           -- e.g. 'google', 'outlook', 'zoho'
+  provider_event_id text NOT NULL,       -- the provider's native event ID
+  calendar_id text NOT NULL,             -- the provider-specific calendar collection ID
+  -- Retained columns
+  calendar_name text NOT NULL DEFAULT '', -- kept for backward compatibility / display
   summary text NOT NULL DEFAULT '',
   starts_at timestamptz NOT NULL,
   ends_at timestamptz NOT NULL,
-  file_hash text NOT NULL DEFAULT '',
   status text NOT NULL DEFAULT 'active'
     CHECK (status IN ('active', 'deleted')),
   created_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
@@ -325,6 +327,7 @@ CREATE TABLE calendar_managed_events (
 );
 
 CREATE INDEX calendar_managed_events_status_starts_idx ON calendar_managed_events(status, starts_at);
+CREATE INDEX calendar_managed_events_provider_idx ON calendar_managed_events(provider_name, provider_event_id);
 CREATE INDEX calendar_managed_events_job_idx ON calendar_managed_events(created_by_job_id, updated_by_job_id);
 
 CREATE TABLE calendar_event_audit (

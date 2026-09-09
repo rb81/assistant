@@ -114,14 +114,14 @@ Command:
 
 Calendar:
 
-- `calendar_sync`
-- `calendar_list_busy`
-- `calendar_list_events`
-- `calendar_create_event`
-- `calendar_update_event`
-- `calendar_delete_event`
+- `calendar_sync` — triggers a refresh from all configured calendar API providers; no-op when no providers are active
+- `calendar_list_busy` — lists busy windows across all configured providers within a date/time range; titles are redacted unless `allow_read_event_details` is enabled
+- `calendar_list_events` — lists calendar events from all configured providers; titles and details subject to the same policy
+- `calendar_create_event` — creates an event on the specified provider (or the default provider when `provider` is omitted); supports `alert_minutes` override
+- `calendar_update_event` — updates a managed event by its assistant-assigned ID; accepts `alert_minutes` override
+- `calendar_delete_event` — deletes a managed event; no-ops gracefully when the event is already gone on the provider
 
-Calendar writes are managed-only through gateway rules.
+Calendar tools are exposed only when at least one provider has credentials configured in the environment. Write operations (create/update/delete) are restricted to events the assistant itself created — non-managed events appear in free/busy results but cannot be modified. See [docs/calendar-providers.md](calendar-providers.md) for provider setup.
 
 ## Context and Search Tools
 

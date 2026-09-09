@@ -66,9 +66,12 @@ SMTP_FROM=agent@example.com
 EMAIL_ALLOWED_RECIPIENT_DOMAINS=example.com,trusted-partner.com
 EMAIL_ACTIONABLE_SENDERS=boss@example.com,team@example.com
 
-CALDAV_URL=https://calendar-provider.example/.well-known/caldav
-CALDAV_USERNAME=user@example.com
-CALDAV_PASSWORD=...
+# Calendar provider credentials — set CALENDAR_ENABLED=true and at least one provider.
+# See docs/calendar-providers.md for OAuth setup instructions.
+CALENDAR_ENABLED=true
+CALENDAR_GOOGLE_CLIENT_ID=...
+CALENDAR_GOOGLE_CLIENT_SECRET=...
+CALENDAR_GOOGLE_REFRESH_TOKEN=...
 ```
 
 Most of these values are injected into matching runtime config paths at startup. For example, `ADMIN_EMAIL` becomes `agent.admin.email`, `ORG_NAME` becomes `agent.org.name`, `ORG_SECURITY_EMAIL` becomes `agent.org.security_email`, `ORG_INTERNAL_EMAIL_DOMAINS` becomes `agent.org.internal_email_domains`, and `EMAIL_ALLOWED_RECIPIENT_DOMAINS` becomes `agent.email.allowed_recipient_domains`.
@@ -79,9 +82,7 @@ Most of these values are injected into matching runtime config paths at startup.
 
 `AGENT_API_DOCS_ENABLED=false` disables Swagger UI, ReDoc, and the dashboard API Docs icon. `AGENT_API_OPENAPI_ENABLED=false` disables `/openapi.json`. Blank values leave `config/agent.yaml` or the built-in defaults unchanged. Set both to `false` in production unless you intentionally expose generated API documentation behind another access-control layer.
 
-The `CALDAV_*` values are different: they are account/provider values passed into the container for the configured calendar sync tool. They are not mapped into Assistant's `agent.calendar` runtime config and are not exposed as assistant tools.
-
-`CALDAV_URL` should be the direct CalDAV URL for the single calendar collection Assistant should sync. The bundled `config/vdirsyncer/config` uses `collections = null`, so it does not perform collection discovery.
+Calendar tools stay disabled until `CALENDAR_ENABLED=true` and at least one provider's credentials are set in `.env`. The presence of `CALENDAR_GOOGLE_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_ID`, or `CALENDAR_ZOHO_CLIENT_ID` (plus matching secret and refresh token) activates that provider. See [docs/calendar-providers.md](calendar-providers.md) for OAuth setup instructions and supported variables.
 
 ## Entity Registry
 
@@ -120,7 +121,7 @@ When enabled, objects are automatically analyzed and linked to 1-3 high-level en
 - task limits, tool timeouts, polling intervals, and rate limits
 - email behavior defaults such as folder names, attachment limits, and sent-folder behavior
 - filesystem paths, shared workspace behavior, and umask
-- calendar sync, private vdir storage, and managed-event policy
+- calendar enabled/disabled state, default provider, default alert minutes, and managed-event policy
 - artifact processing, ClamAV, prompt context paths, memory, notes, entities, workspace indexing, reminders, projects, deep research, heartbeat, sandbox, search, and fusion defaults
 
 **Every setting in this file can be overridden via environment variables in `.env`.** For normal deployments you should not need to edit this file — use `.env` for both secrets/identity and operational overrides. See [docs/env-overrides.md](env-overrides.md) for the complete list of available environment variable overrides.
@@ -199,7 +200,7 @@ Not all `.env` values are required. Here is a summary of fallback behavior when 
 | `ORG_INTERNAL_EMAIL_DOMAINS` | All recipients treated as external (footers always added) |
 | `EMAIL_ALLOWED_RECIPIENT_DOMAINS` | Only admin email is allowlisted for delivery |
 | `EMAIL_ACTIONABLE_SENDERS` | No inbound emails create new jobs (dashboard-only) |
-| `CALDAV_*` | Calendar features remain disabled |
+| `CALENDAR_*` | Calendar features remain disabled (no provider credentials detected) |
 | `IMAP_*` | Email polling disabled; agent operates in dashboard-only mode |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | SMTP connects without authentication (rare) |
 
@@ -242,41 +243,30 @@ curl http://localhost:8000/api/config/status
 
 This reports whether email, memory, reminder, calendar, file, command, search, fusion, terminal, admin, and LLM capabilities are available under the current configuration.
 
-## Calendar sync
+## Calendar providers
 
-Assistant calendar access is intentionally local-first:
-
-```text
-CalDAV provider <-> configured sync command <-> private vdir store <-> calendar gateway <-> assistant tools
-```
-
-The assistant does not receive the CalDAV password and does not write arbitrary `.ics` files. It can use `calendar_list_busy` and `calendar_list_events` through the gateway, and writes go through `calendar_create_event`, `calendar_update_event`, and `calendar_delete_event`.
-
-Writes are managed-only. Created events receive a stable assistant ID in the event description:
+Assistant connects directly to calendar APIs using OAuth 2.0. No local sync daemon or intermediate file store is required:
 
 ```text
---- Assistant Marker (do not remove) ---
-Assistant ID: <uuid>
+Google / Outlook / Zoho  <-->  CalendarRouter  <-->  assistant tools
 ```
 
-The gateway also still writes `X-ASSISTANT-*` properties for older clients. Update/delete operations match on that description marker first, then fall back to UID/`X-ASSISTANT-ID`. If a provider rewrites the UID or strips custom properties, the local database is updated to the new UID so later edits still work. Non-managed calendar events can contribute to free/busy results, but the gateway refuses to edit or delete them.
+The `CalendarRouter` dispatches all calendar operations to the appropriate provider based on the credentials found at startup. Multiple providers can be active simultaneously, and multiple accounts within a single provider are supported using numbered environment variable suffixes (e.g., `CALENDAR_GOOGLE_2_CLIENT_ID`).
 
-`agent.calendar.sync.before_read` now defaults to `true`, so `calendar_list_events` and `calendar_list_busy` pull remote changes before reading. `agent.calendar.cache.ttl_seconds` (default `45`) caches parsed `.ics` files, managed-event rows, and recent list results between those reads.
+Calendar tools are exposed when `CALENDAR_ENABLED=true` and at least one provider's client ID is present in the environment. No YAML changes are needed. Leave `CALENDAR_ENABLED` unset or `false` to keep calendar tools hidden even when credentials are present.
 
-Keep the vdir store under `/data/private/calendar/vdir` or another path outside `/data/share`; `/data/share` is visible through normal file tools. The default Compose setup mounts `./data/private/calendar` into the task-agent container for this purpose.
+### Write operations
 
-Configure calendar runtime behavior in `config/agent.yaml` under `agent.calendar`. Keep this block provider-neutral: enabled/disabled state, fixed sync command, local vdir path, default calendar collection, read-detail policy, and default alert minutes belong there. Put CalDAV account values in `.env`, and configure the sync tool to consume `CALDAV_URL`, `CALDAV_USERNAME`, and `CALDAV_PASSWORD`.
+Events created by the assistant are tracked in the `calendar_managed_events` database table (columns: `provider_name`, `provider_event_id`, `calendar_id`). Update and delete operations match only on managed events — the assistant refuses to edit or delete events it did not create. Non-managed events can contribute to free/busy results from `calendar_list_busy`.
 
-`agent.calendar.default_alert_minutes` sets how many minutes before each event the assistant adds a VALARM reminder to every `.ics` file it creates or updates. The default is `15`. Set it to `0` to suppress alerts entirely. Override it per-deployment with `AGENT_CALENDAR_DEFAULT_ALERT_MINUTES` in `.env`.
+### Default provider and alerts
 
-`CALENDAR_TIMEZONE` (or `agent.calendar.timezone` in YAML) sets the timezone used when writing `DTSTART`/`DTEND` values and the accompanying VTIMEZONE component into generated `.ics` files. When blank, it falls back to `AGENT_TIMEZONE`. Setting this correctly ensures events appear at the right local time on all calendar clients regardless of where their CalDAV server is hosted.
+`CALENDAR_DEFAULT_PROVIDER` (or `agent.calendar.default_provider` in YAML) sets which provider receives write operations when the agent does not specify one explicitly. When blank, the first discovered provider is used.
 
-The default Compose environment sets `VDIRSYNCER_CONFIG=/app/config/vdirsyncer/config`. That tracked config writes local events to `/data/private/calendar/vdir/default`, stores sync state in `/data/private/calendar/status`, and reads CalDAV account values from `CALDAV_URL`, `CALDAV_USERNAME`, and `CALDAV_PASSWORD`.
+`CALENDAR_DEFAULT_ALERT_MINUTES` (or `agent.calendar.default_alert_minutes` in YAML) sets how many minutes before each event the assistant requests a reminder alert. The default is `30`. Set it to `0` to suppress alerts. Override per-call with the `alert_minutes` parameter on `calendar_create_event` and `calendar_update_event`.
 
-When vdirsyncer detects that its configuration changed, such as after a CalDAV password rotation, the calendar gateway automatically runs discovery for the configured sync pair and retries the sync once. The local calendar name (`agent.calendar.store.default_calendar`, default `default`) is separate from the vdirsyncer pair name (`agent.calendar.sync.discovery_pair`, default `default_calendar`). This runs inside `task-agent` using the same environment and persistent `/data/private/calendar` volume, so rebuilding containers does not require a host-side command. Authentication failures such as HTTP 401 remain configuration errors and are reported without repeated discovery. If automatic discovery fails, the manual fallback is:
+`CALENDAR_TIMEZONE` (or `agent.calendar.timezone` in YAML) sets the timezone used for event date/time values. When blank, it falls back to `AGENT_TIMEZONE`.
 
-```bash
-docker compose exec task-agent vdirsyncer discover default_calendar
-```
+See [docs/calendar-providers.md](calendar-providers.md) for full OAuth setup instructions for Google Calendar, Microsoft Outlook, and Zoho Calendar, including how to obtain a refresh token and which scopes to request.
 
-To start fresh locally, `scripts/reset-databases.sh` clears calendar ownership/audit records with the database reset. Add `--discard-calendar-sync` when you also want to delete the local vdir files and vdirsyncer status. This does not delete remote calendar events.
+To start fresh, `scripts/reset-databases.sh` clears calendar ownership records with the database reset.

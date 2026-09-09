@@ -103,7 +103,13 @@ def fusion_configured(config: AppConfig) -> bool:
 
 
 def calendar_configured(config: AppConfig) -> bool:
-    return config.get_bool("agent.calendar.enabled", False) and is_set(config.get("agent.calendar.store.vdir_path"))
+    if not config.get_bool("agent.calendar.enabled", False):
+        return False
+    return (
+        is_set(os.getenv("CALENDAR_GOOGLE_CLIENT_ID"))
+        or is_set(os.getenv("CALENDAR_OUTLOOK_CLIENT_ID"))
+        or is_set(os.getenv("CALENDAR_ZOHO_CLIENT_ID"))
+    )
 
 
 def validate_role_config(role: str, config: AppConfig) -> list[str]:
@@ -204,22 +210,24 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
                 "calendar_sync",
                 "calendar_list_busy",
                 "calendar_list_events",
+                "calendar_list_calendars",
                 "calendar_create_event",
                 "calendar_update_event",
                 "calendar_delete_event",
             ]
             if calendar_configured(config)
             else [],
-            "store": {
-                "vdir_path": config.get("agent.calendar.store.vdir_path"),
-                "default_calendar": config.get("agent.calendar.store.default_calendar", "default"),
-            },
-            "sync": {
-                "command_configured": bool(config.get_list("agent.calendar.sync.command")),
-                "before_read": config.get_bool("agent.calendar.sync.before_read", True),
-                "before_write": config.get_bool("agent.calendar.sync.before_write", True),
-                "after_write": config.get_bool("agent.calendar.sync.after_write", True),
-            },
+            "providers": [
+                p
+                for p, var in (
+                    ("google", "CALENDAR_GOOGLE_CLIENT_ID"),
+                    ("outlook", "CALENDAR_OUTLOOK_CLIENT_ID"),
+                    ("zoho", "CALENDAR_ZOHO_CLIENT_ID"),
+                )
+                if is_set(os.getenv(var))
+            ],
+            "default_provider": os.getenv("CALENDAR_DEFAULT_PROVIDER") or config.get("agent.calendar.default_provider"),
+            "default_alert_minutes": config.get_int("agent.calendar.default_alert_minutes", 30),
             "policy": {
                 "allow_read_event_details": config.get_bool("agent.calendar.policy.allow_read_event_details", False),
                 "writes_managed_only": True,

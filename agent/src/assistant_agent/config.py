@@ -227,17 +227,18 @@ def load_config() -> AppConfig:
         # Calendar
         ("CALENDAR_ENABLED", "agent.calendar.enabled", bool),
         ("CALENDAR_TIMEZONE", "agent.calendar.timezone", str),
+        ("CALENDAR_DEFAULT_PROVIDER", "agent.calendar.default_provider", str),
+        ("CALENDAR_DEFAULT_ALERT_MINUTES", "agent.calendar.default_alert_minutes", int),
+
         ("AGENT_CALENDAR_DEFAULT_ALERT_MINUTES", "agent.calendar.default_alert_minutes", int),
-        ("AGENT_CALENDAR_SYNC_TIMEOUT_SECONDS", "agent.calendar.sync.timeout_seconds", int),
-        ("AGENT_CALENDAR_SYNC_DISCOVERY_PAIR", "agent.calendar.sync.discovery_pair", str),
-        ("AGENT_CALENDAR_SYNC_BEFORE_READ", "agent.calendar.sync.before_read", bool),
-        ("AGENT_CALENDAR_SYNC_BEFORE_WRITE", "agent.calendar.sync.before_write", bool),
-        ("AGENT_CALENDAR_SYNC_AFTER_WRITE", "agent.calendar.sync.after_write", bool),
-        ("AGENT_CALENDAR_STORE_VDIR_PATH", "agent.calendar.store.vdir_path", str),
-        ("AGENT_CALENDAR_STORE_DEFAULT_CALENDAR", "agent.calendar.store.default_calendar", str),
-        ("AGENT_CALENDAR_CACHE_TTL_SECONDS", "agent.calendar.cache.ttl_seconds", int),
         ("AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS", "agent.calendar.policy.allow_read_event_details", bool),
-        ("AGENT_CALENDAR_LIMITS_MAX_OCCURRENCES_PER_EVENT", "agent.calendar.limits.max_occurrences_per_event", int),
+        
+        # Calendar provider-specific settings
+        ("CALENDAR_GOOGLE_CALENDAR_ID", "agent.calendar.google.calendar_id", str),
+        ("CALENDAR_OUTLOOK_CALENDAR_ID", "agent.calendar.outlook.calendar_id", str),
+        ("CALENDAR_OUTLOOK_TENANT_ID", "agent.calendar.outlook.tenant_id", str),
+        ("CALENDAR_ZOHO_CALENDAR_ID", "agent.calendar.zoho.calendar_id", str),
+        ("CALENDAR_ZOHO_API_BASE", "agent.calendar.zoho.api_base", str),
         
         # Projects
         ("AGENT_PROJECTS_ENABLED", "agent.projects.enabled", bool),

@@ -97,7 +97,7 @@ Once you trigger a task, the agent works autonomously — using a full suite of 
 - **Persistent memory** — decisions, preferences, and context are remembered across sessions and injected into relevant jobs
 - **Private notes and contacts** — separate from memory; searchable on demand
 - **Semantic workspace** — a shared folder with full-text and semantic search, PDF/Office file extraction, format conversion
-- **Calendar** — read/write CalDAV access with strict managed-event rules (opt-in, disabled by default)
+- **Calendar** — read/write access to Google Calendar, Microsoft Outlook, and Zoho via OAuth, with strict managed-event rules (opt-in, disabled by default)
 
 ---
 
@@ -189,6 +189,7 @@ New here? Start with:
 
 - [docs/advanced-configuration.md](docs/advanced-configuration.md) — **start here** for tuning and integrations
 - [docs/configuration.md](docs/configuration.md) — full `.env` and `config/agent.yaml` reference
+- [docs/calendar-providers.md](docs/calendar-providers.md) — OAuth setup for Google, Outlook, and Zoho
 - [docs/security.md](docs/security.md) — threat model, hardening checklist, and reverse-proxy examples
 - [docs/docker-setup.md](docs/docker-setup.md) — image builds, Compose topology, networks, and mounts
 - [docs/running-assistant.md](docs/running-assistant.md) — local and server deployment guide

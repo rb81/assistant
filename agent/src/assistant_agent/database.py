@@ -1104,13 +1104,13 @@ CREATE INDEX IF NOT EXISTS reminders_job_id_idx ON reminders(job_id);
 
 CREATE TABLE IF NOT EXISTS calendar_managed_events (
   assistant_id text PRIMARY KEY,
-  uid text NOT NULL UNIQUE,
-  calendar_name text NOT NULL,
-  relative_path text NOT NULL,
+  provider_name text NOT NULL,
+  provider_event_id text NOT NULL,
+  calendar_id text NOT NULL,
+  calendar_name text NOT NULL DEFAULT '',
   summary text NOT NULL DEFAULT '',
   starts_at timestamptz NOT NULL,
   ends_at timestamptz NOT NULL,
-  file_hash text NOT NULL DEFAULT '',
   status text NOT NULL DEFAULT 'active',
   created_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
   updated_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
@@ -1120,12 +1120,13 @@ CREATE TABLE IF NOT EXISTS calendar_managed_events (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS provider_name text;
+ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS provider_event_id text;
+ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS calendar_id text;
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS calendar_name text NOT NULL DEFAULT '';
-ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS relative_path text NOT NULL DEFAULT '';
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS summary text NOT NULL DEFAULT '';
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS starts_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS ends_at timestamptz NOT NULL DEFAULT now();
-ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS file_hash text NOT NULL DEFAULT '';
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS created_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL;
 ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS updated_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL;
@@ -1134,9 +1135,11 @@ ALTER TABLE calendar_managed_events ADD COLUMN IF NOT EXISTS deleted_at timestam
 ALTER TABLE calendar_managed_events DROP CONSTRAINT IF EXISTS calendar_managed_events_status_check;
 ALTER TABLE calendar_managed_events ADD CONSTRAINT calendar_managed_events_status_check CHECK (status IN ('active', 'deleted'));
 
-CREATE UNIQUE INDEX IF NOT EXISTS calendar_managed_events_uid_unique_idx ON calendar_managed_events(uid);
+DROP INDEX IF EXISTS calendar_managed_events_uid_unique_idx;
 CREATE INDEX IF NOT EXISTS calendar_managed_events_status_starts_idx ON calendar_managed_events(status, starts_at);
+CREATE INDEX IF NOT EXISTS calendar_managed_events_provider_idx ON calendar_managed_events(provider_name, provider_event_id);
 CREATE INDEX IF NOT EXISTS calendar_managed_events_job_idx ON calendar_managed_events(created_by_job_id, updated_by_job_id);
+
 
 CREATE TABLE IF NOT EXISTS calendar_event_audit (
   id bigserial PRIMARY KEY,

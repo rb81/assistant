@@ -186,24 +186,24 @@ class ConfigTest(unittest.TestCase):
                 "AGENT_CONFIG": config_file.name,
                 "CALENDAR_ENABLED": "true",
                 "CALENDAR_TIMEZONE": "America/New_York",
-                "AGENT_CALENDAR_SYNC_DISCOVERY_PAIR": "custom_pair",
-                "CALENDAR_VDIR_PATH": "/tmp/should-not-apply",
-                "CALDAV_URL": "https://calendar-provider.example/.well-known/caldav",
-                "CALDAV_USERNAME": "user@example.com",
-                "CALDAV_PASSWORD": "secret",
+                "CALENDAR_DEFAULT_PROVIDER": "google",
+                "CALENDAR_DEFAULT_ALERT_MINUTES": "15",
+                "CALENDAR_GOOGLE_CLIENT_ID": "google-client-id",
+                "CALENDAR_GOOGLE_CLIENT_SECRET": "google-client-secret",
+                "CALENDAR_GOOGLE_REFRESH_TOKEN": "google-refresh-token",
             }
             with patch.dict(os.environ, env, clear=True):
                 config = load_config()
 
-        # CALENDAR_ENABLED and CALENDAR_TIMEZONE are supported overrides
         self.assertTrue(config.get_bool("agent.calendar.enabled", False))
         self.assertEqual(config.get("agent.calendar.timezone"), "America/New_York")
-        self.assertEqual(config.get("agent.calendar.sync.discovery_pair"), "custom_pair")
-        # But vdir_path and CALDAV_* are NOT mapped into agent config
-        self.assertIsNone(config.get("agent.calendar.store.vdir_path"))
-        self.assertIsNone(config.get("agent.calendar.provider.url"))
-        self.assertIsNone(config.get("agent.calendar.provider.username"))
-        self.assertIsNone(config.get("agent.calendar.provider.password"))
+        self.assertEqual(config.get("agent.calendar.default_provider"), "google")
+        self.assertEqual(config.get_int("agent.calendar.default_alert_minutes", 30), 15)
+        # Provider OAuth credentials are consumed by CalendarRouter from the
+        # environment; they are not copied into agent.yaml config paths.
+        self.assertIsNone(config.get("agent.calendar.google.client_id"))
+        self.assertIsNone(config.get("agent.calendar.providers"))
+
 
 
 if __name__ == "__main__":

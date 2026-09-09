@@ -581,19 +581,23 @@ class PollEndpointShapeTest(unittest.TestCase):
 
 
 class _PollStubDb:
-    def __init__(self, job: Optional[dict[str, Any]] = None) -> None:
-        self._job: Optional[dict[str, Any]] = job if job is not None else {
-            "id": 1,
-            "status": "running",
-            "last_error": None,
-            "task_summary": "test",
-            "updated_at": None,
-            "locked_at": None,
-            "attempts": 0,
-            "completed_at": None,
-            "metadata": {},
-            "thread_id": "thread-1",
-        }
+    def __init__(self, job: Any = ...) -> None:
+        if job is ...:
+            self._job: Optional[dict[str, Any]] = {
+                "id": 1,
+                "status": "running",
+                "last_error": None,
+                "task_summary": "test",
+                "updated_at": None,
+                "locked_at": None,
+                "attempts": 0,
+                "completed_at": None,
+                "metadata": {},
+                "thread_id": "thread-1",
+            }
+        else:
+            self._job = job
+
 
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
         if "FROM jobs" in sql:

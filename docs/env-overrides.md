@@ -289,21 +289,50 @@ AGENT_SANDBOX_ENABLED=false
 
 ## Calendar
 
+Calendar tools are activated by setting `CALENDAR_ENABLED=true` and providing OAuth credentials for at least one provider. The agent calls Google, Outlook, or Zoho APIs directly using refresh tokens.
+
+For full OAuth setup instructions see [docs/calendar-providers.md](calendar-providers.md).
+
+### Core settings
+
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `CALENDAR_ENABLED` | `agent.calendar.enabled` | bool | `false` |
 | `CALENDAR_TIMEZONE` | `agent.calendar.timezone` | string | _(empty, uses AGENT_TIMEZONE)_ |
-| `AGENT_CALENDAR_DEFAULT_ALERT_MINUTES` | `agent.calendar.default_alert_minutes` | int | `15` |
-| `AGENT_CALENDAR_SYNC_TIMEOUT_SECONDS` | `agent.calendar.sync.timeout_seconds` | int | `120` |
-| `AGENT_CALENDAR_SYNC_DISCOVERY_PAIR` | `agent.calendar.sync.discovery_pair` | string | `default_calendar` |
-| `AGENT_CALENDAR_SYNC_BEFORE_READ` | `agent.calendar.sync.before_read` | bool | `true` |
-| `AGENT_CALENDAR_SYNC_BEFORE_WRITE` | `agent.calendar.sync.before_write` | bool | `true` |
-| `AGENT_CALENDAR_SYNC_AFTER_WRITE` | `agent.calendar.sync.after_write` | bool | `true` |
-| `AGENT_CALENDAR_STORE_VDIR_PATH` | `agent.calendar.store.vdir_path` | string | `/data/private/calendar/vdir` |
-| `AGENT_CALENDAR_STORE_DEFAULT_CALENDAR` | `agent.calendar.store.default_calendar` | string | `default` |
-| `AGENT_CALENDAR_CACHE_TTL_SECONDS` | `agent.calendar.cache.ttl_seconds` | int | `45` |
+| `CALENDAR_DEFAULT_PROVIDER` | `agent.calendar.default_provider` | string | _(first configured provider)_ |
+| `CALENDAR_DEFAULT_ALERT_MINUTES` | `agent.calendar.default_alert_minutes` | int | `30` |
 | `AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS` | `agent.calendar.policy.allow_read_event_details` | bool | `false` |
-| `AGENT_CALENDAR_LIMITS_MAX_OCCURRENCES_PER_EVENT` | `agent.calendar.limits.max_occurrences_per_event` | int | `500` |
+
+### Google Calendar provider
+
+| Environment Variable | YAML Path | Description |
+|---|---|---|
+| `CALENDAR_GOOGLE_CLIENT_ID` | _(env only)_ | OAuth 2.0 client ID |
+| `CALENDAR_GOOGLE_CLIENT_SECRET` | _(env only)_ | OAuth 2.0 client secret |
+| `CALENDAR_GOOGLE_REFRESH_TOKEN` | _(env only)_ | Long-lived refresh token |
+| `CALENDAR_GOOGLE_CALENDAR_ID` | `agent.calendar.google.calendar_id` | Calendar to use (default: `primary`) |
+
+For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE_2_CLIENT_SECRET` / `CALENDAR_GOOGLE_2_REFRESH_TOKEN` (and optionally `CALENDAR_GOOGLE_2_CALENDAR_ID`). Repeat with suffix `_3`, `_4`, etc.
+
+### Microsoft Outlook / Microsoft 365 provider
+
+| Environment Variable | YAML Path | Description |
+|---|---|---|
+| `CALENDAR_OUTLOOK_CLIENT_ID` | _(env only)_ | Azure app (client) ID |
+| `CALENDAR_OUTLOOK_CLIENT_SECRET` | _(env only)_ | Azure client secret |
+| `CALENDAR_OUTLOOK_REFRESH_TOKEN` | _(env only)_ | Long-lived refresh token |
+| `CALENDAR_OUTLOOK_TENANT_ID` | `agent.calendar.outlook.tenant_id` | Azure tenant ID (default: `common`) |
+| `CALENDAR_OUTLOOK_CALENDAR_ID` | `agent.calendar.outlook.calendar_id` | Calendar to use (default: `default`) |
+
+### Zoho Calendar provider
+
+| Environment Variable | YAML Path | Description |
+|---|---|---|
+| `CALENDAR_ZOHO_CLIENT_ID` | _(env only)_ | Zoho OAuth client ID |
+| `CALENDAR_ZOHO_CLIENT_SECRET` | _(env only)_ | Zoho OAuth client secret |
+| `CALENDAR_ZOHO_REFRESH_TOKEN` | _(env only)_ | Long-lived refresh token |
+| `CALENDAR_ZOHO_API_BASE` | `agent.calendar.zoho.api_base` | API base URL for regional data centers (default: `https://calendar.zoho.com/api/v1`) |
+| `CALENDAR_ZOHO_CALENDAR_ID` | `agent.calendar.zoho.calendar_id` | Calendar UID to use (default: `default`) |
 
 ---
 

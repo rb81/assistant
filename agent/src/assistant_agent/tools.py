@@ -21,7 +21,7 @@ from markdown_it import MarkdownIt
 from psycopg.types.json import Jsonb
 
 from .artifact_processor import public_artifact_manifest, public_attachment_metadata
-from .calendar_gateway import CalendarError, CalendarGateway
+from .calendar import CalendarError, CalendarRouter
 from .config import AppConfig, agent_email, agent_name, message_id_domain
 from .contact_store import ContactStore
 from .context_store import ContextStore
@@ -106,6 +106,7 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
     "Calendar": {
         "tools": {
             "calendar_sync", "calendar_list_busy", "calendar_list_events",
+            "calendar_list_calendars",
             "calendar_create_event", "calendar_update_event", "calendar_delete_event",
         },
         "text": (
@@ -2367,7 +2368,7 @@ class ToolRuntime:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).sync("manual")
+            return CalendarRouter(self.db, self.config, self.job).sync("manual")
         except CalendarError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -2375,7 +2376,7 @@ class ToolRuntime:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).list_busy(start, end, include_details=include_details)
+            return CalendarRouter(self.db, self.config, self.job).list_busy(start, end, include_details=include_details)
         except (CalendarError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
 
@@ -2383,8 +2384,16 @@ class ToolRuntime:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).list_events(start, end, managed_only=managed_only)
+            return CalendarRouter(self.db, self.config, self.job).list_events(start, end, managed_only=managed_only)
         except (CalendarError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    def calendar_list_calendars(self) -> dict[str, Any]:
+        if not self.config.get_bool("agent.calendar.enabled", False):
+            raise ToolError("calendar tools are disabled")
+        try:
+            return CalendarRouter(self.db, self.config, self.job).list_provider_calendars()
+        except CalendarError as exc:
             raise ToolError(str(exc)) from exc
 
     def calendar_create_event(
@@ -2392,28 +2401,30 @@ class ToolRuntime:
         title: str,
         start: str,
         end: str,
-        calendar: Optional[str] = None,
+        provider: Optional[str] = None,
         description: str = "",
         location: str = "",
         all_day: bool = False,
-        transparency: str = "OPAQUE",
+        transparency: str = "opaque",
         attendees: Optional[list[str]] = None,
+        alert_minutes: Optional[int] = None,
         metadata: Optional[dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).create_event(
+            return CalendarRouter(self.db, self.config, self.job).create_event(
                 title=title,
                 start=start,
                 end=end,
-                calendar=calendar,
+                provider=provider,
                 description=description,
                 location=location,
                 all_day=all_day,
                 transparency=transparency,
                 attendees=attendees,
+                alert_minutes=alert_minutes,
                 metadata=metadata,
                 idempotency_key=idempotency_key,
             )
@@ -2431,12 +2442,13 @@ class ToolRuntime:
         all_day: Optional[bool] = None,
         transparency: Optional[str] = None,
         attendees: Optional[list[str]] = None,
+        alert_minutes: Optional[int] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).update_event(
+            return CalendarRouter(self.db, self.config, self.job).update_event(
                 event_id=event_id,
                 title=title,
                 start=start,
@@ -2446,6 +2458,7 @@ class ToolRuntime:
                 all_day=all_day,
                 transparency=transparency,
                 attendees=attendees,
+                alert_minutes=alert_minutes,
                 metadata=metadata,
             )
         except (CalendarError, ValueError) as exc:
@@ -2455,7 +2468,7 @@ class ToolRuntime:
         if not self.config.get_bool("agent.calendar.enabled", False):
             raise ToolError("calendar tools are disabled")
         try:
-            return CalendarGateway(self.db, self.config, self.job).delete_event(event_id)
+            return CalendarRouter(self.db, self.config, self.job).delete_event(event_id)
         except CalendarError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -2515,6 +2528,7 @@ class ToolRuntime:
             "calendar_sync": self.calendar_sync,
             "calendar_list_busy": self.calendar_list_busy,
             "calendar_list_events": self.calendar_list_events,
+            "calendar_list_calendars": self.calendar_list_calendars,
             "calendar_create_event": self.calendar_create_event,
             "calendar_update_event": self.calendar_update_event,
             "calendar_delete_event": self.calendar_delete_event,
@@ -3304,7 +3318,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_sync",
-            "description": "Run the configured local calendar sync command. The command is fixed in configuration; this tool cannot choose arbitrary commands.",
+            "description": "Trigger a refresh from all configured calendar API providers. Fetches the latest event data from Google, Outlook, and/or Zoho Calendar so that subsequent list calls return up-to-date results.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -3312,7 +3326,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_list_busy",
-            "description": "List busy windows from the local calendar store for a time range. Reads sync first unless disabled. Non-managed event details are redacted unless calendar detail reading is explicitly enabled in configuration.",
+            "description": "List busy windows from all configured calendar providers for a time range. Non-managed event details are redacted unless calendar detail reading is explicitly enabled in configuration.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3332,7 +3346,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_list_events",
-            "description": "List calendar events from the local store. Reads sync first unless disabled. Use managed_only=true when preparing to update or delete an event created by the assistant. Managed events stay identifiable even if a provider rewrites the UID.",
+            "description": "List calendar events from all configured providers. Use managed_only=true when preparing to update or delete an event created by the assistant.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3351,36 +3365,48 @@ FUNCTION_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "calendar_list_calendars",
+            "description": "List all discovered calendars for each configured provider. Use this for diagnostics (for example, confirming the Zoho calendar UID in use).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "calendar_create_event",
-            "description": "Create an assistant-managed event in the local calendar store. The gateway records ownership and writes a description marker before syncing.",
+            "description": "Create an assistant-managed event via a configured calendar provider. The router records ownership and tracks the provider event ID so the event can be updated or deleted later.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "start": {"type": "string", "description": "ISO 8601 start time, or YYYY-MM-DD for all-day events."},
                     "end": {"type": "string", "description": "ISO 8601 end time, or exclusive YYYY-MM-DD for all-day events."},
-                    "calendar": {
+                    "provider": {
                         "type": "string",
-                        "description": "Optional local calendar collection name. Omit to use the configured default.",
+                        "description": "Optional provider name: google, outlook, or zoho. Omit to use the configured default provider.",
                     },
                     "description": {"type": "string"},
                     "location": {"type": "string"},
                     "all_day": {"type": "boolean", "default": False},
                     "transparency": {
                         "type": "string",
-                        "enum": ["OPAQUE", "TRANSPARENT"],
-                        "default": "OPAQUE",
-                        "description": "OPAQUE blocks time; TRANSPARENT does not.",
+                        "enum": ["opaque", "transparent"],
+                        "default": "opaque",
+                        "description": "opaque blocks time; transparent does not.",
                     },
                     "attendees": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional list of attendee email addresses to invite to the event.",
                     },
+                    "alert_minutes": {
+                        "type": "integer",
+                        "description": "Optional reminder alert in minutes before the event. Omit to use the provider or configuration default.",
+                    },
                     "metadata": {"type": "object"},
                     "idempotency_key": {
                         "type": "string",
-                        "description": "Stable key for this event intent within the local calendar gateway. Reuse only when retrying the same create.",
+                        "description": "Stable key for this event intent within the current job. Reuse only when retrying the same create.",
                     },
                 },
                 "required": ["title", "start", "end"],
@@ -3391,7 +3417,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_update_event",
-            "description": "Update an assistant-managed event. The gateway refuses events not recorded as assistant-managed and not carrying the managed marker.",
+            "description": "Update an assistant-managed calendar event. The router refuses events not previously created and recorded by the assistant.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3402,11 +3428,15 @@ FUNCTION_TOOLS = [
                     "description": {"type": "string"},
                     "location": {"type": "string"},
                     "all_day": {"type": "boolean"},
-                    "transparency": {"type": "string", "enum": ["OPAQUE", "TRANSPARENT"]},
+                    "transparency": {"type": "string", "enum": ["opaque", "transparent"]},
                     "attendees": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional list of attendee email addresses. Replaces existing attendees if provided.",
+                    },
+                    "alert_minutes": {
+                        "type": "integer",
+                        "description": "Optional reminder alert in minutes before the event.",
                     },
                     "metadata": {"type": "object"},
                 },
@@ -3418,7 +3448,7 @@ FUNCTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "calendar_delete_event",
-            "description": "Delete an assistant-managed event. The gateway refuses anything that was not created and recorded by the assistant.",
+            "description": "Delete an assistant-managed calendar event via the provider API. The router refuses anything not previously created and recorded by the assistant.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3545,6 +3575,7 @@ CALENDAR_TOOL_NAMES = {
     "calendar_sync",
     "calendar_list_busy",
     "calendar_list_events",
+    "calendar_list_calendars",
     "calendar_create_event",
     "calendar_update_event",
     "calendar_delete_event",
@@ -3727,12 +3758,13 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "deep_research_request": "Start a guided iterative research run.",
         "deep_research_status": "Inspect linked deep research progress/results.",
         "command_execute": "Run a command in the sandbox container.",
-        "calendar_sync": "Run the configured local calendar sync command.",
-        "calendar_list_busy": "List busy windows from the local calendar store.",
-        "calendar_list_events": "List events from the local calendar store.",
-        "calendar_create_event": "Create an assistant-managed local calendar event.",
-        "calendar_update_event": "Update an assistant-managed local calendar event.",
-        "calendar_delete_event": "Delete an assistant-managed local calendar event.",
+        "calendar_sync": "Fetch the latest event data from all configured calendar API providers.",
+        "calendar_list_busy": "List busy windows from all configured calendar providers.",
+        "calendar_list_events": "List events from all configured calendar providers.",
+        "calendar_list_calendars": "List all provider calendars (IDs and names) for diagnostics and configuration checks.",
+        "calendar_create_event": "Create an assistant-managed event via a calendar API provider.",
+        "calendar_update_event": "Update an assistant-managed calendar event via the provider API.",
+        "calendar_delete_event": "Delete an assistant-managed calendar event via the provider API.",
         "context_search": "Semantic search across all data sources (jobs, reminders, emails, memories, notes, contacts, projects).",
         "job_search": "Search past jobs by keyword with optional status filter.",
         "job_read": "Read full details of a past job by ID.",

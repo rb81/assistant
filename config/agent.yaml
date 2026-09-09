@@ -218,25 +218,24 @@ agent:
   calendar:
     enabled: false
     timezone:
-    default_alert_minutes: 15
-    sync:
-      command:
-        - vdirsyncer
-        - sync
-      timeout_seconds: 120
-      discovery_pair: default_calendar
-      before_read: true
-      before_write: true
-      after_write: true
-    store:
-      vdir_path: /data/private/calendar/vdir
-      default_calendar: default
-    cache:
-      ttl_seconds: 45
+    # Default provider when not specified per-call (google, outlook, or zoho).
+    # Override via CALENDAR_DEFAULT_PROVIDER env var.
+    default_provider:
+    # Default reminder alert in minutes before an event. Override via
+    # CALENDAR_DEFAULT_ALERT_MINUTES env var.
+    default_alert_minutes: 30
     policy:
       allow_read_event_details: false
-    limits:
-      max_occurrences_per_event: 500
+    # Provider-specific settings. OAuth credentials must be set via .env;
+    # calendar_id and regional options can be set here or overridden via env vars.
+    google:
+      calendar_id:
+    outlook:
+      calendar_id:
+      tenant_id:
+    zoho:
+      calendar_id:
+      api_base:
 
   projects:
     enabled: true

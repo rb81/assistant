@@ -205,30 +205,43 @@ See [docs/concurrent-job-processing.md](concurrent-job-processing.md) for scalin
 
 ## Calendar Integration
 
-Calendar access is disabled by default. To enable:
-
-1. Set in `.env`:
+Calendar access is disabled by default. To enable, add OAuth credentials for at least one provider to `.env`:
 
 ```env
 CALENDAR_ENABLED=true
-CALDAV_URL=https://your-caldav-provider/.well-known/caldav
-CALDAV_USERNAME=you@example.com
-CALDAV_PASSWORD=your-password
+
+# Google Calendar (see docs/calendar-providers.md for how to obtain these)
+CALENDAR_GOOGLE_CLIENT_ID=your-client-id
+CALENDAR_GOOGLE_CLIENT_SECRET=your-client-secret
+CALENDAR_GOOGLE_REFRESH_TOKEN=your-refresh-token
+
+# Optional: set the default timezone for event creation
 CALENDAR_TIMEZONE=America/New_York
 ```
 
-2. Enable in `config/agent.yaml`:
+Calendar tools are activated when `CALENDAR_ENABLED=true` and at least one provider's `*_CLIENT_ID` / `*_CLIENT_SECRET` / `*_REFRESH_TOKEN` are present. No YAML editing is needed.
+
+Optional `.env` tuning:
+
+```env
+CALENDAR_DEFAULT_PROVIDER=google          # Which provider to use when not specified per-call
+CALENDAR_DEFAULT_ALERT_MINUTES=30         # Reminder alert before each created event (0 to disable)
+```
+
+Or set them in `config/agent.yaml`:
 
 ```yaml
 agent:
   calendar:
     enabled: true
     timezone: America/New_York
+    default_provider: google
+    default_alert_minutes: 30
     policy:
-      allow_read_event_details: false   # Set true to let the agent read event contents
+      allow_read_event_details: false   # Set true to let the agent read event titles/descriptions
 ```
 
-See [docs/configuration.md](configuration.md#calendar-sync) for the full CalDAV setup.
+See [docs/calendar-providers.md](calendar-providers.md) for step-by-step OAuth setup for Google Calendar, Microsoft Outlook, and Zoho Calendar.
 
 ---
 
@@ -293,7 +306,7 @@ All runtime state lives under `./data`:
 ```
 ./data/postgres        — PostgreSQL database
 ./data/share           — Shared workspace (visible to agent and UI)
-./data/private/        — Inbound artifacts, calendar vdir
+./data/private/        — Inbound artifacts and private storage
 ./data/ollama          — Ollama model cache
 ./data/clamav          — ClamAV virus definitions
 ```
@@ -305,6 +318,7 @@ To back up or migrate, stop the stack (`docker compose down`) and copy `./data`.
 ## Further Reading
 
 - [docs/configuration.md](configuration.md) — full `.env` and `config/agent.yaml` reference
+- [docs/calendar-providers.md](calendar-providers.md) — OAuth setup for Google, Outlook, and Zoho calendar providers
 - [docs/security.md](security.md) — threat model, hardening checklist, reverse proxy examples
 - [docs/docker-setup.md](docker-setup.md) — Compose topology, networks, and volume mounts
 - [docs/running-assistant.md](running-assistant.md) — local and server deployment guide

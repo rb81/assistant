@@ -68,8 +68,8 @@ def calendar_enabled_config(temp_dir: str) -> AppConfig:
             "agent": {
                 "calendar": {
                     "enabled": True,
-                    "store": {"vdir_path": str(Path(temp_dir) / "calendar" / "vdir"), "default_calendar": "main"},
-                    "sync": {"command": [], "before_read": False, "before_write": False, "after_write": False},
+                    "default_provider": "google",
+                    "default_alert_minutes": 30,
                 },
                 "filesystem": {"shared_root": temp_dir, "require_mount": False},
                 "tool_result_cache": {"enabled": True, "root": ".cache/tool-results", "min_bytes": 100},
@@ -78,6 +78,7 @@ def calendar_enabled_config(temp_dir: str) -> AppConfig:
             }
         }
     )
+
 
 
 class FakeReminderDatabase:
@@ -300,25 +301,43 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
     def test_calendar_tools_are_loadable_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = calendar_enabled_config(temp_dir)
-            available = available_function_names(config, {"id": 7, "thread_id": "thread"})
+            env = {"CALENDAR_GOOGLE_CLIENT_ID": "test-google-client-id"}
+            with patch.dict(os.environ, env, clear=False):
+                available = available_function_names(config, {"id": 7, "thread_id": "thread"})
+                self.assertIn("calendar_list_busy", available)
+                self.assertIn("calendar_create_event", tool_catalog(config, {"id": 7, "thread_id": "thread"}))
+                self.assertIn("calendar_list_calendars", available)
 
-            self.assertIn("calendar_list_busy", available)
-            self.assertIn("calendar_create_event", tool_catalog(config, {"id": 7, "thread_id": "thread"}))
+                agent = TaskAgent.__new__(TaskAgent)
+                agent.config = config
+                enabled: set[str] = set()
+                result = agent.load_tool_specs(
+                    {"id": 7, "thread_id": "thread"},
+                    {
+                        "tools": [
+                            "calendar_list_busy",
+                            "calendar_list_calendars",
+                            "calendar_create_event",
+                            "calendar_update_event",
+                            "calendar_delete_event",
+                        ]
+                    },
+                    enabled,
+                )
 
-            agent = TaskAgent.__new__(TaskAgent)
-            agent.config = config
-            enabled: set[str] = set()
-            result = agent.load_tool_specs(
-                {"id": 7, "thread_id": "thread"},
-                {"tools": ["calendar_list_busy", "calendar_create_event", "calendar_update_event", "calendar_delete_event"]},
-                enabled,
-            )
+                self.assertEqual(
+                    result["loaded"],
+                    [
+                        "calendar_create_event",
+                        "calendar_delete_event",
+                        "calendar_list_busy",
+                        "calendar_list_calendars",
+                        "calendar_update_event",
+                    ],
+                )
+                self.assertIn("calendar_delete_event", enabled)
+                self.assertIn("calendar_list_calendars", enabled)
 
-            self.assertEqual(
-                result["loaded"],
-                ["calendar_create_event", "calendar_delete_event", "calendar_list_busy", "calendar_update_event"],
-            )
-            self.assertIn("calendar_delete_event", enabled)
 
     def test_contact_tools_create_search_update_and_delete_contacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
