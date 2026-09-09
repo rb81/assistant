@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 
 from ..config import AppConfig
 from ..database import json_safe
-from ..time_utils import parse_datetime
+from ..time_utils import local_datetime_iso, parse_datetime
 from .models import (
     BusyWindow,
     Calendar,
@@ -245,8 +245,8 @@ class CalendarRouter:
                 is_managed = bool(assistant_id) and assistant_id in managed_ids
 
                 item: dict[str, Any] = {
-                    "start": w.start.isoformat(),
-                    "end": w.end.isoformat(),
+                    "start": local_datetime_iso(w.start, self._config),
+                    "end": local_datetime_iso(w.end, self._config),
                     "provider": w.provider_name,
                     "calendar_id": w.calendar_id,
                     "all_day": w.all_day,
@@ -261,8 +261,8 @@ class CalendarRouter:
 
         busy.sort(key=lambda x: (x["start"], x["end"], x["provider"]))
         return {
-            "start": range_start.isoformat(),
-            "end": range_end.isoformat(),
+            "start": local_datetime_iso(range_start, self._config),
+            "end": local_datetime_iso(range_end, self._config),
             "busy": busy,
             "providers": list(self._providers.keys()),
         }
@@ -303,8 +303,8 @@ class CalendarRouter:
                     "provider": ev.provider_name,
                     "calendar_id": ev.calendar_id,
                     "provider_event_id": ev.provider_event_id,
-                    "start": ev.start.isoformat(),
-                    "end": ev.end.isoformat(),
+                    "start": local_datetime_iso(ev.start, self._config),
+                    "end": local_datetime_iso(ev.end, self._config),
                     "all_day": ev.all_day,
                     "managed": is_managed,
                     "status": ev.status,
@@ -325,8 +325,8 @@ class CalendarRouter:
 
         events.sort(key=lambda x: (x["start"], x["end"], x["provider"]))
         return {
-            "start": range_start.isoformat(),
-            "end": range_end.isoformat(),
+            "start": local_datetime_iso(range_start, self._config),
+            "end": local_datetime_iso(range_end, self._config),
             "events": events,
             "providers": list(self._providers.keys()),
         }
@@ -735,14 +735,16 @@ class CalendarRouter:
     def _public_row(self, row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
         if row is None:
             return None
+        starts_at = row.get("starts_at")
+        ends_at = row.get("ends_at")
         return {
             "event_id": row.get("assistant_id"),
             "provider": row.get("provider_name"),
             "provider_event_id": row.get("provider_event_id"),
             "calendar_id": row.get("calendar_id"),
             "title": row.get("summary"),
-            "start": row["starts_at"].isoformat() if hasattr(row.get("starts_at"), "isoformat") else row.get("starts_at"),
-            "end": row["ends_at"].isoformat() if hasattr(row.get("ends_at"), "isoformat") else row.get("ends_at"),
+            "start": local_datetime_iso(starts_at, self._config) if hasattr(starts_at, "isoformat") else starts_at,
+            "end": local_datetime_iso(ends_at, self._config) if hasattr(ends_at, "isoformat") else ends_at,
             "status": row.get("status"),
             "metadata": row.get("metadata") or {},
         }
