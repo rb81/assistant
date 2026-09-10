@@ -95,17 +95,35 @@ def test_create_event_sends_eventdata_in_query_params_not_body() -> None:
 def test_update_event_sends_eventdata_in_query_params_not_body() -> None:
     provider = _provider()
     captured = {}
+    call_count = [0]
 
     def fake_request(method, path, params=None, body=None, retry_on_auth=True):
+        call_count[0] += 1
         captured["method"] = method
         captured["path"] = path
         captured["params"] = params
         captured["body"] = body
+        # First call is get_event (to fetch etag), second is the PUT
+        if call_count[0] == 1:
+            return {
+                "events": [
+                    {
+                        "uid": "evt-1@zoho.com",
+                        "title": "Original",
+                        "etag": 1500551360550,
+                        "dateandtime": {
+                            "start": "20260910T090000Z",
+                            "end": "20260910T100000Z",
+                        },
+                    }
+                ]
+            }
         return {
             "events": [
                 {
                     "uid": "evt-1@zoho.com",
                     "title": "Updated",
+                    "etag": 1500551360551,
                     "dateandtime": {
                         "start": "20260910T090000Z",
                         "end": "20260910T100000Z",
@@ -131,7 +149,13 @@ def test_update_event_sends_eventdata_in_query_params_not_body() -> None:
     assert captured["method"] == "PUT"
     assert captured["path"] == "/calendars/calendar-uid-1/events/evt-1%40zoho.com"
     assert captured["body"] is None
-    assert captured["params"] == {"eventdata": '{"title":"Updated"}'}
+    # Zoho now requires etag and dateandtime in all updates
+    import json
+    eventdata = json.loads(captured["params"]["eventdata"])
+    assert eventdata["title"] == "Updated"
+    assert eventdata["etag"] == 1500551360550
+    assert "dateandtime" in eventdata
+    assert eventdata["dateandtime"]["start"] == "20260910T090000Z"
 
 
 def test_default_calendar_alias_resolves_to_primary_uid() -> None:

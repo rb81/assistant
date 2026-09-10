@@ -201,6 +201,16 @@ class ZohoCalendarProvider:
         existing: CalendarEvent,
     ) -> CalendarEvent:
         resolved_calendar_id = self._resolved_calendar_id(calendar_id)
+        
+        # Fetch current event to get the required etag
+        current = self.get_event(calendar_id, provider_event_id)
+        current_data = self._get(
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id))
+        )
+        current_etag = (current_data.get("events") or [{}])[0].get("etag")
+        if not current_etag:
+            raise CalendarError("Zoho Calendar event missing required etag for update")
+        
         event_data: dict[str, Any] = {}
 
         if request.title is not None:
@@ -215,12 +225,16 @@ class ZohoCalendarProvider:
         next_all_day = request.all_day if request.all_day is not None else existing.all_day
         next_start = request.start if request.start is not None else existing.start
         next_end = request.end if request.end is not None else existing.end
-        if request.start is not None or request.end is not None or request.all_day is not None:
-            event_data["dateandtime"] = {
-                "start": _dt_to_zoho(next_start, next_all_day),
-                "end": _dt_to_zoho(next_end, next_all_day),
-                "timezone": "UTC",
-            }
+        
+        # Zoho requires dateandtime for all updates
+        event_data["dateandtime"] = {
+            "start": _dt_to_zoho(next_start, next_all_day),
+            "end": _dt_to_zoho(next_end, next_all_day),
+            "timezone": "UTC",
+        }
+        
+        # Zoho requires etag for all updates
+        event_data["etag"] = current_etag
 
         if request.attendees is not None:
             event_data["attendees"] = [{"email": e} for e in request.attendees]
@@ -232,9 +246,6 @@ class ZohoCalendarProvider:
                 ]
             else:
                 event_data["reminders"] = []
-
-        if not event_data:
-            return self.get_event(calendar_id, provider_event_id)
 
         params = {"eventdata": json.dumps(event_data, separators=(",", ":"))}
         data = self._put(
@@ -249,8 +260,28 @@ class ZohoCalendarProvider:
 
     def delete_event(self, calendar_id: str, provider_event_id: str) -> None:
         resolved_calendar_id = self._resolved_calendar_id(calendar_id)
-        self._delete(
+        
+        # Fetch current event to get the required etag and uid
+        current_data = self._get(
             "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id))
+        )
+        current_event = (current_data.get("events") or [{}])[0]
+        current_etag = current_event.get("etag")
+        current_uid = current_event.get("uid") or current_event.get("id")
+        
+        if not current_etag or not current_uid:
+            raise CalendarError("Zoho Calendar event missing required etag or uid for delete")
+        
+        # Zoho requires uid and etag in eventdata for delete
+        event_data = {
+            "uid": current_uid,
+            "etag": current_etag,
+        }
+        params = {"eventdata": json.dumps(event_data, separators=(",", ":"))}
+        
+        self._request("DELETE", 
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id)),
+            params=params
         )
 
     def get_event(self, calendar_id: str, provider_event_id: str) -> CalendarEvent:
