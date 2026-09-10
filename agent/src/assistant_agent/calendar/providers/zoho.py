@@ -205,7 +205,7 @@ class ZohoCalendarProvider:
         # Fetch current event to get the required etag
         current = self.get_event(calendar_id, provider_event_id)
         current_data = self._get(
-            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id))
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc_event_id(provider_event_id))
         )
         current_etag = (current_data.get("events") or [{}])[0].get("etag")
         if not current_etag:
@@ -249,7 +249,7 @@ class ZohoCalendarProvider:
 
         params = {"eventdata": json.dumps(event_data, separators=(",", ":"))}
         data = self._put(
-            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id)),
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc_event_id(provider_event_id)),
             params=params,
         )
         updated = (data.get("events") or [{}])[0]
@@ -263,7 +263,7 @@ class ZohoCalendarProvider:
         
         # Fetch current event to get the required etag and uid
         current_data = self._get(
-            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id))
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc_event_id(provider_event_id))
         )
         current_event = (current_data.get("events") or [{}])[0]
         current_etag = current_event.get("etag")
@@ -280,14 +280,14 @@ class ZohoCalendarProvider:
         params = {"eventdata": json.dumps(event_data, separators=(",", ":"))}
         
         self._request("DELETE", 
-            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id)),
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc_event_id(provider_event_id)),
             params=params
         )
 
     def get_event(self, calendar_id: str, provider_event_id: str) -> CalendarEvent:
         resolved_calendar_id = self._resolved_calendar_id(calendar_id)
         data = self._get(
-            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc(provider_event_id))
+            "/calendars/%s/events/%s" % (_enc(resolved_calendar_id), _enc_event_id(provider_event_id))
         )
         items = data.get("events") or []
         if not items:
@@ -499,3 +499,14 @@ class ZohoCalendarProvider:
 def _enc(value: str) -> str:
     """URL-encode a path segment."""
     return quote(value, safe="")
+
+
+def _enc_event_id(value: str) -> str:
+    """URL-encode a Zoho event UID path segment.
+
+    Zoho event UIDs are RFC 5545-style identifiers such as
+    ``c1f11429314c4a92850552db424194fb@zoho.com``. Percent-encoding the
+    ``@`` as ``%40`` causes Zoho to return resource-not-found for GET/PUT/
+    DELETE, so ``@`` is left unescaped.
+    """
+    return quote(value, safe="@")

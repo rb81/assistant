@@ -103,8 +103,8 @@ def test_update_event_sends_eventdata_in_query_params_not_body() -> None:
         captured["path"] = path
         captured["params"] = params
         captured["body"] = body
-        # First call is get_event (to fetch etag), second is the PUT
-        if call_count[0] == 1:
+        # GET fetches the current event/etag; PUT applies the update.
+        if method == "GET":
             return {
                 "events": [
                     {
@@ -147,7 +147,7 @@ def test_update_event_sends_eventdata_in_query_params_not_body() -> None:
         provider.update_event("calendar-uid-1", "evt-1@zoho.com", request, existing_event)
 
     assert captured["method"] == "PUT"
-    assert captured["path"] == "/calendars/calendar-uid-1/events/evt-1%40zoho.com"
+    assert captured["path"] == "/calendars/calendar-uid-1/events/evt-1@zoho.com"
     assert captured["body"] is None
     # Zoho now requires etag and dateandtime in all updates
     import json

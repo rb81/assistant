@@ -71,11 +71,11 @@ def test_delete_event_fetches_etag_and_sends_eventdata() -> None:
 
     # Verify GET was called first
     assert captured["call_1_method"] == "GET"
-    assert captured["call_1_path"] == "/calendars/calendar-uid-1/events/evt-delete%40zoho.com"
+    assert captured["call_1_path"] == "/calendars/calendar-uid-1/events/evt-delete@zoho.com"
     
     # Verify DELETE was called with eventdata containing uid + etag
     assert captured["call_2_method"] == "DELETE"
-    assert captured["call_2_path"] == "/calendars/calendar-uid-1/events/evt-delete%40zoho.com"
+    assert captured["call_2_path"] == "/calendars/calendar-uid-1/events/evt-delete@zoho.com"
     
     import json
     eventdata = json.loads(captured["call_2_params"]["eventdata"])
