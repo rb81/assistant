@@ -920,6 +920,10 @@ class TaskAgent:
             tool = row.get("tool_name")
             output = row.get("output_data") or {}
             input_data = row.get("input_data") or {}
+            if not isinstance(output, dict):
+                output = {}
+            if not isinstance(input_data, dict):
+                input_data = {}
             line = ""
             if event_type == "tool_result" and tool == "reminder_create":
                 reminder = output.get("reminder")
@@ -945,20 +949,28 @@ class TaskAgent:
                 line = "%s workspace file %s" % (action, path)
             elif event_type == "tool_result" and tool in {"contact_create", "contact_update", "contact_delete"}:
                 contact = output.get("contact") or output.get("deleted") or {}
+                if not isinstance(contact, dict):
+                    contact = {}
                 label = self.contact_action_label(contact, input_data)
                 action = {"contact_create": "Created", "contact_update": "Updated", "contact_delete": "Deleted"}.get(str(tool), "Changed")
                 line = "%s contact #%s %s" % (action, contact.get("id") or input_data.get("contact_id") or "?", label)
             elif event_type == "tool_result" and tool == "project_create":
                 project = output.get("project") or {}
+                if not isinstance(project, dict):
+                    project = {}
                 line = "Started project #%s %r" % (project.get("id") or "?", project.get("title") or input_data.get("title") or "")
             elif event_type == "tool_result" and tool == "deep_research_request":
                 run = output.get("deep_research_run") or {}
+                if not isinstance(run, dict):
+                    run = {}
                 line = "Started deep research run #%s %r" % (
                     run.get("id") or "?",
                     run.get("title") or input_data.get("research_question") or input_data.get("question") or "",
                 )
             elif event_type == "tool_result" and tool in {"calendar_create_event", "calendar_update_event", "calendar_delete_event"}:
                 event = output.get("event") or {}
+                if not isinstance(event, dict):
+                    event = {}
                 action = {
                     "calendar_create_event": "Created",
                     "calendar_update_event": "Updated",

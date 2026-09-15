@@ -329,6 +329,24 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         self.assertIn("Created reminder #1", content)
         self.assertIn("Do not repeat durable side effects", content)
 
+    def test_prior_action_summary_ignores_non_object_project_payload(self) -> None:
+        agent = self.agent()
+
+        class FakeDb:
+            def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "event_type": "tool_result",
+                        "tool_name": "project_create",
+                        "input_data": {"title": "Existing project"},
+                        "output_data": {"project": "legacy project payload"},
+                    }
+                ]
+
+        agent.db = FakeDb()  # type: ignore[assignment]
+
+        self.assertEqual(agent.prior_action_summary(319), ["Started project #? 'Existing project'"])
+
     def test_task_limits_use_admin_review_override(self) -> None:
         agent = self.agent()
         agent.config = AppConfig(
