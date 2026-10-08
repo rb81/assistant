@@ -181,7 +181,12 @@ def load_config() -> AppConfig:
         # Prompt
         ("AGENT_PROMPT_AGENT_FILE", "agent.prompt.agent_file", str),
         ("AGENT_PROMPT_MAX_CONTEXT_FILE_BYTES", "agent.prompt.max_context_file_bytes", int),
-        
+
+        # Chat (direct-chat fast path)
+        ("AGENT_CHAT_MODEL", "agent.chat.model", str),
+        ("AGENT_CHAT_MAX_HISTORY_MESSAGES", "agent.chat.max_history_messages", int),
+        ("AGENT_CHAT_RATE_LIMIT_PER_MINUTE", "agent.chat.rate_limit_per_minute", int),
+
         # Memory
         ("AGENT_MEMORY_RECENT_PROMPT_LIMIT", "agent.memory.recent_prompt_limit", int),
         ("AGENT_MEMORY_STEWARD_ENABLED", "agent.memory.steward.enabled", bool),

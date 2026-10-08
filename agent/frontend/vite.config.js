@@ -5,16 +5,20 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  esbuild: { jsx: "automatic", jsxImportSource: "preact" },
   build: {
     emptyOutDir: false,
     outDir: resolve(root, "../src/assistant_agent/ui/assets"),
     rollupOptions: {
-      input: resolve(root, "src/workspace.js"),
+      input: {
+        workspace: resolve(root, "src/workspace.js"),
+        chat: resolve(root, "src/chat/main.jsx")
+      },
       output: {
-        entryFileNames: "workspace.bundle.js",
-        chunkFileNames: "workspace.[name].js",
+        entryFileNames: "[name].bundle.js",
+        chunkFileNames: "[name].chunk.js",
         assetFileNames: assetInfo => {
-          if (assetInfo.name && assetInfo.name.endsWith(".css")) return "workspace.bundle.css";
+          if (assetInfo.name && assetInfo.name.endsWith(".css")) return "[name].bundle.css";
           return "workspace.[name][extname]";
         }
       }

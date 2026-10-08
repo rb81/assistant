@@ -52,3 +52,7 @@ temp/
 # OS metadata
 .DS_Store
 Thumbs.db
+# chat PWA build output
+agent/src/assistant_agent/ui/assets/chat.bundle.css
+agent/src/assistant_agent/ui/assets/chat.bundle.js
+agent/src/assistant_agent/ui/assets/*.chunk.js

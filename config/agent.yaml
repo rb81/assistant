@@ -150,6 +150,11 @@ agent:
     agent_file: AGENT.md
     max_context_file_bytes: 65536
 
+  chat:
+    model:
+    max_history_messages: 20
+    rate_limit_per_minute: 20
+
   memory:
     recent_prompt_limit: 10
     steward:

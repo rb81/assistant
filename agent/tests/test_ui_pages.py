@@ -44,6 +44,14 @@ class UiPageRenderTest(unittest.TestCase):
 
         self.assertNotIn('href="/docs"', html)
 
+    def test_chat_page_renders_title_and_pwa_links(self) -> None:
+        html = render_ui_page("chat.html", self.config())
+
+        self.assertNotIn("__APP_TITLE__", html)
+        self.assertIn('id="chat-root"', html)
+        self.assertIn('rel="manifest"', html)
+        self.assertIn("/assets/chat.bundle.js", html)
+
     def test_dashboard_renders_cost_reminders_and_projects_views(self) -> None:
         html = render_ui_page("admin.html", self.config())
 
