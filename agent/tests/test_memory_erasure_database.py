@@ -9,7 +9,7 @@ from unittest.mock import patch
 from psycopg.types.json import Jsonb
 
 from assistant_agent.config import AppConfig
-from assistant_agent.database import Database
+from assistant_agent.database import Database, MigrationBlockedError, V2_ACK_ENV
 from assistant_agent.memory_store import MemoryStore
 from assistant_agent.tool_result_cache import ToolResultCache
 
@@ -144,7 +144,13 @@ class MemoryErasureDatabaseTest(unittest.TestCase):
         project = self.db.fetch_one("INSERT INTO projects(original_job_id, original_thread_id, title, status) VALUES (%s, 'retirement-test', 'Old project', 'running') RETURNING id", (parent["id"],))
         self.db.execute("INSERT INTO project_tasks(project_id, sequence, title, task, status, job_id) VALUES (%s, 1, 'Existing work', 'Do not duplicate', 'queued', %s)", (project["id"], child["id"]))
         self.db.execute("INSERT INTO agent_notes(title, content, status) VALUES ('Old note', 'Migrated working knowledge', 'active')")
-        self.db.run_migrations(migrations)
+        with patch.dict(os.environ, {V2_ACK_ENV: ""}):
+            with self.assertRaises(MigrationBlockedError):
+                self.db.run_migrations()
+        self.assertIsNotNone(self.db.fetch_one("SELECT to_regclass('agent_notes') AS relation")["relation"])
+        self.assertEqual(self.db.fetch_all("SELECT filename FROM schema_migrations WHERE filename LIKE '005%'"), [])
+        with patch.dict(os.environ, {V2_ACK_ENV: "yes"}):
+            self.assertIn("005_unified_memory_retire_projects.sql", self.db.run_migrations())
         self.assertEqual(self.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (parent["id"],))["status"], "queued")
         self.assertEqual(self.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (child["id"],))["status"], "queued")
         migrated = self.db.fetch_one("SELECT * FROM agent_memories WHERE content = 'Migrated working knowledge'")

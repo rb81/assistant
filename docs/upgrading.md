@@ -2,9 +2,15 @@
 
 This is a breaking upgrade: browser administration/shared editing, Projects,
 separate notes and entities are retired. The retained API now requires TLS and
-bearer authentication. Do not blindly pull the `v2` branch into a running v1
-deployment. v1 stays available unchanged on the `v1` branch and the `v1.0.0` tag;
-v2 is a prerelease on the `v2` branch.
+bearer authentication. Do not blindly pull `main` into a running v1
+deployment. v1 stays available unchanged on the `v1` branch and the `v1.0.0`
+release; v2 is on `main`.
+
+**Safety interlock.** If the database holds v1 data, v2 refuses to apply migration
+005 (which drops the retired tables) until you set `ASSISTANT_ACCEPT_V2_MIGRATION=yes`
+in `.env`. Without it, workers exit with an "Upgrade blocked" message, and nothing
+is dropped or migrated. If you pulled v2 by accident, `git checkout v1` and restart. Fresh and
+already-migrated databases are not affected.
 
 ## Before upgrading
 
@@ -39,7 +45,7 @@ v2 is a prerelease on the `v2` branch.
 
 ## Apply the upgrade
 
-1. Check out the reviewed v2 code (`git fetch origin && git checkout v2`) while the old stack is stopped.
+1. Update to the v2 code (`git fetch origin && git checkout main && git pull`) while the old stack is stopped.
 2. Run `./scripts/setup.sh` and keep the current database password. Known inline
    credentials migrate into protected Compose secret files on final confirmation.
    Unknown non-secret settings and existing prompts are preserved. Resolve
@@ -49,8 +55,10 @@ v2 is a prerelease on the `v2` branch.
 3. Configure authenticated email administration. For the optional API, import a
    trusted hostname-valid certificate and configure clients with the bearer token.
    Development certificates only cover localhost/127.0.0.1; never disable verification.
-4. Accept the wizard's optional startup only when ready, or run
-   `docker compose up -d --build`. Ordered migrations run automatically at
+4. Once your backup is verified, add `ASSISTANT_ACCEPT_V2_MIGRATION=yes` to `.env`
+   (setup preserves it). Then accept the wizard's optional startup, or run
+   `docker compose up -d --build`. Starting before this step makes workers exit
+   with "Upgrade blocked" and changes nothing. Ordered migrations run automatically at
    startup. Do not apply individual SQL files manually without migration tracking.
 5. Verify service health, `/admin status`, migrated memories, child-job history,
    reminders and optional integrations. API health checks need HTTPS and bearer auth.

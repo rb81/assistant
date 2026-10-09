@@ -6,7 +6,7 @@ import time
 import uvicorn
 
 from .config import database_url, load_config
-from .database import Database
+from .database import Database, MigrationBlockedError
 from .deep_research import DeepResearchAgent
 from .email_ingest import EmailDownloader
 from .filesystem_permissions import apply_shared_file_umask
@@ -112,7 +112,11 @@ def run_role(role: str) -> None:
 
     db = Database(database_url(config))
     db.ensure_feature_schema()
-    ran = db.run_migrations()
+    try:
+        ran = db.run_migrations()
+    except MigrationBlockedError as exc:
+        LOGGER.error("Upgrade blocked: %s", exc)
+        raise SystemExit(78)
     if ran:
         LOGGER.info("applied %s migration(s): %s", len(ran), ", ".join(ran))
     stopper = install_stopper()

@@ -21,18 +21,18 @@
 > [!CAUTION]
 > **This is Assistant v2, a breaking release. It is not an in-place `git pull` of v1.**
 >
-> - **Running v1?** Do **not** pull or merge this branch into a running deployment, and do not start v2 containers against your existing database until you have followed the **[upgrade guide](docs/upgrading.md)**.
+> - **Running v1?** Do **not** pull this branch into a running deployment until you have followed the **[upgrade guide](docs/upgrading.md)**. As a safety net, v2 refuses to migrate a database that holds v1 data until you set `ASSISTANT_ACCEPT_V2_MIGRATION=yes` in `.env`; workers exit with an "Upgrade blocked" message and nothing is changed.
 > - v2 permanently **drops** the Projects, separate Notes and Entity tables from the database. Supported history is migrated first, but the change cannot be undone without a backup.
 > - **Back up your database and files first** (`pg_dump` plus your `data/`, `.env` and `config/`), and rehearse the upgrade on a copy.
 > - The browser dashboard and shared workspace editor are gone. Plain-HTTP API clients stop working.
-> - **Staying on v1?** It remains available and unchanged on the [`v1` branch](https://github.com/rb81/assistant/tree/v1) and the `v1.0.0` tag. Ongoing legacy maintenance is not promised.
+> - **Staying on v1?** It remains available and unchanged on the [`v1` branch](https://github.com/rb81/assistant/tree/v1) and the `v1.0.0` release. If you already pulled v2 by mistake, run `git checkout v1` and restart; your data is untouched. Ongoing legacy maintenance is not promised.
 
 ## Which version do I want?
 
-| | **v1** | **v2** (this branch) |
+| | **v1** | **v2** (`main`) |
 |---|---|---|
 | Status | Stable, unchanged | Prerelease |
-| Code | [`v1` branch](https://github.com/rb81/assistant/tree/v1), tag `v1.0.0` | `v2` branch |
+| Code | [`v1` branch](https://github.com/rb81/assistant/tree/v1), release `v1.0.0` | `main` branch |
 | Configuration | Hand-edited `.env` | Guided setup wizard, protected secrets, optional `overrides.env` |
 | Interface | Email, browser dashboard, workspace editor | Email (plus optional authenticated HTTPS API) |
 | Integrations | Calendar | Calendar, **Zoom**, **Dropbox** |
@@ -60,7 +60,7 @@
 **You'll need:** Docker with Compose, Python 3.12 or newer for setup, an [OpenRouter](https://openrouter.ai) API key, and **a dedicated email mailbox for the assistant** (see the warning below).
 
 ```bash
-git clone -b v2 https://github.com/rb81/assistant.git
+git clone https://github.com/rb81/assistant.git
 cd assistant
 ./scripts/setup.sh
 ```
@@ -94,8 +94,8 @@ Useful commands:
 > 1. Record your current v1 commit/images and stop the old workers (including the project scheduler). Never run v1 and v2 workers against the same database.
 > 2. With PostgreSQL still running, take a logical backup: `docker compose exec -T postgres pg_dump -U assistant -d assistant > assistant-before-upgrade.sql`. Keep it confidential and test restoring it into a disposable database.
 > 3. Stop the stack **without** `--volumes`. Keep `data/`, `.env`, `config/` and any local prompt files.
-> 4. Check out v2, run `./scripts/setup.sh` and keep your current database password. Known inline credentials move into protected secret files; your prompts and unknown settings are preserved. Decline replacing customized instructions, and decline automatic startup until you are ready.
-> 5. Start v2 (`docker compose up -d --build`). Ordered migrations run automatically; verify with `/admin status`, your memories, reminders and integrations.
+> 4. Update to v2 (`git pull` on `main`, or switch from `v1` with `git checkout main && git pull`), run `./scripts/setup.sh` and keep your current database password. Known inline credentials move into protected secret files; your prompts and unknown settings are preserved. Decline replacing customized instructions, and decline automatic startup until you are ready.
+> 5. Only after your backup, add `ASSISTANT_ACCEPT_V2_MIGRATION=yes` to `.env` (the acknowledgement that the retired tables will be dropped), then start v2 (`docker compose up -d --build`). Without it, v2 refuses to migrate a database holding v1 data. Ordered migrations then run automatically; verify with `/admin status`, your memories, reminders and integrations.
 > 6. Rotate provider credentials that were previously stored in plaintext `.env`, backups or history.
 >
 > **Rolling back** means restoring the pre-upgrade backup together with the old code. Checking out v1 against a migrated database is unsafe.
@@ -198,7 +198,7 @@ Start with [Configuration](docs/configuration.md), [Architecture](docs/architect
 
 ## Contributing
 
-Contributions are welcome. Fork the repository, branch from `v2` for v2 work, read [docs/codebase.md](docs/codebase.md), write tests and open a pull request describing what and why.
+Contributions are welcome. Fork the repository, branch from `main` for v2 work, read [docs/codebase.md](docs/codebase.md), write tests and open a pull request describing what and why.
 
 ```bash
 cd agent

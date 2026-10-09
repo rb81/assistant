@@ -2,8 +2,8 @@
 
 ## v2.0.0 (prerelease): Platform Refresh
 
-This breaking release lives on the `v2` branch. The previous version is preserved
-unchanged as v1 (`v1` branch, tag `v1.0.0`). v2 is not an in-place `git pull` of v1:
+This breaking release lives on `main`. The previous version is preserved
+unchanged as v1 (`v1` branch, release `v1.0.0`). v2 is not an in-place `git pull` of v1:
 read [the upgrade guide](docs/upgrading.md) before starting new workers.
 
 ### Added
@@ -34,6 +34,8 @@ read [the upgrade guide](docs/upgrading.md) before starting new workers.
 
 ### Security
 
+- Upgrade interlock: migration 005 (which drops retired tables) refuses to run on a
+  database holding v1 data until `ASSISTANT_ACCEPT_V2_MIGRATION=yes` is set in `.env`.
 - Optional API requires TLS and bearer authentication, including health endpoints.
 - Setup moves known credentials out of `.env` and grants secret mounts by service.
 - File-secret errors fail closed; admin responses redact file-backed credentials.

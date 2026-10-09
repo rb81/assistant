@@ -1,16 +1,27 @@
 import json
 import logging
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 
 LOGGER = logging.getLogger("assistant.database")
+
+# The v2 migration permanently drops tables from v1, so an existing installation must opt in.
+V2_GATED_MIGRATION = "005_unified_memory_retire_projects.sql"
+V2_ACK_ENV = "ASSISTANT_ACCEPT_V2_MIGRATION"
+V2_DATA_TABLES = ("jobs", "emails", "agent_memories", "agent_notes", "projects", "reminders", "contacts")
+
+
+class MigrationBlockedError(RuntimeError):
+    pass
 
 REQUEUEABLE_JOB_STATUSES = frozenset({"failed", "cancelled", "waiting", "needs_review", "completed"})
 
@@ -99,6 +110,9 @@ class Database:
         """
         if migrations_dir is None:
             migrations_dir = Path(__file__).parent / "migrations"
+            gated = True
+        else:
+            gated = False
         if not migrations_dir.is_dir():
             return []
 
@@ -112,6 +126,14 @@ class Database:
                 for path in sorted(migrations_dir.glob("*.sql")):
                     if path.name in applied:
                         continue
+                    if gated and path.name == V2_GATED_MIGRATION and not self._v2_migration_acknowledged() and self._holds_existing_data(cur):
+                        raise MigrationBlockedError(
+                            "This database holds data from Assistant v1. The v2 upgrade permanently drops the retired "
+                            "Projects, Notes and Entity tables (supported history is migrated first) and cannot be undone "
+                            "without a backup. Nothing has been changed. Back up the database and files, read "
+                            "docs/upgrading.md, then set %s=yes in .env and recreate the containers. "
+                            "To stay on v1, check out the v1 branch instead." % V2_ACK_ENV
+                        )
                     LOGGER.info("applying migration: %s", path.name)
                     cur.execute(path.read_text(encoding="utf-8"))
                     cur.execute(
@@ -123,6 +145,21 @@ class Database:
             LOGGER.info("migration applied: %s", filename)
 
         return ran
+
+    @staticmethod
+    def _v2_migration_acknowledged() -> bool:
+        return os.environ.get(V2_ACK_ENV, "").strip().lower() in {"yes", "true", "1"}
+
+    @staticmethod
+    def _holds_existing_data(cur: psycopg.Cursor) -> bool:
+        for table in V2_DATA_TABLES:
+            cur.execute("SELECT to_regclass(%s) AS relation", (table,))
+            if cur.fetchone()["relation"] is None:
+                continue
+            cur.execute(sql.SQL("SELECT EXISTS (SELECT 1 FROM {}) AS present").format(sql.Identifier(table)))
+            if cur.fetchone()["present"]:
+                return True
+        return False
 
     def get_state(self, key: str, default: Any = None) -> Any:
         row = self.fetch_one("SELECT value FROM runtime_state WHERE key = %s", (key,))
