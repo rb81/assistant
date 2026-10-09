@@ -6,8 +6,21 @@ Public API:
   CalendarError   — base exception raised for expected errors
 """
 
+from typing import TYPE_CHECKING
+
 from .provider import CalendarError, ProviderAuthError, ProviderEventNotFoundError
-from .router import CalendarRouter
+
+if TYPE_CHECKING:
+  from .router import CalendarRouter
+
+
+def __getattr__(name: str) -> type["CalendarRouter"]:
+  if name == "CalendarRouter":
+    from .router import CalendarRouter
+
+    return CalendarRouter
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "CalendarRouter",

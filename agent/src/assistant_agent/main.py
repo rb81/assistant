@@ -12,7 +12,6 @@ from .email_ingest import EmailDownloader
 from .filesystem_permissions import apply_shared_file_umask
 from .heartbeat import Heartbeat
 from .prompt_context import ensure_prompt_files, validate_agent_prompt
-from .projects import ProjectScheduler
 from .reminders import ReminderScheduler
 from .supervisor import Supervisor
 from .task_agent import TaskAgent
@@ -59,6 +58,11 @@ def install_stopper() -> Stopper:
 
 def run_role(role: str) -> None:
     config = load_config()
+    assistant_timezone = str(config.get("agent.app.timezone") or "UTC").strip()
+    for setting in ("agent.calendar.timezone", "agent.reminders.default_timezone"):
+        legacy_timezone = str(config.get(setting) or "").strip()
+        if legacy_timezone and legacy_timezone != assistant_timezone:
+            LOGGER.warning("%s is deprecated and ignored; assistant timezone is %s", setting, assistant_timezone)
     apply_shared_file_umask(config)
     prompt_context_error = None
     if role in PROMPT_FILE_SEED_ROLES:
@@ -97,13 +101,13 @@ def run_role(role: str) -> None:
         if host == "0.0.0.0" and not config.get_bool("agent.api.allow_public_bind", False):
             LOGGER.error(
                 "Refusing to bind the dashboard to 0.0.0.0 without an explicit override. "
-                "This would expose all unauthenticated endpoints to every network interface. "
+                "This listens on every container interface and may expose the API to other networks. "
                 "To allow this, set AGENT_API_ALLOW_PUBLIC_BIND=true (or agent.api.allow_public_bind: true "
-                "in config/agent.yaml). Alternatively, set AGENT_API_BIND_HOST to 127.0.0.1 or a specific "
-                "LAN IP. See docs/security.md for details."
+                "in config/agent.yaml). Managed Compose publishes only on host loopback. "
+                "See docs/security.md for details."
             )
             raise SystemExit(78)
-        uvicorn.run("assistant_agent.api:app", host=host, port=port)
+        uvicorn.run("assistant_agent.api:app", host=host, port=port, ssl_certfile=config.get("agent.api.tls_cert_file"), ssl_keyfile=config.get("agent.api.tls_key_file"))
         return
 
     db = Database(database_url(config))
@@ -120,11 +124,6 @@ def run_role(role: str) -> None:
     elif role == "reminder-cron":
         count = ReminderScheduler(db, config).run_once()
         LOGGER.info("reminder cron processed %s reminder(s)", count)
-    elif role == "project-scheduler":
-        ProjectScheduler(db, config).run_forever(stopper)
-    elif role == "project-cron":
-        count = ProjectScheduler(db, config).run_once()
-        LOGGER.info("project cron processed %s item(s)", count)
     elif role == "deep-research-agent":
         DeepResearchAgent(db, config).run_forever(stopper)
     elif role == "deep-research-cron":
@@ -152,7 +151,6 @@ def run_role(role: str) -> None:
         while not stopper():
             EmailDownloader(db, config).sync_once()
             ReminderScheduler(db, config).run_once()
-            ProjectScheduler(db, config).run_once()
             DeepResearchAgent(db, config).run_once()
             WorkspaceIndex(db, config).run_once()
             TaskAgent(db, config, role=role).run_once()

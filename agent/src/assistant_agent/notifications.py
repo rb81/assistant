@@ -114,7 +114,6 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
     latest = _latest_email(db, job)
     checkpoint = _latest_checkpoint(db, int(job["id"]))
     diag = _diagnostics(db, config, job)
-    app_base_url = str(config.get("agent.app.base_url", "http://localhost:8000")).rstrip("/")
     factor = config.get_float("agent.supervisor.email_approval_increase_factor", 1.2)
     increase_pct = int(round((factor - 1.0) * 100))
 
@@ -165,9 +164,6 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
         "  • Your reply body will be passed to the agent as an instruction.",
         "  • Both limits will be increased by %s%%." % increase_pct,
         "  • Leave the body empty to approve with no additional instruction.",
-        "",
-        "Or review the job in the dashboard:",
-        app_base_url,
     ])
 
     return "\n".join(lines)

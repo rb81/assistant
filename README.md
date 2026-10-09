@@ -1,130 +1,122 @@
-# Assistant — A Semi-Autonomous AI Personal Assistant
+<p align="center">
+  <img src="docs/assets/logo.png" alt="Assistant logo" width="180">
+</p>
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+<h1 align="center">Assistant</h1>
 
-> **Give it a task. Walk away. Come back to results.**
+<p align="center">
+  <strong>A semi-autonomous, self-hosted AI personal assistant that lives in your inbox.</strong><br>
+  Give it a task. Walk away. Come back to results.
+</p>
 
-Assistant is an open-source, self-hosted, semi-autonomous AI personal assistant that lives in your email inbox. Send it a message, and it gets to work — reading files, browsing the web, writing and running scripts, scheduling follow-ups, and emailing you back when it's done. No app to open, no chat window to babysit. Just email, like you already use every day.
-
-It's built for people who want a capable AI agent they actually control: one that runs on their own infrastructure, keeps its data private, and can be configured precisely to match how much autonomy they're comfortable giving it.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/version-v2%20(prerelease)-orange.svg" alt="Version v2 prerelease">
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776ab.svg" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/runs%20on-Docker%20Compose-2496ed.svg" alt="Docker Compose">
+</p>
 
 ---
 
-## ⚡ Quick Start
+> [!CAUTION]
+> **This is Assistant v2, a breaking release. It is not an in-place `git pull` of v1.**
+>
+> - **Running v1?** Do **not** pull or merge this branch into a running deployment, and do not start v2 containers against your existing database until you have followed the **[upgrade guide](docs/upgrading.md)**.
+> - v2 permanently **drops** the Projects, separate Notes and Entity tables from the database. Supported history is migrated first, but the change cannot be undone without a backup.
+> - **Back up your database and files first** (`pg_dump` plus your `data/`, `.env` and `config/`), and rehearse the upgrade on a copy.
+> - The browser dashboard and shared workspace editor are gone. Plain-HTTP API clients stop working.
+> - **Staying on v1?** It remains available and unchanged on the [`v1` branch](https://github.com/rb81/assistant/tree/v1) and the `v1.0.0` tag. Ongoing legacy maintenance is not promised.
 
-**You'll need:**
-- Docker and Docker Compose
-- An [OpenRouter](https://openrouter.ai) API key
-- An email address for yourself (to receive notifications and results)
+## Which version do I want?
+
+| | **v1** | **v2** (this branch) |
+|---|---|---|
+| Status | Stable, unchanged | Prerelease |
+| Code | [`v1` branch](https://github.com/rb81/assistant/tree/v1), tag `v1.0.0` | `v2` branch |
+| Configuration | Hand-edited `.env` | Guided setup wizard, protected secrets, optional `overrides.env` |
+| Interface | Email, browser dashboard, workspace editor | Email (plus optional authenticated HTTPS API) |
+| Integrations | Calendar | Calendar, **Zoom**, **Dropbox** |
+| Upgrade path | n/a | [Upgrade guide](docs/upgrading.md) (breaking) |
+
+## What's new in v2
+
+- **Guided setup wizard.** `./scripts/setup.sh` configures identity, models, embeddings, email, integrations, the API and advanced settings, with review-before-save, Back/Edit/Cancel navigation and no secrets in your shell history. Existing installs get a section picker instead of repeating everything.
+- **Protected secrets.** Credentials live in gitignored `.secrets/` files mounted only into the services that need them. Update or rotate them with `./scripts/setup.sh secrets`.
+- **Native Zoom connector.** Create, edit and cancel managed meetings, linked to your calendar events. Opt-in.
+- **Native Dropbox connector.** A private App Folder Inbox/Outbox for on-demand file exchange: malware-scanned, size-limited, no public links, no overwrites. Opt-in. See [Dropbox](docs/dropbox.md).
+- **Memory and data tools.** Unified memories (durable facts plus expiring working context, with reviewable suggestions), `setup tools` troubleshooting menus, and `setup reset`, a selective factory reset that takes a backup first.
+- **Expert `overrides.env`.** An optional, gitignored file for advanced settings the wizard does not manage. See [Expert overrides](#expert-overrides).
+- **Email administration.** Authenticated `/admin` commands (`jobs`, `logs`, `memory`, `reminders`, `requeue`, `instruct`) that never invoke a model. See [Email Administration](docs/email-administration.md).
+- **Smaller, safer surface.** No browser UI, no published application port by default, and an optional HTTPS API that requires TLS and bearer authentication.
+
+### Removed in v2
+
+- Browser dashboard, shared workspace editor and frontend build
+- Projects and project scheduling (long tasks use the ordinary agent loop)
+- Separate Notes and Entities (migrated into unified memories)
+
+## Quick Start (new installation)
+
+**You'll need:** Docker with Compose, Python 3.12 or newer for setup, an [OpenRouter](https://openrouter.ai) API key, and **a dedicated email mailbox for the assistant** (see the warning below).
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/rb81/assistant.git
+git clone -b v2 https://github.com/rb81/assistant.git
 cd assistant
-
-# 2. Create your config files
-cp .env.example .env
-cp config/AGENT.md.example config/AGENT.md
+./scripts/setup.sh
 ```
 
-**Edit `.env` — fill in these required values at minimum:**
-
-```env
-POSTGRES_PASSWORD=          # Generate one: openssl rand -base64 32
-OPENROUTER_API_KEY=         # Your key from openrouter.ai
-ADMIN_EMAIL=you@example.com # Where notifications and results go
-SMTP_HOST=smtp.example.com  # Outbound mail server
-SMTP_PORT=587
-SMTP_FROM=assistant@example.com
-```
-
-**Enable the dashboard** (it's off by default for security — safe to turn on locally):
-
-```env
-AGENT_API_DASHBOARD_ENABLED=true
-AGENT_API_WORKSPACE_ENABLED=true
-```
-
-> **Note:** If you are not configuring email (IMAP), the dashboard and/or workspace UI must be enabled — they are your only way to submit jobs and interact with the agent. Without email *and* without at least one UI surface active, there is no way to give the agent work to do.
+The wizard explains every choice, validates as you go and writes nothing until you confirm. Setup can then build and start the stack, or start it yourself:
 
 ```bash
-# 3. Start the stack
 docker compose up -d --build
 ```
 
-**Open the dashboard:** [http://localhost:8000/admin](http://localhost:8000/admin)
+Send a task to the assistant's mailbox. Send `/admin` as a subject for deterministic help; commands do not invoke models or create jobs. No application port is published by default.
 
-Create your first job from the dashboard. No email configuration needed for this step. Watch it move from `queued` → `running` → `completed` and inspect the logs in the job detail view.
+> [!WARNING]
+> **Give the agent its own mailbox**, such as `assistant@yourdomain.com`. Never give it access to your personal email. You send tasks to its address; results and notifications return to your `ADMIN_EMAIL`. Set `EMAIL_ACTIONABLE_SENDERS` to your own address and `EMAIL_ALLOWED_RECIPIENT_DOMAINS` to your own domain so only you can trigger it and it can only email people you trust.
 
-> **Want email-triggered jobs?** See [Adding Email](#adding-email-triggered-jobs) below, or jump to the [Advanced Configuration guide](docs/advanced-configuration.md).
+Useful commands:
 
----
+| Command | Purpose |
+|---|---|
+| `./scripts/setup.sh` | Full wizard (new) or section picker (existing) |
+| `./scripts/setup.sh --section <name>` | Jump to `identity`, `models`, `embeddings`, `email`, `calendar`, `zoom`, `dropbox`, `api`, `advanced` or `instructions` |
+| `./scripts/setup.sh secrets status\|update\|apply` | Manage credentials |
+| `./scripts/setup.sh tools` | Status, logs, restarts, jobs, memories, reminders, embeddings |
+| `./scripts/setup.sh reset` | Factory reset of selected data, with backup; keeps settings and `AGENT.md` |
 
-## Adding Email-Triggered Jobs
+## Upgrading from v1
 
-> **Important:** The agent needs its **own dedicated email address and mailbox** — for example, `assistant@yourdomain.com`. Create a separate account for it with your email provider and configure IMAP/SMTP to point at that account. **Do not give the agent access to your personal email.** You communicate with the agent by sending messages *to* its address; results and notifications come back to you at your `ADMIN_EMAIL`.
+> [!IMPORTANT]
+> Read the full **[upgrade guide](docs/upgrading.md)** before touching a running v1 install. The short version:
+>
+> 1. Record your current v1 commit/images and stop the old workers (including the project scheduler). Never run v1 and v2 workers against the same database.
+> 2. With PostgreSQL still running, take a logical backup: `docker compose exec -T postgres pg_dump -U assistant -d assistant > assistant-before-upgrade.sql`. Keep it confidential and test restoring it into a disposable database.
+> 3. Stop the stack **without** `--volumes`. Keep `data/`, `.env`, `config/` and any local prompt files.
+> 4. Check out v2, run `./scripts/setup.sh` and keep your current database password. Known inline credentials move into protected secret files; your prompts and unknown settings are preserved. Decline replacing customized instructions, and decline automatic startup until you are ready.
+> 5. Start v2 (`docker compose up -d --build`). Ordered migrations run automatically; verify with `/admin status`, your memories, reminders and integrations.
+> 6. Rotate provider credentials that were previously stored in plaintext `.env`, backups or history.
+>
+> **Rolling back** means restoring the pre-upgrade backup together with the old code. Checking out v1 against a migrated database is unsafe.
 
-Once SMTP is working, add IMAP credentials to `.env` to let the agent pick up tasks from its inbox:
+What happens to your data:
 
-```env
-IMAP_HOST=imap.example.com
-IMAP_PORT=993
-IMAP_USERNAME=assistant@example.com
-IMAP_PASSWORD=your-password
+| v1 data | In v2 |
+|---|---|
+| Notes | Converted to unified memories |
+| Entities | Kept as tags on memories |
+| Projects and project tasks | Snapshots kept on the parent jobs; waiting parents are requeued with retirement instructions; unstarted tasks are not queued |
+| Working context | Migrated working context **expires after 14 days**; pin or review anything that must persist |
+| Jobs, emails, memories, reminders, calendar records | Preserved |
+| Browser UI URLs and plain-HTTP API clients | **No longer work** |
 
-SMTP_USERNAME=assistant@example.com
-SMTP_PASSWORD=your-password
+Email intake now requires the `email` Compose profile; the wizard selects it. `AGENT_TIMEZONE` is authoritative for implicit times.
 
-# Safety guardrails — set these before enabling email
-EMAIL_ACTIONABLE_SENDERS=you@example.com      # Only these addresses can trigger jobs
-EMAIL_ALLOWED_RECIPIENT_DOMAINS=example.com   # Agent can only email these domains
-```
-
-Restart the stack (`docker compose restart`) and send an email to the agent's inbox. It will be picked up within the polling interval (default: 60 seconds).
-
-> **Bottom line on email safety:** Set `EMAIL_ACTIONABLE_SENDERS` to your own address and `EMAIL_ALLOWED_RECIPIENT_DOMAINS` to your own domain. With those two in place, the agent can only be triggered by you and can only email people you've already trusted.
-
----
-
-## What It Does
-
-Once you trigger a task, the agent works autonomously — using a full suite of tools until the job is done, then sends you the result.
-
-- **Schedules itself** — creates recurring reminders that wake it up in the future to rerun tasks, check on things, or continue work it started
-- **Writes and runs code** — scripts run in a sandboxed, isolated Docker container, not on your host system
-- **Multi-step projects** — complex tasks broken into ordered sequences where each step uses the output of the previous
-- **Deep research** — asynchronous research loops with web search, file tools, and guidance checkpoints; pauses to ask for input when stuck
-- **Persistent memory** — decisions, preferences, and context are remembered across sessions and injected into relevant jobs
-- **Private notes and contacts** — separate from memory; searchable on demand
-- **Semantic workspace** — a shared folder with full-text and semantic search, PDF/Office file extraction, format conversion
-- **Calendar** — read/write access to Google Calendar, Microsoft Outlook, and Zoho via OAuth, with strict managed-event rules (opt-in, disabled by default)
-
----
-
-## The Workspace
-
-The built-in browser UI (`http://localhost:8000`) has two surfaces:
-
-**`/workspace` — Your shared office**
-
-A full-featured document environment you and the agent share. Anything you put here the agent can read, edit, and build on — and anything the agent creates you can open, review, and refine.
-
-- **WYSIWYG editor** — rich-text editing (Milkdown) with Source and Preview toggles; auto-saves drafts every 30 seconds
-- **File explorer** — create folders, rename, move, duplicate, and trash files
-- **Uploads and file conversion** — drop in PDFs, Word docs, spreadsheets; the workspace indexer extracts text for semantic search automatically. Convert any document to Markdown, HTML, PDF, or DOCX from the file context menu.
-- **CSV / table rendering** — tabular data rendered as a readable, interactive table
-- **Workspace chat** — submit tasks directly from the workspace with the currently open file attached as context
-
-**`/admin` — The control room**
-
-Manage the agent's technical operations: create and monitor jobs, inspect execution logs, requeue stuck work, browse memories and contacts, view tool call history, and inject supervisor instructions into running jobs.
-
----
-
-## How It Works
+## How it works
 
 ```
-You → email (or workspace chat or dashboard)
+You → email
         ↓
    Job is queued
         ↓
@@ -137,103 +129,86 @@ You → email (or workspace chat or dashboard)
    Job completes → agent emails you back the result
 ```
 
-The agent runs as a set of Docker services. Each concern has its own process: email ingestion, job execution, reminder scheduling, project orchestration, deep research, workspace indexing, supervision, and health monitoring. They all share a PostgreSQL database and a bind-mounted workspace directory.
+Separate services handle email ingestion, job execution, native reminders, deep research, private file indexing, supervision and health monitoring, sharing PostgreSQL and private working storage. See [architecture](docs/architecture.md) and the [agent loop](docs/agent-loop.md).
 
-For the full picture, see [docs/architecture.md](docs/architecture.md) and [docs/agent-loop.md](docs/agent-loop.md).
+## What it does
 
----
+- **Schedules itself.** Recurring reminders wake it to rerun tasks or continue work.
+- **Writes and runs code** in an isolated Docker sandbox, not on your host.
+- **Deep research.** Asynchronous research loops with web search; it pauses to ask when stuck.
+- **Persistent memory.** Decisions, preferences and context are remembered and injected into relevant jobs.
+- **Private files and contacts.** Attachment scanning, extraction and conversion, with email deliverables.
+- **Calendar** (Google, Outlook, Zoho) with strict managed-event rules. Opt-in.
+- **Zoom** managed meetings. Opt-in.
+- **Dropbox** private file exchange. Opt-in.
 
-## ⚠️ Security and Autonomy
+## Configuration
 
-**The API has no built-in authentication.** It is designed for private-network deployments — running behind a firewall, accessed over a VPN, or behind a reverse proxy that provides its own authentication layer.
+Credentials live in gitignored `.secrets/` files and non-secret settings in `.env`; both are written by the wizard. You never need to copy `.env.example`: it is only a reference for the keys setup writes. Compose does not encrypt host source files.
 
-**Secure defaults out of the box:**
-- The dashboard binds to `127.0.0.1` — only your local machine can reach it
-- The `/admin` and `/workspace` UIs are disabled until you explicitly turn them on
-- API docs and OpenAPI schema are off by default
-- No email triggers until you set `EMAIL_ACTIONABLE_SENDERS`
-- No outbound email beyond your admin address until you set `EMAIL_ALLOWED_RECIPIENT_DOMAINS`
-- The agent can only be triggered by you and can only reply to people you've approved
+```bash
+./scripts/setup.sh --section advanced   # task limits, email behavior, memory, search, research
+./scripts/setup.sh secrets update OPENROUTER_API_KEY
+```
 
-**Before going live, make sure:**
-- [ ] `POSTGRES_PASSWORD` is a strong, unique password (not the placeholder)
-- [ ] `ADMIN_EMAIL` is set to your own address
-- [ ] `EMAIL_ACTIONABLE_SENDERS` is locked to your address
-- [ ] `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is locked to your domain(s)
-- [ ] `AGENT_API_PUBLISHED_HOST` stays at `127.0.0.1` unless you intend LAN access
-- [ ] If exposing publicly: put a reverse proxy with HTTPS + authentication in front
+### Expert overrides
 
-See **[docs/security.md](docs/security.md)** for the full threat model, hardening checklist, sandbox socket risks, and reverse-proxy configuration examples (nginx, Caddy).
+Everything the wizard does not manage can be set in an optional `overrides.env` in the repository root. Setup creates a commented template on first save, or you can create it by hand with `NAME=value` lines using the names in [environment overrides](docs/env-overrides.md).
 
----
+- Gitignored and loaded after `.env`; never rewritten by setup.
+- Validated at the wizard's review step (unknown names, wrong types, credentials, conflicts).
+- **Never put credentials in it.** Use `./scripts/setup.sh secrets update`.
+- Apply changes with `docker compose up -d --force-recreate`.
+
+Details: [Manual overrides file](docs/configuration.md#manual-overrides-file).
+
+## Security and autonomy
+
+> [!WARNING]
+> The optional API requires TLS and bearer authentication and is excluded from the default Compose profile. Enable it only with a valid server certificate/key and a strong `AGENT_API_AUTH_TOKEN`. Admin email requests must come from an authenticated identity, not merely a matching From address; see [Email Administration](docs/email-administration.md).
+
+Secure defaults:
+
+- No application port is published, and no browser UI exists.
+- No email triggers until you set `EMAIL_ACTIONABLE_SENDERS`.
+- No outbound email beyond your admin address until you set `EMAIL_ALLOWED_RECIPIENT_DOMAINS`.
+- API docs and the OpenAPI schema are off by default.
+
+Before going live:
+
+- [ ] `POSTGRES_PASSWORD` is strong and unique (the wizard keeps your existing one on upgrade)
+- [ ] `ADMIN_EMAIL` is your own address
+- [ ] `EMAIL_ACTIONABLE_SENDERS` and `EMAIL_ALLOWED_RECIPIENT_DOMAINS` are locked down
+- [ ] If the API is enabled: loopback only, HTTPS with a verified certificate, bearer token
+- [ ] Docker daemon access uses local sockets, SSH or mutual TLS, never unauthenticated TCP
+
+See [docs/security.md](docs/security.md) for the threat model, sandbox socket risks and hardening.
 
 ## Documentation
 
-New here? Start with:
+Start with [Configuration](docs/configuration.md), [Architecture](docs/architecture.md) and [Security](docs/security.md). The full index is in [docs/README.md](docs/README.md).
 
-1. [Quick Start](#-quick-start) — you're already looking at it
-2. [docs/advanced-configuration.md](docs/advanced-configuration.md) — models, limits, email, integrations, UI, scaling
-3. [docs/architecture.md](docs/architecture.md) — service topology, runtime boundaries, data flow
-4. [docs/security.md](docs/security.md) — threat model, hardening, reverse-proxy examples
-
-### Core Guides
-
-- [docs/architecture.md](docs/architecture.md) — service topology, runtime boundaries, and data flow
-- [docs/agent-loop.md](docs/agent-loop.md) — job lifecycle and agent execution loop
-- [docs/prompting.md](docs/prompting.md) — prompt construction, context, and compaction
-- [docs/tools-reference.md](docs/tools-reference.md) — all agent tools, grouped by capability
-- [docs/extending-tools.md](docs/extending-tools.md) — how to add a new tool safely
-- [docs/openrouter.md](docs/openrouter.md) — OpenRouter integration and model/tool usage
-
-### Configuration and Deployment
-
-- [docs/advanced-configuration.md](docs/advanced-configuration.md) — **start here** for tuning and integrations
-- [docs/configuration.md](docs/configuration.md) — full `.env` and `config/agent.yaml` reference
-- [docs/calendar-providers.md](docs/calendar-providers.md) — OAuth setup for Google, Outlook, and Zoho
-- [docs/security.md](docs/security.md) — threat model, hardening checklist, and reverse-proxy examples
-- [docs/docker-setup.md](docs/docker-setup.md) — image builds, Compose topology, networks, and mounts
-- [docs/running-assistant.md](docs/running-assistant.md) — local and server deployment guide
-- [docs/concurrent-job-processing.md](docs/concurrent-job-processing.md) — task-agent scaling
-
-### Data and Storage
-
-- [docs/data-model.md](docs/data-model.md) — PostgreSQL schema and entity relationships
-- [docs/memory-system.md](docs/memory-system.md) — Memory Steward, notes, embeddings, and workspace index
-
-### Runtime Infrastructure
-
-- [docs/sandbox.md](docs/sandbox.md) — command execution sandbox architecture
-- [docs/email-and-artifacts.md](docs/email-and-artifacts.md) — IMAP ingestion, ClamAV scanning, and attachment conversion
-
-### UI and API
-
-- [docs/visual-workspace-ui.md](docs/visual-workspace-ui.md) — `/admin` and `/workspace` UI behavior
-- [docs/dashboard-and-api.md](docs/dashboard-and-api.md) — dashboard capabilities and API endpoint map
-- [docs/codebase.md](docs/codebase.md) — module map, test structure, and contribution workflow
-
----
+| Topic | Guides |
+|---|---|
+| Upgrading | [Upgrade guide](docs/upgrading.md), [Changelog](CHANGELOG.md) |
+| Configuration | [Advanced configuration](docs/advanced-configuration.md), [Configuration reference](docs/configuration.md), [Environment overrides](docs/env-overrides.md), [Docker setup](docs/docker-setup.md), [Running Assistant](docs/running-assistant.md) |
+| Integrations | [Calendar providers](docs/calendar-providers.md), [Dropbox](docs/dropbox.md), [OpenRouter](docs/openrouter.md) |
+| Internals | [Agent loop](docs/agent-loop.md), [Prompting](docs/prompting.md), [Tools reference](docs/tools-reference.md), [Data model](docs/data-model.md), [Memory system](docs/memory-system.md), [Sandbox](docs/sandbox.md), [Email and artifacts](docs/email-and-artifacts.md), [Concurrent jobs](docs/concurrent-job-processing.md) |
+| Extending | [Extending tools](docs/extending-tools.md), [Codebase guide](docs/codebase.md), [HTTPS API](docs/dashboard-and-api.md) |
 
 ## Contributing
 
-Contributions are welcome! Here's how to get involved:
-
-1. **Fork** the repository and create a feature branch off `main`
-2. **Read** [docs/codebase.md](docs/codebase.md) for the module map and contribution guidelines
-3. **Write tests** — the test suite lives in `agent/tests/` and uses `pytest`
-4. **Open a pull request** with a clear description of what you changed and why
-
-To run the tests locally:
+Contributions are welcome. Fork the repository, branch from `v2` for v2 work, read [docs/codebase.md](docs/codebase.md), write tests and open a pull request describing what and why.
 
 ```bash
 cd agent
-pip install -r requirements.txt
-pytest tests/
+python3 -m venv ../.venv && . ../.venv/bin/activate
+pip install -r requirements.txt -r requirements-setup.txt pytest
+PYTHONPATH=src pytest tests/
 ```
 
-Bug reports, feature requests, and documentation improvements are all appreciated. If you're unsure whether something is in scope, open an issue first to discuss.
-
----
+Open an issue first if you are unsure whether something is in scope.
 
 ## License
 
-Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for the full text.
+Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE).

@@ -484,6 +484,49 @@ class TestCalendarRouterListBusy:
 
         result = router.list_busy("2026-09-10T00:00:00+00:00", "2026-09-10T23:59:00+00:00")
         assert result["busy"] == []
+        assert result["status"] == "degraded"
+        assert result["complete"] is False
+        assert result["provider_errors"][0]["status"] == "error"
+
+    def test_empty_healthy_calendar_is_complete_but_auth_failure_is_not(self):
+        from assistant_agent.calendar.provider import ProviderAuthError
+
+        mock_prov = MagicMock()
+        mock_prov.get_free_busy.return_value = []
+        router, db, *_ = _make_router_with_mock_provider(mock_prov)
+        db.fetch_all.return_value = []
+        result = router.list_busy("2026-10-09T00:00:00+00:00", "2026-10-10T00:00:00+00:00")
+        assert result["complete"] is True
+        assert result["status"] == "ok"
+        mock_prov.get_free_busy.side_effect = ProviderAuthError("PRIVATE-TOKEN-CANARY")
+        result = router.list_busy("2026-10-09T00:00:00+00:00", "2026-10-10T00:00:00+00:00")
+        assert result["complete"] is False
+        assert result["provider_errors"][0]["status"] == "auth_error"
+        assert "PRIVATE-TOKEN-CANARY" not in str(result)
+
+    def test_no_providers_is_not_verified_availability(self):
+        router, db, *_ = _make_router_with_mock_provider()
+        router._providers.clear()
+        db.fetch_all.return_value = []
+        result = router.list_busy("2026-10-09T00:00:00+00:00", "2026-10-10T00:00:00+00:00")
+        assert result["status"] == "no_providers"
+        assert result["complete"] is False
+
+    def test_healthy_windows_survive_another_provider_failure(self):
+        from assistant_agent.calendar.provider import ProviderAuthError
+
+        healthy = MagicMock()
+        healthy.get_free_busy.return_value = [self._busy_window()]
+        router, db, *_ = _make_router_with_mock_provider(healthy)
+        failed = MagicMock()
+        failed.get_free_busy.side_effect = ProviderAuthError("expired")
+        router._providers["zoho"] = failed
+        router._provider_configs["zoho"] = next(iter(router._provider_configs.values()))
+        db.fetch_all.return_value = []
+        result = router.list_busy("2026-10-09T00:00:00+00:00", "2026-10-10T00:00:00+00:00")
+        assert len(result["busy"]) == 1
+        assert result["complete"] is False
+        assert result["provider_errors"][0]["provider"] == "zoho"
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +639,31 @@ class TestCalendarRouterCreateEvent:
 
 
 class TestCalendarRouterTimezone:
+    def test_all_day_dates_survive_provider_round_trips(self):
+        from zoneinfo import ZoneInfo
+        from assistant_agent.calendar.providers.google import _dt_to_google, _google_to_dt
+        from assistant_agent.calendar.providers.outlook import _dt_to_graph, _graph_to_dt
+        from assistant_agent.calendar.providers.zoho import _dt_to_zoho, _zoho_to_dt
+        for zone in ("Asia/Dubai", "America/New_York"):
+            local_start = datetime(2026, 10, 8, tzinfo=ZoneInfo(zone))
+            google = _dt_to_google(local_start, True)
+            assert google["date"] == "2026-10-08"
+            assert _google_to_dt(google, zone)[0] == local_start
+            graph = _dt_to_graph(local_start, True)
+            assert graph["dateTime"] == "2026-10-08T00:00:00"
+            assert graph["timeZone"] == zone
+            assert _graph_to_dt(graph) == local_start.astimezone(timezone.utc)
+            zoho = _dt_to_zoho(local_start, True)
+            assert zoho == "20261008"
+            assert _zoho_to_dt(zoho, zone)[0] == local_start
+
+    def test_router_retains_local_midnight_for_all_day_provider_requests(self):
+        router, _, _ = self._router_with_tz({"agent.app.timezone": "Asia/Dubai"})
+        start = router._event_start("2026-10-08", True)
+        assert start.date().isoformat() == "2026-10-08"
+        assert start.hour == 0
+        assert start.utcoffset().total_seconds() == 14400
+
     def setup_method(self):
         from assistant_agent.calendar.router import CalendarRouter
         CalendarRouter._token_store = None
@@ -606,7 +674,7 @@ class TestCalendarRouterTimezone:
         db.fetch_all.return_value = []
         return router, db, mock_prov
 
-    def test_timed_event_naive_start_uses_calendar_timezone(self):
+    def test_timed_event_naive_start_uses_assistant_timezone(self):
         mock_event = MagicMock()
         mock_event.provider_event_id = "prov-evt-tz"
         mock_event.start = datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
@@ -615,8 +683,8 @@ class TestCalendarRouterTimezone:
         mock_prov.create_event.return_value = mock_event
         router, db, _ = self._router_with_tz(
             {
-                "agent.calendar.timezone": "Asia/Dubai",
-                "agent.app.timezone": "",
+                "agent.calendar.timezone": "America/New_York",
+                "agent.app.timezone": "Asia/Dubai",
                 "agent.reminders.default_timezone": "UTC",
             },
             mock_prov,
@@ -642,13 +710,13 @@ class TestCalendarRouterTimezone:
         assert request.start == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
         assert request.end == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
 
-    def test_list_busy_naive_range_uses_calendar_timezone(self):
+    def test_list_busy_naive_range_uses_assistant_timezone(self):
         mock_prov = MagicMock()
         mock_prov.get_free_busy.return_value = []
         router, _, mock_prov = self._router_with_tz(
             {
-                "agent.calendar.timezone": "Asia/Dubai",
-                "agent.app.timezone": "",
+                "agent.calendar.timezone": "America/New_York",
+                "agent.app.timezone": "Asia/Dubai",
                 "agent.reminders.default_timezone": "UTC",
             },
             mock_prov,
@@ -658,8 +726,8 @@ class TestCalendarRouterTimezone:
         kwargs = mock_prov.get_free_busy.call_args.kwargs
         assert kwargs["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc)
         assert kwargs["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc)
-        assert result["start"] == datetime(2026, 6, 4, 13, 0, tzinfo=timezone.utc).isoformat()
-        assert result["end"] == datetime(2026, 6, 4, 14, 0, tzinfo=timezone.utc).isoformat()
+        assert result["start"] == "2026-06-04T17:00:00+04:00"
+        assert result["end"] == "2026-06-04T18:00:00+04:00"
 
     def test_explicit_offset_still_honored(self):
         mock_prov = MagicMock()

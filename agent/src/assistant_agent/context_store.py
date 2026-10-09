@@ -46,7 +46,9 @@ class ContextStore:
 
         query_embedding = self._embed_query(clean_query)
         if query_embedding is not None:
-            return self._semantic_search(clean_query, query_embedding, limit, search_days=search_days)
+            results = self._semantic_search(clean_query, query_embedding, limit, search_days=search_days)
+            if results:
+                return results
         return self._keyword_search(clean_query, limit, search_days=search_days)
 
     def search_for_steward(self, query: str, max_candidates: int = 15) -> list[dict[str, Any]]:
@@ -74,8 +76,6 @@ class ContextStore:
         all_results.extend(self._search_reminders_semantic(query, query_embedding, per_source, days))
         all_results.extend(self._search_outbound_emails_semantic(query, query_embedding, per_source, days))
         all_results.extend(self._search_inbound_emails_semantic(query, query_embedding, per_source, days))
-        all_results.extend(self._search_notes_semantic(query, query_embedding, per_source))
-        all_results.extend(self._search_projects_semantic(query, query_embedding, per_source, days))
         all_results.extend(self._search_contacts_semantic(query, query_embedding, per_source))
 
         # Sort by score descending and return top results
@@ -93,8 +93,6 @@ class ContextStore:
         all_results.extend(self._search_reminders_keyword(query, per_source, days))
         all_results.extend(self._search_outbound_emails_keyword(query, per_source, days))
         all_results.extend(self._search_inbound_emails_keyword(query, per_source, days))
-        all_results.extend(self._search_notes_keyword(query, per_source))
-        all_results.extend(self._search_projects_keyword(query, per_source, days))
         all_results.extend(self._search_contacts_keyword(query, per_source))
 
         return all_results[:limit]
@@ -106,14 +104,15 @@ class ContextStore:
     def _search_memories_semantic(self, query: str, query_embedding: list[float], limit: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, content, tags, scope, kind, importance, embedding, created_at, updated_at
+                        SELECT id, content, tags, scope, kind, importance, embedding, embedding_model, embedding_dimensions, created_at, updated_at
             FROM agent_memories
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %s AND embedding_dimensions = %s
               AND (expires_at IS NULL OR expires_at > now())
             ORDER BY pinned DESC, importance DESC, updated_at DESC
             LIMIT %s
             """,
-            (min(limit * 20, 200),),
+            (self.embedding_client.model, len(query_embedding), min(limit * 20, 200)),
         )
         return self._score_and_format(rows, query, query_embedding, "memory", limit, self._format_memory,
                                       text_fields=["content"])
@@ -121,13 +120,15 @@ class ContextStore:
     def _search_jobs_semantic(self, query: str, query_embedding: list[float], limit: int, days: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, task_summary, status, metadata, embedding, created_at, completed_at
+                        SELECT id, task_summary, status, metadata, embedding, embedding_model, embedding_dimensions, created_at, completed_at
             FROM jobs
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %%s AND embedding_dimensions = %%s
               AND created_at > now() - interval '%s days'
             ORDER BY created_at DESC
             LIMIT %s
             """ % (int(days), min(limit * 20, 200)),
+            (self.embedding_client.model, len(query_embedding)),
         )
         return self._score_and_format(rows, query, query_embedding, "job", limit, self._format_job,
                                       text_fields=["task_summary"])
@@ -135,13 +136,15 @@ class ContextStore:
     def _search_reminders_semantic(self, query: str, query_embedding: list[float], limit: int, days: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, title, task, status, run_at, recurrence_unit, embedding, created_at, updated_at
+                        SELECT id, title, task, status, run_at, recurrence_unit, embedding, embedding_model, embedding_dimensions, created_at, updated_at
             FROM reminders
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %%s AND embedding_dimensions = %%s
               AND (status = 'scheduled' OR created_at > now() - interval '%s days')
             ORDER BY run_at DESC
             LIMIT %s
             """ % (int(days), min(limit * 20, 200)),
+            (self.embedding_client.model, len(query_embedding)),
         )
         return self._score_and_format(rows, query, query_embedding, "reminder", limit, self._format_reminder,
                                       text_fields=["title", "task"])
@@ -149,14 +152,16 @@ class ContextStore:
     def _search_outbound_emails_semantic(self, query: str, query_embedding: list[float], limit: int, days: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, to_addresses, subject, status, embedding, created_at, sent_at
+                        SELECT id, to_addresses, subject, status, embedding, embedding_model, embedding_dimensions, created_at, sent_at
             FROM outbound_email_logs
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %%s AND embedding_dimensions = %%s
               AND created_at > now() - interval '%s days'
               AND status = 'sent'
             ORDER BY created_at DESC
             LIMIT %s
             """ % (int(days), min(limit * 20, 200)),
+            (self.embedding_client.model, len(query_embedding)),
         )
         return self._score_and_format(rows, query, query_embedding, "outbound_email", limit, self._format_outbound_email,
                                       text_fields=["subject"])
@@ -164,58 +169,35 @@ class ContextStore:
     def _search_inbound_emails_semantic(self, query: str, query_embedding: list[float], limit: int, days: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, from_address, to_addresses, subject, thread_id, embedding, received_at
+                        SELECT id, from_address, to_addresses, subject, thread_id, embedding, embedding_model, embedding_dimensions, received_at
             FROM emails
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %%s AND embedding_dimensions = %%s
               AND received_at > now() - interval '%s days'
             ORDER BY received_at DESC
             LIMIT %s
             """ % (int(days), min(limit * 20, 200)),
+            (self.embedding_client.model, len(query_embedding)),
         )
         return self._score_and_format(rows, query, query_embedding, "inbound_email", limit, self._format_inbound_email,
                                       text_fields=["from_address", "subject"])
 
-    def _search_notes_semantic(self, query: str, query_embedding: list[float], limit: int) -> list[dict[str, Any]]:
-        rows = self.db.fetch_all(
-            """
-            SELECT id, title, content, tags, embedding, created_at, updated_at
-            FROM agent_notes
-            WHERE embedding IS NOT NULL
-            ORDER BY updated_at DESC
-            LIMIT %s
-            """,
-            (min(limit * 20, 200),),
-        )
-        return self._score_and_format(rows, query, query_embedding, "note", limit, self._format_note,
-                                      text_fields=["title", "content"])
 
-    def _search_projects_semantic(self, query: str, query_embedding: list[float], limit: int, days: int) -> list[dict[str, Any]]:
-        rows = self.db.fetch_all(
-            """
-            SELECT id, title, status, result_summary, embedding, created_at, completed_at
-            FROM projects
-            WHERE embedding IS NOT NULL
-              AND created_at > now() - interval '%s days'
-            ORDER BY created_at DESC
-            LIMIT %s
-            """ % (int(days), min(limit * 20, 200)),
-        )
-        return self._score_and_format(rows, query, query_embedding, "project", limit, self._format_project,
-                                      text_fields=["title", "result_summary"])
 
     def _search_contacts_semantic(self, query: str, query_embedding: list[float], limit: int) -> list[dict[str, Any]]:
         rows = self.db.fetch_all(
             """
-            SELECT id, first_name, last_name, email_address, company, title, notes, embedding, updated_at
+                        SELECT id, first_name, last_name, email_address, company, title, notes, embedding, embedding_model, embedding_dimensions, updated_at
             FROM contacts
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %s AND embedding_dimensions = %s
             ORDER BY updated_at DESC
             LIMIT %s
             """,
-            (min(limit * 20, 200),),
+            (self.embedding_client.model, len(query_embedding), min(limit * 20, 200)),
         )
         return self._score_and_format(rows, query, query_embedding, "contact", limit, self._format_contact,
-                                      text_fields=["first_name", "last_name", "email_address", "company", "notes"])
+                                      text_fields=["first_name", "last_name", "email_address", "company"])
 
     # -------------------------------------------------------------------------
     # Keyword search helpers (per source)
@@ -297,34 +279,7 @@ class ContextStore:
         )
         return [self._format_inbound_email(row, None) for row in rows]
 
-    def _search_notes_keyword(self, query: str, limit: int) -> list[dict[str, Any]]:
-        pattern = "%%%s%%" % query
-        rows = self.db.fetch_all(
-            """
-            SELECT id, title, content, tags, created_at, updated_at
-            FROM agent_notes
-            WHERE title ILIKE %s OR content ILIKE %s
-            ORDER BY updated_at DESC
-            LIMIT %s
-            """,
-            (pattern, pattern, limit),
-        )
-        return [self._format_note(row, None) for row in rows]
 
-    def _search_projects_keyword(self, query: str, limit: int, days: int) -> list[dict[str, Any]]:
-        pattern = "%%%s%%" % query
-        rows = self.db.fetch_all(
-            """
-            SELECT id, title, status, result_summary, created_at, completed_at
-            FROM projects
-            WHERE created_at > now() - interval '%s days'
-              AND (title ILIKE %s OR result_summary ILIKE %s)
-            ORDER BY created_at DESC
-            LIMIT %s
-            """ % (int(days), "%s", "%s", "%s"),
-            (pattern, pattern, limit),
-        )
-        return [self._format_project(row, None) for row in rows]
 
     def _search_contacts_keyword(self, query: str, limit: int) -> list[dict[str, Any]]:
         pattern = "%%%s%%" % query
@@ -369,6 +324,8 @@ class ContextStore:
         clean_query_lower = query.strip().lower() if query else ""
         scored = []
         for row in rows:
+            if not self.embedding_client.compatible(row, len(query_embedding)):
+                continue
             embedding = row.get("embedding")
             if not embedding:
                 continue
@@ -462,31 +419,7 @@ class ContextStore:
             "received_at": str(row.get("received_at") or ""),
         }
 
-    def _format_note(self, row: dict[str, Any], score: Optional[float]) -> dict[str, Any]:
-        title = str(row.get("title") or "")
-        content = str(row.get("content") or "")
-        snippet = "%s: %s" % (title, content[:150]) if content else title
-        return {
-            "source": "note",
-            "id": row["id"],
-            "snippet": snippet[:250],
-            "score": score,
-            "tags": row.get("tags") or [],
-            "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
-        }
 
-    def _format_project(self, row: dict[str, Any], score: Optional[float]) -> dict[str, Any]:
-        title = str(row.get("title") or "")
-        result = str(row.get("result_summary") or "")[:100]
-        snippet = "%s → %s" % (title, result) if result else title
-        return {
-            "source": "project",
-            "id": row["id"],
-            "snippet": snippet[:250],
-            "score": score,
-            "status": row.get("status"),
-            "created_at": str(row.get("created_at") or ""),
-        }
 
     def _format_contact(self, row: dict[str, Any], score: Optional[float]) -> dict[str, Any]:
         name_parts = [str(row.get("first_name") or ""), str(row.get("last_name") or "")]
@@ -586,16 +519,6 @@ def contact_embedding_text(row: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def project_embedding_text(row: dict[str, Any]) -> str:
-    """Build embedding text for a project record."""
-    title = str(row.get("title") or "").strip()
-    result = str(row.get("result_summary") or "").strip()
-    parts = []
-    if title:
-        parts.append("Project: %s" % title)
-    if result:
-        parts.append(result[:DEFAULT_EMBEDDING_TEXT_LIMIT])
-    return "\n\n".join(parts).strip()
 
 
 # -------------------------------------------------------------------------

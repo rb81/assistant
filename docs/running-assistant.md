@@ -2,30 +2,27 @@
 
 ## Configuration
 
-Create the local secrets file from the template:
+Run the setup wizard; it creates and maintains every local configuration file:
 
 ```bash
-cp .env.example .env
-# Fill in your secrets and identity values in .env
+./scripts/setup.sh
 ```
 
-Use `.env` for secrets and account/safety values such as provider keys, mail credentials, `AGENT_NAME`, `AGENT_EMAIL`, `ADMIN_EMAIL`, `ORG_NAME`, `ORG_SECURITY_EMAIL`, `ORG_INTERNAL_EMAIL_DOMAINS`, permitted recipient domains, and actionable senders. `config/agent.yaml` is a tracked file with sensible operational defaults for model names, limits, feature settings, ports, paths, and tool behavior — you should not need to edit it for normal deployments.
+| File | Written by | Contents |
+|---|---|---|
+| `.env` | Setup wizard | Non-secret settings: identity, models, email host/folders, safety lists, integration switches, Compose profiles |
+| `.secrets/`, `.compose-secrets.yaml` | Setup wizard | Credentials and their per-service Docker secret mounts |
+| `overrides.env` | You (optional) | Expert settings the wizard does not manage; see [environment overrides](env-overrides.md) |
+| `config/AGENT.md` | You, via the wizard's instructions section | Runtime system prompt |
 
-Minimum values for manual dashboard jobs processed by the task-agent:
+`.env.example` is only a reference for the keys the wizard writes; you do not need to copy it. `config/agent.yaml` is a tracked file with sensible operational defaults for model names, limits, feature settings, ports, paths, and tool behavior — you should not need to edit it for normal deployments. For anything beyond the wizard, use `overrides.env` rather than editing tracked files, so updates never conflict with your changes.
 
-- `POSTGRES_PASSWORD`
-- `AGENT_API_PUBLISHED_HOST`
-- `AGENT_API_PUBLISHED_PORT`
-- `AGENT_APP_BASE_URL`
-- `OPENROUTER_API_KEY`
-- `ADMIN_EMAIL`
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_FROM`
+Jobs can be submitted by email or through the optional authenticated HTTPS API.
+The API is published only on the server's loopback interface by default. Use
+`https://localhost:8000` on the host; remote access should use an SSH tunnel, not a
+LAN bind. Configure the API profile and its TLS certificate through guided setup.
 
-`AGENT_API_PUBLISHED_HOST=127.0.0.1` keeps the dashboard available only from the server itself. To keep access from other trusted machines on the local network, set it to the server's LAN address, for example `AGENT_API_PUBLISHED_HOST=192.168.1.50`, and continue using `http://192.168.1.50:8000`. This controls host binding only, not generated links.
-
-`AGENT_APP_BASE_URL` controls the dashboard links sent in admin emails and overrides `agent.app.base_url` when non-blank. In production, set it to the public URL users should click, for example `https://assistant.example.com`.
+`AGENT_APP_BASE_URL` sets the HTTPS hostname used when configuring the optional API certificate; it does not add dashboard links to admin emails. See [API access](dashboard-and-api.md) for certificate and connection requirements.
 
 Persistent data defaults to the repository-local `./data` directory. Docker Compose bind-mounts PostgreSQL data, the shared workspace, private artifacts, ClamAV data, and Ollama model/cache data under that directory.
 
@@ -55,7 +52,7 @@ Fusion uses OpenRouter's `openrouter:fusion` server tool for multi-model deliber
 
 `request_input` emails either the original sender (`recipient=requester`) or `ADMIN_EMAIL` (`recipient=admin`) and pauses the job. The configured admin email is included in runtime prompt context and is the approval/contact endpoint for admin escalation.
 
-`task_complete` requires a user-visible `response`. Manual dashboard jobs display that response in the job detail view. For external email jobs, Assistant rejects completion until a sent `email_send` reply exists for the latest external requester.
+`task_complete` requires a user-visible `response`. The optional API includes job details and execution logs for API-submitted jobs. For external email jobs, Assistant rejects completion until a sent `email_send` reply exists for the latest external requester.
 
 Prompt context and agent docs:
 
@@ -74,19 +71,15 @@ Memory and reminders:
 - The `reminder-scheduler` service checks due reminders every 2 seconds by default and queues each due reminder as a normal job. Completed recurring reminders are rescheduled to their next run.
 - For a host cron instead of the Compose service, run the one-shot role every minute: `docker compose run --rm -e AGENT_ROLE=reminder-cron task-agent`.
 
-Projects and deep research:
+Deep research:
 
-- `project_create` lets the task-agent create an ordered project. The current job pauses, and `project-scheduler` queues one child job at a time. Sequence 2 is not queued until sequence 1 completes.
-- Each project gets a shared workspace path in metadata. Child jobs receive recent original-thread context, prior task summaries, and can inspect linked progress with `project_status`.
-- Project child jobs can use normal tools and `deep_research_request`, but they cannot call `project_create`. This is enforced in both tool exposure and runtime validation.
 - `deep_research_request` creates a research run and pauses the current job. The `deep-research-agent` uses a focused research prompt with email tools, file tools, direct OpenRouter web search, and terminal research controls.
 - `deep_research_status` lets linked jobs inspect run progress, result data, errors, and recent search/tool events.
 - A research run can pause by emailing the requester for guidance. A reply in the same thread resumes the waiting research run before the original job is requeued.
-- The task-agent sends the original requester a short status email when it successfully starts a project or deep research run, unless the sender is local.
-- `heartbeat` periodically surveys active jobs, projects, and research runs with a rule-based queue monitor. It can flag stuck work for review and send admin notifications/digests.
-- For host cron instead of Compose services, run `docker compose run --rm -e AGENT_ROLE=project-cron task-agent`, `docker compose run --rm -e AGENT_ROLE=deep-research-cron task-agent`, and `docker compose run --rm -e AGENT_ROLE=heartbeat-cron task-agent`.
+- `heartbeat` periodically checks queue health and can send admin notifications/digests.
+- For host cron instead of Compose services, run `docker compose run --rm -e AGENT_ROLE=deep-research-cron task-agent` and `docker compose run --rm -e AGENT_ROLE=heartbeat-cron task-agent`.
 
-Polling defaults are split by external and internal workload. IMAP polling uses `agent.email.imap_poll_interval_seconds` and defaults to 60 seconds. Internal PostgreSQL-backed queues use shorter defaults: `agent.task_agent.poll_interval_seconds`, `agent.reminders.scheduler_poll_interval_seconds`, `agent.projects.scheduler_poll_interval_seconds`, and `agent.deep_research.poll_interval_seconds` default to 2 seconds. Project and reminder schedulers keep looping immediately after they process work, then sleep only once they find nothing ready.
+Polling defaults are split by external and internal workload. IMAP polling uses `agent.email.imap_poll_interval_seconds` and defaults to 60 seconds. Internal PostgreSQL-backed queues use shorter defaults: `agent.task_agent.poll_interval_seconds`, `agent.reminders.scheduler_poll_interval_seconds`, and `agent.deep_research.poll_interval_seconds` default to 2 seconds. Reminder scheduling keeps looping immediately after processing work, then sleeps only once it finds nothing ready.
 
 Shared workspace settings live in local `config/agent.yaml`:
 
@@ -145,26 +138,24 @@ docker compose up -d --force-recreate
 
 Services:
 
-- `agent-api`: FastAPI dashboard and JSON API on `http://localhost:8000`.
+- `agent-api`: optional FastAPI JSON API on `https://localhost:8000` (loopback only).
 - `downloader`: IMAP polling and job creation.
 - `task-agent`: LLM tool loop for queued jobs.
 - `reminder-scheduler`: Queues due reminders as jobs.
-- `project-scheduler`: Queues ordered project tasks as child jobs and returns project results.
 - `deep-research-agent`: Runs constrained deep research loops with direct OpenRouter web search.
 - `workspace-indexer`: Maintains the semantic file index. PDF and Office files are text-extracted for search without moving the originals.
 - `supervisor`: Stalled job and review monitor.
 - `heartbeat`: Rule-based active-work survey, stale-work review flagging, and admin digest monitor.
-- `ollama`: Internal embedding service for semantic memory, notes, and workspace file search.
+- `ollama`: Internal embedding service for memory and supported semantic search.
 - `ollama-model-puller`: One-shot startup service that pulls the configured embedding model.
 - `sandbox`: Command execution broker for isolated per-command run containers.
 - `postgres`: Durable state.
 
 ## First Run
 
-1. Open `http://localhost:8000`.
-2. Create a manual job from the left panel.
-3. Watch the job move from `queued` to `running`, then to `completed`, `failed`, or `needs_review`.
-4. Inspect the Agent Response and logs in the job detail view.
+1. Enable the optional API in setup if API access is required.
+2. Use a client that trusts the configured certificate and supplies the bearer token.
+3. Keep host publication on loopback; use an SSH tunnel for remote administration.
 
 If required configuration is missing, the affected service exits at startup instead of running in a degraded state.
 
@@ -197,7 +188,6 @@ Use the actual repository path in place of `/srv/assistant`. The cron user must 
 Useful endpoints:
 
 - `GET /health`
-- `GET /api/stats`
 - `GET /api/config/status`
 - `GET /api/jobs`
 - `POST /api/jobs`
@@ -267,8 +257,8 @@ Prompt context is loaded from `config/AGENT.md` (or the file named by `agent.pro
 
 Before exposing this beyond local development:
 
-- Put authentication in front of the dashboard.
-- Publish the dashboard only on `127.0.0.1` or the server's LAN IP with `AGENT_API_PUBLISHED_HOST`; avoid `0.0.0.0` unless another firewall layer enforces access.
+- Keep the optional API published only on `127.0.0.1` and use HTTPS with a trusted certificate and bearer token.
+- Use an SSH tunnel for remote API access instead of widening the host bind.
 - Disable generated API docs with `AGENT_API_DOCS_ENABLED=false` and `AGENT_API_OPENAPI_ENABLED=false`, or set `agent.api.docs_enabled: false` and `agent.api.openapi_enabled: false` in `config/agent.yaml`.
 - Replace example config values and rotate secrets.
 - Restrict SMTP domains to the minimum required list.

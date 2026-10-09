@@ -6,7 +6,6 @@ This document helps contributors navigate the repository quickly.
 
 - `agent/src/assistant_agent/` — core application modules.
 - `agent/tests/` — unit/integration-focused tests.
-- `agent/frontend/` — workspace UI frontend source (Vite/Milkdown).
 - `sandbox/` — sandbox broker implementation.
 - `database/schema.sql` — PostgreSQL schema.
 - `config/` — tracked operational config defaults.
@@ -15,17 +14,15 @@ This document helps contributors navigate the repository quickly.
 ## Core Python Modules (high-level)
 
 - `main.py` — role bootstrap and process entrypoint.
-- `api.py` — FastAPI app and dashboard/API endpoints.
+- `api.py` — optional authenticated FastAPI JSON API.
 - `task_agent.py` — primary autonomous loop.
 - `tools.py` — tool schemas, runtime execution, availability gating.
 - `database.py` — DB helpers and queue operations.
 - `email_ingest.py` — IMAP downloader + actionable job creation.
 - `memory_manager.py` / `memory_store.py` — memory stewardship and storage.
-- `entity_store.py` / `entity_linker.py` — entity registry storage and LLM-powered auto-classification.
-- `entity_resolver.py` — polymorphic entity reference resolution for entity-linked recall.
-- `note_store.py` — notes persistence/search.
+- `context_store.py` — semantic and keyword search across supported data sources.
+- `embedding_maintenance.py` — embedding status, probing, and reindex operations.
 - `workspace_index.py` — workspace indexing + semantic search backend.
-- `projects.py` — project scheduler/orchestration.
 - `deep_research.py` — deep research async worker.
 - `reminders.py` — reminder scheduling and recurrence handling.
 - `calendar/` — OAuth calendar providers (`google`, `outlook`, `zoho`) and `CalendarRouter`.
@@ -34,11 +31,11 @@ This document helps contributors navigate the repository quickly.
 - `llm_client.py` — OpenRouter/OpenAI-compatible chat client.
 - `prompt_context.py` — AGENT prompt loading and runtime context assembly.
 
-## Frontend and UI
+## Browser UI
 
-- Static UI templates/assets live under `agent/src/assistant_agent/ui/`.
-- Frontend build source lives under `agent/frontend/`.
-- Built assets are copied into the Python image during Docker build.
+The browser dashboard and workspace editor have been retired. The optional API
+serves JSON endpoints only; retained files under `agent/src/assistant_agent/ui/`
+are not served by the application.
 
 ## Test Suite
 
@@ -49,9 +46,9 @@ Tests are under `agent/tests/` and cover:
 - reminder/tool behavior,
 - calendar router and provider configuration,
 - mailbox/threading handling,
-- prompt context and UI pages,
+- prompt context and API route exposure,
 - sandbox retry handling,
-- notes/workspace index interactions.
+- memory/context search and workspace index interactions.
 
 Run tests from `agent/` with pytest (inside container or local venv with dependencies installed).
 

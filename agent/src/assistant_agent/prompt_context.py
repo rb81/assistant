@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .config import AppConfig, agent_display, agent_email, agent_name
 from .time_utils import current_time_context
@@ -10,6 +10,45 @@ from .time_utils import current_time_context
 LOGGER = logging.getLogger("assistant.prompt_context")
 SHARED_WORKSPACE_DEFAULTS = Path(__file__).with_name("shared_workspace")
 DOCS_DIR = ".assistant/docs"
+REQUEST_CLOCK_START = "[Current request time]"
+REQUEST_CLOCK_END = "[/Current request time]"
+
+
+def refresh_request_context(messages: list[dict[str, Any]], config: AppConfig) -> list[dict[str, Any]]:
+    clock = current_time_context(config)
+    block = "\n".join([
+        REQUEST_CLOCK_START,
+        "Assistant timezone: %s" % clock["timezone"],
+        "Current local date/time: %s" % clock["local"],
+        "Current UTC date/time: %s" % clock["utc"],
+        "Use the assistant timezone for unqualified times. Preserve explicitly requested zones and UTC offsets.",
+        "Historical message timestamps are not the current time.",
+        REQUEST_CLOCK_END,
+    ])
+    refreshed = []
+    for message in messages:
+        copied = dict(message)
+        content = copied.get("content")
+        if isinstance(content, str):
+            if content.startswith(REQUEST_CLOCK_START) and REQUEST_CLOCK_END in content:
+                content = content.split(REQUEST_CLOCK_END, 1)[1].lstrip("\n")
+            if copied.get("role") == "system":
+                content = "\n".join(line for line in content.splitlines() if not line.startswith((
+                    "- Current UTC time:", "- Current local time:", "- Default timezone:",
+                )))
+            copied["content"] = content
+        refreshed.append(copied)
+    for message in refreshed:
+        if message.get("role") == "system" and isinstance(message.get("content"), str):
+            message["content"] = block + "\n\n" + message["content"]
+            break
+    else:
+        refreshed.insert(0, {"role": "system", "content": block})
+    for message in reversed(refreshed):
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            message["content"] = block + "\n\n" + message["content"]
+            break
+    return refreshed
 
 
 def shared_root(config: AppConfig) -> Path:

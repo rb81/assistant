@@ -1,5 +1,6 @@
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -111,7 +112,7 @@ class MemoryStore:
         )
 
     def active_filter(self) -> str:
-        return "(expires_at IS NULL OR expires_at > now())"
+        return "(expires_at IS NULL OR expires_at > now()) AND COALESCE(metadata->>'state', 'active') = 'active'"
 
     def get(self, memory_id: int, include_expired: bool = False) -> Optional[dict[str, Any]]:
         filters = ["id = %s"]
@@ -141,11 +142,15 @@ class MemoryStore:
         metadata: Optional[dict[str, Any]] = None,
         source_job_id: Optional[int] = None,
         actor: str = "system",
+        embed: bool = True,
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         if not text:
             raise ValueError("memory content is required")
-        embedding, embedding_model, embedding_dimensions, embedding_updated_at = self.embedding_for(text)
+        embedding, embedding_model, embedding_dimensions, embedding_updated_at = self.embedding_for(text) if embed else (None, None, None, None)
+        metadata = dict(metadata or {})
+        if not embed:
+            metadata["embedding_pending"] = True
         row = self.db.fetch_one(
             f"""
             INSERT INTO agent_memories(
@@ -209,6 +214,7 @@ class MemoryStore:
         job_id: Optional[int] = None,
         actor: str = "system",
         include_expired: bool = False,
+        embed: bool = True,
     ) -> dict[str, Any]:
         existing = self.get(memory_id, include_expired=include_expired)
         if existing is None:
@@ -221,8 +227,10 @@ class MemoryStore:
         embedding_model = None
         embedding_dimensions = None
         embedding_updated_at = None
-        if has_content:
+        if has_content and embed:
             embedding, embedding_model, embedding_dimensions, embedding_updated_at = self.embedding_for(next_content or "")
+        if has_content and not embed:
+            metadata = {**(existing.get("metadata") or {}), **(metadata or {}), "embedding_pending": True}
         has_expires_at = expires_at is not UNSET
         next_expires_at = self.parse_optional_datetime(expires_at) if has_expires_at else None
         row = self.db.fetch_one(
@@ -269,6 +277,8 @@ class MemoryStore:
         )
         if row is None:
             raise ValueError("memory not found")
+        if row is None:
+            raise ValueError("memory no longer exists")
         self.log_event(
             "update",
             actor,
@@ -297,22 +307,22 @@ class MemoryStore:
         actor: str = "system",
         include_expired: bool = False,
     ) -> dict[str, Any]:
-        existing = self.get(memory_id, include_expired=include_expired)
-        if existing is None:
-            raise ValueError("memory not found")
-        row = self.db.fetch_one(
-            "DELETE FROM agent_memories WHERE id = %s RETURNING id, content, tags, scope, kind",
-            (memory_id,),
-        )
-        self.log_event(
-            "delete",
-            actor,
-            memory_id=memory_id,
-            job_id=job_id,
-            input_data={"reason": reason},
-            output_data={"deleted": row, "before": existing},
-        )
-        return row
+        from .memory_erasure import erase_memory
+
+        return erase_memory(self.db, self.config, memory_id, actor, job_id, include_expired)
+
+    def refresh_pending_embeddings(self, limit: int = 10) -> int:
+        if not self.embedding_client.enabled:
+            return 0
+        rows = self.db.fetch_all("SELECT id, content FROM agent_memories WHERE metadata->>'embedding_pending' = 'true' ORDER BY id LIMIT %s", (limit,))
+        refreshed = 0
+        for row in rows:
+            embedding, model, dimensions, updated = self.embedding_for(row["content"])
+            if embedding is None:
+                continue
+            saved = self.db.fetch_one("UPDATE agent_memories SET embedding = %s, embedding_model = %s, embedding_dimensions = %s, embedding_updated_at = %s, metadata = metadata - 'embedding_pending' WHERE id = %s AND content = %s RETURNING id", (embedding, model, dimensions, updated, row["id"], row["content"]))
+            refreshed += bool(saved)
+        return refreshed
 
     def keyword_search(
         self,
@@ -327,6 +337,7 @@ class MemoryStore:
         filters = [self.active_filter()]
         if clean_query:
             pattern = "%%%s%%" % clean_query
+            terms = list(dict.fromkeys(term.lower() for term in re.findall(r"\w{3,}", clean_query) if term.lower() not in {"the", "and", "for", "this", "that", "with", "from", "please", "email", "task", "send", "have", "will", "your"}))[:12]
             filters.append(
                 """
                 (content ILIKE %s
@@ -339,17 +350,28 @@ class MemoryStore:
                  ))
                 """
             )
+            if terms:
+                filters[-1] = "(%s OR %s)" % (filters[-1], " OR ".join("content ILIKE %s" for _term in terms))
             params.extend([pattern, pattern, pattern, pattern])
+            params.extend("%%%s%%" % term for term in terms)
         if clean_tags:
             filters.append("tags && %s")
             params.append(clean_tags)
+        ranking = ""
+        if clean_query:
+            ranking = "(CASE WHEN content ILIKE %s THEN 100 ELSE 0 END"
+            params.append(pattern)
+            for term in terms:
+                ranking += " + CASE WHEN content ILIKE %s THEN 1 ELSE 0 END"
+                params.append("%%%s%%" % term)
+            ranking += ") DESC, "
         params.append(max_rows)
         rows = self.db.fetch_all(
             f"""
             SELECT {MEMORY_COLUMNS}
             FROM agent_memories
             WHERE {" AND ".join(filters)}
-            ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
+            ORDER BY {ranking}pinned DESC, importance DESC, updated_at DESC, created_at DESC
             LIMIT %s
             """,
             tuple(params),
@@ -373,21 +395,24 @@ class MemoryStore:
             SELECT {MEMORY_COLUMNS}, embedding
             FROM agent_memories
             WHERE embedding IS NOT NULL
+                            AND embedding_model = %s AND embedding_dimensions = %s
               AND {self.active_filter()}
             ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
             LIMIT %s
             """,
-            (min(max(candidate_limit, 10), 2000),),
+            (self.embedding_client.model, len(query_embedding), min(max(candidate_limit, 10), 2000)),
         )
         scored = []
         recency_boost_max = self.config.get_float("agent.memory.embeddings.recency_boost_max", 0.1)
         recency_boost_days = self.config.get_int("agent.memory.embeddings.recency_boost_days", 365)
         
         for row in rows:
-            score = cosine_similarity(query_embedding, row.get("embedding") or [])
-            if score is None:
+            if not self.embedding_client.compatible(row, len(query_embedding)):
                 continue
-            
+            score = cosine_similarity(query_embedding, row.get("embedding") or [])
+            minimum = self.config.get_float("agent.memory.embeddings.min_similarity", 0.45)
+            if score is None or score < minimum:
+                continue
             # Calculate recency boost
             days_old = 9999
             updated = row.get("updated_at") or row.get("created_at")
@@ -400,15 +425,18 @@ class MemoryStore:
                 if updated:
                     days_old = max((datetime.now(timezone.utc) - updated).days, 0)
             
-            recency_boost = max(0.0, recency_boost_max * (1.0 - min(days_old / float(recency_boost_days), 1.0)))
+            recency_boost = max(0.0, recency_boost_max * (1.0 - min(days_old / float(max(recency_boost_days, 1)), 1.0)))
             score = score + recency_boost
             
             clean_row = dict(row)
             clean_row.pop("embedding", None)
             clean_row["score"] = score
+            clean_row["similarity"] = score - recency_boost
             scored.append(clean_row)
         scored.sort(key=lambda item: (item.get("score") or 0.0, item.get("importance") or 0), reverse=True)
-        result = scored[: min(max(int(limit or 10), 1), 100)]
+        keywords = self.keyword_search(clean_query, limit=limit)
+        seen = {row["id"] for row in keywords}
+        result = (keywords + [row for row in scored if row["id"] not in seen])[: min(max(int(limit or 10), 1), 100)]
         self.touch([row["id"] for row in result])
         if not result:
             return self.keyword_search(clean_query, limit=limit)

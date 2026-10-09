@@ -4,6 +4,8 @@ Assistant connects to calendar services directly via OAuth 2.0 APIs. This docume
 
 ## Supported providers
 
+Zoom is a separate conferencing integration. All implicit calendar/reminder times use `AGENT_TIMEZONE`; legacy feature timezone overrides are ignored. Local and UTC request clocks refresh on every model call.
+
 | Provider | Identifier | Required env vars |
 |----------|-----------|-------------------|
 | Google Calendar | `google` | `CALENDAR_GOOGLE_CLIENT_ID`, `CALENDAR_GOOGLE_CLIENT_SECRET`, `CALENDAR_GOOGLE_REFRESH_TOKEN` |
@@ -11,6 +13,14 @@ Assistant connects to calendar services directly via OAuth 2.0 APIs. This docume
 | Zoho Calendar | `zoho` | `CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN` |
 
 Calendar tools stay disabled until `CALENDAR_ENABLED=true` and at least one provider's `*_CLIENT_ID` / `*_CLIENT_SECRET` / `*_REFRESH_TOKEN` are set. No `config/agent.yaml` edits are required.
+
+## Zoom
+
+Set `ZOOM_ENABLED=true`, `ZOOM_AUTH_MODE=s2s`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`, and `ZOOM_ACCOUNT_ID` for an account-owned server-to-server app. `ZOOM_USER_ID` defaults to `me`. Alternatively use `ZOOM_AUTH_MODE=oauth` and `ZOOM_REFRESH_TOKEN` for a user-authorized app. Grant only meeting read/write scopes needed for the authorized host. Rotated refresh/access tokens persist in private database state, with serialized refresh and retry-after backoff.
+
+Tools: `zoom_create_meeting`, `zoom_read_meeting`, `zoom_list_meetings`, `zoom_update_meeting`, `zoom_delete_meeting`, and admin-only `zoom_reconcile_meeting`. Writes require local managed IDs. Host start URLs are neither returned nor stored. Creation requires a stable idempotency key. After an uncertain timeout, verify the authorized host's Zoom meeting and reconcile its provider ID with the existing request; never use a new key to create a duplicate.
+
+Create Zoom first, then pass its local `zoom_meeting_id` to `calendar_create_event`. Start and duration must match. Only participant links are added. Linked edits/deletions synchronize the other service; after a partial failure, retry the same update/deletion, not creation. Recurring Zoom series, joining, recordings, and transcription are not implemented. Live account validation requires configured credentials; mocked API tests and live database lifecycle tests do not prove an account's scopes/licensing.
 
 ## Multiple accounts per provider
 
@@ -76,16 +86,17 @@ curl -s -X POST https://oauth2.googleapis.com/token \
 
 The response will contain `refresh_token`. Copy it.
 
-### Step 4 — Add to `.env`
+### Step 4 — Store the credentials
 
-```env
-CALENDAR_GOOGLE_CLIENT_ID=your-client-id
-CALENDAR_GOOGLE_CLIENT_SECRET=your-client-secret
-CALENDAR_GOOGLE_REFRESH_TOKEN=your-refresh-token
+Enter them in `./scripts/setup.sh --section calendar` (stored as protected secrets, not in `.env`), or update later with `./scripts/setup.sh secrets update NAME`. The names are:
 
-# Optional: target a specific calendar (defaults to primary)
-CALENDAR_GOOGLE_CALENDAR_ID=primary
+```text
+CALENDAR_GOOGLE_CLIENT_ID
+CALENDAR_GOOGLE_CLIENT_SECRET
+CALENDAR_GOOGLE_REFRESH_TOKEN
 ```
+
+The optional target calendar (defaults to `primary`) is the non-secret setting `CALENDAR_GOOGLE_CALENDAR_ID`, which the wizard writes to `.env`.
 
 The `CalendarRouter` will automatically refresh the access token when it expires using the stored refresh token.
 
@@ -141,12 +152,11 @@ curl -s -X POST "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/toke
 
 Copy `refresh_token` from the response.
 
-### Step 5 — Add to `.env`
+### Step 5 — Store the credentials
+
+Enter the client ID, client secret and refresh token in `./scripts/setup.sh --section calendar` (stored as protected secrets), or update later with `./scripts/setup.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `.env` through the wizard:
 
 ```env
-CALENDAR_OUTLOOK_CLIENT_ID=your-client-id
-CALENDAR_OUTLOOK_CLIENT_SECRET=your-client-secret
-CALENDAR_OUTLOOK_REFRESH_TOKEN=your-refresh-token
 CALENDAR_OUTLOOK_TENANT_ID=your-tenant-id
 
 # Optional: target a specific calendar (defaults to the user's default calendar)
@@ -198,13 +208,11 @@ curl -s -X POST "https://accounts.zoho.com/oauth/v2/token" \
 
 Copy `refresh_token` from the response.
 
-### Step 4 — Add to `.env`
+### Step 4 — Store the credentials
+
+Enter the client ID, client secret and refresh token in `./scripts/setup.sh --section calendar` (stored as protected secrets), or update later with `./scripts/setup.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `.env` through the wizard:
 
 ```env
-CALENDAR_ZOHO_CLIENT_ID=your-client-id
-CALENDAR_ZOHO_CLIENT_SECRET=your-client-secret
-CALENDAR_ZOHO_REFRESH_TOKEN=your-refresh-token
-
 # Optional: target a specific calendar UID (can also be set in agent.yaml at
 # agent.calendar.zoho.calendar_id). If omitted, the integration uses "default",
 # which may be empty if your events are stored in another Zoho calendar.
@@ -233,7 +241,8 @@ These variables apply across all providers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CALENDAR_ENABLED` | `false` | Set `true` to expose calendar tools when provider credentials are present |
-| `CALENDAR_TIMEZONE` | (from `AGENT_TIMEZONE`) | Timezone for event date/time values (e.g. `America/New_York`) |
+| `AGENT_TIMEZONE` | `UTC` | Authoritative timezone for implicit event times and all-day boundaries (e.g. `America/New_York`) |
+| `CALENDAR_TIMEZONE` | deprecated | Ignored; use `AGENT_TIMEZONE` |
 | `CALENDAR_DEFAULT_PROVIDER` | first discovered | Which provider to use when the agent does not specify one |
 | `CALENDAR_DEFAULT_ALERT_MINUTES` | `30` | Minutes before each event to set a reminder alert (0 to suppress) |
 
@@ -241,18 +250,37 @@ These variables apply across all providers:
 
 ## Verifying configuration
 
-After adding credentials and restarting the stack, check tool status:
+For an existing installation, run `./scripts/setup.sh --section calendar`.
+The optional read-only verification uses a fresh access token and checks both
+calendar discovery and event access, without creating events or persisting the
+test token. Verification failure does not prevent saving an offline draft, and
+no credentials are automatically rotated.
 
-```bash
-curl http://localhost:8000/api/config/status | jq .calendar
-```
+Zoho `.com` accounts use `https://accounts.zoho.com/oauth/v2/token` and
+`https://calendar.zoho.com/api/v1`. Older setup versions saved the bare calendar
+origin without `/api/v1`; the provider now normalizes that origin to the API
+route. A persistent HTTP 401 after one token refresh is an authentication error,
+not proof of an empty calendar. If it persists after fixing the route, verify the
+client ID/secret and matching refresh token. `INVALID_OAUTHSCOPE` requires renewed
+consent for `ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`: token refresh
+cannot grant missing scopes. Use setup or `./scripts/setup.sh secrets update`
+to store replacements, and explicitly activate/recreate affected consumers.
 
-The response will list active providers and whether calendar tools are exposed.
+`calendar_list_busy` returns `status`, `complete`, and `provider_errors` alongside
+the existing windows. Only `complete=true` verifies availability. With failed
+providers, healthy-provider windows remain available but `status=degraded` and
+`complete=false`; an empty list is not evidence that the user is free. With no
+providers, `status=no_providers` and `complete=false`.
+
+After adding credentials and activating the affected services, check tool status
+through the optional authenticated HTTPS API using a trusted certificate. Never
+use plain HTTP or disable certificate verification. The response lists active
+providers and whether calendar tools are exposed.
 
 ---
 
 ## Security notes
 
-- Refresh tokens grant long-lived access to your calendar. Store `.env` securely and never commit it to source control.
+- Refresh tokens grant long-lived access to your calendar. Store `.secrets/` securely and never commit it to source control.
 - The assistant can only create, update, and delete events that it created itself — it cannot modify third-party events.
 - Set `agent.calendar.policy.allow_read_event_details: false` (the default) to redact event titles and descriptions from free/busy results; the agent will only see time windows, not content.

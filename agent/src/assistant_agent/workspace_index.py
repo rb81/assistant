@@ -576,14 +576,17 @@ class WorkspaceIndex:
                 FROM workspace_file_chunks c
                 JOIN workspace_files f ON f.id = c.file_id
                 WHERE c.embedding IS NOT NULL
+                                    AND c.embedding_model = %s AND c.embedding_dimensions = %s
                   AND f.index_status IN ('indexed', 'embedding_failed')
                   AND (%s = '' OR f.relative_path LIKE %s)
                 ORDER BY f.updated_at DESC, c.chunk_index ASC
                 LIMIT %s
                 """,
-                (prefix, prefix + "%", min(max(candidate_limit, 10), 10000)),
+                (self.embedding_client.model, len(query_embedding), prefix, prefix + "%", min(max(candidate_limit, 10), 10000)),
             )
             for row in rows:
+                if not self.embedding_client.compatible(row, len(query_embedding)):
+                    continue
                 score = cosine_similarity(query_embedding, row.get("embedding") or [])
                 if score is None:
                     continue

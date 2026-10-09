@@ -1,247 +1,157 @@
 # Security Guide
 
-Assistant is designed to run on a **private, trusted network** — typically your home server, a local VM, or a private VPS that is not directly reachable from the public internet. This document explains the security model, its inherent limitations, and what you must do if you choose to expose it beyond a private network.
+## Access model
 
----
+The email-first deployment publishes no application port. Browser administration
+and shared editing are removed. The optional API requires HTTPS and bearer
+authentication for every route, including `/health`. See [API access](dashboard-and-api.md).
+PostgreSQL, Ollama, ClamAV and sandbox broker ports remain private. PostgreSQL
+connections and sandbox RPC use verified TLS; the sandbox also requires its
+service-scoped bearer token.
 
-## ⚠️ Critical: This System Has No Built-In Authentication
+Use a dedicated assistant mailbox, sender/recipient allowlists, verified admin
+identity, and explicit review for sensitive actions. See [email administration](email-administration.md).
+DMARC authenticates a domain, not an individual mailbox. Only trust receiving
+providers that strip forged authentication headers and enforce the authorized
+mailbox identity. HMAC-signed admin commands provide a separate verification path.
 
-**Every API endpoint, the admin dashboard (`/admin`), and the workspace UI (`/workspace`) are completely unauthenticated.** Anyone who can reach the server's IP and port can:
+## Docker secrets
 
-- Create, cancel, and delete jobs
-- Read and write files in the shared workspace
-- Browse and edit memories, notes, and contacts
-- Trigger sandboxed command execution
-- Access all email, calendar, and configuration data
+Run `./scripts/setup.sh` to configure credentials without editing `.env`.
+Credentials are stored in gitignored `.secrets` files with directory mode `0700`
+and file mode `0600`. A generated `.compose-secrets.yaml` grants read-only mounts
+under `/run/secrets` only to relevant services. `.env` contains non-secret settings.
+The sandbox initialization helper receives only its broker token and TLS pair.
+It has no network or Docker socket and temporarily uses `DAC_READ_SEARCH` to read
+protected host-owned sources. It stages root-owned keys/token (`0600`) into a
+private Docker-managed volume. The capability-free broker mounts this volume
+read-only; its runtime credentials are never made world-readable. The token is
+also mounted only into its two callers (`task-agent` and the optional API).
+Ephemeral command containers receive no credential mounts.
 
-This is an intentional design trade-off for simplicity in private deployments. It means **network-level access control is your only protection**.
+This is ordinary Docker Compose, not Swarm: host source files are plaintext, not
+encrypted. Compose file-backed mounts do not reliably implement requested
+`uid`/`gid`/`mode` remapping; verify effective access on the deployment host. Keep
+host permissions restrictive and use FileVault/LUKS if disk encryption is needed.
+Host administrators, Docker-daemon users and compromised authorized services can
+read credentials. Secret files reduce accidental exposure, not those privileges.
 
----
+Never bake secrets into images, build arguments, Git commits, shell arguments,
+logs, or the agent-accessible `data/share` directory. Do not print fully rendered
+Compose configuration from a legacy inline-secret deployment. Protect backups:
+`.secrets`, TLS keys, database dumps and runtime OAuth token caches are confidential.
+Providers can store refreshed access/refresh tokens in PostgreSQL; file-backed
+initial credentials do not encrypt those database records.
 
-## Deployment Model
+## Dropbox file exchange
 
-Assistant is designed to be accessed by one person (you) on a network you control. There are three typical deployment scenarios:
+Use a Dropbox **App Folder** registration with only file metadata/read/write
+scopes. The tools restrict paths to Inbox and task-specific Outbox destinations;
+setup requires the operator to confirm App Folder registration. Do not use a
+Full Dropbox app. No public links, webhooks or inbound ports are needed.
 
-### ✅ Local machine (fully safe)
-Run the stack on your own laptop or desktop. The default `127.0.0.1` binding means only your machine can reach the dashboard. This is the safest default.
+Dropbox downloads remain in private quarantine until mandatory clean scans and
+successful conversion. Exports scan a bounded snapshot of eligible workspace
+bytes, exclude internal/credential paths and never overwrite remote files.
+Remote deletion is limited to regular Inbox/Outbox files, requires a current
+listed revision, and must follow an explicit requester instruction.
+Standing Outbox permission applies to any task when enabled, not just authenticated
+admin tasks. Keep email sender restrictions appropriate for that authority.
 
-### ✅ Private home/office network
-Run on a home server or NAS. Bind to the server's LAN IP (e.g., `192.168.1.50`). Only devices on your LAN can reach the dashboard. This is safe if you trust all devices on your network.
+Dropbox is not end-to-end encrypted. Imported content may be sent to configured
+model/embedding providers. Scanning does not eliminate prompt injection, and
+path restrictions cannot detect all secrets embedded in a deliverable. Local
+removal does not retract remote files or revoke Dropbox authorization. See the
+[Dropbox guide](dropbox.md) for setup, retries, revocation and retention.
 
-### ⚠️ Public server (VPS, cloud VM) — requires additional protection
-If your server has a public IP, you **must** put the dashboard behind a reverse proxy with authentication before it is safe to operate. See [If You Must Expose This Publicly](#if-you-must-expose-this-publicly) below.
-
----
-
-## Network Binding
-
-### Docker compose publishing (the primary control)
-
-The `agent-api` service in `docker-compose.yml` publishes its port like this:
-
-```yaml
-ports:
-  - "${AGENT_API_PUBLISHED_HOST:-127.0.0.1}:${AGENT_API_PUBLISHED_PORT:-8000}:8000"
-```
-
-The default `AGENT_API_PUBLISHED_HOST=127.0.0.1` means Docker will only accept connections on the loopback interface — the dashboard is not reachable from other machines. This is the safest default.
-
-**To allow LAN access**, set in `.env`:
-
-```env
-AGENT_API_PUBLISHED_HOST=192.168.1.50  # your server's LAN IP
-```
-
-**Never set `AGENT_API_PUBLISHED_HOST=0.0.0.0`** on a server with a public IP unless you have a firewall rule or reverse proxy blocking external access.
-
-### Internal bind host
-
-Inside the container, the API binds to `0.0.0.0` so that Docker's port-forwarding can route traffic to it. **This does not expose the service externally** — what's reachable from outside is controlled entirely by the `AGENT_API_PUBLISHED_HOST` setting on the Docker host (see above), which still defaults to `127.0.0.1`. You can override the internal bind address in `config/agent.yaml` or via `AGENT_API_BIND_HOST`, but there is normally no reason to do so.
-
-### Public bind guard
-
-As a safety net, the API **refuses to start** if `AGENT_API_BIND_HOST` resolves to `0.0.0.0` unless you explicitly acknowledge this by setting:
-
-```env
-AGENT_API_ALLOW_PUBLIC_BIND=true
-```
-
-Or in `config/agent.yaml`:
-
-```yaml
-agent:
-  api:
-    allow_public_bind: true
-```
-
-This prevents a casual user from accidentally exposing all unauthenticated endpoints on every network interface. In the standard Docker Compose setup the internal bind is `0.0.0.0` (so Docker port-forwarding works), and the override is already set in the container environment. If you run the API outside Docker and forget to set `AGENT_API_BIND_HOST` to `127.0.0.1`, this guard will catch the mistake.
-
----
-
-## Database Password
-
-The `.env.example` file contains a placeholder password that **must be changed** before deploying:
-
-**Do this before starting the stack:**
+## Updating credentials
 
 ```bash
-cp .env.example .env
-# Generate a strong password, for example:
-openssl rand -base64 32
-# Set it in .env:
-POSTGRES_PASSWORD=<your-generated-password>
+./scripts/setup.sh secrets status
+./scripts/setup.sh secrets update
+./scripts/setup.sh secrets update OPENROUTER_API_KEY
+./scripts/setup.sh secrets apply
 ```
 
-The application will log a startup warning if it detects that `POSTGRES_PASSWORD` is still set to the placeholder value. It will still start — but you should treat this warning as urgent.
+Status shows names, not values. Updates use masked input and explicit confirmation.
+Generated client tokens/signing keys are shown only after a separate reveal request.
+Activation recreates affected running containers: a plain restart may retain the
+old file bind mount after atomic replacement. Inactive profiles are not started.
+Saved credentials can remain pending; inspect service health after activation.
 
-The database port is **not published** outside the Docker network by default, so the password primarily protects against container-to-container or volume-level compromise. Still, using the default placeholder is bad practice.
+Obtain replacement third-party credentials from the provider, apply and verify
+them, then revoke the old credentials. The CLI does not rotate keys at providers.
+API-token/signing-key changes invalidate clients still using the previous value.
 
----
+Database-password updates use a coordinated maintenance flow: stop consumers,
+alter the database role, replace the file, verify network authentication, and
+recreate consumers. `POSTGRES_PASSWORD_FILE` alone only controls initialization,
+not the password in an existing database. If interrupted, use
+`./scripts/setup.sh secrets recover` to restore the previous credential and resume
+the recorded services. Recovery data is protected locally; database and filesystem
+changes are not one atomic transaction. Custom/external databases require a
+deployment-specific rotation procedure and are explicitly refused by this flow.
 
-## Dashboard and Workspace Visibility
+## API exposure
 
-By default, the `/admin` dashboard and `/workspace` UI are enabled. For deployments where you want to expose only the API (e.g., behind an application that calls the API programmatically), you can disable the browser UIs:
+Compose publishes the optional API only on `127.0.0.1`; remote LAN/VPN binding is
+not supported by the managed setup. The API binds inside its container for Docker
+port forwarding, but host access remains loopback-only. Use an SSH tunnel for
+remote administration rather than widening the host bind. Do not expose the Docker
+daemon through unauthenticated TCP: use OS-controlled sockets, SSH, or mTLS.
 
-In `.env`:
+Import a trusted, hostname-valid TLS certificate for production. The wizard's
+development certificate covers localhost/127.0.0.1 only; explicitly trust its
+certificate in development clients instead of disabling certificate verification.
+Keep API docs/OpenAPI disabled unless needed. A reverse proxy must retain a secure
+HTTPS backend and correct, narrowly trusted forwarding configuration if one is
+used on the host; HTTP is rejected by the API. The managed deployment does not
+publish the API for remote clients.
 
-```env
-AGENT_API_DASHBOARD_ENABLED=false
-AGENT_API_WORKSPACE_ENABLED=false
-```
+## Transport security
 
-When set to `false`, those routes return HTTP 404. The underlying API endpoints (e.g., `/api/jobs`, `/api/workspace/file`) remain available.
+External model and integration requests use HTTPS with normal certificate
+verification. Runtime model URLs must be HTTPS; Zoho Calendar accepts only HTTPS
+on supported regional Zoho hosts. Redirects are not followed for authenticated
+model or sandbox requests. IMAP uses implicit TLS. SMTP requires certificate-
+verified STARTTLS before login or message transfer and does not fall back to
+plaintext.
 
-Note: disabling the UI does **not** provide authentication — it only prevents the browser interface from loading. API endpoints are still unauthenticated. True protection requires either not publishing the port or using a reverse proxy with authentication.
+PostgreSQL clients verify the service certificate and hostname; PostgreSQL rejects
+non-TLS network connections. Sandbox RPC uses HTTPS with hostname verification and
+a separate bearer token. Ollama and ClamAV do not use TLS in this deployment;
+their ports are unpublished and their Compose networks are private and limited to
+required clients. Docker bridge traffic is not itself encrypted, so the host and
+Docker daemon remain trusted. Internal service certificates are stored under
+`data/private/tls`; rotate the complete PostgreSQL/sandbox certificate set
+together and recreate those services and their clients.
 
----
+## Sandbox Docker socket
 
-## Upload Size Limit
+The sandbox broker mounts `/var/run/docker.sock` to create fresh per-command
+containers. Anyone controlling that socket can control the daemon and potentially
+mount host files or other containers' secrets. Read-only broker filesystems,
+dropped capabilities, `no-new-privileges`, private broker networking and resource
+limits do not eliminate this privilege. Run containers receive only the shared
+workspace, not the socket or provider credentials. Run containers execute as root
+to support package installation; their writable layer is ephemeral, but workspace
+changes and outbound data transfer persist. Container escape remains a residual
+risk.
 
-The `PUT /api/workspace/upload` endpoint enforces a configurable maximum upload size. The default is **500 MB**. Large uploads beyond this limit are rejected with HTTP 413.
+To eliminate the mount exposure, disable `agent.sandbox.enabled` and do not start
+the `sandbox` service; disabling the tool alone does not remove a running broker's
+socket mount. Use a dedicated Docker host/daemon for stronger isolation. Validate
+gVisor/networking overrides before production use.
 
-To change the limit, set in `.env`:
+## Retention and upgrades
 
-```env
-AGENT_API_MAX_UPLOAD_BYTES=104857600   # 100 MB
-```
+Controlled-copy deletion cannot retract already-sent mail/model requests,
+third-party data, external logs or backups. Source documents may cause relearning.
+Read [deletion limits](email-administration.md#memory-and-deletion) and
+[upgrade/rollback requirements](upgrading.md) before deployment.
 
-Or set `agent.api.max_upload_bytes` in `config/agent.yaml`.
+## Responsible disclosure
 
----
-
-## API Documentation Exposure
-
-The FastAPI interactive docs (`/docs`, `/redoc`) and the OpenAPI schema (`/openapi.json`) are **disabled by default**. They expose a full enumeration of all API endpoints and make it trivial for anyone with network access to discover the API surface.
-
-To enable them for local development, set in `.env`:
-
-```env
-AGENT_API_DOCS_ENABLED=true
-AGENT_API_OPENAPI_ENABLED=true
-```
-
-Disable them again before connecting the server to any network you do not fully control.
-
----
-
-## Configuration Status Endpoint
-
-`GET /api/config/status` returns the configured LLM model name, LLM base URL, admin email address, SMTP status, sandbox URL, embedding URL, and other operational parameters. This endpoint requires no authentication and is intentionally open on private deployments where it is useful for verifying your setup.
-
-If the server is reachable from a network you do not fully control, be aware that this endpoint leaks configuration details to anyone who can reach it. The same network-level controls that protect the rest of the API apply here — see [Network Binding](#network-binding) and [If You Must Expose This Publicly](#if-you-must-expose-this-publicly).
-
----
-
-## Docker Socket in the Sandbox Service
-
-The `sandbox` service in `docker-compose.yml` mounts the Docker socket:
-
-```yaml
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock
-```
-
-**Why it's there:** The sandbox broker creates fresh Docker containers to isolate each command execution. Mounting the socket is the mechanism by which the broker can spin up and tear down these ephemeral run containers. It is architecturally necessary for the container isolation mode.
-
-**The risk:** A process inside the sandbox broker container that can write to the Docker socket has full control of the Docker daemon on the host — it can create privileged containers, mount host paths, etc. The sandbox broker is hardened (read-only filesystem, all capabilities dropped, no new privileges), but this is a high-privilege mount that you should be aware of.
-
-**Mitigations in place:**
-- The sandbox runs read-only with a `tmpfs` at `/tmp`
-- `security_opt: no-new-privileges:true` is set
-- All Linux capabilities are dropped from the broker (`cap_drop: ALL`)
-- The broker is on `sandbox_net` only — it cannot reach `app_net` directly
-- Per-command run containers drop `NET_RAW` and are resource-capped
-
-**If you want to eliminate the Docker socket exposure:** Disable sandbox command execution entirely by setting `agent.sandbox.enabled: false` in `config/agent.yaml`. This removes the `command_execute` tool from the agent but everything else continues to work.
-
----
-
-## If You Must Expose This Publicly
-
-If you need to access the dashboard from outside your private network (e.g., from your phone over the internet), the recommended approach is:
-
-### Option 1: Reverse proxy with HTTP Basic Auth (minimum viable)
-
-Use nginx or Caddy in front of the agent with HTTP Basic Auth:
-
-**Nginx example:**
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name assistant.yourdomain.com;
-
-    # TLS config here (certbot/Let's Encrypt)
-
-    # Password-protect everything
-    auth_basic "Assistant";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-Generate the password file:
-```bash
-htpasswd -c /etc/nginx/.htpasswd yourusername
-```
-
-**Caddy example:**
-
-```caddy
-assistant.yourdomain.com {
-    basicauth /* {
-        yourusername <hashed-password>
-    }
-    reverse_proxy 127.0.0.1:8000
-}
-```
-
-### Option 2: VPN access only
-
-Keep `AGENT_API_PUBLISHED_HOST=127.0.0.1` (or a LAN IP) and access remotely via WireGuard or Tailscale. This is the most secure option — the dashboard is never on the public internet.
-
-### Option 3: Keep the dashboard private; expose only selected API routes
-
-If you have an application that calls specific API endpoints, proxy only those through nginx with auth, and keep the dashboard (`/admin`, `/workspace`) behind a separate, more restricted location block — or disable them entirely with `AGENT_API_DASHBOARD_ENABLED=false`.
-
-### Checklist for public deployment
-
-- [ ] Reverse proxy with HTTPS and authentication in front of the stack
-- [ ] `AGENT_API_PUBLISHED_HOST=127.0.0.1` (proxy connects internally)
-- [ ] `AGENT_API_DOCS_ENABLED` and `AGENT_API_OPENAPI_ENABLED` are not set to `true` (they are off by default)
-- [ ] `POSTGRES_PASSWORD` is a strong, unique password (not the placeholder)
-- [ ] `EMAIL_ACTIONABLE_SENDERS` is locked down to only your address
-- [ ] `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is locked down to your domains
-- [ ] Consider `AGENT_API_DASHBOARD_ENABLED=false` and `AGENT_API_WORKSPACE_ENABLED=false` if you don't need the browser UI from the public internet
-- [ ] Firewall rules block direct access to port 8000 from external IPs
-
----
-
-## Responsible Disclosure
-
-If you discover a security vulnerability in this project, please open a GitHub issue or reach out privately before disclosing publicly. This is an open-source project without a formal security response team — issues will be addressed on a best-effort basis.
+Prefer private contact with the repository maintainer before public disclosure
+of exploitable details. This project has no formal security response team;
+responses are best effort. Do not include credentials or private user data in issues.

@@ -41,7 +41,6 @@ class Heartbeat:
         actions += self.flag_stalled_jobs(now)
         actions += self.notify_failed_jobs()
         actions += self.flag_stalled_deep_research(now)
-        actions += self.flag_stalled_projects(now)
         actions += self.run_memory_maintenance(now)
         if actions == 0:
             self.log_manual_event("heartbeat_rule_check", {"result": "healthy", "now": now})
@@ -158,33 +157,6 @@ class Heartbeat:
                 actions += 1
         return actions
 
-    def flag_stalled_projects(self, now) -> int:
-        threshold = timedelta(minutes=self.config.get_int("agent.heartbeat.project_stale_minutes", 60))
-        rows = self.db.fetch_all(
-            """
-            SELECT p.*, j.thread_id, j.task_summary, j.status AS job_status, j.last_error AS job_last_error
-            FROM projects p
-            JOIN jobs j ON j.id = p.original_job_id
-            WHERE p.status IN ('queued', 'running')
-            ORDER BY p.updated_at ASC
-            LIMIT 100
-            """
-        )
-        actions = 0
-        for project in rows:
-            updated_at = project.get("updated_at")
-            if updated_at and updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=now.tzinfo)
-            if updated_at and now - updated_at > threshold:
-                reason = "Heartbeat detected project #%s has had no update for more than %s minutes" % (
-                    project["id"],
-                    int(threshold.total_seconds() // 60),
-                )
-                self.db.execute("UPDATE projects SET last_error = %s, updated_at = now() WHERE id = %s", (reason, project["id"]))
-                job = {"id": project["original_job_id"], "thread_id": project["thread_id"], "task_summary": project["task_summary"], "status": project["job_status"], "last_error": project["job_last_error"]}
-                notify_admin_job_failure(self.db, self.config, job, "needs_review", reason, "heartbeat rule")
-                actions += 1
-        return actions
 
     def run_memory_maintenance(self, now) -> int:
         """Run periodic memory maintenance (reaping stale memories)."""
@@ -214,19 +186,12 @@ class Heartbeat:
         # Run memory reaping
         try:
             from .memory_manager import MemorySteward
-            from .note_store import NoteStore
             
             steward = MemorySteward(self.db, self.config)
             result = steward.reap_stale_memories()
             
-            # Run note reaping
-            note_store = NoteStore(self.db, self.config)
-            note_result = note_store.reap_stale_notes()
-            
-            # Combine results
             combined_result = {
                 "memories_reaped": result["reaped_count"],
-                "notes_archived": note_result["archived_count"],
             }
             
             # Update last run time
@@ -239,12 +204,11 @@ class Heartbeat:
                 ("memory_maintenance_last_run", Jsonb(json_safe({
                     "timestamp": now.isoformat(),
                     "memories_reaped": result["reaped_count"],
-                    "notes_archived": note_result["archived_count"],
                 }))),
             )
             
             self.log_manual_event("memory_maintenance_complete", combined_result)
-            return 1 if (result["reaped_count"] > 0 or note_result["archived_count"] > 0) else 0
+            return 1 if result["reaped_count"] > 0 else 0
         except Exception as exc:
             LOGGER.warning("memory maintenance failed: %s", exc)
             return 0

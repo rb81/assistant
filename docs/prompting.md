@@ -29,13 +29,15 @@ This document explains how Assistant constructs prompts for the task agent.
 
 ## User Context Assembly
 
+Immediately before each LLM request, the shared client refreshes a labeled current-time block in system and user context. It includes the configured assistant timezone, local date/time with UTC offset, and UTC date/time. This also applies to research, resumed checkpoints, retries, and compacted or long-running conversations. Historical email dates are not treated as the current clock. Checkpointed messages are not mutated by this refresh.
+
 `messages_from_base_context(...)` builds the main user block with:
 
 - task summary and thread ID,
 - completion requirement guidance,
 - reminder origin block (if linked reminder),
 - supervisor instructions,
-- linked async status (projects/research),
+- linked async research status,
 - prior side-effect summary,
 - memory summary/notes,
 - thread/email context with metadata.

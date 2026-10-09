@@ -37,8 +37,8 @@ def _dt_to_graph(dt: datetime, all_day: bool) -> dict[str, str]:
     if all_day:
         # Graph uses a separate isAllDay flag; we still need the dateTime field.
         return {
-            "dateTime": dt.astimezone(timezone.utc).date().isoformat() + "T00:00:00",
-            "timeZone": "UTC",
+            "dateTime": dt.date().isoformat() + "T00:00:00",
+            "timeZone": getattr(dt.tzinfo, "key", "UTC"),
         }
     return {
         "dateTime": dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
@@ -49,12 +49,13 @@ def _dt_to_graph(dt: datetime, all_day: bool) -> dict[str, str]:
 def _graph_to_dt(value: dict[str, str]) -> datetime:
     """Parse a Microsoft Graph dateTimeTimeZone dict into a UTC datetime."""
     raw = value.get("dateTime", "")
-    # Strip sub-seconds if present.
-    raw = raw.split(".")[0]
     if "T" not in raw:
         raw = raw + "T00:00:00"
-    dt = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
-    return dt
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        from zoneinfo import ZoneInfo
+        dt = dt.replace(tzinfo=ZoneInfo(value.get("timeZone") or "UTC"))
+    return dt.astimezone(timezone.utc)
 
 
 def _parse_attendees(raw: list[dict[str, Any]]) -> list[Attendee]:

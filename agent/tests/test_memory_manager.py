@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 psycopg_module = types.ModuleType("psycopg")
@@ -16,9 +17,88 @@ sys.modules.setdefault("psycopg.types", types.ModuleType("psycopg.types"))
 sys.modules.setdefault("psycopg.types.json", json_module)
 
 from assistant_agent.memory_manager import normalize_memory_candidate
+from assistant_agent.memory_erasure import memory_contents, redact_memory
+
+
+class MemoryRememberToolTest(unittest.TestCase):
+    def test_canonical_evidence_stores_without_explicit_user_bypass(self) -> None:
+        from assistant_agent.config import AppConfig
+        from assistant_agent.tools import ToolRuntime
+
+        runtime = ToolRuntime.__new__(ToolRuntime)
+        runtime.db = MagicMock()
+        runtime.config = AppConfig({"agent": {}})
+        runtime.job = {"id": 11}
+        with patch("assistant_agent.tools.MemoryStore") as store:
+            store.return_value.create.return_value = {"id": 3}
+            metadata = {"evidence": "User approval in email 42", "why_future_relevant": "Guides future communication"}
+            result = runtime.memory_remember("User approved the communication style", metadata=metadata)
+
+            self.assertEqual(result, {"memory": {"id": 3}})
+            saved = store.return_value.create.call_args.kwargs
+            self.assertEqual(saved["metadata"]["evidence"], "User approval in email 42")
+            self.assertFalse(saved["metadata"].get("explicit_user_requested", False))
+            self.assertEqual(saved["source_job_id"], 11)
+            self.assertEqual(metadata, {"evidence": "User approval in email 42", "why_future_relevant": "Guides future communication"})
+
+    def test_exposed_schema_requires_canonical_metadata_or_explicit_request(self) -> None:
+        from assistant_agent.tools import FUNCTION_TOOLS
+
+        spec = next(tool["function"] for tool in FUNCTION_TOOLS if tool["function"]["name"] == "memory_remember")
+        parameters = spec["parameters"]
+        self.assertEqual(parameters["required"], ["content", "metadata"])
+        metadata = parameters["properties"]["metadata"]
+        self.assertFalse(metadata["additionalProperties"])
+        self.assertEqual(set(metadata["properties"]), {"evidence", "why_future_relevant", "explicit_user_requested"})
+        self.assertEqual(metadata["anyOf"][0]["required"], ["evidence", "why_future_relevant"])
+        self.assertEqual(metadata["anyOf"][1]["properties"]["explicit_user_requested"], {"const": True})
+
+    def test_missing_metadata_still_rejected_with_actionable_error(self) -> None:
+        from assistant_agent.tools import ToolError, ToolRuntime
+
+        runtime = ToolRuntime.__new__(ToolRuntime)
+        for metadata in ({}, {"evidence": "User approval"}, {"why_future_relevant": "Future communication"}, {"source_evidence": "User approval", "why_future_relevant": "Future communication"}):
+            with self.subTest(metadata=metadata), patch("assistant_agent.tools.MemoryStore") as store:
+                with self.assertRaises(ToolError) as caught:
+                    runtime.memory_remember("User approved the communication style", metadata=metadata)
+
+                self.assertIn("metadata.evidence", str(caught.exception))
+                self.assertIn("metadata.why_future_relevant", str(caught.exception))
+                store.assert_not_called()
 
 
 class MemoryCandidateFilterTest(unittest.TestCase):
+    def test_short_memory_does_not_corrupt_log_keys_or_unrelated_status(self) -> None:
+        payload = {"id": 99, "status": "id", "content": "id", "description": "identify row id"}
+        cleaned = redact_memory(payload, 7, {"id"})
+        self.assertEqual(cleaned, {"id": 99, "status": "id", "content": "[deleted memory]", "description": "identify row id"})
+
+    def test_uncertain_similarity_proposes_review_without_overwriting(self) -> None:
+        from unittest.mock import MagicMock
+        from assistant_agent.config import AppConfig
+        from assistant_agent.memory_manager import MemorySteward
+        steward = MemorySteward.__new__(MemorySteward)
+        steward.db = MagicMock()
+        steward.config = AppConfig({"agent": {}})
+        steward.store = MagicMock()
+        steward.store.create.return_value = {"id": 9}
+        steward.memories_to_store = MagicMock(return_value=[{"content": "A related but distinct preference", "kind": "preference", "importance": 5, "confidence": 0.9, "evidence": "User request", "why_future_relevant": "Future scheduling"}])
+        steward.duplicate_exists = MagicMock(return_value=False)
+        steward._detect_conflicts = MagicMock(return_value=[{"id": 7, "similarity": 0.95}])
+        steward.consolidate({"id": 1, "thread_id": "test"}, [], "completed", "done")
+        steward.store.update.assert_not_called()
+        metadata = steward.store.create.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["state"], "suggested")
+        self.assertEqual(metadata["related_memory_ids"], [7])
+
+    def test_redaction_clears_all_versions_without_erasing_unrelated_history(self) -> None:
+        versions = memory_contents({"before": {"content": "A unique old memory"}, "after": {"content": "A unique corrected memory"}})
+        payload = {"messages": ["Recall: A unique old memory", "Result: A unique corrected memory", "Unrelated meeting"], "tokens_used": 30}
+        cleaned = redact_memory(payload, 7, versions)
+        self.assertEqual(cleaned["messages"], ["Recall: [deleted memory]", "Result: [deleted memory]", "Unrelated meeting"])
+        self.assertEqual(cleaned["tokens_used"], 30)
+        self.assertEqual(redact_memory({"memory_ids": [7], "summary": "Paraphrased memory"}, 7, versions), {"redacted_memory_id": 7})
+
     def test_rejects_contact_category_even_when_important(self) -> None:
         normalized, reason = normalize_memory_candidate(
             {

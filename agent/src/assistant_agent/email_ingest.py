@@ -3,6 +3,7 @@ import hashlib
 import imaplib
 import logging
 import os
+import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
@@ -104,6 +105,23 @@ def extract_bodies_and_attachments(message: Message, attachment_root: Path, mess
     return "\n\n".join(text_parts).strip(), "\n\n".join(html_parts).strip(), attachments
 
 
+def calendar_event_uids(message: Message) -> list[str]:
+    uids: list[str] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        filename = (decode_mime_header(part.get_filename()) or "").lower()
+        if part.get_content_type() not in ("text/calendar", "application/ics") and not filename.endswith(".ics"):
+            continue
+        # RFC 5545 folds long lines with a leading space or tab.
+        unfolded = payload_to_text(part).replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "")
+        for line in unfolded.split("\n"):
+            name, _, value = line.partition(":")
+            if name.split(";", 1)[0].strip().upper() == "UID" and value.strip() and value.strip() not in uids:
+                uids.append(value.strip())
+    return uids
+
+
 def message_id_for(raw_bytes: bytes, message: Message, domain: str = "assistant.local") -> str:
     header_id = message.get("Message-ID")
     if header_id:
@@ -160,7 +178,8 @@ class EmailDownloader:
         inserted = 0
         max_uid = last_uid
 
-        with imaplib.IMAP4_SSL(host, port) as mailbox:
+        timeout = self.config.get_int("agent.email.imap_timeout_seconds", 60)
+        with imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context(), timeout=timeout) as mailbox:
             mailbox.login(username, password)
             mailbox.select(imap_mailbox_arg(folder))
             status, data = mailbox.uid("search", None, "UID", "%s:*" % (last_uid + 1))
@@ -240,6 +259,11 @@ class EmailDownloader:
             return IngestResult(inserted=False, queued=bool(existing.get("is_actionable")), message_id=message_id)
 
         subject = json_safe(decode_mime_header(parsed.get("Subject")) or "")
+        from .admin_commands import AdminCommands, is_admin_subject
+        if is_admin_subject(subject):
+            body = "\n".join(payload_to_text(part) for part in parsed.walk() if part.get_content_type() == "text/plain")
+            handled = AdminCommands(self.db, self.config).handle(parsed, subject, body)
+            return IngestResult(inserted=handled, queued=True, message_id=message_id)
         in_reply_to = json_safe(parsed.get("In-Reply-To"))
         references = json_safe(parse_reference_header(parsed.get("References")))
         from_addresses = json_safe(parse_addresses(parsed.get("From")))
@@ -258,6 +282,9 @@ class EmailDownloader:
             from_addresses,
         )
         actionable = self.is_actionable(from_addresses, thread_id)
+        if actionable and self.is_managed_calendar_notification(parsed):
+            LOGGER.info("storing calendar notification %s for an assistant-managed event without queueing", message_id)
+            actionable = False
 
         row = self.db.fetch_one(
             """
@@ -304,7 +331,11 @@ class EmailDownloader:
         self.process_artifacts(row, attachments, body_text, body_html)
 
         if actionable:
-            self.queue_or_update_job(thread_id, subject, row["id"], from_addresses=from_addresses, body_text=body_text)
+            from .admin_commands import authenticated_admin
+            verified_admin = authenticated_admin(parsed, self.config, subject, body_text)
+            self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
+            self.queue_or_update_job(thread_id, subject, row["id"], from_addresses=from_addresses, body_text=body_text, admin_authenticated=verified_admin)
+            self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
         return IngestResult(inserted=True, queued=actionable, message_id=message_id)
 
     def process_artifacts(self, email_row: dict[str, Any], attachments: list[dict[str, Any]], body_text: str, body_html: str) -> None:
@@ -385,6 +416,16 @@ class EmailDownloader:
                     return row["thread_id"]
 
         return message_id
+
+    def is_managed_calendar_notification(self, message: Message) -> bool:
+        uids = calendar_event_uids(message)
+        if not uids:
+            return False
+        row = self.db.fetch_one(
+            "SELECT 1 AS managed FROM calendar_managed_events WHERE provider_event_id = ANY(%s) LIMIT 1",
+            (uids,),
+        )
+        return row is not None
 
     def is_actionable(self, from_addresses: list[str], thread_id: str) -> bool:
         open_job = self.db.fetch_one(
@@ -487,6 +528,7 @@ class EmailDownloader:
         trigger_email_id: int,
         from_addresses: Optional[list[str]] = None,
         body_text: str = "",
+        admin_authenticated: bool = False,
     ) -> None:
         resumed_research = self.resume_waiting_deep_research_for_thread(thread_id)
         open_job = self.db.fetch_one(
@@ -515,8 +557,10 @@ class EmailDownloader:
                     },
                 )
                 return
-            if open_job["status"] == "needs_review" and from_addresses and self.is_admin_sender(from_addresses):
+            if open_job["status"] == "needs_review" and admin_authenticated:
                 self.apply_email_review_override(open_job, trigger_email_id, body_text)
+                return
+            if open_job["status"] == "needs_review":
                 return
             if open_job["status"] in ("waiting", "needs_review"):
                 self.db.execute(

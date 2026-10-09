@@ -28,7 +28,7 @@ For each claimed job:
    - pending supervisor instructions,
    - linked reminder (if any),
    - memory recall summary,
-   - async project/research status,
+   - async research status,
    - prior side-effect summary,
    - processed artifact manifests.
 3. Build prompt messages (`system` + `user` context block).
@@ -63,7 +63,7 @@ On each iteration:
 
 ## Async Requests
 
-If tool call is async-request type (`project_create`, `deep_research_request`):
+If tool call is async-request type (`deep_research_request`):
 
 - job is moved to `waiting`,
 - status-change event is logged,

@@ -15,6 +15,7 @@ To obtain a refresh token, follow the setup guide in docs/calendar-providers.md.
 
 import logging
 import json
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
@@ -36,6 +37,39 @@ from ..token_store import TokenStore
 log = logging.getLogger(__name__)
 
 _DEFAULT_BASE = "https://calendar.zoho.com/api/v1"
+_ZOHO_API_HOSTS = frozenset({
+    "calendar.zoho.com",
+    "calendar.zoho.eu",
+    "calendar.zoho.in",
+    "calendar.zoho.com.au",
+    "calendar.zoho.jp",
+    "calendar.zoho.com.cn",
+    "calendar.zoho.sa",
+    "calendar.zoho.com.sg",
+})
+
+
+def normalize_api_base(value: str) -> str:
+    configured_base = str(value or _DEFAULT_BASE).rstrip("/")
+    parsed_base = urlsplit(configured_base)
+    try:
+        port = parsed_base.port
+    except ValueError:
+        port = -1
+    if (
+        parsed_base.scheme.lower() != "https"
+        or parsed_base.hostname not in _ZOHO_API_HOSTS
+        or parsed_base.username
+        or parsed_base.password
+        or port not in (None, 443)
+        or parsed_base.query
+        or parsed_base.fragment
+        or parsed_base.path not in ("", "/", "/api/v1")
+    ):
+        raise ValueError("Zoho Calendar API base must use HTTPS on a supported Zoho Calendar host")
+    if parsed_base.path in ("", "/"):
+        configured_base += "/api/v1"
+    return configured_base
 
 # Zoho epoch: dates are represented as milliseconds since Unix epoch in some
 # endpoints; ISO 8601 is used in event create/update bodies.
@@ -45,11 +79,11 @@ _ZOHO_DT_FMT = "%Y%m%dT%H%M%SZ"
 def _dt_to_zoho(dt: datetime, all_day: bool) -> str:
     """Format a datetime as Zoho's yyyyMMdd'T'HHmmss'Z' string."""
     if all_day:
-        return dt.astimezone(timezone.utc).strftime("%Y%m%d")
+        return dt.strftime("%Y%m%d")
     return dt.astimezone(timezone.utc).strftime(_ZOHO_DT_FMT)
 
 
-def _zoho_to_dt(value: str) -> tuple[datetime, bool]:
+def _zoho_to_dt(value: str, timezone_name: str = "UTC") -> tuple[datetime, bool]:
     """Parse a Zoho datetime string into (datetime, all_day).
 
     Zoho returns timed values as compact ISO without colons, with either a
@@ -66,7 +100,8 @@ def _zoho_to_dt(value: str) -> tuple[datetime, bool]:
     if len(value) == 8 and "T" not in value:
         from datetime import time as dtime
         d = datetime.strptime(value, "%Y%m%d").date()
-        return datetime.combine(d, dtime.min, tzinfo=timezone.utc), True
+        from zoneinfo import ZoneInfo
+        return datetime.combine(d, dtime.min, tzinfo=ZoneInfo(timezone_name)), True
     if len(value) < 15:
         raise ValueError("invalid Zoho datetime string")
     naive = datetime.strptime(value[:15], "%Y%m%dT%H%M%S")
@@ -111,7 +146,7 @@ class ZohoCalendarProvider:
     def __init__(self, config: ProviderConfig, token_store: TokenStore) -> None:
         self._config = config
         self._tokens = token_store
-        self._base = str(config.extra.get("api_base") or _DEFAULT_BASE).rstrip("/")
+        self._base = normalize_api_base(config.extra.get("api_base") or _DEFAULT_BASE)
         self._calendar_alias_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -311,10 +346,7 @@ class ZohoCalendarProvider:
         # listing events from each calendar and treating occupied time as busy.
         windows: list[BusyWindow] = []
         for cal_id in calendar_ids:
-            try:
-                events = self.list_events(cal_id, start, end)
-            except CalendarError:
-                continue
+            events = self.list_events(cal_id, start, end)
             for event in events:
                 if not event.blocks_time():
                     continue
@@ -382,6 +414,13 @@ class ZohoCalendarProvider:
         if response.status_code == 401 and retry_on_auth:
             self._tokens.invalidate(self._config.name)
             return self._request(method, path, params=params, body=body, retry_on_auth=False)
+
+        if response.status_code == 401:
+            raise ProviderAuthError(
+                "Zoho Calendar authentication failed (HTTP 401) after refreshing the access token. "
+                "Verify the .com OAuth client and refresh token, and re-authorize with "
+                "ZohoCalendar.event.ALL and ZohoCalendar.calendar.READ if needed."
+            )
 
         if response.status_code == 404:
             raise ProviderEventNotFoundError(
@@ -469,8 +508,9 @@ class ZohoCalendarProvider:
         if not start_raw:
             return None
         try:
-            start, all_day = _zoho_to_dt(start_raw)
-            end, _ = _zoho_to_dt(end_raw) if end_raw else (start, all_day)
+            zone = self._config.extra.get("assistant_timezone", "UTC")
+            start, all_day = _zoho_to_dt(start_raw, zone)
+            end, _ = _zoho_to_dt(end_raw, zone) if end_raw else (start, all_day)
         except (ValueError, KeyError):
             log.debug("could not parse event dates for Zoho event %r", event_id)
             return None

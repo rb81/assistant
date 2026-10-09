@@ -1,10 +1,12 @@
 import json
 import logging
+import math
 import urllib.error
 import urllib.request
 from typing import Any, Optional
 
 from .config import AppConfig
+from .transport_security import open_https_request, open_internal_http_request, validate_embedding_url
 
 
 LOGGER = logging.getLogger("assistant.embedding_client")
@@ -23,6 +25,8 @@ class EmbeddingClient:
                 config.get("agent.memory.embeddings.base_url", "http://ollama:11434"),
             )
         ).rstrip("/")
+        endpoint = validate_embedding_url(self.base_url)
+        self._uses_internal_http = endpoint.scheme.lower() == "http"
         self.model = str(
             config.get(
                 "agent.embeddings.model",
@@ -60,7 +64,8 @@ class EmbeddingClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            open_request = open_internal_http_request if self._uses_internal_http else open_https_request
+            with open_request(request, timeout=self.timeout_seconds) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -71,4 +76,14 @@ class EmbeddingClient:
         embeddings = data.get("embeddings") or []
         if not embeddings or not isinstance(embeddings[0], list):
             raise RuntimeError("embedding response did not include a vector")
-        return [float(value) for value in embeddings[0]]
+        vector = [float(value) for value in embeddings[0]]
+        if not vector or not all(math.isfinite(value) for value in vector) or not any(vector):
+            raise RuntimeError("embedding response did not include a finite nonzero vector")
+        if self.dimensions and len(vector) != self.dimensions:
+            raise RuntimeError("embedding response dimensions do not match the requested dimensions")
+        return vector
+
+    def compatible(self, row: dict[str, Any], dimensions: int) -> bool:
+        return (row.get("embedding_model") == self.model
+                and row.get("embedding_dimensions") == dimensions
+                and len(row.get("embedding") or []) == dimensions)

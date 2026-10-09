@@ -2,6 +2,7 @@ import sys
 import types
 import unittest
 from typing import Any, Optional
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 psycopg_module = types.ModuleType("psycopg")
@@ -33,7 +34,7 @@ markdown_module.MarkdownIt = FakeMarkdownIt
 sys.modules.setdefault("markdown_it", markdown_module)
 
 from assistant_agent.config import AppConfig
-from assistant_agent.notifications import _already_sent, _fingerprint, notify_admin_job_failure
+from assistant_agent.notifications import _already_sent, _body, _fingerprint, notify_admin_job_failure
 
 
 class FakeDatabase:
@@ -51,6 +52,43 @@ class FakeDatabase:
 
 
 class NotificationDedupeTest(unittest.TestCase):
+    def test_admin_input_email_requests_reply_without_retired_dashboard(self) -> None:
+        from assistant_agent.task_agent import TaskAgent
+
+        agent = TaskAgent.__new__(TaskAgent)
+        agent.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "app": {"base_url": "https://localhost:8000"}}})
+        agent.db = MagicMock()
+        agent.db.latest_thread_emails.return_value = [{"message_id": "<request@example.com>"}]
+        runtime = MagicMock()
+        with patch("assistant_agent.task_agent.admin_configured", return_value=True), patch(
+            "assistant_agent.task_agent.smtp_configured", return_value=True
+        ):
+            agent.email_admin_for_input({"id": 11, "thread_id": "thread-1"}, runtime, "May I proceed?")
+
+        sent = runtime.email_send.call_args.kwargs
+        self.assertIn("May I proceed?", sent["body"])
+        self.assertIn("Reply to this email with your approval or clarification", sent["body"])
+        self.assertNotIn("dashboard", sent["body"].lower())
+        self.assertNotIn("localhost", sent["body"])
+        self.assertEqual(sent["in_reply_to"], "<request@example.com>")
+
+    def test_review_email_preserves_reply_approval_without_retired_dashboard(self) -> None:
+        config = AppConfig({"agent": {"app": {"base_url": "https://localhost:8000"}}})
+        diagnostics = {
+            "explanation": "Repeated tool failure",
+            "usage": {"total_tokens": 100, "token_pct": 0.01, "iterations_used": 3, "iteration_pct": 6, "api_calls": 3},
+            "limits": {"max_tokens": 1000000, "max_iterations": 50},
+        }
+        with patch("assistant_agent.notifications._latest_email", return_value={}), patch(
+            "assistant_agent.notifications._latest_checkpoint", return_value={}
+        ), patch("assistant_agent.notifications._diagnostics", return_value=diagnostics):
+            body = _body(FakeDatabase(), config, {"id": 11}, "needs_review", "Tool failure", "task-agent")
+
+        self.assertIn("Reply to this email to approve and continue the job.", body)
+        self.assertIn("Both limits will be increased by 20%.", body)
+        self.assertNotIn("dashboard", body.lower())
+        self.assertNotIn("localhost", body)
+
     def test_fingerprint_ignores_notification_source(self) -> None:
         self.assertEqual(
             _fingerprint(31, "needs_review", "max iterations reached", "task-agent iteration budget"),

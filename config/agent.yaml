@@ -18,7 +18,7 @@
 agent:
   app:
     name: assistant
-    base_url: http://localhost:8000
+    base_url: https://localhost:8000
     referer_url: https://assistant.local
     timezone: UTC
 
@@ -33,6 +33,8 @@ agent:
   admin:
     name:
     email:
+    trusted_authserv_ids: []
+    command_signing_key:
 
   # Organization details — override via ORG_NAME / ORG_SECURITY_EMAIL /
   # ORG_INTERNAL_EMAIL_DOMAINS env vars.
@@ -48,7 +50,6 @@ agent:
     user: assistant
 
   llm:
-    provider: openrouter
     model: anthropic/claude-sonnet-4.6
     fallback_model: openai/gpt-5.4
     base_url: https://openrouter.ai/api/v1
@@ -65,8 +66,6 @@ agent:
     summarization_timeout_seconds: 30
     summarization_keep_recent: 6
     summarization_max_input_chars: 80000
-    max_daily_cost_usd: 10.00
-    tool_timeout_default_seconds: 120
     tool_timeout_command_seconds: 300
     max_emails_per_hour: 10
     poll_interval_seconds: 60
@@ -101,11 +100,16 @@ agent:
     actionable_senders: []
     subject_threading_fallback: false
 
+  dropbox:
+    enabled: false
+    client_id:
+    refresh_token:
+    allow_exports: false
+    max_file_bytes: 26214400
+
   supervisor:
     stall_threshold_minutes: 15
     max_task_duration_minutes: 60
-    review_model: openai/gpt-4.1-mini
-    recent_log_limit: 5
 
   filesystem:
     shared_root: /data/share
@@ -151,12 +155,11 @@ agent:
     max_context_file_bytes: 65536
 
   memory:
-    recent_prompt_limit: 10
+    working_context_days: 14
     steward:
       enabled: true
       model: openai/gpt-4.1-mini
       mode: best_effort
-      max_iterations: 4
       timeout_seconds: 45
       max_tokens_per_call: 1600
       max_injected_memories: 8
@@ -164,13 +167,13 @@ agent:
       max_transcript_bytes: 30000
       min_importance: 4
       min_confidence: 0.55
-      mini_reflection_enabled: true
       reap_after_days: 90
       reap_max_importance: 2
       reap_interval_hours: 24
       conflict_detection_enabled: true
       conflict_similarity_threshold: 0.85
     embeddings:
+      min_similarity: 0.45
       recency_boost_max: 0.1
       recency_boost_days: 365
 
@@ -237,12 +240,6 @@ agent:
       calendar_id:
       api_base:
 
-  projects:
-    enabled: true
-    scheduler_poll_interval_seconds: 2
-    max_tasks: 25
-    max_projects_per_tick: 25
-
   deep_research:
     enabled: true
     model:
@@ -252,24 +249,16 @@ agent:
     poll_interval_seconds: 2
     timeout_seconds: 180
 
-  entities:
-    enabled: true
-    max_per_object: 3
-    auto_link_on_create: true
-
   heartbeat:
     enabled: true
     poll_interval_seconds: 300
     stale_threshold_minutes: 30
     deep_research_stale_minutes: 60
-    project_stale_minutes: 60
     admin_digest_interval_hours: 0
 
   sandbox:
     enabled: true
-    base_url: http://sandbox:8080
-    default_timeout_seconds: 300
-    hard_kill_grace_seconds: 30
+    base_url: https://sandbox:8080
     max_attempts: 3
     retry_backoff_seconds: 1
 
@@ -292,18 +281,9 @@ agent:
     temperature:
 
   api:
-    # Bind host for the uvicorn server inside the container.
-    # 127.0.0.1 is the safe default — external access is controlled by
-    # AGENT_API_PUBLISHED_HOST in docker-compose.yml (also defaults to 127.0.0.1).
+    # Bind host for the uvicorn server inside the container. Compose publishes
+    # the host port on 127.0.0.1 only.
     bind_host: 127.0.0.1
     port: 8000
     docs_enabled: false
     openapi_enabled: false
-    # Set to false to disable the /admin and /workspace browser UIs (returns 404).
-    # The /api/* endpoints remain available regardless of these settings.
-    # See docs/security.md before exposing this service on a public network.
-    dashboard_enabled: true
-    workspace_enabled: true
-    # Maximum bytes allowed for a single workspace upload (PUT /api/workspace/upload).
-    # Default: 524288000 = 500 MB. Set to 0 to disable the limit.
-    max_upload_bytes: 524288000

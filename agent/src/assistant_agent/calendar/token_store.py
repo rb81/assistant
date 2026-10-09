@@ -164,10 +164,9 @@ class TokenStore:
             ) from exc
 
         if response.status_code != 200:
-            body = response.text[:500]
             raise ProviderAuthError(
-                "token refresh failed for %r (HTTP %d): %s"
-                % (provider_name, response.status_code, body)
+                "token refresh failed for %r (HTTP %d); verify the OAuth client and refresh token"
+                % (provider_name, response.status_code)
             )
 
         try:
@@ -179,8 +178,11 @@ class TokenStore:
 
         access_token: Optional[str] = data.get("access_token")
         if not access_token:
+            error_code = data.get("error")
+            known_errors = {"invalid_client", "invalid_grant", "invalid_code", "invalid_scope", "access_denied"}
+            detail = error_code if isinstance(error_code, str) and error_code in known_errors else "missing_access_token"
             raise ProviderAuthError(
-                "token response for %r did not contain access_token" % provider_name
+                "token response for %r did not contain access_token (%s); verify the OAuth client and refresh token" % (provider_name, detail)
             )
 
         expires_in: int = int(data.get("expires_in", 3600))
@@ -198,6 +200,8 @@ class TokenStore:
 
     def _persist(self, provider_name: str, access_token: str, expires_at: float) -> None:
         """Best-effort persistence of the access token in runtime_state."""
+        if self._db is None:
+            return
         key = "calendar_token_%s" % provider_name
         try:
             self._db.execute(

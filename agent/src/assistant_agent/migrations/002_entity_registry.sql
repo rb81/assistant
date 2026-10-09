@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS entities (
   CONSTRAINT entities_name_unique UNIQUE(name)
 );
 
-CREATE TRIGGER entities_set_updated_at
+CREATE OR REPLACE TRIGGER entities_set_updated_at
 BEFORE UPDATE ON entities
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();

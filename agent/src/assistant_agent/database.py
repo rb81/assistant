@@ -3,7 +3,7 @@ import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -11,6 +11,26 @@ from psycopg.types.json import Jsonb
 
 
 LOGGER = logging.getLogger("assistant.database")
+
+REQUEUEABLE_JOB_STATUSES = frozenset({"failed", "cancelled", "waiting", "needs_review", "completed"})
+
+UPDATED_AT_SQL = """
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS trigger AS $$
+BEGIN
+    IF to_jsonb(NEW) ? 'embedding'
+         AND NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at
+         AND (to_jsonb(NEW) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
+                 = (to_jsonb(OLD) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
+         AND (COALESCE(to_jsonb(NEW)->'metadata', '{}'::jsonb) - 'embedding_pending')
+                 = (COALESCE(to_jsonb(OLD)->'metadata', '{}'::jsonb) - 'embedding_pending') THEN
+        RETURN NEW;
+    END IF;
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+"""
 
 
 def json_safe(value: Any) -> Any:
@@ -63,14 +83,18 @@ class Database:
                     cur.execute(sql)
 
     def ensure_feature_schema(self) -> None:
-        self.execute(FEATURE_SCHEMA_SQL)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext('assistant_schema_upgrade'))")
+                cur.execute(FEATURE_SCHEMA_SQL)
 
     def run_migrations(self, migrations_dir: Optional[Path] = None) -> list[str]:
         """Apply any pending SQL migration files in order.
 
         Migrations are tracked in a ``schema_migrations`` table keyed by
-        filename.  Each file is applied exactly once, inside its own
-        transaction.  The default migrations directory is the ``migrations/``
+        filename. Pending files are applied in one serialized transaction so
+        concurrent workers cannot apply or partially observe the same upgrade.
+        The default migrations directory is the ``migrations/``
         sub-package bundled alongside this module.
         """
         if migrations_dir is None:
@@ -78,39 +102,25 @@ class Database:
         if not migrations_dir.is_dir():
             return []
 
-        # Ensure the tracking table exists (idempotent).
-        self.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-              filename text PRIMARY KEY,
-              applied_at timestamptz NOT NULL DEFAULT now()
-            )
-            """
-        )
-
-        applied = {
-            row["filename"]
-            for row in self.fetch_all("SELECT filename FROM schema_migrations ORDER BY filename")
-        }
-
-        pending = sorted(
-            path for path in migrations_dir.glob("*.sql")
-            if path.name not in applied
-        )
-
         ran: list[str] = []
-        for path in pending:
-            LOGGER.info("applying migration: %s", path.name)
-            sql = path.read_text(encoding="utf-8")
-            with self.connect() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext('assistant_schema_upgrade'))")
+                cur.execute("CREATE TABLE IF NOT EXISTS schema_migrations (filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
+                cur.execute("SELECT filename FROM schema_migrations ORDER BY filename")
+                applied = {row["filename"] for row in cur.fetchall()}
+                for path in sorted(migrations_dir.glob("*.sql")):
+                    if path.name in applied:
+                        continue
+                    LOGGER.info("applying migration: %s", path.name)
+                    cur.execute(path.read_text(encoding="utf-8"))
                     cur.execute(
                         "INSERT INTO schema_migrations(filename) VALUES (%s)",
                         (path.name,),
                     )
-            ran.append(path.name)
-            LOGGER.info("migration applied: %s", path.name)
+                    ran.append(path.name)
+        for filename in ran:
+            LOGGER.info("migration applied: %s", filename)
 
         return ran
 
@@ -233,6 +243,31 @@ class Database:
             "status_change",
             output_data={"status": status, "last_error": last_error, "task_summary": task_summary},
         )
+
+    def requeue_job(self, job_id: int, reason: str, statuses: Iterable[str] = REQUEUEABLE_JOB_STATUSES) -> bool:
+        row = self.fetch_one(
+            """
+            UPDATE jobs
+            SET status = 'queued', run_at = now(), locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+            WHERE id = %s AND status = ANY(%s)
+            RETURNING id
+            """,
+            (job_id, sorted(statuses)),
+        )
+        if row:
+            self.log_event(job_id, "status_change", output_data={"status": "queued", "reason": reason})
+        return row is not None
+
+    def add_job_instruction(self, job_id: int, instruction: str, created_by: str) -> str:
+        """Record an instruction; terminal jobs are requeued so it gets processed. Returns created/requeued."""
+        self.execute(
+            "INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",
+            (job_id, instruction, created_by),
+        )
+        self.log_event(job_id, "supervisor_note", output_data={"instruction": instruction, "created_by": created_by})
+        if self.requeue_job(job_id, "requeued by admin instruction", ("completed", "failed", "cancelled")):
+            return "requeued"
+        return "created"
 
     def create_manual_job(
         self,
@@ -435,18 +470,12 @@ class Database:
                 jobs = list(cur.fetchall())
                 thread_ids = sorted({row["thread_id"] for row in jobs if row.get("thread_id")})
 
-                project_ids = self.column_values(
-                    cur,
-                    "SELECT id FROM projects WHERE original_job_id = ANY(%s::bigint[])",
-                    (job_ids,),
-                    "id",
-                )
-                project_task_ids = self.column_values(
-                    cur,
-                    "SELECT id FROM project_tasks WHERE project_id = ANY(%s::bigint[])",
-                    (project_ids,),
-                    "id",
-                )
+                project_ids = sorted({int(row["metadata"]["retired_project"]["id"]) for row in jobs
+                                      if isinstance(row.get("metadata", {}).get("retired_project"), dict)
+                                      and str(row["metadata"]["retired_project"].get("id", "")).isdigit()})
+                project_task_ids = sorted({int(task["id"]) for row in jobs
+                                           for task in row.get("metadata", {}).get("retired_project_tasks", [])
+                                           if isinstance(task, dict) and str(task.get("id", "")).isdigit()})
                 deep_research_run_ids = self.column_values(
                     cur,
                     "SELECT id FROM deep_research_runs WHERE original_job_id = ANY(%s::bigint[])",
@@ -531,8 +560,7 @@ class Database:
                     "reminders": 0,
                     "calendar_managed_events": 0,
                     "calendar_event_audit": 0,
-                    "projects": 0,
-                    "project_tasks": 0,
+                    "zoom_managed_meetings": 0,
                     "deep_research_runs": 0,
                     "deep_research_events": 0,
                     "manual_events": 0,
@@ -609,15 +637,10 @@ class Database:
                     "DELETE FROM deep_research_runs WHERE id = ANY(%s::bigint[])",
                     (deep_research_run_ids,),
                 )
-                counts["project_tasks"] += self.delete_count(
+                counts["zoom_managed_meetings"] += self.delete_count(
                     cur,
-                    "DELETE FROM project_tasks WHERE id = ANY(%s::bigint[])",
-                    (project_task_ids,),
-                )
-                counts["projects"] += self.delete_count(
-                    cur,
-                    "DELETE FROM projects WHERE id = ANY(%s::bigint[])",
-                    (project_ids,),
+                    "DELETE FROM zoom_managed_meetings WHERE created_by_job_id = ANY(%s::bigint[])",
+                    (job_ids,),
                 )
                 counts["task_logs"] += self.delete_count(
                     cur,
@@ -677,11 +700,14 @@ class Database:
 
                 UNION
 
-                SELECT pt.job_id AS id
-                FROM project_tasks pt
-                JOIN projects p ON p.id = pt.project_id
-                WHERE p.original_job_id = ANY(%s::bigint[])
-                  AND pt.job_id IS NOT NULL
+                                SELECT child.id
+                                FROM jobs parent
+                                CROSS JOIN LATERAL jsonb_array_elements(
+                                        CASE WHEN jsonb_typeof(parent.metadata->'retired_project_tasks') = 'array'
+                                                 THEN parent.metadata->'retired_project_tasks' ELSE '[]'::jsonb END
+                                ) task
+                                JOIN jobs child ON child.id::text = task->>'job_id'
+                                WHERE parent.id = ANY(%s::bigint[])
 
                 UNION
 
@@ -835,6 +861,29 @@ CREATE INDEX IF NOT EXISTS processed_artifacts_email_idx ON processed_artifacts(
 CREATE INDEX IF NOT EXISTS processed_artifacts_thread_idx ON processed_artifacts(thread_id, id);
 CREATE INDEX IF NOT EXISTS processed_artifacts_status_idx ON processed_artifacts(conversion_status, scan_status);
 
+CREATE TABLE IF NOT EXISTS dropbox_transfers (
+    request_key text PRIMARY KEY,
+    job_id bigint NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    thread_id text,
+    direction text NOT NULL CHECK (direction IN ('import', 'export')),
+    remote_path text NOT NULL,
+    remote_id text,
+    revision text,
+    local_path text,
+    markdown_path text,
+    local_sha256 text,
+    markdown_sha256 text,
+    content_hash text,
+    size_bytes bigint CHECK (size_bytes >= 0),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'failed', 'uncertain')),
+    scan_status text NOT NULL DEFAULT 'pending' CHECK (scan_status IN ('pending', 'clean', 'infected', 'error', 'skipped')),
+    conversion_status text NOT NULL DEFAULT 'pending' CHECK (conversion_status IN ('pending', 'ready', 'failed', 'not_applicable')),
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dropbox_transfers_job_idx ON dropbox_transfers(job_id);
+
 CREATE TABLE IF NOT EXISTS agent_memories (
   id bigserial PRIMARY KEY,
   content text NOT NULL,
@@ -888,51 +937,28 @@ ALTER TABLE memory_events DROP CONSTRAINT IF EXISTS memory_events_memory_id_fkey
 CREATE INDEX IF NOT EXISTS memory_events_memory_created_idx ON memory_events(memory_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS memory_events_job_created_idx ON memory_events(job_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS agent_notes (
-  id bigserial PRIMARY KEY,
-  title text NOT NULL DEFAULT 'Untitled note',
-  content text NOT NULL,
-  tags text[] NOT NULL DEFAULT ARRAY[]::text[],
-  embedding double precision[],
-  embedding_model text,
-  embedding_dimensions int,
-  embedding_updated_at timestamptz,
-  source_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  last_accessed_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
 
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Untitled note';
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT ARRAY[]::text[];
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS embedding double precision[];
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS embedding_model text;
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS embedding_dimensions int;
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS embedding_updated_at timestamptz;
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS source_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL;
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE agent_notes ADD COLUMN IF NOT EXISTS last_accessed_at timestamptz;
 
-CREATE INDEX IF NOT EXISTS agent_notes_created_idx ON agent_notes(created_at DESC);
-CREATE INDEX IF NOT EXISTS agent_notes_tags_idx ON agent_notes USING GIN(tags);
-CREATE INDEX IF NOT EXISTS agent_notes_updated_idx ON agent_notes(updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS note_events (
-  id bigserial PRIMARY KEY,
-  note_id bigint,
-  job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
-  actor text NOT NULL DEFAULT 'system',
-  event_type text NOT NULL,
-  input_data jsonb NOT NULL DEFAULT '{}'::jsonb,
-  output_data jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
 
-ALTER TABLE note_events DROP CONSTRAINT IF EXISTS note_events_note_id_fkey;
 
-CREATE INDEX IF NOT EXISTS note_events_note_created_idx ON note_events(note_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS note_events_job_created_idx ON note_events(job_id, created_at DESC);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS contacts (
   id bigserial PRIMARY KEY,
@@ -1155,71 +1181,38 @@ ALTER TABLE calendar_event_audit ADD CONSTRAINT calendar_event_audit_action_chec
 CREATE INDEX IF NOT EXISTS calendar_event_audit_event_created_idx ON calendar_event_audit(assistant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS calendar_event_audit_job_created_idx ON calendar_event_audit(job_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS projects (
-  id bigserial PRIMARY KEY,
-  original_job_id bigint NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  original_thread_id text NOT NULL,
-  title text NOT NULL,
-  status text NOT NULL DEFAULT 'queued',
-  priority int NOT NULL DEFAULT 0,
-  run_at timestamptz NOT NULL DEFAULT now(),
-  locked_at timestamptz,
-  locked_by text,
-  result_summary text,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  completed_at timestamptz,
-  last_error text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
 
-ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_status_check;
-ALTER TABLE projects ADD CONSTRAINT projects_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled'));
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS priority int NOT NULL DEFAULT 0;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS run_at timestamptz NOT NULL DEFAULT now();
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_at timestamptz;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_by text;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS result_summary text;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at timestamptz;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS last_error text;
 
-CREATE INDEX IF NOT EXISTS projects_status_run_at_idx ON projects(status, run_at);
-CREATE INDEX IF NOT EXISTS projects_original_job_idx ON projects(original_job_id);
+
+
+
+
+
+
+
+
+
+
+
+
+
 CREATE INDEX IF NOT EXISTS outbound_email_logs_provider_message_idx ON outbound_email_logs(provider_message_id);
 
-CREATE TABLE IF NOT EXISTS project_tasks (
-  id bigserial PRIMARY KEY,
-  project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  sequence int NOT NULL,
-  title text NOT NULL,
-  task text NOT NULL,
-  status text NOT NULL DEFAULT 'pending',
-  job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
-  priority int NOT NULL DEFAULT 0,
-  result_summary text,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  queued_at timestamptz,
-  completed_at timestamptz,
-  last_error text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (project_id, sequence)
-);
 
-ALTER TABLE project_tasks DROP CONSTRAINT IF EXISTS project_tasks_status_check;
-ALTER TABLE project_tasks ADD CONSTRAINT project_tasks_status_check CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'cancelled'));
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS job_id bigint REFERENCES jobs(id) ON DELETE SET NULL;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS priority int NOT NULL DEFAULT 0;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS result_summary text;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS queued_at timestamptz;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS completed_at timestamptz;
-ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS last_error text;
 
-CREATE INDEX IF NOT EXISTS project_tasks_project_sequence_idx ON project_tasks(project_id, sequence);
-CREATE INDEX IF NOT EXISTS project_tasks_job_idx ON project_tasks(job_id);
-CREATE INDEX IF NOT EXISTS project_tasks_status_idx ON project_tasks(status);
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS deep_research_runs (
   id bigserial PRIMARY KEY,
@@ -1290,13 +1283,7 @@ ALTER TABLE deep_research_events ADD CONSTRAINT deep_research_events_event_type_
 CREATE INDEX IF NOT EXISTS deep_research_events_run_sequence_idx ON deep_research_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS deep_research_events_run_created_idx ON deep_research_events(run_id, created_at);
 
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS trigger AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+""" + UPDATED_AT_SQL + """
 
 DO $$
 BEGIN
@@ -1314,12 +1301,6 @@ BEGIN
     EXECUTE FUNCTION set_updated_at();
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agent_notes_set_updated_at') THEN
-    CREATE TRIGGER agent_notes_set_updated_at
-    BEFORE UPDATE ON agent_notes
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'contacts_set_updated_at') THEN
     CREATE TRIGGER contacts_set_updated_at
@@ -1342,19 +1323,7 @@ BEGIN
     EXECUTE FUNCTION set_updated_at();
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'projects_set_updated_at') THEN
-    CREATE TRIGGER projects_set_updated_at
-    BEFORE UPDATE ON projects
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'project_tasks_set_updated_at') THEN
-    CREATE TRIGGER project_tasks_set_updated_at
-    BEFORE UPDATE ON project_tasks
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'deep_research_runs_set_updated_at') THEN
     CREATE TRIGGER deep_research_runs_set_updated_at
@@ -1409,9 +1378,5 @@ ALTER TABLE contacts
   ADD COLUMN IF NOT EXISTS embedding_dimensions int,
   ADD COLUMN IF NOT EXISTS embedding_updated_at timestamptz;
 
-ALTER TABLE projects
-  ADD COLUMN IF NOT EXISTS embedding double precision[],
-  ADD COLUMN IF NOT EXISTS embedding_model text,
-  ADD COLUMN IF NOT EXISTS embedding_dimensions int,
-  ADD COLUMN IF NOT EXISTS embedding_updated_at timestamptz;
+
 """

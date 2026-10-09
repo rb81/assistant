@@ -1,3 +1,12 @@
+# Platform Upgrade Notice
+
+This platform refresh is a breaking change. Read [the upgrade guide](upgrading.md)
+before starting new code on an existing database. Use [guided setup and secret
+management](configuration.md), [current security guidance](security.md), and
+[the authenticated HTTPS API](dashboard-and-api.md). Browser editing/administration,
+Projects, separate notes and entities are removed; older feature descriptions
+elsewhere in the documentation are historical, not supported setup instructions.
+
 # Documentation Index
 
 This directory is the canonical documentation set for the Assistant project.
@@ -16,19 +25,18 @@ The local CalDAV/vdirsyncer calendar sync system has been **removed** and replac
 - The `./data/private/calendar` volume mount has been removed
 - `config/vdirsyncer/config` no longer exists
 - `calendar_create_event` no longer has a `calendar` parameter; use `provider` instead
-- `calendar_managed_events` table has new columns (`provider_name`, `provider_event_id`, `calendar_id`); old columns (`uid`, `relative_path`, `file_hash`) are removed — run migration `003_calendar_providers.sql`
+- `calendar_managed_events` now stores provider IDs instead of CalDAV file metadata; the ordered migrations handle the schema change during startup.
 
 **Migration steps:**
-1. Run `agent/src/assistant_agent/migrations/003_calendar_providers.sql` against your database
-2. Remove `CALDAV_*` and `VDIRSYNCER_CONFIG` from your `.env`
-3. Add OAuth credentials for at least one provider (Google, Outlook, or Zoho) — see [calendar-providers.md](calendar-providers.md)
-4. Remove the `./data/private/calendar` bind mount from any custom Compose overrides
+1. Follow [the upgrade guide](upgrading.md) before starting the updated stack. Do not apply individual SQL files manually; migrations run in order at startup.
+2. Remove `CALDAV_*` and `VDIRSYNCER_CONFIG` from your `.env` and remove the `./data/private/calendar` bind mount from any custom Compose overrides.
+3. Configure OAuth credentials for at least one provider (Google, Outlook, or Zoho) using [calendar-providers.md](calendar-providers.md).
 
 ---
 
 If you are new here, read in this order:
 
-1. [advanced-configuration.md](advanced-configuration.md) — models, limits, email, integrations, UI, and scaling
+1. [advanced-configuration.md](advanced-configuration.md) — models, limits, email, integrations, and deployment topology
 2. [architecture.md](architecture.md) — service topology, runtime boundaries, and data flow
 3. [agent-loop.md](agent-loop.md) — job lifecycle and agent execution loop
 4. [prompting.md](prompting.md) — prompt construction, context, and compaction
@@ -48,15 +56,16 @@ Then use the domain-specific docs below.
 
 ## Data & Storage
 
-- [data-model.md](data-model.md) — PostgreSQL schema and entity relationships
-- [memory-system.md](memory-system.md) — Memory Steward, notes, embeddings, and workspace index
+- [data-model.md](data-model.md) — PostgreSQL schema and data lifecycle
+- [memory-system.md](memory-system.md) — unified memory, embeddings, and workspace indexing
 
 ## Configuration and Deployment
 
-- [advanced-configuration.md](advanced-configuration.md) — **start here** for models, limits, email, integrations, UI, and scaling
+- [advanced-configuration.md](advanced-configuration.md) — **start here** for models, limits, email, integrations, and deployment topology
 - [configuration.md](configuration.md) — full `.env` and `config/agent.yaml` reference
 - [calendar-providers.md](calendar-providers.md) — OAuth setup for Google Calendar, Microsoft Outlook, and Zoho Calendar
-- [env-overrides.md](env-overrides.md) — complete list of environment variable overrides
+- [dropbox.md](dropbox.md) - private app-folder file exchange, authorization and transfer limits
+- [env-overrides.md](env-overrides.md) — expert `overrides.env` guide and complete list of overridable settings
 - [security.md](security.md) — threat model, hardening checklist, network binding, reverse-proxy examples, and responsible disclosure
 - [docker-setup.md](docker-setup.md) — image builds, Compose topology, networks, and mounts
 - [running-assistant.md](running-assistant.md) — local and server deployment guide
@@ -70,9 +79,8 @@ Then use the domain-specific docs below.
 
 - [email-and-artifacts.md](email-and-artifacts.md) — IMAP ingestion, disclosure handling, ClamAV scanning, and MarkItDown artifact conversion
 
-## UI & Contributor Orientation
+## API & Contributor Orientation
 
-- [visual-workspace-ui.md](visual-workspace-ui.md) — `/admin` and `/workspace` UI behavior
-- [dashboard-and-api.md](dashboard-and-api.md) — dashboard capabilities and API endpoint map
+- [dashboard-and-api.md](dashboard-and-api.md) — authenticated HTTPS API setup and endpoint map
 - [codebase.md](codebase.md) — module map, test structure, and contribution workflow
 

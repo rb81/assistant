@@ -1,6 +1,7 @@
 import os
 import json
 import http.client
+import hmac
 import socket
 import subprocess
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 
@@ -308,7 +309,8 @@ def remove_network(client: DockerClient, network_name: Optional[str]) -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health(authorization: str = Header(default="")) -> dict[str, str]:
+    require_api_token(authorization)
     return {
         "status": "ok",
         "isolation_mode": ISOLATION_MODE,
@@ -318,7 +320,8 @@ def health() -> dict[str, str]:
 
 
 @app.post("/execute", response_model=CommandResponse)
-def execute(request: CommandRequest) -> CommandResponse:
+def execute(request: CommandRequest, authorization: str = Header(default="")) -> CommandResponse:
+    require_api_token(authorization)
     workdir = resolve_workdir(request.workdir)
     timeout = request.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
     timeout = min(timeout, MAX_TIMEOUT_SECONDS)
@@ -329,6 +332,26 @@ def execute(request: CommandRequest) -> CommandResponse:
     if ISOLATION_MODE != "process":
         raise HTTPException(status_code=500, detail="unsupported SANDBOX_ISOLATION_MODE: %s" % ISOLATION_MODE)
     return execute_process(request, workdir, timeout, started)
+
+
+def require_api_token(authorization: str) -> None:
+    token = os.getenv("SANDBOX_API_TOKEN", "")
+    token_file = os.getenv("SANDBOX_API_TOKEN_FILE", "")
+    if token and token_file:
+        raise HTTPException(status_code=503, detail="sandbox authentication is misconfigured")
+    if token_file:
+        try:
+            path = Path(token_file)
+            if not path.is_file() or path.stat().st_size > 4096:
+                raise ValueError
+            token = path.read_text(encoding="utf-8").rstrip("\r\n")
+        except (OSError, UnicodeError, ValueError):
+            raise HTTPException(status_code=503, detail="sandbox authentication is unavailable") from None
+    if len(token) < 32:
+        raise HTTPException(status_code=503, detail="sandbox authentication is not configured")
+    scheme, separator, supplied = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not hmac.compare_digest(token.encode("utf-8"), supplied.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="authentication required")
 
 
 def execute_process(request: CommandRequest, workdir: Path, timeout: int, started: float) -> CommandResponse:

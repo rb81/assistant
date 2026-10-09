@@ -160,9 +160,10 @@ class FakeIMAP:
     raw_by_uid: dict[bytes, bytes] = {}
     move_status: Any = "OK"
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, ssl_context=None, timeout=None) -> None:
         self.host = host
         self.port = port
+        self.timeout = timeout
         self.selected = ""
         self.uid_calls: list[tuple[str, tuple[Any, ...]]] = []
         self.append_calls: list[tuple[Any, ...]] = []
@@ -561,6 +562,85 @@ class MailboxHandlingTest(unittest.TestCase):
 
         self.assertEqual(result, {"enabled": True, "status": "appended", "folder": "[Gmail]/Sent Mail"})
         self.assertEqual(FakeIMAP.instances[0].append_calls[0][0], '"[Gmail]/Sent Mail"')
+        self.assertEqual(FakeIMAP.instances[0].timeout, 60)
+
+    def test_email_send_records_smtp_acceptance_before_sent_folder_append(self) -> None:
+        db = FakeOutboundEmailDatabase()
+        runtime = ToolRuntime(
+            db=db,  # type: ignore[arg-type]
+            config=AppConfig(
+                {
+                    "agent": {
+                        "identity": {"name": "Agent", "email": "agent@acme.example"},
+                        "email": {
+                            "smtp_host": "smtp.local",
+                            "smtp_username": "agent@acme.example",
+                            "smtp_password": "secret",
+                            "save_to_sent": True,
+                        },
+                        "filesystem": {"shared_root": "/tmp"},
+                    }
+                }
+            ),
+            job={"id": 1, "thread_id": "thread-1"},
+        )
+        statuses_at_append: list[list[str]] = []
+
+        def append(message: EmailMessage) -> dict[str, Any]:
+            statuses_at_append.append([sql for sql, _ in db.executed if "status = 'sent'" in sql])
+            raise TimeoutError("IMAP stalled")
+
+        runtime._append_to_sent_if_enabled = append  # type: ignore[method-assign]
+
+        with patch("assistant_agent.tools.smtplib.SMTP", FakeSMTP):
+            with self.assertRaises(TimeoutError):
+                runtime.email_send(["person@acme.example"], "Hello", "Hi", new_thread=True)
+
+        self.assertEqual(len(statuses_at_append[0]), 1)
+
+    def test_calendar_notification_for_managed_event_is_stored_without_queueing(self) -> None:
+        class CalendarIngestDatabase(FakeIngestDatabase):
+            def __init__(self, managed_uids: set[str]) -> None:
+                super().__init__()
+                self.managed_uids = managed_uids
+                self.uid_queries: list[list[str]] = []
+
+            def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
+                if "FROM calendar_managed_events" in sql:
+                    self.uid_queries.append(list(params[0]))
+                    return {"managed": 1} if self.managed_uids & set(params[0]) else None
+                return super().fetch_one(sql, params)
+
+        def invitation(uid: str) -> bytes:
+            message = EmailMessage()
+            message["From"] = "admin@acme.example"
+            message["To"] = "agent@acme.example"
+            message["Subject"] = "Invitation: Test Event"
+            message["Message-ID"] = "<%s@sender.zohocalendar.com>" % uid[:8]
+            message.set_content("You have been invited.")
+            folded_uid = "UID:%s\r\n %s" % (uid[:10], uid[10:])
+            ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n" % folded_uid
+            message.add_attachment(ics.encode("utf-8"), maintype="text", subtype="calendar", filename="event.ics")
+            return message.as_bytes()
+
+        managed_uid = "e78dd528a0bf4ee49dd90da16a340f33@zoho.com"
+        for uid, expected_queued in ((managed_uid, False), ("other-event@zoho.com", True)):
+            db = CalendarIngestDatabase({managed_uid})
+            downloader = EmailDownloader.__new__(EmailDownloader)
+            downloader.db = db  # type: ignore[assignment]
+            downloader.config = AppConfig({"agent": {"email": {"actionable_senders": ["admin@acme.example"]}}})
+            downloader.attachment_root = Path("/tmp/assistant-test-artifacts/attachments")
+            downloader.artifact_processor = FakeArtifactProcessor()
+            downloader.queue_or_update_job = lambda *args, **kwargs: None  # type: ignore[method-assign]
+            downloader.db.execute = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+
+            with patch("assistant_agent.admin_commands.authenticated_admin", lambda *args: False):
+                result = downloader.ingest_raw(invitation(uid))
+
+            self.assertTrue(result.inserted)
+            self.assertEqual(result.queued, expected_queued)
+            self.assertEqual(db.uid_queries, [[uid]])
+            self.assertEqual(db.inserted[0][-1], expected_queued)
 
     def test_email_send_formats_from_header_with_agent_display_name(self) -> None:
         runtime = ToolRuntime(
@@ -592,6 +672,7 @@ class MailboxHandlingTest(unittest.TestCase):
         self.assertEqual(str(message["From"]), "Agent <agent@acme.example>")
         self.assertEqual(from_addr, "agent@acme.example")
         self.assertEqual(to_addrs, ["user@example.com"])
+        self.assertTrue(FakeSMTP.instances[0].started_tls)
 
     def test_email_send_adds_ai_disclosure_for_external_recipients(self) -> None:
         db = FakeOutboundEmailDatabase()
@@ -726,9 +807,9 @@ class MailboxHandlingTest(unittest.TestCase):
 
         html = runtime._markdown_email_html("Best,\nAgent\nAcme Inc. (FZE)\nhttps://acme.example")
 
-        self.assertIn("Best,<br>", html)
-        self.assertIn("Agent<br>", html)
-        self.assertIn("Acme Inc. (FZE)<br>", html)
+        self.assertRegex(html, r"Best,<br\s*/?>")
+        self.assertRegex(html, r"Agent<br\s*/?>")
+        self.assertRegex(html, r"Acme Inc\. \(FZE\)<br\s*/?>")
 
     def test_email_read_supports_body_character_paging(self) -> None:
         runtime = ToolRuntime(

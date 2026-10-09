@@ -6,24 +6,24 @@ This document describes how Assistant is structured in production and local deve
 
 The default stack runs these services:
 
-- `postgres` — durable state (jobs, logs, memories, reminders, projects, research, contacts, etc.).
+- `postgres` — durable state (jobs, logs, memories, reminders, research, contacts, and related records).
 - `clamav` — malware scanning support for inbound artifacts.
-- `agent-api` — FastAPI dashboard + JSON API.
+- `agent-api` — optional authenticated FastAPI JSON API; no browser UI is served.
 - `downloader` — IMAP ingestion and job creation.
 - `task-agent` — main LLM-driven autonomous worker loop.
 - `workspace-indexer` — semantic indexer for shared workspace files.
 - `reminder-scheduler` — schedules due reminders into normal jobs.
-- `project-scheduler` — orchestrates ordered project child jobs.
 - `deep-research-agent` — asynchronous constrained research loop.
 - `supervisor` — stalled/failure review monitor.
 - `heartbeat` — rule-based queue health checks and notifications.
-- `ollama` — embedding service for semantic memory/notes/workspace search.
+- `ollama` — embedding service for supported semantic search and memory operations.
 - `sandbox` — command-execution broker that starts isolated run containers.
 
 ## Networks
 
-- `app_net` connects normal application services.
-- `sandbox_net` is internal and used by the sandbox control plane.
+- `database_net`, `model_net`, and `clamav_net` are internal networks scoped to their clients.
+- `sandbox_net` is internal and carries authenticated HTTPS control traffic.
+- `egress_net` permits outbound provider access while disabling bridge inter-container forwarding.
 
 The sandbox broker itself sits on `sandbox_net`. Per-command run containers are created dynamically by the broker on separate ephemeral bridge networks.
 
@@ -32,7 +32,7 @@ The sandbox broker itself sits on `sandbox_net`. Per-command run containers are 
 Compose bind-mounts runtime data under `./data` by default:
 
 - `./data/postgres` — PostgreSQL files.
-- `./data/share` — shared workspace visible to file tools.
+- `./data/share` — the shared workspace: the working directory the agent's file tools and the sandbox read and write. It is not exposed through any browser UI; the old shared editor was removed.
 - `./data/private/artifacts` — private raw/processed artifact storage.
 - `./data/ollama` — local Ollama model/cache storage.
 - `./data/clamav` — ClamAV signatures/state.
@@ -48,19 +48,18 @@ Most roles share the same Python image and are selected by `AGENT_ROLE` in `assi
 - `task-agent`
 - `workspace-indexer`
 - `reminder-scheduler`
-- `project-scheduler`
 - `deep-research-agent`
 - `supervisor`
 - `heartbeat`
 
-There are also one-shot cron-style roles (for host cron usage) such as `reminder-cron`, `project-cron`, `deep-research-cron`, `workspace-index-cron`, `heartbeat-cron`, and `tool-cache-cleanup-cron`.
+There are also one-shot cron-style roles (for host cron usage) such as `reminder-cron`, `deep-research-cron`, `workspace-index-cron`, `heartbeat-cron`, and `tool-cache-cleanup-cron`.
 
 ## End-to-End Flow
 
 ### 1) Inbound request
 
 - Email-driven: `downloader` pulls IMAP messages, stores in `emails`, decides actionability, and queues/updates jobs.
-- Dashboard-driven: user creates a manual job via API/UI (`/api/jobs`).
+- API-driven: a client creates a manual job through the optional HTTPS API (`POST /api/jobs`).
 
 ### 2) Job execution
 
@@ -75,15 +74,15 @@ Depending on tool calls, the job may:
 - read/write shared workspace files,
 - execute sandbox commands,
 - create reminders,
-- create projects or deep research runs,
-- update contacts, notes, calendar records, etc.
+- start deep research runs,
+- update contacts or calendar records.
 
 All important events are logged to `task_logs`.
 
 ### 4) Monitoring & intervention
 
 - `supervisor` checks running/review-needed jobs for stalls/failure patterns.
-- `heartbeat` performs rule-based health checks on jobs, projects, and research runs.
+- `heartbeat` performs rule-based queue health checks and sends notifications.
 - Admin notifications are sent on failure/review conditions.
 
 ## Security Boundaries

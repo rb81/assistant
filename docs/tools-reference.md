@@ -30,6 +30,21 @@ Guardrails:
 - cache/source-archive visibility is restricted,
 - workspace index is updated on file mutations.
 
+## Dropbox Tools
+
+- `dropbox_list`: paginated Inbox/Outbox file metadata, including nested files.
+- `dropbox_import`: one revision-pinned Inbox document; mandatory clean scans
+	and successful conversion before workspace publication/indexing.
+- `dropbox_export`: one scanned workspace snapshot to `Outbox/job-<id>`, only
+	with saved standing delivery permission; no overwrite or internal-file export.
+- `dropbox_delete`: delete one listed Inbox/Outbox file by path and current
+	revision, only when explicitly requested by the requester.
+
+Tools are loadable only when Dropbox is configured and the workspace is available.
+Export is additionally hidden unless `DROPBOX_ALLOW_EXPORTS=true`. Retry an
+uncertain export using the same source and filename. Dropbox content is untrusted
+data. See [connection, limits and privacy](dropbox.md).
+
 ## Email Tools
 
 - `email_search`
@@ -46,26 +61,16 @@ Guardrails:
 - optional append to IMAP Sent folder when configured,
 - disclosure footer handling for external domains.
 
-## Memory and Notes Tools
+## Memory Tools
 
 Memory:
 
-- `memory_remember` — create a durable memory with optional `kind` (decision, agreement, incident, preference, operating_rule, project_context) and `importance` (1-5)
+- `memory_remember` — create an atomic durable memory or expiring working context. Inferred memories require `metadata.evidence` and `metadata.why_future_relevant`; `metadata.explicit_user_requested=true` is the alternative only when the user explicitly asked to remember it. Other metadata keys, including `source_evidence`, are rejected. Kinds include decision, agreement, incident, preference, operating_rule, project_context, and working_context; importance is 1-5.
 - `memory_search` — semantic search when query is non-empty, keyword search when blank
 - `memory_update`
 - `memory_forget`
 
-Notes:
-
-- `note_create`
-- `note_search`
-- `note_read`
-- `note_update`
-- `note_delete`
-
-Notes are private to explicit tool access and never injected into prompt context.
-
-**Auto-Entity Linking**: When enabled (`agent.entities.auto_link_on_create`), newly created memories and notes are automatically linked to 1-3 high-level entities via LLM classification. This grouping is best-effort and never blocks object creation.
+Notes and entities are retired and migrated into unified memory; see [Memory System](memory-system.md).
 
 ## Contacts Tools
 
@@ -77,8 +82,6 @@ Notes are private to explicit tool access and never injected into prompt context
 
 Contacts are deliberately separate from memory records.
 
-**Auto-Entity Linking**: When enabled, newly created contacts are automatically linked to high-level entities based on name, company, title, and notes fields.
-
 ## Reminders Tools
 
 - `reminder_create`
@@ -88,23 +91,12 @@ Contacts are deliberately separate from memory records.
 
 Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
 
-**Auto-Entity Linking**: When enabled, newly created reminders are automatically linked to high-level entities based on title and task description.
-
-## Projects and Deep Research Tools
-
-Projects:
-
-- `project_create`
-- `project_status`
-
-Deep research:
+## Deep Research Tools
 
 - `deep_research_request`
 - `deep_research_status`
 
-`project_create` and `deep_research_request` are async request tools; parent job transitions to `waiting`.
-
-**Auto-Entity Linking**: When enabled, newly created projects are automatically linked to high-level entities based on project title and first few task descriptions.
+`deep_research_request` is an async request tool; the parent job transitions to `waiting`.
 
 ## Command and Calendar Tools
 
@@ -115,7 +107,7 @@ Command:
 Calendar:
 
 - `calendar_sync` — triggers a refresh from all configured calendar API providers; no-op when no providers are active
-- `calendar_list_busy` — lists busy windows across all configured providers within a date/time range; titles are redacted unless `allow_read_event_details` is enabled
+- `calendar_list_busy` — lists busy windows across all configured providers within a date/time range; titles are redacted unless `allow_read_event_details` is enabled. Only `complete=true` verifies availability; `provider_errors` and `status=degraded`/`no_providers` indicate an incomplete check, even when `busy` is empty.
 - `calendar_list_events` — lists calendar events from all configured providers; titles and details subject to the same policy
 - `calendar_create_event` — creates an event on the specified provider (or the default provider when `provider` is omitted); supports `alert_minutes` override
 - `calendar_update_event` — updates a managed event by its assistant-assigned ID; accepts `alert_minutes` override
@@ -125,7 +117,7 @@ Calendar tools are exposed only when at least one provider has credentials confi
 
 ## Context and Search Tools
 
-- `context_search` — semantic search across all sources (emails, jobs, memories, notes, reminders, contacts, projects); accepts `recent_only=true` to limit to last 7 days
+- `context_search` — semantic search across memories, jobs, reminders, inbound/outbound emails, and contacts; accepts `recent_only=true` to limit to last 7 days
 - `job_search` — search past job history by query and status
 
 ## Web and Fusion Tools

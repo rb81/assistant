@@ -2,9 +2,11 @@ import os
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Iterable, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import yaml
+
+from .secret_store import is_secret_name, read_secret
 
 
 class AppConfig:
@@ -60,17 +62,7 @@ def _set_nested(values: dict[str, Any], path: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
-def load_config() -> AppConfig:
-    path = Path(os.getenv("AGENT_CONFIG", "/app/config/agent.yaml"))
-    values: dict[str, Any] = {}
-
-    if path.exists() and not path.is_file():
-        raise RuntimeError("%s must be a file, not a directory" % path)
-    if path.is_file():
-        with path.open("r", encoding="utf-8") as handle:
-            values = yaml.safe_load(handle) or {}
-
-    env_overrides: list[tuple[str, str, Optional[type]]] = [
+ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         # App settings
         ("AGENT_APP_NAME", "agent.app.name", str),
         ("AGENT_APP_BASE_URL", "agent.app.base_url", str),
@@ -84,6 +76,23 @@ def load_config() -> AppConfig:
         # Admin contact
         ("ADMIN_NAME", "agent.admin.name", str),
         ("ADMIN_EMAIL", "agent.admin.email", str),
+        ("ADMIN_TRUSTED_AUTHSERV_IDS", "agent.admin.trusted_authserv_ids", list),
+        ("ADMIN_COMMAND_SIGNING_KEY", "agent.admin.command_signing_key", str),
+        ("AGENT_API_AUTH_TOKEN", "agent.api.auth_token", str),
+        ("AGENT_API_TLS_CERT_FILE", "agent.api.tls_cert_file", str),
+        ("AGENT_API_TLS_KEY_FILE", "agent.api.tls_key_file", str),
+        ("ZOOM_ENABLED", "agent.zoom.enabled", bool),
+        ("ZOOM_AUTH_MODE", "agent.zoom.auth_mode", str),
+        ("ZOOM_CLIENT_ID", "agent.zoom.client_id", str),
+        ("ZOOM_CLIENT_SECRET", "agent.zoom.client_secret", str),
+        ("ZOOM_ACCOUNT_ID", "agent.zoom.account_id", str),
+        ("ZOOM_REFRESH_TOKEN", "agent.zoom.refresh_token", str),
+        ("ZOOM_USER_ID", "agent.zoom.user_id", str),
+        ("DROPBOX_ENABLED", "agent.dropbox.enabled", bool),
+        ("DROPBOX_CLIENT_ID", "agent.dropbox.client_id", str),
+        ("DROPBOX_REFRESH_TOKEN", "agent.dropbox.refresh_token", str),
+        ("DROPBOX_ALLOW_EXPORTS", "agent.dropbox.allow_exports", bool),
+        ("DROPBOX_MAX_FILE_BYTES", "agent.dropbox.max_file_bytes", int),
         
         # Organization
         ("ORG_NAME", "agent.org.name", str),
@@ -97,7 +106,6 @@ def load_config() -> AppConfig:
         ("AGENT_DATABASE_USER", "agent.database.user", str),
         
         # LLM
-        ("AGENT_LLM_PROVIDER", "agent.llm.provider", str),
         ("AGENT_LLM_MODEL", "agent.llm.model", str),
         ("AGENT_LLM_FALLBACK_MODEL", "agent.llm.fallback_model", str),
         ("AGENT_LLM_BASE_URL", "agent.llm.base_url", str),
@@ -114,8 +122,6 @@ def load_config() -> AppConfig:
         ("AGENT_LIMITS_SUMMARIZATION_TIMEOUT_SECONDS", "agent.limits.summarization_timeout_seconds", int),
         ("AGENT_LIMITS_SUMMARIZATION_KEEP_RECENT", "agent.limits.summarization_keep_recent", int),
         ("AGENT_LIMITS_SUMMARIZATION_MAX_INPUT_CHARS", "agent.limits.summarization_max_input_chars", int),
-        ("AGENT_MAX_DAILY_COST_USD", "agent.limits.max_daily_cost_usd", float),
-        ("AGENT_LIMITS_TOOL_TIMEOUT_DEFAULT_SECONDS", "agent.limits.tool_timeout_default_seconds", int),
         ("AGENT_LIMITS_TOOL_TIMEOUT_COMMAND_SECONDS", "agent.limits.tool_timeout_command_seconds", int),
         ("AGENT_MAX_EMAILS_PER_HOUR", "agent.limits.max_emails_per_hour", int),
         ("AGENT_LIMITS_POLL_INTERVAL_SECONDS", "agent.limits.poll_interval_seconds", int),
@@ -151,8 +157,6 @@ def load_config() -> AppConfig:
         # Supervisor
         ("AGENT_SUPERVISOR_STALL_THRESHOLD_MINUTES", "agent.supervisor.stall_threshold_minutes", int),
         ("AGENT_SUPERVISOR_MAX_TASK_DURATION_MINUTES", "agent.supervisor.max_task_duration_minutes", int),
-        ("AGENT_SUPERVISOR_REVIEW_MODEL", "agent.supervisor.review_model", str),
-        ("AGENT_SUPERVISOR_RECENT_LOG_LIMIT", "agent.supervisor.recent_log_limit", int),
         
         # Filesystem
         ("AGENT_FILESYSTEM_SHARED_ROOT", "agent.filesystem.shared_root", str),
@@ -183,11 +187,9 @@ def load_config() -> AppConfig:
         ("AGENT_PROMPT_MAX_CONTEXT_FILE_BYTES", "agent.prompt.max_context_file_bytes", int),
         
         # Memory
-        ("AGENT_MEMORY_RECENT_PROMPT_LIMIT", "agent.memory.recent_prompt_limit", int),
         ("AGENT_MEMORY_STEWARD_ENABLED", "agent.memory.steward.enabled", bool),
         ("AGENT_MEMORY_STEWARD_MODEL", "agent.memory.steward.model", str),
         ("AGENT_MEMORY_STEWARD_MODE", "agent.memory.steward.mode", str),
-        ("AGENT_MEMORY_STEWARD_MAX_ITERATIONS", "agent.memory.steward.max_iterations", int),
         ("AGENT_MEMORY_STEWARD_TIMEOUT_SECONDS", "agent.memory.steward.timeout_seconds", int),
         ("AGENT_MEMORY_STEWARD_MAX_TOKENS_PER_CALL", "agent.memory.steward.max_tokens_per_call", int),
         ("AGENT_MEMORY_STEWARD_MAX_INJECTED_MEMORIES", "agent.memory.steward.max_injected_memories", int),
@@ -241,10 +243,6 @@ def load_config() -> AppConfig:
         ("CALENDAR_ZOHO_API_BASE", "agent.calendar.zoho.api_base", str),
         
         # Projects
-        ("AGENT_PROJECTS_ENABLED", "agent.projects.enabled", bool),
-        ("AGENT_PROJECTS_SCHEDULER_POLL_INTERVAL_SECONDS", "agent.projects.scheduler_poll_interval_seconds", int),
-        ("AGENT_PROJECTS_MAX_TASKS", "agent.projects.max_tasks", int),
-        ("AGENT_PROJECTS_MAX_PROJECTS_PER_TICK", "agent.projects.max_projects_per_tick", int),
         
         # Deep research
         ("AGENT_DEEP_RESEARCH_ENABLED", "agent.deep_research.enabled", bool),
@@ -266,8 +264,6 @@ def load_config() -> AppConfig:
         # Sandbox
         ("AGENT_SANDBOX_ENABLED", "agent.sandbox.enabled", bool),
         ("AGENT_SANDBOX_BASE_URL", "agent.sandbox.base_url", str),
-        ("AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS", "agent.sandbox.default_timeout_seconds", int),
-        ("AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS", "agent.sandbox.hard_kill_grace_seconds", int),
         ("AGENT_SANDBOX_MAX_ATTEMPTS", "agent.sandbox.max_attempts", int),
         ("AGENT_SANDBOX_RETRY_BACKOFF_SECONDS", "agent.sandbox.retry_backoff_seconds", int),
         
@@ -294,17 +290,29 @@ def load_config() -> AppConfig:
         ("AGENT_API_PORT", "agent.api.port", int),
         ("AGENT_API_DOCS_ENABLED", "agent.api.docs_enabled", bool),
         ("AGENT_API_OPENAPI_ENABLED", "agent.api.openapi_enabled", bool),
-        ("AGENT_API_DASHBOARD_ENABLED", "agent.api.dashboard_enabled", bool),
-        ("AGENT_API_WORKSPACE_ENABLED", "agent.api.workspace_enabled", bool),
         ("AGENT_API_ALLOW_PUBLIC_BIND", "agent.api.allow_public_bind", bool),
-        ("AGENT_API_MAX_UPLOAD_BYTES", "agent.api.max_upload_bytes", int),
-    ]
+]
 
-    for env_name, path_name, caster in env_overrides:
-        if env_name not in os.environ:
+
+def load_config() -> AppConfig:
+    path = Path(os.getenv("AGENT_CONFIG", "/app/config/agent.yaml"))
+    values: dict[str, Any] = {}
+
+    if path.exists() and not path.is_file():
+        raise RuntimeError("%s must be a file, not a directory" % path)
+    if path.is_file():
+        with path.open("r", encoding="utf-8") as handle:
+            values = yaml.safe_load(handle) or {}
+
+    for env_name, path_name, caster in ENV_OVERRIDES:
+        if env_name not in os.environ and not (is_secret_name(env_name) and env_name + "_FILE" in os.environ):
             continue
-        raw_value = os.environ[env_name]
+        raw_value = (read_secret(env_name) or "") if is_secret_name(env_name) else os.environ[env_name]
         if not raw_value.strip():
+            if env_name == "AGENT_EMBEDDINGS_DIMENSIONS":
+                _set_nested(values, path_name, None)
+            elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS"}:
+                _set_nested(values, path_name, [])
             continue
         if caster is int:
             try:
@@ -377,12 +385,33 @@ def message_id_domain(config: AppConfig) -> str:
     return "%s.local" % app_name(config)
 
 
+def validate_database_url(value: str) -> None:
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+        query = parse_qs(parsed.query, keep_blank_values=True)
+    except ValueError:
+        parsed = None
+        query = {}
+    if (
+        parsed is None
+        or parsed.scheme not in {"postgres", "postgresql"}
+        or not parsed.hostname
+        or len(query.get("sslmode", [])) != 1
+        or query["sslmode"][0] != "verify-full"
+        or len(query.get("sslrootcert", [])) != 1
+        or not query["sslrootcert"][0]
+    ):
+        raise RuntimeError("DATABASE_URL must use sslmode=verify-full and provide sslrootcert")
+
+
 def database_url(config: AppConfig) -> str:
-    value = os.getenv("DATABASE_URL")
+    value = read_secret("DATABASE_URL")
     if value:
+        validate_database_url(value)
         return value
 
-    password = os.getenv("POSTGRES_PASSWORD")
+    password = read_secret("POSTGRES_PASSWORD")
     if not password:
         raise RuntimeError("POSTGRES_PASSWORD is required")
 
@@ -390,12 +419,13 @@ def database_url(config: AppConfig) -> str:
     host = str(config.get("agent.database.host", "postgres"))
     port = config.get_int("agent.database.port", 5432)
     name = str(config.get("agent.database.name", "assistant"))
-    return "postgres://%s:%s@%s:%s/%s" % (
+    return "postgres://%s:%s@%s:%s/%s?%s" % (
         quote(user, safe=""),
         quote(password, safe=""),
         host,
         port,
         quote(name, safe=""),
+        urlencode({"sslmode": "verify-full", "sslrootcert": "/run/assistant/tls/postgres.crt"}),
     )
 
 

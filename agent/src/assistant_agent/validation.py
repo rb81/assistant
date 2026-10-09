@@ -4,6 +4,7 @@ from typing import Any
 
 from .config import AppConfig, agent_email, database_url
 from .time_utils import default_timezone
+from .secret_store import read_secret
 
 
 EXAMPLE_VALUES = {
@@ -32,7 +33,7 @@ WEAK_PASSWORDS = {
 
 def postgres_password_is_weak() -> bool:
     """Return True if POSTGRES_PASSWORD is unset or matches a known weak/placeholder value."""
-    password = os.getenv("POSTGRES_PASSWORD", "")
+    password = read_secret("POSTGRES_PASSWORD", "") or ""
     return not password.strip() or password.strip() in WEAK_PASSWORDS
 
 
@@ -44,7 +45,7 @@ def is_set(value: Any) -> bool:
 
 
 def has_model_api_key() -> bool:
-    return is_set(os.getenv("OPENROUTER_API_KEY")) or is_set(os.getenv("OPENAI_API_KEY"))
+    return is_set(read_secret("OPENROUTER_API_KEY")) or is_set(read_secret("OPENAI_API_KEY"))
 
 
 def uses_openrouter(config: AppConfig) -> bool:
@@ -52,7 +53,7 @@ def uses_openrouter(config: AppConfig) -> bool:
 
 
 def openrouter_configured(config: AppConfig) -> bool:
-    return uses_openrouter(config) and is_set(os.getenv("OPENROUTER_API_KEY"))
+    return uses_openrouter(config) and is_set(read_secret("OPENROUTER_API_KEY"))
 
 
 def smtp_configured(config: AppConfig) -> bool:
@@ -105,15 +106,26 @@ def fusion_configured(config: AppConfig) -> bool:
 def calendar_configured(config: AppConfig) -> bool:
     if not config.get_bool("agent.calendar.enabled", False):
         return False
-    return (
-        is_set(os.getenv("CALENDAR_GOOGLE_CLIENT_ID"))
-        or is_set(os.getenv("CALENDAR_OUTLOOK_CLIENT_ID"))
-        or is_set(os.getenv("CALENDAR_ZOHO_CLIENT_ID"))
+    return any(
+        is_set(read_secret(f"CALENDAR_{provider}_CLIENT_ID"))
+        for provider in ("GOOGLE", "OUTLOOK", "ZOHO")
     )
 
 
 def validate_role_config(role: str, config: AppConfig) -> list[str]:
     errors: list[str] = []
+    from .time_utils import default_timezone
+
+    try:
+        default_timezone(config)
+    except ValueError as exc:
+        errors.append(str(exc))
+    if role == "api":
+        if len(str(config.get("agent.api.auth_token") or "")) < 32:
+            errors.append("API requires AGENT_API_AUTH_TOKEN of at least 32 characters")
+        for setting in ("agent.api.tls_cert_file", "agent.api.tls_key_file"):
+            if not config.get(setting) or not Path(str(config.get(setting))).is_file():
+                errors.append("API requires a readable TLS file: %s" % setting)
     try:
         database_url(config)
     except RuntimeError as exc:
@@ -194,11 +206,7 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
                 "model": config.get("agent.embeddings.model", config.get("agent.memory.embeddings.model", "embeddinggemma")),
             },
         },
-        "note_tools": {
-            "available": True,
-            "tools": ["note_create", "note_search", "note_read", "note_update", "note_delete"],
-            "prompt_injection": False,
-        },
+
         "reminder_tools": {
             "available": True,
             "tools": ["reminder_create", "reminder_list", "reminder_update", "reminder_cancel"],
@@ -224,7 +232,7 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
                     ("outlook", "CALENDAR_OUTLOOK_CLIENT_ID"),
                     ("zoho", "CALENDAR_ZOHO_CLIENT_ID"),
                 )
-                if is_set(os.getenv(var))
+                if is_set(read_secret(var))
             ],
             "default_provider": os.getenv("CALENDAR_DEFAULT_PROVIDER") or config.get("agent.calendar.default_provider"),
             "default_alert_minutes": config.get_int("agent.calendar.default_alert_minutes", 30),
@@ -233,11 +241,7 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
                 "writes_managed_only": True,
             },
         },
-        "project_tools": {
-            "available": config.get_bool("agent.projects.enabled", True),
-            "tools": ["project_create", "project_status"] if config.get_bool("agent.projects.enabled", True) else [],
-            "max_tasks": config.get_int("agent.projects.max_tasks", 25),
-        },
+
         "deep_research_tools": {
             "available": config.get_bool("agent.deep_research.enabled", True) and search_configured(config),
             "tools": ["deep_research_request", "deep_research_status", "web_search"]

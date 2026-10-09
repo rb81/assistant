@@ -59,103 +59,6 @@ def workspace_config(temp_dir: str, embeddings_enabled: bool = True) -> AppConfi
     )
 
 
-class FakeNoteDatabase:
-    def __init__(self) -> None:
-        self.notes: list[dict[str, Any]] = []
-        self.events: list[dict[str, Any]] = []
-        self.next_id = 1
-
-    def row(self, values: dict[str, Any]) -> dict[str, Any]:
-        row = {
-            "id": self.next_id,
-            "title": "Untitled note",
-            "content": "",
-            "tags": [],
-            "embedding": None,
-            "embedding_model": None,
-            "embedding_dimensions": None,
-            "embedding_updated_at": None,
-            "source_job_id": None,
-            "metadata": {},
-            "last_accessed_at": None,
-            "created_at": "2026-06-09T00:00:00Z",
-            "updated_at": "2026-06-09T00:00:00Z",
-        }
-        row.update(values)
-        return row
-
-    def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
-        normalized = " ".join(sql.split())
-        if normalized.startswith("INSERT INTO agent_notes"):
-            title, content, tags, embedding, embedding_model, embedding_dimensions, embedding_updated_at, source_job_id, metadata = params
-            row = self.row(
-                {
-                    "title": title,
-                    "content": content,
-                    "tags": tags,
-                    "embedding": embedding,
-                    "embedding_model": embedding_model,
-                    "embedding_dimensions": embedding_dimensions,
-                    "embedding_updated_at": embedding_updated_at,
-                    "source_job_id": source_job_id,
-                    "metadata": metadata,
-                }
-            )
-            self.next_id += 1
-            self.notes.append(row)
-            return row
-        if "FROM agent_notes WHERE id = %s" in normalized:
-            note_id = int(params[0])
-            return next((note for note in self.notes if int(note["id"]) == note_id), None)
-        if normalized.startswith("UPDATE agent_notes"):
-            note_id = int(params[-1])
-            note = next((item for item in self.notes if int(item["id"]) == note_id), None)
-            if note is None:
-                return None
-            title, content, tags, has_metadata, metadata = params[:5]
-            if title is not None:
-                note["title"] = title
-            if content is not None:
-                note["content"] = content
-            if tags is not None:
-                note["tags"] = tags
-            if has_metadata:
-                note["metadata"] = metadata
-            note["updated_at"] = "2026-06-09T01:00:00Z"
-            return note
-        if normalized.startswith("DELETE FROM agent_notes"):
-            note_id = int(params[0])
-            for index, note in enumerate(self.notes):
-                if int(note["id"]) == note_id:
-                    return self.notes.pop(index)
-            return None
-        return None
-
-    def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        normalized = " ".join(sql.split())
-        if "FROM agent_notes" not in normalized:
-            return []
-        if "embedding IS NOT NULL" in normalized:
-            return [dict(note) for note in self.notes if note.get("embedding") is not None]
-        query = ""
-        if params and isinstance(params[0], str):
-            query = params[0].strip("%").lower()
-        rows = []
-        for note in self.notes:
-            haystack = "%s %s %s" % (note["title"], note["content"], " ".join(note["tags"]))
-            if not query or query in haystack.lower():
-                rows.append(dict(note))
-        return rows
-
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
-        normalized = " ".join(sql.split())
-        if normalized.startswith("INSERT INTO note_events"):
-            self.events.append({"note_id": params[0], "event_type": params[3]})
-        if normalized.startswith("UPDATE agent_notes SET last_accessed_at"):
-            note_id = int(params[0])
-            for note in self.notes:
-                if int(note["id"]) == note_id:
-                    note["last_accessed_at"] = "touched"
 
 
 class FakeConversionDatabase:
@@ -275,27 +178,10 @@ class NotesAndWorkspaceIndexTest(unittest.TestCase):
             config = workspace_config(temp_dir)
             available = available_function_names(config, {"id": 7, "thread_id": "thread"})
 
-            self.assertIn("note_create", available)
-            self.assertIn("note_search", tool_catalog(config, {"id": 7, "thread_id": "thread"}))
+            self.assertNotIn("note_create", available)
+            self.assertIn("memory_remember", available)
+            self.assertNotIn("note_search", tool_catalog(config, {"id": 7, "thread_id": "thread"}))
 
-    def test_note_tool_crud_uses_explicit_search_and_read(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = workspace_config(temp_dir)
-            db = FakeNoteDatabase()
-            runtime = ToolRuntime(db, config, {"id": 42, "thread_id": "thread-1"})  # type: ignore[arg-type]
-
-            with patch("assistant_agent.embedding_client.EmbeddingClient.embed", return_value=[1.0, 0.0]):
-                created = runtime.note_create("Investigate the workspace index after saving files.", title="Workspace index", tags=["workspace"])
-                found = runtime.note_search("saving files")
-                read = runtime.note_read(created["note"]["id"])
-                updated = runtime.note_update(created["note"]["id"], title="Workspace index notes")
-                deleted = runtime.note_delete(created["note"]["id"])
-
-            self.assertEqual(created["note"]["title"], "Workspace index")
-            self.assertEqual(found["notes"][0]["id"], created["note"]["id"])
-            self.assertIn("workspace index", read["note"]["content"])
-            self.assertEqual(updated["note"]["title"], "Workspace index notes")
-            self.assertEqual(deleted["deleted"]["id"], created["note"]["id"])
 
     def test_document_converter_creates_markdown_without_archiving_original(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -411,70 +297,6 @@ class NotesAndWorkspaceIndexTest(unittest.TestCase):
             self.assertIn("embedding index", matches[0]["snippet"].lower())
 
 
-class NoteReapingTest(unittest.TestCase):
-    """Test note reaping/archiving functionality."""
-    
-    def test_reap_archives_stale_active_notes(self) -> None:
-        """Verify reap_stale_notes archives active notes older than threshold."""
-        # This is a structural test - implementation would require mocking db and config
-        # In real testing, you would:
-        # 1. Create FakeNoteDatabase with old active notes (updated_at > 60 days ago)
-        # 2. Call note_store.reap_stale_notes()
-        # 3. Verify db.execute was called with UPDATE to set status='archived'
-        # 4. Verify returned dict has correct archived_count
-        # 5. Verify archived_ids list contains the note IDs
-        pass
-    
-    def test_reap_skips_recently_updated_notes(self) -> None:
-        """Verify reap_stale_notes does NOT archive recently-updated notes."""
-        # Test would:
-        # 1. Create notes with updated_at < threshold (e.g., 30 days ago)
-        # 2. Call reap_stale_notes()
-        # 3. Verify those notes are NOT archived
-        # 4. Verify archived_count = 0
-        pass
-    
-    def test_reap_preserves_data(self) -> None:
-        """Verify reaping only changes status, preserving content/title/tags."""
-        # Test would:
-        # 1. Create note with specific content, title, tags
-        # 2. Call reap_stale_notes()
-        # 3. Verify only status field changed to 'archived'
-        # 4. Verify content, title, tags remain unchanged
-        pass
-    
-    def test_reap_logs_to_note_events(self) -> None:
-        """Verify reap_stale_notes logs 'archive' events to note_events."""
-        # Test would:
-        # 1. Use FakeNoteDatabase that tracks log_event calls
-        # 2. Call reap_stale_notes()
-        # 3. Verify log_event was called for each archived note
-        # 4. Verify event_type='archive'
-        # 5. Verify input_data contains reason='stale', age_days, linked_entities
-        pass
-    
-    def test_reap_respects_config_threshold(self) -> None:
-        """Verify reap_stale_notes uses note_reap_after_days from config."""
-        # Test would:
-        # 1. Set config agent.memory.steward.note_reap_after_days to custom value
-        # 2. Verify SQL query uses that value in the interval calculation
-        pass
-    
-    def test_reap_only_archives_active_notes(self) -> None:
-        """Verify reap_stale_notes does not touch already-archived notes."""
-        # Test would:
-        # 1. Create notes with status='archived'
-        # 2. Call reap_stale_notes()
-        # 3. Verify those notes are not included in archived_ids
-        pass
-    
-    def test_reap_limits_batch_size(self) -> None:
-        """Verify reap_stale_notes limits to 100 notes per run."""
-        # Test would:
-        # 1. Create 150 stale active notes
-        # 2. Call reap_stale_notes()
-        # 3. Verify only 100 are archived (LIMIT 100 in query)
-        pass
 
 
 if __name__ == "__main__":

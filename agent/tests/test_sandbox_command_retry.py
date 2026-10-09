@@ -57,7 +57,7 @@ class FakeResponse:
 
 def http_error(status: int, detail: str) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
-        "http://sandbox:8080/execute",
+        "https://sandbox:8080/execute",
         status,
         "error",
         {},
@@ -71,7 +71,7 @@ def retry_config(shared_root: str) -> AppConfig:
             "agent": {
                 "filesystem": {"shared_root": shared_root, "require_mount": False},
                 "sandbox": {
-                    "base_url": "http://sandbox:8080",
+                    "base_url": "https://sandbox:8080",
                     "max_attempts": 3,
                     "retry_backoff_seconds": 0,
                 },
@@ -89,14 +89,17 @@ class SandboxCommandRetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             calls = 0
 
-            def fake_urlopen(request: Any, timeout: int) -> FakeResponse:
+            def fake_urlopen(request: Any, timeout: int, context: Any) -> FakeResponse:
                 nonlocal calls
                 calls += 1
+                self.assertEqual(request.get_header("Authorization"), "Bearer sandbox-token")
+                self.assertIs(context, tls_context)
                 if calls == 1:
                     raise http_error(502, "docker daemon unavailable")
                 return FakeResponse({"exit_code": 0, "stdout": "ok\n", "stderr": "", "duration_ms": 10, "timed_out": False})
 
-            with patch("urllib.request.urlopen", fake_urlopen):
+            tls_context = object()
+            with patch("assistant_agent.tools.read_secret", return_value="sandbox-token"), patch("assistant_agent.tools.ssl.create_default_context", return_value=tls_context), patch("assistant_agent.tools.open_https_request", side_effect=fake_urlopen):
                 result = self.runtime(temp_dir).command_execute(["python", "--version"])
 
         self.assertEqual(result["exit_code"], 0)
@@ -107,10 +110,10 @@ class SandboxCommandRetryTest(unittest.TestCase):
     def test_exhausted_retries_raise_structured_tool_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
 
-            def fake_urlopen(request: Any, timeout: int) -> FakeResponse:
+            def fake_urlopen(request: Any, timeout: int, context: Any) -> FakeResponse:
                 raise urllib.error.URLError("connection refused")
 
-            with patch("urllib.request.urlopen", fake_urlopen):
+            with patch("assistant_agent.tools.read_secret", return_value="sandbox-token"), patch("assistant_agent.tools.ssl.create_default_context"), patch("assistant_agent.tools.open_https_request", side_effect=fake_urlopen):
                 with self.assertRaises(SandboxAttemptsExhausted) as raised:
                     self.runtime(temp_dir).command_execute(["python", "--version"])
 
@@ -122,12 +125,12 @@ class SandboxCommandRetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             calls = 0
 
-            def fake_urlopen(request: Any, timeout: int) -> FakeResponse:
+            def fake_urlopen(request: Any, timeout: int, context: Any) -> FakeResponse:
                 nonlocal calls
                 calls += 1
                 raise http_error(400, "workdir does not exist")
 
-            with patch("urllib.request.urlopen", fake_urlopen):
+            with patch("assistant_agent.tools.read_secret", return_value="sandbox-token"), patch("assistant_agent.tools.ssl.create_default_context"), patch("assistant_agent.tools.open_https_request", side_effect=fake_urlopen):
                 with self.assertRaises(Exception) as raised:
                     self.runtime(temp_dir).command_execute(["python", "--version"])
 
@@ -142,12 +145,12 @@ class SandboxCommandRetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             calls = 0
 
-            def fake_urlopen(request: Any, timeout: int) -> FakeResponse:
+            def fake_urlopen(request: Any, timeout: int, context: Any) -> FakeResponse:
                 nonlocal calls
                 calls += 1
                 raise http_error(502, detail)
 
-            with patch("urllib.request.urlopen", fake_urlopen):
+            with patch("assistant_agent.tools.read_secret", return_value="sandbox-token"), patch("assistant_agent.tools.ssl.create_default_context"), patch("assistant_agent.tools.open_https_request", side_effect=fake_urlopen):
                 with self.assertRaises(SandboxHostConfigurationError) as raised:
                     self.runtime(temp_dir).command_execute(["python", "--version"])
 

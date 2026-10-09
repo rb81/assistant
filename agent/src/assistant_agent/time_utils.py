@@ -7,11 +7,11 @@ from .config import AppConfig
 
 
 def default_timezone(config: AppConfig) -> tuple[tzinfo, str]:
-    name = str(config.get("agent.reminders.default_timezone") or config.get("agent.app.timezone") or "UTC")
+    name = str(config.get("agent.app.timezone") or "UTC").strip()
     try:
         return ZoneInfo(name), name
-    except ZoneInfoNotFoundError:
-        return timezone.utc, "UTC"
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("invalid assistant timezone: %s" % name) from exc
 
 
 def parse_datetime(value: str, config: AppConfig, timezone_name: Optional[str] = None) -> datetime:
@@ -29,11 +29,18 @@ def parse_datetime(value: str, config: AppConfig, timezone_name: Optional[str] =
         if override:
             try:
                 zone = ZoneInfo(override)
-            except ZoneInfoNotFoundError:
-                zone = timezone.utc
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError("invalid timezone: %s" % override) from exc
         else:
             zone, _ = default_timezone(config)
-        parsed = parsed.replace(tzinfo=zone)
+        candidates = {
+            parsed.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc)
+            for fold in (0, 1)
+            if parsed.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None) == parsed
+        }
+        if len(candidates) != 1:
+            raise ValueError("datetime is ambiguous or nonexistent in the configured timezone; provide an explicit UTC offset")
+        parsed = candidates.pop()
     return parsed.astimezone(timezone.utc)
 
 

@@ -22,6 +22,15 @@ This document summarizes the PostgreSQL schema in `database/schema.sql`.
 
 `jobs` is the primary work queue. `task_logs` stores detailed event timeline. `agent_checkpoints` stores resumable context snapshots.
 
+## Dropbox Transfers
+
+`dropbox_transfers` records task-owned import/export operations, remote paths,
+file IDs/revisions, local/content hashes, byte sizes, scan/conversion state and
+safe errors. Status is `pending|ready|failed|uncertain`. Stable request keys and
+transaction-scoped advisory locks serialize retries. Transfers cascade with
+their job; deleting database rows does not delete local or Dropbox files.
+Email-only `processed_artifacts` ownership and source types remain unchanged.
+
 ## Queue and Concurrency Guarantees
 
 - Jobs are claimed with `FOR UPDATE SKIP LOCKED` semantics.
@@ -34,14 +43,7 @@ This document summarizes the PostgreSQL schema in `database/schema.sql`.
 - `agent_memories`
 - `memory_events`
 
-Durable memory records plus audit/event log.
-
-### Notes
-
-- `agent_notes`
-- `note_events`
-
-Agent-private note records (not prompt-injected by steward).
+Unified durable facts and expiring working context, with suggestions awaiting review and an audit/event log. Migration 005 converted the former separate notes into memories and kept entity labels as tags.
 
 ### Contacts
 
@@ -65,13 +67,6 @@ Tracks indexed files, chunked searchable text, embedding metadata, and conversio
 
 Supports one-time and recurring schedules.
 
-### Projects
-
-- `projects`
-- `project_tasks`
-
-Ordered task orchestration with one-sequence-at-a-time progression.
-
 ### Deep research
 
 - `deep_research_runs`
@@ -79,21 +74,17 @@ Ordered task orchestration with one-sequence-at-a-time progression.
 
 Asynchronous research execution and event timeline.
 
-## Calendar
+## Calendar and Zoom
 
 - `calendar_managed_events`
 - `calendar_event_audit`
+- `zoom_managed_meetings`
 
-Managed-event ownership and audit history. `calendar_managed_events` records events created by the assistant across any provider, with columns `provider_name` (e.g. `google`, `outlook`, `zoho`), `provider_event_id` (the remote event ID returned by the API), and `calendar_id` (the target calendar within the provider). Update and delete operations match exclusively on rows in this table; the assistant refuses to modify events it did not create.
+Managed-event ownership and audit history. `calendar_managed_events` records events created by the assistant across any provider, with columns `provider_name` (e.g. `google`, `outlook`, `zoho`), `provider_event_id` (the remote event ID returned by the API), and `calendar_id` (the target calendar within the provider). Update and delete operations match exclusively on rows in this table; the assistant refuses to modify events it did not create. `zoom_managed_meetings` records Zoom meetings created by the assistant (migration 006); erasing a job removes these local rows, not the meetings at Zoom.
 
-## Entity Registry
+## Retired Tables
 
-- `entities`
-- `entity_object_links`
-
-High-level entity groupings (projects, topics, areas of life) that any object in the system can be linked to. The entity registry enables automatic organization and cross-object retrieval via LLM-powered entity resolution.
-
-Unlike the polymorphic `linked_entities` JSONB column in memories/notes (which stores URN-style references to domain objects like contacts/projects/reminders), the entity registry uses a dedicated junction table and provides bidirectional linking with cascade deletion support.
+`projects`, `project_tasks`, `agent_notes`, `note_events`, `entities` and `entity_object_links` are created by the base `database/schema.sql` and then dropped by migration 005 (`agent/src/assistant_agent/migrations`). Supported history is preserved on parent jobs and in memories first. See [upgrading](upgrading.md).
 
 ## Operational and Diagnostics Tables
 
@@ -106,8 +97,6 @@ Runtime metadata and manual/rule-based monitor actions.
 
 - `jobs.status`: `queued|running|waiting|completed|failed|needs_review|cancelled`
 - `reminders.status`: `scheduled|queued|completed|failed|cancelled`
-- `projects.status`: `queued|running|completed|failed|cancelled`
-- `project_tasks.status`: `pending|queued|running|completed|failed|cancelled`
 - `deep_research_runs.status`: `queued|running|waiting_for_input|completed|failed|cancelled`
 
 ## Updated-at Trigger Pattern

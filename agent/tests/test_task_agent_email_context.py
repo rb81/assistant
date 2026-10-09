@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 psycopg_module = types.ModuleType("psycopg")
@@ -54,6 +54,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         os.environ["AGENT_CONFIG"] = str(shared_root / "agent.yaml")
         self.addCleanup(lambda: os.environ.pop("AGENT_CONFIG", None))
         agent = TaskAgent.__new__(TaskAgent)
+        agent.memory_steward = MagicMock()
         agent.config = AppConfig(
             {
                 "agent": {
@@ -345,7 +346,51 @@ class TaskAgentEmailContextTest(unittest.TestCase):
 
         agent.db = FakeDb()  # type: ignore[assignment]
 
-        self.assertEqual(agent.prior_action_summary(319), ["Started project #? 'Existing project'"])
+        self.assertEqual(agent.prior_action_summary(319), [])
+
+    def test_prior_action_summary_flags_side_effect_without_recorded_outcome(self) -> None:
+        agent = self.agent()
+
+        class FakeDb:
+            def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+                return [
+                    {"event_type": "tool_call", "tool_name": "file_write", "input_data": {"path": "a.txt"}},
+                    {"event_type": "tool_result", "tool_name": "file_write", "output_data": {"path": "a.txt"}},
+                    {"event_type": "tool_call", "tool_name": "email_send", "input_data": {"to": ["user@example.com"], "subject": "Re: Tests"}},
+                    {"event_type": "status_change", "output_data": {"status": "needs_review", "reason": "stalled"}},
+                ]
+
+        agent.db = FakeDb()  # type: ignore[assignment]
+
+        lines = agent.prior_action_summary(17)
+
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0], "Wrote workspace file a.txt")
+        self.assertIn("email_send was started to user@example.com, subject 'Re: Tests'", lines[1])
+        self.assertIn("outcome was never recorded", lines[1])
+        self.assertEqual(lines[2], "Job status changed to needs_review: stalled")
+
+    def test_still_owns_job_requires_running_status_and_same_worker(self) -> None:
+        agent = self.agent()
+        agent.locked_by = "task-agent:a"
+        rows: list[Optional[dict[str, Any]]] = [
+            {"status": "running", "locked_by": "task-agent:a"},
+            {"status": "needs_review", "locked_by": None},
+            {"status": "running", "locked_by": "task-agent:b"},
+            {"status": "cancelled", "locked_by": None},
+            None,
+        ]
+
+        class FakeDb:
+            def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
+                return rows.pop(0)
+
+        agent.db = FakeDb()  # type: ignore[assignment]
+
+        with patch("assistant_agent.task_agent.LOGGER.warning", lambda *args, **kwargs: None):
+            results = [agent.still_owns_job(17) for _ in range(5)]
+
+        self.assertEqual(results, [True, False, False, False, False])
 
     def test_task_limits_use_admin_review_override(self) -> None:
         agent = self.agent()

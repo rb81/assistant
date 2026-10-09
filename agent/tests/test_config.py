@@ -21,10 +21,86 @@ from assistant_agent.config import (
     app_display_name,
     load_config,
     message_id_domain,
+    database_url,
 )
+from assistant_agent.secret_store import read_secret
 
 
 class ConfigTest(unittest.TestCase):
+    def test_obsolete_environment_overrides_are_ignored(self):
+        retired = {
+            "AGENT_MEMORY_RECENT_PROMPT_LIMIT": "agent.memory.recent_prompt_limit",
+            "AGENT_LLM_PROVIDER": "agent.llm.provider",
+            "AGENT_MAX_DAILY_COST_USD": "agent.limits.max_daily_cost_usd",
+            "AGENT_LIMITS_TOOL_TIMEOUT_DEFAULT_SECONDS": "agent.limits.tool_timeout_default_seconds",
+            "AGENT_SUPERVISOR_REVIEW_MODEL": "agent.supervisor.review_model",
+            "AGENT_SUPERVISOR_RECENT_LOG_LIMIT": "agent.supervisor.recent_log_limit",
+            "AGENT_MEMORY_STEWARD_MAX_ITERATIONS": "agent.memory.steward.max_iterations",
+            "AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS": "agent.sandbox.default_timeout_seconds",
+            "AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS": "agent.sandbox.hard_kill_grace_seconds",
+            "AGENT_API_DASHBOARD_ENABLED": "agent.api.dashboard_enabled",
+            "AGENT_API_WORKSPACE_ENABLED": "agent.api.workspace_enabled",
+            "AGENT_API_MAX_UPLOAD_BYTES": "agent.api.max_upload_bytes",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, {"AGENT_CONFIG": root + "/missing", **dict.fromkeys(retired, "99")}, clear=True):
+                config = load_config()
+                for path in retired.values():
+                    with self.subTest(path=path):
+                        self.assertIsNone(config.get(path))
+            defaults = Path(__file__).resolve().parents[2] / "config/agent.yaml"
+            with patch.dict(os.environ, {"AGENT_CONFIG": str(defaults)}, clear=True):
+                config = load_config()
+                for path in retired.values():
+                    with self.subTest(default=path):
+                        self.assertIsNone(config.get(path))
+
+    def test_blank_embedding_dimensions_reset_yaml_override_to_model_default(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
+            config_file.write("agent:\n  embeddings:\n    dimensions: 256\n")
+            config_file.flush()
+            with patch.dict(os.environ, {"AGENT_CONFIG": config_file.name, "AGENT_EMBEDDINGS_DIMENSIONS": ""}, clear=True):
+                self.assertIsNone(load_config().get("agent.embeddings.dimensions"))
+
+    def test_file_secrets_load_without_populating_environment(self):
+        with tempfile.TemporaryDirectory() as root:
+            secret = Path(root) / "credential"
+            secret.write_text("safe$#'\\credential\n", encoding="utf-8")
+            with patch.dict(os.environ, {"AGENT_CONFIG": root + "/missing", "SMTP_PASSWORD_FILE": str(secret), "POSTGRES_PASSWORD_FILE": str(secret)}, clear=True):
+                config = load_config()
+                self.assertEqual(config.get("agent.email.smtp_password"), "safe$#'\\credential")
+                self.assertIn("safe%24%23%27%5Ccredential", database_url(config))
+                self.assertIn("sslmode=verify-full", database_url(config))
+                self.assertIn("sslrootcert=%2Frun%2Fassistant%2Ftls%2Fpostgres.crt", database_url(config))
+                self.assertNotIn("SMTP_PASSWORD", os.environ)
+
+    def test_custom_database_url_must_verify_server_certificate(self):
+        config = AppConfig({})
+        for value in (
+            "postgres://user:password@database.example/assistant",
+            "postgres://user:password@database.example/assistant?sslmode=require",
+            "postgres://user:password@database.example/assistant?sslmode=verify-full",
+        ):
+            with self.subTest(value=value), patch.dict(os.environ, {"DATABASE_URL": value}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "sslmode=verify-full and provide sslrootcert"):
+                    database_url(config)
+        secure = "postgres://user:password@database.example/assistant?sslmode=verify-full&sslrootcert=%2Fetc%2Fssl%2Fdb.crt"
+        with patch.dict(os.environ, {"DATABASE_URL": secure}, clear=True):
+            self.assertEqual(database_url(config), secure)
+
+    def test_file_secrets_fail_closed_and_redact_errors(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "secret"
+            path.write_text("", encoding="utf-8")
+            for pointer in (str(path), root + "/missing", ""):
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY_FILE": pointer}, clear=True):
+                    with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY_FILE"):
+                        read_secret("OPENROUTER_API_KEY")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "PRIVATE-CANARY", "OPENROUTER_API_KEY_FILE": str(path)}, clear=True):
+                with self.assertRaises(RuntimeError) as raised:
+                    read_secret("OPENROUTER_API_KEY")
+                self.assertNotIn("PRIVATE-CANARY", str(raised.exception))
+
     def test_missing_config_file_loads_empty(self) -> None:
         with tempfile.TemporaryDirectory() as config_dir:
             local_config = Path(config_dir) / "agent.yaml"

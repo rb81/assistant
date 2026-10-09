@@ -35,16 +35,17 @@ _BASE = "https://www.googleapis.com/calendar/v3"
 def _dt_to_google(dt: datetime, all_day: bool) -> dict[str, str]:
     """Convert a datetime to a Google API dateTime/date dict."""
     if all_day:
-        return {"date": dt.astimezone(timezone.utc).date().isoformat()}
+        return {"date": dt.date().isoformat()}
     return {"dateTime": dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
-def _google_to_dt(value: dict[str, str]) -> tuple[datetime, bool]:
+def _google_to_dt(value: dict[str, str], timezone_name: str = "UTC") -> tuple[datetime, bool]:
     """Parse a Google API dateTime/date dict into (datetime, all_day)."""
     if "date" in value:
         from datetime import date, time
         d = date.fromisoformat(value["date"])
-        dt = datetime.combine(d, time.min, tzinfo=timezone.utc)
+        from zoneinfo import ZoneInfo
+        dt = datetime.combine(d, time.min, tzinfo=ZoneInfo(timezone_name))
         return dt, True
     raw = value.get("dateTime", "")
     # Google returns RFC3339 — datetime.fromisoformat handles this in 3.11+.
@@ -327,8 +328,9 @@ class GoogleCalendarProvider:
         if not start_raw:
             return None
         try:
-            start, all_day = _google_to_dt(start_raw)
-            end, _ = _google_to_dt(end_raw) if end_raw else (start, all_day)
+            zone = self._config.extra.get("assistant_timezone", "UTC")
+            start, all_day = _google_to_dt(start_raw, zone)
+            end, _ = _google_to_dt(end_raw, zone) if end_raw else (start, all_day)
         except (ValueError, KeyError):
             log.debug("could not parse event dates for Google event %r", event_id)
             return None

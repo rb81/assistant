@@ -1,19 +1,17 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .config import AppConfig, agent_name
 from .context_store import ContextStore
 from .database import Database
-from .entity_linker import EntityLinker
-from .entity_resolver import EntityRef, EntityResolver, ResolutionResult
 from .llm_client import LlmClient
 from .memory_store import MemoryStore, cosine_similarity
 
 
 LOGGER = logging.getLogger("assistant.memory_manager")
-ALLOWED_MEMORY_KINDS = {"decision", "agreement", "incident", "preference", "operating_rule", "project_context"}
+ALLOWED_MEMORY_KINDS = {"decision", "agreement", "incident", "preference", "operating_rule", "project_context", "working_context"}
 KIND_ALIASES = {
     "operating rule": "operating_rule",
     "operating-rule": "operating_rule",
@@ -22,103 +20,14 @@ KIND_ALIASES = {
 }
 
 # High-signal tool names that trigger mini-reflection after job completion
-HIGH_SIGNAL_TOOLS = {
-    "calendar_create_event",
-    "calendar_update_event",
-    "calendar_delete_event",
-    "email_send",
-    "contact_create",
-    "project_create",
-}
 
 
-RECALL_SYSTEM_PROMPT = """You are a context steward for an autonomous task agent.
-
-Given the current task, resolved entities, and candidate context (from memories, past jobs, reminders, emails, notes, projects, and contacts), return a concise structured recall.
-
-Format your response as follows:
-
-LINKED CONTEXT (verified — structurally connected to this task):
-- [type] #[id]: [one-line summary of what's relevant] [entity label in brackets]
-
-POSSIBLY RELATED (found by similarity — agent should verify before acting):
-- [type] #[id]: [one-line summary] [reason for uncertainty]
-
-DRILL-DOWN: Use note_read, job_read, or context_search to verify uncertain items. Do not guess contents from titles.
-
-Rules:
-- Only include items that are genuinely useful for the current task.
-- Mark items as LINKED if they are structurally connected via entity links.
-- Mark items as POSSIBLY RELATED if found only by text similarity.
-- semantic_context_candidates items with "exact_term_match": true contain the query term literally in their text — treat these as high-confidence factual matches. Give them extra weight; include unless clearly off-topic.
-- semantic_context_candidates items with "exact_term_match": false were found by embedding similarity — judge them on content relevance to the task, not the flag. Many genuinely useful context items will have this flag as false.
-- If no candidate context is useful, return exactly: NONE
-- Do not include secrets. Do not include one-off or weakly related facts.
-- Be concise — a few lines per section maximum.
-"""
+RECALL_SYSTEM_PROMPT = 'You are a context steward. Return concise relevant recall with memory IDs and source evidence.\nDistinguish known source-backed facts from possibly related search results. Similarity or an exact word does not prove a relationship.\nUse only genuinely useful memories and source context for this request; do not guess, include secrets, or repeat routine bookkeeping.\nGive priority to explicit user preferences and standing rules when relevant. Return exactly NONE if nothing is useful.\nInclude drill-down IDs for memory_search, job_read, contact_read, or context_search when verification is needed.'
 
 
-CONSOLIDATION_SYSTEM_PROMPT_TEMPLATE = """You are a strict durable-memory steward for an autonomous task agent.
-
-Store a memory only when it is significant enough to change how %(agent_name)s should handle a future task.
-
-Return JSON only, with this shape:
-{"memories":[{"content":"...","tags":["..."],"scope":"global","kind":"decision|agreement|incident|preference|operating_rule|project_context","importance":1-5,"confidence":0.0-1.0,"why_future_relevant":"...","evidence":"...","explicit_user_requested":false,"expires_at":null,"entity_links":[{"type":"contact|project|thread|job|reminder","ref_id":"..."}]}]}
-
-Allowed kinds:
-- decision: a durable choice the user/admin made.
-- agreement: a commitment, approval, accepted plan, or standing arrangement.
-- incident: a notable failure, safety issue, production issue, or repeated problem that should affect future behavior.
-- preference: a stable user/admin preference.
-- operating_rule: a durable process rule or instruction for how %(agent_name)s should work.
-- project_context: durable background for an ongoing project or important long-running effort.
-
-Entity linking rules:
-- Link memories to entities that are DIRECTLY relevant (the person, project, or thread the memory is about).
-- Do NOT link tangentially mentioned entities. Only link if the memory would be needed when working on that entity in the future.
-- Use the resolved_entities provided to identify valid entity refs.
-
-The storage bar is high. Prefer returning no memories.
-
-Do store:
-- Important decisions, agreements, incidents, corrections, durable preferences, standing operating rules, or important project context.
-- User-requested memories, but only if they fit an allowed kind and are safe to store.
-
-Do not store:
-- Routine task summaries, successful completion notes, or "%(agent_name)s did X" bookkeeping.
-- One-off implementation details, temporary statuses, transient bugs already fixed, copied source text, or facts already preserved in logs.
-- Random details from an email, web page, file, or tool result unless they create durable future operating context.
-- External public facts, speculation, inferred personality traits, or weakly relevant observations.
-- Contact records, email addresses, phone numbers, mailing addresses, recipient routing rules, or contact-management facts. Contacts will be handled by a separate tool.
-- Secrets, passwords, private keys, tokens, payment details, or sensitive credentials.
-
-Content requirements:
-- Make each memory atomic and concise.
-- Include dates in content when the timing matters.
-- Explain future relevance in why_future_relevant.
-- Point to the evidence in evidence using a short paraphrase, not a long quote.
-
-Return {"memories":[]} when nothing should be remembered.
-"""
+CONSOLIDATION_SYSTEM_PROMPT_TEMPLATE = 'You are a strict memory steward for %(agent_name)s. Return JSON only:\n{"memories":[{"content":"...","tags":["..."],"scope":"global","kind":"decision|agreement|incident|preference|operating_rule|project_context|working_context","importance":1,"confidence":0.9,"why_future_relevant":"...","evidence":"...","explicit_user_requested":false,"expires_at":null}]}\nStore atomic, concise, significant future-useful facts with source evidence. Prefer no memories to noise.\nAllowed kinds: decisions, agreements, significant incidents, durable preferences, operating rules, background to ongoing real-world work (project_context), and temporary commitments or pending follow-ups (working_context).\nWorking context expires by default. Include dates when relevant. Separate explicit user memories from uncertain inferred suggestions.\nNever conflate related facts or infer a correction from similarity. Do not store secrets, contact records, public trivia, speculation, routine successful-action logs, or copied source text.\nReturn {"memories":[]} when nothing needs remembering.'
 
 
-MINI_REFLECTION_SYSTEM_PROMPT_TEMPLATE = """You are a working-memory steward for an autonomous task agent named %(agent_name)s.
-
-After completing a task that involved significant actions (calendar changes, external emails, new contacts, or projects), you review what happened and decide what working knowledge to capture for future recall.
-
-Given the job summary, outcome, and resolved entities, return JSON:
-{"notes":[{"title":"...","content":"...","tags":["..."],"status":"active","linked_entities":[{"type":"contact|project|thread|job|reminder","ref_id":"..."}],"action":"create|update","update_note_id":null}]}
-
-Rules:
-- Capture working knowledge that will help %(agent_name)s recall context in future interactions with the same people/projects.
-- Examples: meeting details, commitments made, pending follow-ups, important dates, relationship context.
-- Link each note to the specific entities it's about (people, projects, threads).
-- Keep notes atomic (one topic per note) and concise.
-- If an existing note should be updated rather than creating a new one, use action:"update" with the update_note_id.
-- Do NOT create notes for routine actions that are already in logs.
-- Do NOT create notes for one-off tasks with no future relevance.
-- Return {"notes":[]} if nothing is worth noting.
-"""
 
 
 class MemorySteward:
@@ -141,15 +50,13 @@ class MemorySteward:
         instructions: list[dict[str, Any]],
     ) -> dict[str, Any]:
         if not self.enabled():
-            return {"summary": "", "notes": "memory disabled"}
+            return {"summary": ""}
         try:
-            # Phase 1: Resolve entities from task context (read-only)
-            resolver = EntityResolver(self.db, self.config)
-            resolution = resolver.resolve_from_task(job, emails, reminder, instructions)
+            resolution = None
 
             # Phase 2: Entity-linked fetch (structural, deterministic)
-            linked_memories = self.fetch_memories_by_entity_links(resolution.entities)
-            linked_notes = self.fetch_notes_by_entity_links(resolution.entities)
+            linked_memories = []
+            linked_notes = []
 
             # Phase 3: Semantic/keyword fallback (existing behavior)
             memory_candidates = self.retrieve_memory_candidates(job, emails, reminder, instructions)
@@ -160,7 +67,7 @@ class MemorySteward:
             all_semantic = memory_candidates + context_candidates
 
             if not all_linked and not all_semantic:
-                return {"summary": "", "notes": "no candidate context"}
+                return {"summary": ""}
 
             summary = self.format_structured_recall(
                 job, emails, reminder, instructions,
@@ -169,7 +76,7 @@ class MemorySteward:
             )
 
             if summary.strip().upper() == "NONE":
-                return {"summary": "", "notes": "no relevant context"}
+                return {"summary": ""}
 
             # Touch accessed memories
             accessed_ids = [row["id"] for row in linked_memories + memory_candidates if row.get("id")]
@@ -178,9 +85,8 @@ class MemorySteward:
 
             return {
                 "summary": summary.strip(),
-                "notes": "structured recall from %s linked + %s semantic candidate(s), %s entities resolved" % (
-                    len(all_linked), len(all_semantic), len(resolution.entities)
-                ),
+                "memory_ids": accessed_ids,
+
             }
         except Exception as exc:
             error_str = str(exc)
@@ -193,59 +99,9 @@ class MemorySteward:
                 self.mode(),
                 error_str,
             )
-            return {"summary": "", "notes": "context recall failed: %s" % exc}
+            return {"summary": ""}
 
-    def fetch_memories_by_entity_links(self, entities: list[EntityRef]) -> list[dict[str, Any]]:
-        """Fetch memories linked to resolved entities via JSONB containment."""
-        if not entities:
-            return []
-        seen: dict[int, dict[str, Any]] = {}
-        limit = self.config.get_int("agent.memory.steward.max_injected_memories", 8)
-        for entity in entities:
-            link_filter = json.dumps([entity.link_dict()])
-            rows = self.db.fetch_all(
-                """
-                SELECT id, content, tags, scope, kind, importance, confidence, pinned,
-                       linked_entities, updated_at, created_at
-                FROM agent_memories
-                WHERE linked_entities @> %s::jsonb
-                  AND (expires_at IS NULL OR expires_at > now())
-                ORDER BY pinned DESC, importance DESC, updated_at DESC
-                LIMIT %s
-                """,
-                (link_filter, limit),
-            )
-            for row in rows:
-                seen[int(row["id"])] = row
-        results = list(seen.values())
-        results.sort(key=lambda item: (bool(item.get("pinned")), int(item.get("importance") or 0)), reverse=True)
-        return results[:limit]
 
-    def fetch_notes_by_entity_links(self, entities: list[EntityRef]) -> list[dict[str, Any]]:
-        """Fetch active notes linked to resolved entities."""
-        if not entities:
-            return []
-        seen: dict[int, dict[str, Any]] = {}
-        limit = self.config.get_int("agent.memory.steward.max_injected_notes", 6)
-        for entity in entities:
-            link_filter = json.dumps([entity.link_dict()])
-            rows = self.db.fetch_all(
-                """
-                SELECT id, title, content, tags, status, linked_entities,
-                       updated_at, created_at
-                FROM agent_notes
-                WHERE linked_entities @> %s::jsonb
-                  AND status = 'active'
-                ORDER BY updated_at DESC
-                LIMIT %s
-                """,
-                (link_filter, limit),
-            )
-            for row in rows:
-                seen[int(row["id"])] = row
-        results = list(seen.values())
-        results.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
-        return results[:limit]
 
     def format_structured_recall(
         self,
@@ -253,7 +109,7 @@ class MemorySteward:
         emails: list[dict[str, Any]],
         reminder: Optional[dict[str, Any]],
         instructions: list[dict[str, Any]],
-        resolution: ResolutionResult,
+        resolution: Any,
         linked_memories: list[dict[str, Any]],
         linked_notes: list[dict[str, Any]],
         semantic_memories: list[dict[str, Any]],
@@ -268,7 +124,7 @@ class MemorySteward:
         task = self.task_query(job, emails, reminder, instructions)
         payload: dict[str, Any] = {
             "task": task,
-            "resolved_entities": [entity.to_dict() for entity in resolution.entities],
+            "resolved_entities": [entity.to_dict() for entity in []],
         }
 
         if linked_memories:
@@ -320,7 +176,7 @@ class MemorySteward:
         for row in self.store.keyword_search(query[:500], limit=max(limit, 4)):
             seen[int(row["id"])] = row
         rows = list(seen.values())
-        rows.sort(key=lambda item: (bool(item.get("pinned")), int(item.get("importance") or 0), str(item.get("updated_at") or item.get("created_at") or "")), reverse=True)
+        rows.sort(key=lambda item: (float(item.get("score") or 1.0), bool(item.get("pinned")), int(item.get("importance") or 0)), reverse=True)
         return rows[: max(limit, 0)]
 
     def retrieve_context_candidates(
@@ -349,8 +205,7 @@ class MemorySteward:
             # Resolve entities for this job to provide to consolidation LLM
             emails = self.db.latest_thread_emails(job["thread_id"], limit=5)
             reminder = self.db.fetch_one("SELECT * FROM reminders WHERE job_id = %s", (job["id"],))
-            resolver = EntityResolver(self.db, self.config)
-            resolution = resolver.resolve_from_task(job, emails, reminder, [])
+            resolution = None
 
             memories = self.memories_to_store(job, messages, outcome, summary, resolution)
             max_writes = self.config.get_int("agent.memory.steward.max_writes_per_job", 3)
@@ -370,43 +225,15 @@ class MemorySteward:
                     rejected.append(compact_rejected_memory(item, reason))
                     continue
                 content = normalized["content"]
+                if normalized["kind"] == "working_context" and not normalized.get("expires_at"):
+                    normalized["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=self.config.get_int("agent.memory.working_context_days", 14))).isoformat()
                 if self.duplicate_exists(content):
                     rejected.append(compact_rejected_memory(item, "duplicate"))
                     continue
 
                 # Check for conflicts before creating
                 conflicts = self._detect_conflicts(content, normalized["kind"])
-                if conflicts:
-                    # Update existing memory instead of creating duplicate
-                    best_match = conflicts[0]
-                    entity_links = self._validate_entity_links(
-                        item.get("entity_links") or [],
-                        resolution.entities,
-                    )
-                    self.store.update(
-                        memory_id=best_match["id"],
-                        content=content,
-                        tags=normalized["tags"],
-                        importance=normalized["importance"],
-                        confidence=normalized["confidence"],
-                        job_id=job["id"],
-                        actor="memory-steward-conflict-resolve",
-                    )
-                    if entity_links:
-                        self._set_memory_entity_links(best_match["id"], entity_links)
-                    self.log(job["id"], "memory_conflict_resolved", {
-                        "existing_id": best_match["id"],
-                        "similarity": best_match["similarity"],
-                        "action": "updated_existing",
-                    })
-                    created.append(best_match["id"])
-                    continue
-
                 # Validate and attach entity links
-                entity_links = self._validate_entity_links(
-                    item.get("entity_links") or [],
-                    resolution.entities,
-                )
 
                 row = self.store.create(
                     content=content,
@@ -417,6 +244,8 @@ class MemorySteward:
                     confidence=normalized["confidence"],
                     expires_at=normalized.get("expires_at"),
                     metadata={
+                        "state": "suggested" if conflicts else "active",
+                        "related_memory_ids": [match["id"] for match in conflicts],
                         "source": "single_shot_consolidation",
                         "outcome": outcome,
                         "category": normalized["kind"],
@@ -429,19 +258,8 @@ class MemorySteward:
                 )
 
                 # Store entity links on the memory
-                if entity_links:
-                    self._set_memory_entity_links(row["id"], entity_links)
-
-                # Auto-link memory to high-level entities
-                self._auto_link_object("memory", row["id"], content, normalized.get("tags"))
 
                 created.append(row["id"])
-
-            # Auto-link the job itself to entities
-            self._auto_link_job(job)
-
-            # Run mini-reflection if high-signal tools were used
-            self._maybe_mini_reflect(job, messages, outcome, summary, resolution)
 
             self.log(
                 job["id"],
@@ -452,7 +270,7 @@ class MemorySteward:
                     "rejected": rejected[:20],
                     "min_importance": min_importance,
                     "min_confidence": min_confidence,
-                    "entities_resolved": len(resolution.entities),
+                    "entities_resolved": len([]),
                 },
             )
         except Exception as exc:
@@ -466,7 +284,7 @@ class MemorySteward:
         messages: list[dict[str, Any]],
         outcome: str,
         summary: str,
-        resolution: ResolutionResult,
+        resolution: Any,
     ) -> list[dict[str, Any]]:
         llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1000))
         transcript = compact_json(messages[-16:])
@@ -483,7 +301,7 @@ class MemorySteward:
                             "job": compact_job(job),
                             "outcome": outcome,
                             "summary": summary,
-                            "resolved_entities": [entity.to_dict() for entity in resolution.entities],
+                            "resolved_entities": [entity.to_dict() for entity in []],
                             "recent_transcript": transcript,
                             "current_utc_time": datetime.now(timezone.utc).isoformat(),
                         }
@@ -501,215 +319,9 @@ class MemorySteward:
         memories = parsed.get("memories") if isinstance(parsed, dict) else []
         return [item for item in memories if isinstance(item, dict)] if isinstance(memories, list) else []
 
-    def _validate_entity_links(
-        self,
-        raw_links: list[Any],
-        resolved_entities: list[EntityRef],
-    ) -> list[dict[str, Any]]:
-        """Validate entity links from LLM output against actually resolved entities."""
-        if not raw_links or not isinstance(raw_links, list):
-            return []
-        # Build a map from (type, str_ref_id) to actual entity for type normalization
-        entity_map = {(entity.type, str(entity.ref_id)): entity for entity in resolved_entities}
-        validated = []
-        for link in raw_links:
-            if not isinstance(link, dict):
-                continue
-            link_type = str(link.get("type") or "").strip()
-            link_ref_id = link.get("ref_id")
-            if not link_type or link_ref_id is None:
-                continue
-            # Only accept links that match resolved entities, use entity's actual ref_id for correct type
-            key = (link_type, str(link_ref_id))
-            if key in entity_map:
-                validated.append({"type": link_type, "ref_id": entity_map[key].ref_id})
-        return validated
 
-    def _set_memory_entity_links(self, memory_id: int, links: list[dict[str, Any]]) -> None:
-        """Update the linked_entities column on a memory."""
-        from psycopg.types.json import Jsonb
-        self.db.execute(
-            "UPDATE agent_memories SET linked_entities = %s WHERE id = %s",
-            (Jsonb(links), memory_id),
-        )
 
-    def _maybe_mini_reflect(
-        self,
-        job: dict[str, Any],
-        messages: list[dict[str, Any]],
-        outcome: str,
-        summary: str,
-        resolution: ResolutionResult,
-    ) -> None:
-        """Run mini-reflection if high-signal tools were used in this job."""
-        if not self.config.get_bool("agent.memory.steward.mini_reflection_enabled", True):
-            return
-        if outcome not in ("completed", "needs_review"):
-            return
 
-        # Check if any high-signal tools were used
-        used_tools: set[str] = set()
-        for message in messages:
-            if message.get("role") == "assistant":
-                for call in message.get("tool_calls") or []:
-                    func = call.get("function") or {}
-                    name = str(func.get("name") or "")
-                    if name in HIGH_SIGNAL_TOOLS:
-                        used_tools.add(name)
-        if not used_tools:
-            return
-
-        try:
-            self._run_mini_reflection(job, messages, outcome, summary, resolution, used_tools)
-        except Exception as exc:
-            LOGGER.warning("mini-reflection failed for job %s: %s", job["id"], exc)
-
-    def _run_mini_reflection(
-        self,
-        job: dict[str, Any],
-        messages: list[dict[str, Any]],
-        outcome: str,
-        summary: str,
-        resolution: ResolutionResult,
-        used_tools: set[str],
-    ) -> None:
-        """Execute mini-reflection to capture working knowledge as notes."""
-        from .note_store import NoteStore
-
-        llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1200))
-        transcript = compact_json(messages[-12:])
-        max_bytes = self.config.get_int("agent.memory.steward.max_transcript_bytes", 10000)
-        if len(transcript) > max_bytes:
-            transcript = "%s...[truncated]" % transcript[:max_bytes]
-
-        # Check for existing notes linked to these entities (to suggest updates)
-        existing_notes: list[dict[str, Any]] = []
-        for entity in resolution.entities:
-            link_filter = json.dumps([entity.link_dict()])
-            rows = self.db.fetch_all(
-                """
-                SELECT id, title, tags, status, linked_entities
-                FROM agent_notes
-                WHERE linked_entities @> %s::jsonb
-                  AND status = 'active'
-                ORDER BY updated_at DESC
-                LIMIT 5
-                """,
-                (link_filter,),
-            )
-            for row in rows:
-                if not any(note["id"] == row["id"] for note in existing_notes):
-                    existing_notes.append(row)
-
-        response = llm.chat(
-            [
-                {"role": "system", "content": mini_reflection_system_prompt(self.config)},
-                {
-                    "role": "user",
-                    "content": compact_json({
-                        "job": compact_job(job),
-                        "outcome": outcome,
-                        "summary": summary,
-                        "high_signal_tools_used": list(used_tools),
-                        "resolved_entities": [entity.to_dict() for entity in resolution.entities],
-                        "existing_notes_for_entities": [
-                            {"id": note["id"], "title": note.get("title"), "tags": note.get("tags")}
-                            for note in existing_notes[:10]
-                        ],
-                        "recent_transcript": transcript,
-                    }),
-                },
-            ],
-            [],
-        )
-
-        content = str(response["choices"][0]["message"].get("content") or "{}").strip()
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            LOGGER.warning(
-                "mini-reflection JSON parse failed for job %s: %s",
-                job["id"], content[:500],
-            )
-            self.log(job["id"], "mini_reflection_parse_failed", {
-                "content_preview": content[:1000],
-                "high_signal_tools": list(used_tools),
-            })
-            return
-
-        notes = parsed.get("notes") if isinstance(parsed, dict) else []
-        if not isinstance(notes, list):
-            return
-
-        note_store = NoteStore(self.db, self.config)
-        max_notes = self.config.get_int("agent.memory.steward.max_notes_per_reflection", 3)
-        created_count = 0
-
-        for item in notes:
-            if not isinstance(item, dict) or created_count >= max_notes:
-                break
-            action = str(item.get("action") or "create").strip()
-            title = str(item.get("title") or "").strip()
-            note_content = str(item.get("content") or "").strip()
-            if not note_content:
-                continue
-
-            # Validate entity links
-            raw_links = item.get("linked_entities") or []
-            entity_links = self._validate_entity_links(raw_links, resolution.entities)
-
-            tags = [str(tag).strip().lower()[:64] for tag in (item.get("tags") or []) if str(tag).strip()][:10]
-
-            if action == "update" and item.get("update_note_id"):
-                try:
-                    note_store.update(
-                        note_id=int(item["update_note_id"]),
-                        content=note_content,
-                        title=title or None,
-                        tags=tags or None,
-                        job_id=job["id"],
-                        actor="mini-reflection",
-                    )
-                    # Update entity links
-                    if entity_links:
-                        from psycopg.types.json import Jsonb
-                        self.db.execute(
-                            "UPDATE agent_notes SET linked_entities = %s WHERE id = %s",
-                            (Jsonb(entity_links), int(item["update_note_id"])),
-                        )
-                    created_count += 1
-                except Exception as exc:
-                    LOGGER.warning("mini-reflection note update failed for job %s: %s", job["id"], exc)
-            else:
-                try:
-                    row = note_store.create(
-                        content=note_content,
-                        title=title or None,
-                        tags=tags or None,
-                        source_job_id=job["id"],
-                        actor="mini-reflection",
-                    )
-                    # Set entity links
-                    if entity_links:
-                        from psycopg.types.json import Jsonb
-                        self.db.execute(
-                            "UPDATE agent_notes SET linked_entities = %s WHERE id = %s",
-                            (Jsonb(entity_links), row["id"]),
-                        )
-                    created_count += 1
-                except Exception as exc:
-                    LOGGER.warning("mini-reflection note create failed for job %s: %s", job["id"], exc)
-
-        if created_count > 0:
-            self.log(job["id"], "mini_reflection_complete", {
-                "notes_written": created_count,
-                "high_signal_tools": list(used_tools),
-            })
-        elif notes:  # LLM proposed notes but none were written
-            self.log(job["id"], "mini_reflection_no_notes_written", {
-                "proposed_count": len(notes),
-                "high_signal_tools": list(used_tools),
-            })
 
     def _detect_conflicts(self, content: str, kind: str) -> list[dict[str, Any]]:
         """Find existing memories of the same kind that are semantically similar."""
@@ -727,6 +339,7 @@ class MemorySteward:
             FROM agent_memories
             WHERE kind = %s
               AND (expires_at IS NULL OR expires_at > now())
+                            AND COALESCE(metadata->>'state', 'active') = 'active'
               AND embedding IS NOT NULL
             ORDER BY importance DESC, updated_at DESC
             LIMIT 100
@@ -739,7 +352,7 @@ class MemorySteward:
             score = cosine_similarity(query_embedding, row.get("embedding") or [])
             if score is not None and score > threshold:
                 conflicts.append({"id": row["id"], "content": row["content"], "similarity": score})
-        return conflicts
+        return sorted(conflicts, key=lambda match: match["similarity"], reverse=True)
 
     def reap_stale_memories(self) -> dict[str, Any]:
         """Soft-expire low-importance memories that haven't been accessed recently.
@@ -758,7 +371,7 @@ class MemorySteward:
               AND importance <= %s
               AND pinned = false
               AND last_accessed_at IS NOT NULL
-              AND last_accessed_at < now() - interval '%s days'
+              AND last_accessed_at < now() - (%s * interval '1 day')
             """,
             (min_importance, stale_days),
         )
@@ -770,7 +383,7 @@ class MemorySteward:
               AND importance <= %s
               AND pinned = false
               AND last_accessed_at IS NULL
-              AND created_at < now() - interval '%s days'
+              AND created_at < now() - (%s * interval '1 day')
             """,
             (min_importance, stale_days),
         )
@@ -791,39 +404,7 @@ class MemorySteward:
             reaped_ids.append(row["id"])
         return {"reaped_count": len(reaped_ids), "reaped_ids": reaped_ids}
 
-    def _auto_link_object(
-        self,
-        object_type: str,
-        object_id: int,
-        content: str,
-        tags: Optional[list[str]] = None,
-    ) -> None:
-        """Best-effort auto-link an object to high-level entities via EntityLinker."""
-        if not self.config.get_bool("agent.entities.auto_link_on_create", True):
-            return
-        try:
-            linker = EntityLinker(self.db, self.config)
-            summary = linker.build_content_summary(content=content, tags=tags)
-            linker.link_object(object_type, object_id, summary, linked_by="memory-steward")
-        except Exception as exc:
-            LOGGER.debug("auto-link failed for %s/%s: %s", object_type, object_id, exc)
 
-    def _auto_link_job(self, job: dict[str, Any]) -> None:
-        """Best-effort auto-link a job to high-level entities."""
-        if not self.config.get_bool("agent.entities.auto_link_on_create", True):
-            return
-        task_summary = str(job.get("task_summary") or "").strip()
-        if not task_summary:
-            return
-        try:
-            linker = EntityLinker(self.db, self.config)
-            summary = linker.build_content_summary(
-                title=task_summary,
-                extra={"thread": job.get("thread_id", "")},
-            )
-            linker.link_object("job", int(job["id"]), summary, linked_by="memory-steward")
-        except Exception as exc:
-            LOGGER.debug("auto-link failed for job/%s: %s", job.get("id"), exc)
 
     def duplicate_exists(self, content: str) -> bool:
         rows = self.store.keyword_search(content[:200], limit=5)
@@ -871,8 +452,6 @@ def consolidation_system_prompt(config: AppConfig) -> str:
     return CONSOLIDATION_SYSTEM_PROMPT_TEMPLATE % {"agent_name": agent_name(config)}
 
 
-def mini_reflection_system_prompt(config: AppConfig) -> str:
-    return MINI_REFLECTION_SYSTEM_PROMPT_TEMPLATE % {"agent_name": agent_name(config)}
 
 
 def compact_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -897,18 +476,6 @@ def compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_note(note: dict[str, Any]) -> dict[str, Any]:
-    content = str(note.get("content") or "")
-    snippet = content[:300] if len(content) > 300 else content
-    return {
-        "id": note.get("id"),
-        "title": note.get("title"),
-        "snippet": snippet,
-        "tags": note.get("tags") or [],
-        "status": note.get("status") or "active",
-        "linked_entities": note.get("linked_entities") or [],
-        "updated_at": note.get("updated_at"),
-    }
 
 
 def normalize_memory_candidate(
@@ -939,6 +506,8 @@ def normalize_memory_candidate(
     confidence = min(max(confidence, 0.0), 1.0)
     if confidence < min_confidence and not explicit_user_requested:
         return None, "low_confidence:%s" % confidence
+    if not explicit_user_requested and (not item.get("evidence") or not item.get("why_future_relevant")):
+        return None, "missing_evidence_or_future_relevance"
 
     tags = []
     for tag in item.get("tags") or []:

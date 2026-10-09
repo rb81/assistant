@@ -6,6 +6,11 @@ data/
 .env.*
 !.env.example
 config/AGENT.md
+.secrets/
+.compose-secrets.yaml
+.setup.lock
+overrides.env
+backups/
 
 # Python caches and build artifacts
 __pycache__/
@@ -32,6 +37,7 @@ agent/src/assistant_agent/ui/assets/workspace.*.woff2
 
 # Virtual environments
 .venv/
+.venv-setup/
 venv/
 env/
 

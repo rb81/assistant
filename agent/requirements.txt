@@ -5,3 +5,4 @@ uvicorn[standard]>=0.34.0,<1
 markdown-it-py>=3.0.0,<4
 markitdown[pdf,docx,pptx,xlsx,xls,youtube-transcription]>=0.1.6,<0.2
 httpx>=0.27.0,<1
+authres>=1.2.0,<2

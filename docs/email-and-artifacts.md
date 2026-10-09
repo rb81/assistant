@@ -88,6 +88,16 @@ For each attachment:
 
 Artifacts are always tracked, including failures.
 
+## Dropbox documents
+
+The optional [Dropbox exchange](dropbox.md) reuses ClamAV and document extraction
+without changing email artifact ownership. Dropbox operations are associated
+with tasks in `dropbox_transfers`, not synthetic email records. Files are imported
+on demand from the app Inbox and remain quarantined until clean scans and
+successful conversion. Unlike optional email scanning, Dropbox requires a clean
+scan even when `clamav.required=false` or scanning is disabled. Outputs use
+scanned snapshots and conflict-safe task Outbox destinations.
+
 ## ClamAV integration
 
 ClamAV scan uses TCP `INSTREAM` against configured host/port (`clamav:3310` by default).

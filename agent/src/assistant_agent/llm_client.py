@@ -6,6 +6,9 @@ import urllib.request
 from typing import Any, Optional
 
 from .config import AppConfig, app_display_name, app_referer_url
+from .prompt_context import refresh_request_context
+from .secret_store import read_secret
+from .transport_security import open_https_request, validate_https_url
 
 
 LOGGER = logging.getLogger("assistant.llm_client")
@@ -25,10 +28,11 @@ class LlmClient:
     ):
         self.config = config
         self.base_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
+        validate_https_url(self.base_url, "Model API base URL")
         if "openrouter.ai" in self.base_url.lower():
-            api_key = os.getenv("OPENROUTER_API_KEY")
+            api_key = read_secret("OPENROUTER_API_KEY")
         else:
-            api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_key = read_secret("OPENAI_API_KEY") or read_secret("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError("model API key is required for task-agent")
         self.api_key = api_key
@@ -59,7 +63,7 @@ class LlmClient:
     def _chat_with_model(self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": [{key: value for key, value in message.items() if key != "memory_ids"} for message in refresh_request_context(messages, self.config)],
             "temperature": self.temperature
             if self.temperature is not None
             else self.config.get_float("agent.llm.temperature", 0.2),
@@ -83,7 +87,7 @@ class LlmClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_https_request(request, timeout=self.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

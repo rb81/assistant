@@ -24,6 +24,28 @@ class ContextSearchTest(unittest.TestCase):
         })
         self.store = ContextStore(self.db, self.config)
 
+    def test_equal_dimension_vectors_from_other_or_unknown_models_are_not_scored(self):
+        current = {"id": 1, "content": "current", "embedding": [1.0, 0.0],
+                   "embedding_model": "embeddinggemma", "embedding_dimensions": 2}
+        rows = [current, {**current, "id": 2, "embedding_model": "old-model"},
+                {**current, "id": 3, "embedding_model": None},
+                {**current, "id": 4, "embedding_dimensions": 3}]
+        results = self.store._score_and_format(rows, "query", [1.0, 0.0], "memory", 10, self.store._format_memory)
+        self.assertEqual([row["id"] for row in results], [1])
+
+    def test_semantic_sources_filter_compatible_models_before_candidate_limit(self):
+        self.db.fetch_all.return_value = []
+        self.store._semantic_search("query", [1.0, 0.0], 10)
+        self.assertEqual(self.db.fetch_all.call_count, 6)
+        for call in self.db.fetch_all.call_args_list:
+            self.assertIn("embedding_model = %s AND embedding_dimensions = %s", call.args[0])
+            self.assertEqual(call.args[1][:2], ("embeddinggemma", 2))
+
+    def test_no_compatible_vectors_falls_back_to_keywords(self):
+        with patch.object(self.store, "_embed_query", return_value=[1.0, 0.0]), patch.object(self.store, "_semantic_search", return_value=[]), patch.object(self.store, "_keyword_search", return_value=[{"id": 1}]) as keywords:
+            self.assertEqual(self.store.search("query"), [{"id": 1}])
+            keywords.assert_called_once()
+
     def test_default_search_days_is_90(self):
         """Test that default search_days is 90 from config."""
         self.assertEqual(self.store.search_days(), 90)
@@ -52,64 +74,58 @@ class ContextSearchTest(unittest.TestCase):
     def test_semantic_search_respects_search_days_override(self):
         """Test that _semantic_search uses search_days override when provided."""
         mock_embedding = [0.1] * 768
-        
+
         # Mock the DB calls for each source
         self.db.fetch_all.return_value = []
-        
+
         with patch.object(self.store, '_search_memories_semantic', return_value=[]):
             with patch.object(self.store, '_search_jobs_semantic', return_value=[]) as mock_jobs:
                 with patch.object(self.store, '_search_reminders_semantic', return_value=[]):
                     with patch.object(self.store, '_search_outbound_emails_semantic', return_value=[]):
                         with patch.object(self.store, '_search_inbound_emails_semantic', return_value=[]):
-                            with patch.object(self.store, '_search_notes_semantic', return_value=[]):
-                                with patch.object(self.store, '_search_projects_semantic', return_value=[]):
-                                    with patch.object(self.store, '_search_contacts_semantic', return_value=[]):
-                                        self.store._semantic_search("test", mock_embedding, 10, search_days=7)
-                                        
-                                        # Verify jobs search was called with days=7
-                                        mock_jobs.assert_called_once()
-                                        args = mock_jobs.call_args[0]
-                                        self.assertEqual(args[3], 7)  # days parameter
+                            with patch.object(self.store, '_search_contacts_semantic', return_value=[]):
+                                self.store._semantic_search("test", mock_embedding, 10, search_days=7)
+
+                                # Verify jobs search was called with days=7
+                                mock_jobs.assert_called_once()
+                                args = mock_jobs.call_args[0]
+                                self.assertEqual(args[3], 7)  # days parameter
 
     def test_semantic_search_without_override_uses_default(self):
         """Test that _semantic_search uses configured default when no override."""
         mock_embedding = [0.1] * 768
-        
+
         self.db.fetch_all.return_value = []
-        
+
         with patch.object(self.store, '_search_memories_semantic', return_value=[]):
             with patch.object(self.store, '_search_jobs_semantic', return_value=[]) as mock_jobs:
                 with patch.object(self.store, '_search_reminders_semantic', return_value=[]):
                     with patch.object(self.store, '_search_outbound_emails_semantic', return_value=[]):
                         with patch.object(self.store, '_search_inbound_emails_semantic', return_value=[]):
-                            with patch.object(self.store, '_search_notes_semantic', return_value=[]):
-                                with patch.object(self.store, '_search_projects_semantic', return_value=[]):
-                                    with patch.object(self.store, '_search_contacts_semantic', return_value=[]):
-                                        self.store._semantic_search("test", mock_embedding, 10)
-                                        
-                                        # Verify jobs search was called with days=90 (default)
-                                        mock_jobs.assert_called_once()
-                                        args = mock_jobs.call_args[0]
-                                        self.assertEqual(args[3], 90)
+                            with patch.object(self.store, '_search_contacts_semantic', return_value=[]):
+                                self.store._semantic_search("test", mock_embedding, 10)
+
+                                # Verify jobs search was called with days=90 (default)
+                                mock_jobs.assert_called_once()
+                                args = mock_jobs.call_args[0]
+                                self.assertEqual(args[3], 90)
 
     def test_keyword_search_respects_search_days_override(self):
         """Test that _keyword_search uses search_days override when provided."""
         self.db.fetch_all.return_value = []
-        
+
         with patch.object(self.store, '_search_memories_keyword', return_value=[]):
             with patch.object(self.store, '_search_jobs_keyword', return_value=[]) as mock_jobs:
                 with patch.object(self.store, '_search_reminders_keyword', return_value=[]):
                     with patch.object(self.store, '_search_outbound_emails_keyword', return_value=[]):
                         with patch.object(self.store, '_search_inbound_emails_keyword', return_value=[]):
-                            with patch.object(self.store, '_search_notes_keyword', return_value=[]):
-                                with patch.object(self.store, '_search_projects_keyword', return_value=[]):
-                                    with patch.object(self.store, '_search_contacts_keyword', return_value=[]):
-                                        self.store._keyword_search("test", 10, search_days=7)
-                                        
-                                        # Verify jobs search was called with days=7
-                                        mock_jobs.assert_called_once()
-                                        args = mock_jobs.call_args[0]
-                                        self.assertEqual(args[2], 7)  # days parameter
+                            with patch.object(self.store, '_search_contacts_keyword', return_value=[]):
+                                self.store._keyword_search("test", 10, search_days=7)
+
+                                # Verify jobs search was called with days=7
+                                mock_jobs.assert_called_once()
+                                args = mock_jobs.call_args[0]
+                                self.assertEqual(args[2], 7)  # days parameter
 
     def test_fallback_to_default_when_search_days_30(self):
         """Test fallback to 30 days when config is not present."""
@@ -138,13 +154,13 @@ class ContextSearchToolTest(unittest.TestCase):
     def test_context_search_with_recent_only_true(self):
         """Test that context_search with recent_only=True passes search_days=7."""
         from assistant_agent.tools import ToolRuntime
-        
+
         job = {"id": 1, "thread_id": 1}
         runtime = ToolRuntime(self.db, self.config, job)
-        
+
         with patch.object(ContextStore, 'search', return_value=[]) as mock_search:
             result = runtime.context_search("test query", limit=10, recent_only=True)
-            
+
             # Verify search was called with search_days=7
             mock_search.assert_called_once()
             args, kwargs = mock_search.call_args
@@ -155,13 +171,13 @@ class ContextSearchToolTest(unittest.TestCase):
     def test_context_search_with_recent_only_false(self):
         """Test that context_search with recent_only=False uses full window."""
         from assistant_agent.tools import ToolRuntime
-        
+
         job = {"id": 1, "thread_id": 1}
         runtime = ToolRuntime(self.db, self.config, job)
-        
+
         with patch.object(ContextStore, 'search', return_value=[]) as mock_search:
             result = runtime.context_search("test query", limit=10, recent_only=False)
-            
+
             # Verify search was called without search_days override (uses default 90)
             mock_search.assert_called_once()
             args, kwargs = mock_search.call_args
@@ -170,13 +186,13 @@ class ContextSearchToolTest(unittest.TestCase):
     def test_context_search_default_recent_only(self):
         """Test that context_search defaults recent_only to False."""
         from assistant_agent.tools import ToolRuntime
-        
+
         job = {"id": 1, "thread_id": 1}
         runtime = ToolRuntime(self.db, self.config, job)
-        
+
         with patch.object(ContextStore, 'search', return_value=[]) as mock_search:
             result = runtime.context_search("test query", limit=10)
-            
+
             # Verify search was called without search_days override
             mock_search.assert_called_once()
             args, kwargs = mock_search.call_args

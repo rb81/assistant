@@ -1,19 +1,25 @@
 import os
+import json
 import tempfile
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 
 from assistant_agent.config import AppConfig
+from assistant_agent.llm_client import LlmClient
+from assistant_agent.time_utils import default_timezone, parse_datetime
 from assistant_agent.prompt_context import (
     SHARED_WORKSPACE_DEFAULTS,
     agent_prompt_path,
     build_prompt_context,
     ensure_prompt_files,
     load_agent_prompt,
+    refresh_request_context,
     validate_agent_prompt,
 )
 
@@ -140,6 +146,93 @@ class LoadAgentPromptTest(unittest.TestCase):
 
 
 class BuildPromptContextTest(unittest.TestCase):
+    def test_https_transport_verifies_certificates_and_refuses_redirects(self) -> None:
+        import ssl
+        import urllib.request
+
+        from assistant_agent.transport_security import open_https_request
+
+        request = urllib.request.Request("https://model.example/v1")
+        response = MagicMock()
+        with patch("assistant_agent.transport_security.urllib.request.build_opener") as build_opener:
+            build_opener.return_value.open.return_value = response
+            self.assertIs(open_https_request(request, timeout=3), response)
+
+        handlers = build_opener.call_args.args
+        tls_handler = next(handler for handler in handlers if isinstance(handler, urllib.request.HTTPSHandler))
+        redirect_handler = next(handler for handler in handlers if handler.__class__.__name__ == "_NoRedirectHandler")
+        self.assertTrue(tls_handler._context.check_hostname)
+        self.assertEqual(tls_handler._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertIsNone(redirect_handler.redirect_request(request, None, 302, "Found", {}, "http://attacker.example"))
+
+    def test_llm_client_rejects_non_https_base_before_reading_credentials(self) -> None:
+        for base_url in ("http://model.example/v1", "https:///missing-host"):
+            with self.subTest(base_url=base_url):
+                config = AppConfig({"agent": {"llm": {"base_url": base_url}}})
+                with patch("assistant_agent.llm_client.read_secret") as read_secret:
+                    with self.assertRaisesRegex(RuntimeError, "valid HTTPS URL"):
+                        LlmClient(config)
+                read_secret.assert_not_called()
+
+    def test_llm_payload_contains_fresh_clock_for_research_or_resumed_requests(self) -> None:
+        config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}}})
+        client = LlmClient.__new__(LlmClient)
+        client.config = config
+        client.base_url = "https://example.invalid"
+        client.api_key = "test-key"
+        client.temperature = None
+        client.max_tokens = None
+        client.timeout_seconds = 1
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        clock = {"timezone": "Asia/Dubai", "utc": "2026-10-08T20:00:00+00:00", "local": "2026-10-09T00:00:00+04:00"}
+        with patch("assistant_agent.prompt_context.current_time_context", return_value=clock), patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
+            client._chat_with_model("test-model", [{"role": "system", "content": "Research rules"}, {"role": "user", "content": "Schedule tomorrow"}], [])
+        payload = json.loads(send.call_args.args[0].data)
+        self.assertIn(clock["local"], payload["messages"][0]["content"])
+        self.assertIn(clock["timezone"], payload["messages"][1]["content"])
+        self.assertIn(clock["utc"], payload["messages"][1]["content"])
+
+    def test_request_clock_refreshes_without_mutating_checkpoint(self) -> None:
+        config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}}})
+        messages = [{"role": "system", "content": "Rules\n- Current UTC time: stale"}, {"role": "user", "content": "Book tomorrow"}]
+        first_clock = {"timezone": "Asia/Dubai", "utc": "2026-10-08T20:00:00+00:00", "local": "2026-10-09T00:00:00+04:00"}
+        next_clock = {"timezone": "Asia/Dubai", "utc": "2026-10-09T20:00:00+00:00", "local": "2026-10-10T00:00:00+04:00"}
+        with patch("assistant_agent.prompt_context.current_time_context", return_value=first_clock):
+            first = refresh_request_context(messages, config)
+        with patch("assistant_agent.prompt_context.current_time_context", return_value=next_clock):
+            resumed = refresh_request_context(first, config)
+        self.assertEqual(messages[1]["content"], "Book tomorrow")
+        self.assertNotIn("stale", resumed[0]["content"])
+        self.assertNotIn(first_clock["local"], resumed[1]["content"])
+        self.assertIn(next_clock["local"], resumed[1]["content"])
+        self.assertEqual(resumed[1]["content"].count("[Current request time]"), 1)
+
+    def test_assistant_timezone_overrides_feature_defaults(self) -> None:
+        config = AppConfig({"agent": {
+            "app": {"timezone": "Asia/Dubai"},
+            "calendar": {"timezone": "America/New_York"},
+            "reminders": {"default_timezone": "Europe/London"},
+        }})
+        self.assertEqual(default_timezone(config)[1], "Asia/Dubai")
+        self.assertEqual(parse_datetime("2026-10-08T14:00:00", config), datetime(2026, 10, 8, 10, tzinfo=timezone.utc))
+        self.assertIn("Default timezone: Asia/Dubai", build_prompt_context(config))
+
+    def test_explicit_offset_preserves_instant(self) -> None:
+        config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}}})
+        self.assertEqual(parse_datetime("2026-10-08T14:00:00-04:00", config), datetime(2026, 10, 8, 18, tzinfo=timezone.utc))
+
+    def test_invalid_timezone_fails_instead_of_using_utc(self) -> None:
+        config = AppConfig({"agent": {"app": {"timezone": "Invalid/Zone"}}})
+        with self.assertRaisesRegex(ValueError, "invalid assistant timezone"):
+            default_timezone(config)
+
+    def test_dst_gap_and_fold_require_explicit_offset(self) -> None:
+        config = AppConfig({"agent": {"app": {"timezone": "America/New_York"}}})
+        for value in ("2026-03-08T02:30:00", "2026-11-01T01:30:00"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "ambiguous or nonexistent"):
+                parse_datetime(value, config)
+
     def test_includes_runtime_context_lines(self) -> None:
         config = AppConfig({
             "agent": {

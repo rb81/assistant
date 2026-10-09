@@ -8,34 +8,36 @@ For the basics, see the [Quick Start in the README](../README.md#-quick-start).
 
 ## Configuration Layers
 
-Assistant has two configuration layers that work together:
+Assistant has several configuration layers that work together. Start with the setup wizard (`./scripts/setup.sh`); it writes the first three for you.
 
 | File | What belongs here | Git status |
 |------|-------------------|------------|
-| `.env` | Secrets, credentials, identity, and operational overrides | Gitignored |
+| `.secrets/` | Credentials (`./scripts/setup.sh secrets update`) | Gitignored |
+| `.env` | Non-secret settings written by the wizard, plus Compose variables such as `TASK_AGENT_WORKERS` | Gitignored |
+| `overrides.env` | Optional, hand-edited expert overrides for settings the wizard does not manage; never rewritten by setup | Gitignored |
 | `config/agent.yaml` | All operational defaults (models, limits, timeouts, feature flags) | Tracked |
 
-Override precedence: `.env` > `config/agent.yaml` > code defaults.
+Override precedence: `docker-compose.yml` `environment:` > `overrides.env` > `.env` > `config/agent.yaml` > code defaults.
 
-**Every setting in `config/agent.yaml` can be overridden via environment variables in `.env`.** Most users only need to fill in `.env` for both secrets and operational customization. You can edit `config/agent.yaml` directly if you prefer, but using `.env` overrides keeps your customizations separate from the tracked defaults.
+**Every setting in `config/agent.yaml` can be overridden by an environment variable.** Use the wizard for the settings it manages (including `--section advanced`), and `overrides.env` for everything else listed in [environment overrides](env-overrides.md). You can edit `config/agent.yaml` directly, but overrides keep your customizations separate from the tracked defaults.
 
-### ⚠️ Important: Prefer `.env` for Customization
+### Important: Prefer overrides to editing `agent.yaml`
 
-**Git updates overwrite `config/agent.yaml` with the upstream version.** If you edit this file directly, your changes will be lost when you pull updates. Always use `.env` for customizations to:
+**Git updates overwrite `config/agent.yaml` with the upstream version.** If you edit this file directly, your changes will be lost when you pull updates. Use the wizard or `overrides.env` for customizations to:
 
 - Keep your settings safe through updates
 - Separate your configuration from tracked defaults
 - Make deployments portable and reproducible
 
-If you've already edited `agent.yaml`, migrate those changes to `.env` overrides before pulling future updates.
+If you've already edited `agent.yaml`, migrate those changes to `overrides.env` (or the wizard) before pulling future updates. Do not put credentials in `overrides.env`.
 
-Full references: [docs/configuration.md](configuration.md) | [docs/env-overrides.md](env-overrides.md)
+How to create and use `overrides.env`: see [Manual overrides file](configuration.md#manual-overrides-file). Full references: [docs/configuration.md](configuration.md) | [docs/env-overrides.md](env-overrides.md)
 
 ---
 
 ## LLM Model Selection
 
-Override the default models in `.env`:
+Choose models with `./scripts/setup.sh --section models`, which writes these `.env` settings:
 
 ```env
 AGENT_LLM_MODEL=anthropic/claude-sonnet-4.6
@@ -54,8 +56,6 @@ agent:
   memory:
     steward:
       model: openai/gpt-4.1-mini
-  supervisor:
-    review_model: openai/gpt-4.1-mini
   search:
     model: openai/gpt-4.1-mini
   deep_research:
@@ -75,16 +75,19 @@ agent:
   limits:
     max_iterations_per_task: 50       # Steps before a job pauses for review
     max_tokens_per_task: 1000000      # Token budget per job
-    max_daily_cost_usd: 10.00         # Daily spend cap (agent stops when hit)
     max_emails_per_hour: 10           # Outbound email rate limit
 ```
 
-Or via `.env`:
+Or use `./scripts/setup.sh --section advanced` (these are the `.env` settings it writes):
 
 ```env
-AGENT_MAX_DAILY_COST_USD=5.00
+AGENT_LIMITS_MAX_TOKENS_PER_TASK=500000
 AGENT_MAX_EMAILS_PER_HOUR=5
 ```
+
+There is no application-enforced daily monetary spending cap. Configure spending
+limits with your model provider; per-task token and iteration limits are enforced
+by the agent.
 
 ---
 
@@ -92,13 +95,12 @@ AGENT_MAX_EMAILS_PER_HOUR=5
 
 > **Important:** The agent requires its own **dedicated email address and mailbox** (e.g., `assistant@yourdomain.com`). Create a separate account for it with your email provider and point both IMAP and SMTP credentials at that account. **Do not give the agent access to your personal email.** You communicate with the agent by sending email *to* its address; responses and notifications are delivered to your `ADMIN_EMAIL`.
 
-For email-driven operation (IMAP polling), add to `.env`:
+Configure email with `./scripts/setup.sh --section email`. Credentials are stored as protected secrets, not in `.env`. For reference, the non-secret settings it writes to `.env` are:
 
 ```env
 IMAP_HOST=imap.example.com
 IMAP_PORT=993
 IMAP_USERNAME=assistant@example.com
-IMAP_PASSWORD=your-password
 IMAP_FOLDER=INBOX
 IMAP_ARCHIVE_FOLDER=Archive
 IMAP_SENT_FOLDER=Sent
@@ -106,9 +108,10 @@ IMAP_SENT_FOLDER=Sent
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USERNAME=assistant@example.com
-SMTP_PASSWORD=your-password
 SMTP_FROM=assistant@example.com
 ```
+
+The IMAP and SMTP passwords are entered in the wizard (or later via `./scripts/setup.sh secrets update IMAP_PASSWORD`).
 
 **Safety guardrails** (set these before enabling email):
 
@@ -118,13 +121,15 @@ EMAIL_ALLOWED_RECIPIENT_DOMAINS=example.com     # Agent can only email these dom
 ORG_INTERNAL_EMAIL_DOMAINS=example.com          # These domains don't get disclosure footers
 ```
 
-If `EMAIL_ACTIONABLE_SENDERS` is blank, no inbound email creates new jobs — the agent operates in dashboard-only mode. If `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is blank, only your `ADMIN_EMAIL` can receive outbound mail.
+If `EMAIL_ACTIONABLE_SENDERS` is blank, inbound email does not create new jobs. Jobs can still be submitted through the optional authenticated API when enabled. If `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is blank, only your `ADMIN_EMAIL` can receive outbound mail.
 
 See [docs/email-and-artifacts.md](email-and-artifacts.md) for the full email pipeline guide.
 
 ---
 
 ## Agent Identity and Organization
+
+Normally set via the wizard's identity and email sections; these are the resulting `.env` values:
 
 ```env
 AGENT_NAME=Ada
@@ -142,28 +147,23 @@ ORG_INTERNAL_EMAIL_DOMAINS=example.com
 
 ---
 
-## Enabling the Browser UI
+## Optional API Access
 
-The dashboard and workspace UIs are disabled by default. To enable them for local use:
+The browser dashboard, workspace UI and workspace-upload routes have been retired.
+Use email administration or the optional authenticated HTTPS API for supported
+operations. Workspace-file indexing remains active for agent search; it is not
+a browser-UI setting and is separate from embedding model configuration.
 
-```env
-AGENT_API_DASHBOARD_ENABLED=true    # Enables /admin
-AGENT_API_WORKSPACE_ENABLED=true    # Enables /workspace
-```
-
-The port binds to `127.0.0.1` by default, so these are only reachable from your local machine. If you want LAN access:
-
-```env
-AGENT_API_PUBLISHED_HOST=192.168.1.50   # Your server's LAN IP
-```
-
-**Never set `AGENT_API_PUBLISHED_HOST=0.0.0.0` on a server with a public IP** without a reverse proxy with authentication in front of it. See [docs/security.md](security.md) for the full guide including nginx and Caddy examples.
+The API is published only on host loopback and requires HTTPS plus a bearer
+token. For remote administration, use an SSH tunnel; managed Compose does not
+publish the API on a LAN interface. See [docs/security.md](security.md) for the
+transport and certificate requirements.
 
 ---
 
 ## API Documentation
 
-Interactive API docs (`/docs`, `/redoc`) and the OpenAPI schema (`/openapi.json`) are disabled by default. To enable locally for development:
+Interactive API docs (`/docs`, `/redoc`) and the OpenAPI schema (`/openapi.json`) are disabled by default. To enable them locally for development, use the API section of `./scripts/setup.sh` (they are wizard-managed `.env` settings, not `overrides.env` ones):
 
 ```env
 AGENT_API_DOCS_ENABLED=true
@@ -205,23 +205,18 @@ See [docs/concurrent-job-processing.md](concurrent-job-processing.md) for scalin
 
 ## Calendar Integration
 
-Calendar access is disabled by default. To enable, add OAuth credentials for at least one provider to `.env`:
+Calendar access is disabled by default. Enable it with `./scripts/setup.sh --section calendar`, which stores OAuth credentials as protected secrets and writes the non-secret switches to `.env`. Resulting settings:
 
 ```env
 CALENDAR_ENABLED=true
 
-# Google Calendar (see docs/calendar-providers.md for how to obtain these)
-CALENDAR_GOOGLE_CLIENT_ID=your-client-id
-CALENDAR_GOOGLE_CLIENT_SECRET=your-client-secret
-CALENDAR_GOOGLE_REFRESH_TOKEN=your-refresh-token
-
 # Optional: set the default timezone for event creation
-CALENDAR_TIMEZONE=America/New_York
+AGENT_TIMEZONE=America/New_York
 ```
 
-Calendar tools are activated when `CALENDAR_ENABLED=true` and at least one provider's `*_CLIENT_ID` / `*_CLIENT_SECRET` / `*_REFRESH_TOKEN` are present. No YAML editing is needed.
+Provider credentials (`CALENDAR_GOOGLE_CLIENT_ID`, `CALENDAR_GOOGLE_CLIENT_SECRET`, `CALENDAR_GOOGLE_REFRESH_TOKEN`, and the Outlook/Zoho equivalents) are managed through the wizard or `./scripts/setup.sh secrets update`; see [docs/calendar-providers.md](calendar-providers.md) for how to obtain them. Calendar tools are activated when `CALENDAR_ENABLED=true` and at least one provider's credentials are present. No YAML editing is needed.
 
-Optional `.env` tuning:
+Optional tuning (wizard-managed `.env` settings):
 
 ```env
 CALENDAR_DEFAULT_PROVIDER=google          # Which provider to use when not specified per-call
@@ -254,17 +249,14 @@ Tuning options in `config/agent.yaml`:
 ```yaml
 agent:
   memory:
-    recent_prompt_limit: 10
     steward:
       enabled: true
       max_injected_memories: 8
       min_importance: 4                    # 1–5 scale; only memories above this are stored
       min_confidence: 0.55
-      mini_reflection_enabled: true
       reap_after_days: 90                  # Expire stale low-importance memories
       reap_max_importance: 2               # Max importance level to reap (≤2)
       reap_interval_hours: 24              # How often to run memory maintenance
-      note_reap_after_days: 60             # Archive inactive notes after this many days
       conflict_detection_enabled: true     # Prevent duplicate memories
       conflict_similarity_threshold: 0.85  # Similarity threshold for conflict detection
   embeddings:
@@ -305,7 +297,7 @@ All runtime state lives under `./data`:
 
 ```
 ./data/postgres        — PostgreSQL database
-./data/share           — Shared workspace (visible to agent and UI)
+./data/share           — Shared workspace (agent and sandbox files; no browser UI)
 ./data/private/        — Inbound artifacts and private storage
 ./data/ollama          — Ollama model cache
 ./data/clamav          — ClamAV virus definitions
@@ -319,7 +311,7 @@ To back up or migrate, stop the stack (`docker compose down`) and copy `./data`.
 
 - [docs/configuration.md](configuration.md) — full `.env` and `config/agent.yaml` reference
 - [docs/calendar-providers.md](calendar-providers.md) — OAuth setup for Google, Outlook, and Zoho calendar providers
-- [docs/security.md](security.md) — threat model, hardening checklist, reverse proxy examples
+- [docs/security.md](security.md) — threat model, transport requirements, and hardening checklist
 - [docs/docker-setup.md](docker-setup.md) — Compose topology, networks, and volume mounts
 - [docs/running-assistant.md](running-assistant.md) — local and server deployment guide
 - [docs/architecture.md](architecture.md) — service topology and data flow

@@ -24,7 +24,8 @@ This document describes how Assistant executes shell commands safely.
 - Paths are constrained under shared root.
 - Broker can enforce runtime limits (CPU, memory, PID, timeout).
 - Broker container is hardened (`read_only`, dropped caps, `no-new-privileges`).
-- Run containers mount shared workspace only (no app internals).
+- Broker requests use HTTPS with hostname verification and a service-scoped bearer token.
+- Run containers execute as root for package installation and mount the shared workspace only (no app credentials or Docker socket).
 
 ## Network Isolation
 
@@ -36,7 +37,15 @@ This document describes how Assistant executes shell commands safely.
 
 ### `SANDBOX_ISOLATION_MODE=container` (default, production)
 
-This is the default and intended production mode. Each command runs in a fresh, short-lived Docker container that is fully isolated from the host and the agent. Resource limits (CPU, memory, PIDs), capability drops, network isolation, and per-run bridge networks are all enforced by Docker. The Docker socket must be mounted into the sandbox broker container and `SANDBOX_RUN_IMAGE` must be set.
+This is the default and intended production mode. Each command runs in a fresh,
+short-lived Docker container separated from the agent's application networks. The
+runner executes as root for package installation; its writable container layer is
+removed after execution, but changes to the shared workspace and outbound data
+transfer persist. Resource limits, capability drops, network isolation, and
+per-run bridge networks are enforced by Docker. The broker itself has the Docker
+socket mounted and therefore retains root-equivalent daemon authority; these
+containers are not fully isolated from host compromise. `SANDBOX_RUN_IMAGE` must
+be set.
 
 `container` is the default in both `docker-compose.yml` and `sandbox/server.py`. You do not need to set anything to use it.
 
@@ -85,7 +94,7 @@ From app config (`config/agent.yaml`):
 
 - `agent.sandbox.enabled`
 - `agent.sandbox.base_url`
-- `agent.sandbox.default_timeout_seconds`
+- `agent.limits.tool_timeout_command_seconds`
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
 

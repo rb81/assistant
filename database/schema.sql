@@ -96,6 +96,29 @@ CREATE UNIQUE INDEX jobs_one_open_per_thread_idx
   ON jobs(thread_id)
   WHERE status IN ('queued', 'running', 'waiting', 'needs_review');
 
+CREATE TABLE dropbox_transfers (
+  request_key text PRIMARY KEY,
+  job_id bigint NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  thread_id text,
+  direction text NOT NULL CHECK (direction IN ('import', 'export')),
+  remote_path text NOT NULL,
+  remote_id text,
+  revision text,
+  local_path text,
+  markdown_path text,
+  local_sha256 text,
+  markdown_sha256 text,
+  content_hash text,
+  size_bytes bigint CHECK (size_bytes >= 0),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'failed', 'uncertain')),
+  scan_status text NOT NULL DEFAULT 'pending' CHECK (scan_status IN ('pending', 'clean', 'infected', 'error', 'skipped')),
+  conversion_status text NOT NULL DEFAULT 'pending' CHECK (conversion_status IN ('pending', 'ready', 'failed', 'not_applicable')),
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX dropbox_transfers_job_idx ON dropbox_transfers(job_id);
+
 CREATE TABLE agent_memories (
   id bigserial PRIMARY KEY,
   content text NOT NULL,
@@ -575,6 +598,14 @@ CREATE INDEX entity_object_links_object_idx ON entity_object_links(object_type, 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
 BEGIN
+  IF to_jsonb(NEW) ? 'embedding'
+     AND NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at
+     AND (to_jsonb(NEW) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
+         = (to_jsonb(OLD) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
+     AND (COALESCE(to_jsonb(NEW)->'metadata', '{}'::jsonb) - 'embedding_pending')
+         = (COALESCE(to_jsonb(OLD)->'metadata', '{}'::jsonb) - 'embedding_pending') THEN
+    RETURN NEW;
+  END IF;
   NEW.updated_at = now();
   RETURN NEW;
 END;

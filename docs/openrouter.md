@@ -41,7 +41,6 @@ Configured models are used in different loops:
 - `agent.memory.steward.model` — Memory Steward consolidation/recall model.
 - `agent.search.model` — model used by `web_search` function tool.
 - `agent.deep_research.search_model` — deep research search-focused model.
-- `agent.supervisor.review_model` — supervisor review model setting.
 
 ## OpenRouter Hosted Tool Types
 

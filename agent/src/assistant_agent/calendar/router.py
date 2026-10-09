@@ -24,6 +24,7 @@ from psycopg.types.json import Jsonb
 from ..config import AppConfig
 from ..database import json_safe
 from ..time_utils import local_datetime_iso, parse_datetime
+from ..secret_store import read_secret
 from .models import (
     BusyWindow,
     Calendar,
@@ -70,9 +71,9 @@ def _load_provider_configs(config: AppConfig) -> list[ProviderConfig]:
     configs: list[ProviderConfig] = []
     for ptype in ("google", "outlook", "zoho"):
         prefix = "CALENDAR_%s" % ptype.upper()
-        client_id = os.environ.get("%s_CLIENT_ID" % prefix, "").strip()
-        client_secret = os.environ.get("%s_CLIENT_SECRET" % prefix, "").strip()
-        refresh_token = os.environ.get("%s_REFRESH_TOKEN" % prefix, "").strip()
+        client_id = (read_secret("%s_CLIENT_ID" % prefix) or "").strip()
+        client_secret = (read_secret("%s_CLIENT_SECRET" % prefix) or "").strip()
+        refresh_token = (read_secret("%s_REFRESH_TOKEN" % prefix) or "").strip()
         if client_id and client_secret and refresh_token:
             # For the primary provider instance, read non-credential settings from config
             # (which includes env overrides via config.py mappings)
@@ -100,9 +101,9 @@ def _load_provider_configs(config: AppConfig) -> list[ProviderConfig]:
         # For numbered instances, read all settings from env (no YAML path for dynamic suffixes)
         for suffix in range(2, 10):
             pfx2 = "CALENDAR_%s_%d" % (ptype.upper(), suffix)
-            cid2 = os.environ.get("%s_CLIENT_ID" % pfx2, "").strip()
-            cs2 = os.environ.get("%s_CLIENT_SECRET" % pfx2, "").strip()
-            rt2 = os.environ.get("%s_REFRESH_TOKEN" % pfx2, "").strip()
+            cid2 = (read_secret("%s_CLIENT_ID" % pfx2) or "").strip()
+            cs2 = (read_secret("%s_CLIENT_SECRET" % pfx2) or "").strip()
+            rt2 = (read_secret("%s_REFRESH_TOKEN" % pfx2) or "").strip()
             if cid2 and cs2 and rt2:
                 cal_id2 = os.environ.get("%s_CALENDAR_ID" % pfx2, "").strip() or _default_calendar_id(ptype)
                 extra2: dict[str, Any] = {}
@@ -161,6 +162,7 @@ class CalendarRouter:
         self._providers: dict[str, CalendarProvider] = {}
         self._provider_configs: dict[str, ProviderConfig] = {}
         for pc in _load_provider_configs(self._config):
+            pc.extra["assistant_timezone"] = self._timezone_name()
             self._provider_configs[pc.name] = pc
             try:
                 provider = build_provider(pc, CalendarRouter._token_store)
@@ -206,7 +208,7 @@ class CalendarRouter:
             except ProviderAuthError as exc:
                 results.append({"provider": name, "status": "auth_error", "detail": str(exc)})
             except CalendarError as exc:
-                results.append({"provider": name, "status": "error", "detail": str(exc)})
+                results.append({"provider": name, "status": "error", "detail": "Calendar access failed; verify the API endpoint and provider connectivity."})
         overall = "ok" if all(r["status"] == "ok" for r in results) else "degraded"
         return {"status": overall, "reason": reason, "providers": results}
 
@@ -221,11 +223,12 @@ class CalendarRouter:
         managed_ids = self._managed_assistant_ids()
         managed_by_provider_id = self._managed_by_provider_id()
         busy: list[dict[str, Any]] = []
-
+        provider_errors: list[dict[str, str]] = []
 
         for name, provider in self._providers.items():
             pc = self._provider_config(name)
             if pc is None:
+                provider_errors.append({"provider": name, "status": "error", "detail": "Provider configuration is unavailable."})
                 continue
             try:
                 windows = provider.get_free_busy(
@@ -234,7 +237,10 @@ class CalendarRouter:
                     end=range_end,
                 )
             except CalendarError as exc:
-                log.warning("list_busy: provider %r error: %s", name, exc)
+                status = "auth_error" if isinstance(exc, ProviderAuthError) else "error"
+                detail = "Authentication failed. Verify calendar OAuth credentials and consent scopes." if status == "auth_error" else "Calendar access failed; availability is unknown."
+                provider_errors.append({"provider": name, "status": status, "detail": detail})
+                log.warning("list_busy: provider %r returned %s", name, status)
                 continue
             for w in windows:
                 assistant_id = w.assistant_id
@@ -265,6 +271,9 @@ class CalendarRouter:
             "end": local_datetime_iso(range_end, self._config),
             "busy": busy,
             "providers": list(self._providers.keys()),
+            "status": "no_providers" if not self._providers else "degraded" if provider_errors else "ok",
+            "complete": bool(self._providers) and not provider_errors,
+            "provider_errors": provider_errors,
         }
 
     def list_events(
@@ -558,17 +567,15 @@ class CalendarRouter:
         except ZoneInfoNotFoundError:
             tz = timezone.utc
         d = date.fromisoformat(str(value)[:10])
-        return datetime.combine(d, time.min, tzinfo=tz).astimezone(timezone.utc)
+        return datetime.combine(d, time.min, tzinfo=tz)
 
     def _event_end(self, value: str, all_day: bool) -> datetime:
         return self._event_start(value, all_day)
 
     def _timezone_name(self) -> str:
-        return str(
-            self._config.get("agent.calendar.timezone")
-            or self._config.get("agent.app.timezone")
-            or "UTC"
-        )
+        from ..time_utils import default_timezone
+
+        return default_timezone(self._config)[1]
 
     def _clean_attendees(self, attendees: Optional[list[str]]) -> list[str]:
         if not attendees or not isinstance(attendees, list):

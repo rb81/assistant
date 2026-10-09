@@ -18,4 +18,7 @@ until docker compose exec -T "$SERVICE" ollama list >/dev/null 2>&1; do
   sleep 2
 done
 
-docker compose exec -T "$SERVICE" sh -c 'ollama pull "${MEMORY_EMBEDDING_MODEL:-embeddinggemma}"'
+if [ -n "${MEMORY_EMBEDDING_MODEL:-}" ]; then
+  printf '%s\n' 'MEMORY_EMBEDDING_MODEL is deprecated; configure AGENT_EMBEDDINGS_MODEL in setup instead.' >&2
+fi
+docker compose run --rm --no-deps -e "OLLAMA_HOST=http://$SERVICE:11434" ollama-model-puller

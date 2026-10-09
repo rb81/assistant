@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 psycopg_module = types.ModuleType("psycopg")
@@ -138,7 +138,7 @@ class FakeReminderDatabase:
                 "recurrence_anchor_day": recurrence_anchor_day,
                 "created_by": created_by,
                 "created_by_job_id": created_by_job_id,
-                "metadata": metadata,
+                "metadata": getattr(metadata, "obj", metadata),
             }
             self.next_id += 1
             self.reminders.append(reminder)
@@ -460,6 +460,30 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
             self.assertEqual(first["reminder"]["id"], second["reminder"]["id"])
             self.assertTrue(second["idempotent_reuse"])
             self.assertNotEqual(first["reminder"]["id"], third["reminder"]["id"])
+
+    def test_reminder_cancel_does_not_cancel_its_running_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = MagicMock()
+            database.fetch_one.return_value = {"id": 3, "title": "Retry", "task": "Send reply", "status": "cancelled", "job_id": 14}
+            runtime = ToolRuntime(database, search_config(temp_dir), {"id": 14, "thread_id": "thread-1"})
+
+            runtime.reminder_cancel(3)
+
+            database.update_job_status.assert_not_called()
+
+    def test_reminder_cancel_cancels_a_different_linked_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = MagicMock()
+            database.fetch_one.return_value = {"id": 3, "title": "Retry", "task": "Send reply", "status": "cancelled", "job_id": 15}
+            runtime = ToolRuntime(database, search_config(temp_dir), {"id": 14, "thread_id": "thread-1"})
+
+            runtime.reminder_cancel(3)
+
+            database.update_job_status.assert_called_once_with(
+                15,
+                "cancelled",
+                last_error="linked reminder was cancelled",
+            )
 
     def test_file_search_excludes_tool_cache_but_explicit_read_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

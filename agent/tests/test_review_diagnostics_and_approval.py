@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 
 # Set DATABASE_URL to bypass POSTGRES_PASSWORD check in api.py module initialization
-os.environ.setdefault("DATABASE_URL", "postgresql://stub:stub@localhost/stub")
+os.environ.setdefault("DATABASE_URL", "postgresql://stub:stub@localhost/stub?sslmode=verify-full&sslrootcert=%2Fdev%2Fnull")
 
 psycopg_module = types.ModuleType("psycopg")
 # MagicMock returns a context manager that supports with statement and has cursor() method
@@ -386,8 +386,7 @@ class EmailApprovalOverrideTest(unittest.TestCase):
         # The override dict is passed as first param to execute() for the UPDATE
         update_params = [params for sql, params in db.executed if "UPDATE jobs" in sql]
         self.assertTrue(len(update_params) >= 1)
-        override_payload = update_params[0][0]  # Jsonb({...})
-        # The Jsonb stub just returns the raw dict
+        override_payload = getattr(update_params[0][0], "obj", update_params[0][0])
         self.assertIn("admin_review_override", override_payload)
         override = override_payload["admin_review_override"]
         # Factor 1.2 × default 50 = 60; 1.2 × 1_000_000 = 1_200_000
@@ -408,7 +407,7 @@ class EmailApprovalOverrideTest(unittest.TestCase):
         d.apply_email_review_override(job, trigger_email_id=8, body_text="")
 
         update_params = [params for sql, params in db.executed if "UPDATE jobs" in sql]
-        override = update_params[0][0]["admin_review_override"]
+        override = getattr(update_params[0][0], "obj", update_params[0][0])["admin_review_override"]
         # 1.2 × 60 = 72; 1.2 × 1_200_000 = 1_440_000
         self.assertEqual(override["max_iterations_per_task"], 72)
         self.assertEqual(override["max_tokens_per_task"], 1_440_000)
@@ -467,6 +466,7 @@ class EmailApprovalOverrideTest(unittest.TestCase):
             trigger_email_id=20,
             from_addresses=["admin@example.com"],
             body_text="Proceed with additional research.",
+            admin_authenticated=True,
         )
 
         self.assertEqual(len(called), 1)
@@ -554,9 +554,9 @@ class PollEndpointShapeTest(unittest.TestCase):
         # Stub the module-level db and config
         stub_db = _PollStubDb()
         api_module.db = stub_db  # type: ignore[attr-defined]
-        api_module.config = AppConfig({"agent": {"limits": {}}})  # type: ignore[attr-defined]
+        api_module.config = AppConfig({"agent": {"limits": {}, "api": {"auth_token": "test-token"}}})  # type: ignore[attr-defined]
 
-        client = TestClient(api_module.app, raise_server_exceptions=True)
+        client = TestClient(api_module.app, raise_server_exceptions=True, base_url="https://testserver", headers={"Authorization": "Bearer test-token"})
         resp = client.get("/api/jobs/1/poll?after_sequence=0")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
@@ -573,9 +573,9 @@ class PollEndpointShapeTest(unittest.TestCase):
 
         stub_db = _PollStubDb(job=None)
         api_module.db = stub_db  # type: ignore[attr-defined]
-        api_module.config = AppConfig({"agent": {"limits": {}}})  # type: ignore[attr-defined]
+        api_module.config = AppConfig({"agent": {"limits": {}, "api": {"auth_token": "test-token"}}})  # type: ignore[attr-defined]
 
-        client = TestClient(api_module.app, raise_server_exceptions=False)
+        client = TestClient(api_module.app, raise_server_exceptions=False, base_url="https://testserver", headers={"Authorization": "Bearer test-token"})
         resp = client.get("/api/jobs/999/poll")
         self.assertEqual(resp.status_code, 404)
 

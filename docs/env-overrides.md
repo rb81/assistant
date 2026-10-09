@@ -1,10 +1,51 @@
+# Credential Storage
+
+Use `./scripts/setup.sh` and `./scripts/setup.sh secrets update` for credentials.
+Known credential names support a matching `NAME_FILE` pointer to a Docker secret;
+do not set a nonempty inline value and a file pointer together. Missing configured
+files fail closed. `.env` should contain non-secret deployment overrides. Inline
+credential examples in this reference describe the legacy compatibility path.
+See [configuration](configuration.md) for the current setup and update workflow.
+
 # Environment Variable Overrides
 
-This document lists every setting from `config/agent.yaml` that can be overridden via environment variables in `.env`.
+This document lists every setting from `config/agent.yaml` that can be overridden via environment variables.
 
-## Why Use `.env` for Configuration?
+## Expert overrides file (`overrides.env`)
 
-**Git updates overwrite `config/agent.yaml` with the upstream version.** Using `.env` for customization means your settings survive updates without manual migration or merge conflicts. This approach:
+This is an optional, expert-level mechanism. Most users never need it: the setup
+wizard (`./scripts/setup.sh`, including `--section advanced`) manages the common
+settings in `.env`. Use `overrides.env` for the rest of the list below.
+
+- **Where:** `overrides.env` in the repository root, next to `.env`. Setup creates
+  it on first save with every unmanaged setting as a commented line, but you may
+  also create it yourself at any time. It is git-ignored and optional.
+- **Format:** one `NAME=value` per line, names exactly as in the tables below.
+  Booleans are `true`/`false`; lists are comma-separated; `#` starts a comment.
+- **Precedence:** Compose loads it after `.env`, so it wins over `.env`,
+  `config/agent.yaml` and code defaults. `environment:` entries in
+  `docker-compose.yml` still win over everything.
+- **Never rewritten:** setup never edits or regenerates the file, so re-running the
+  wizard keeps your lines. If it already exists, setup also will not add the
+  commented template.
+- **Validated:** the setup review flags unknown or misspelled names, wrongly typed
+  values, credentials (use `./scripts/setup.sh secrets update`), and names the
+  wizard or `docker-compose.yml` already controls, which would conflict or be
+  silently ignored. Remove those lines.
+- **Not for Compose variables:** `TASK_AGENT_WORKERS`, `AGENT_API_PUBLISHED_PORT`,
+  `SANDBOX_ISOLATION_MODE` and `COMPOSE_PROFILES` are read by Compose for
+  interpolation from `.env` only.
+- **Apply:** `docker compose up -d --force-recreate`.
+
+```env
+# overrides.env
+AGENT_SANDBOX_ENABLED=false
+AGENT_LLM_TEMPERATURE=0.3
+```
+
+## Why Use `overrides.env` Instead of Editing YAML?
+
+**Git updates overwrite `config/agent.yaml` with the upstream version.** Keeping customizations in `overrides.env` means your settings survive updates without manual migration or merge conflicts. This approach:
 
 - ✅ Keeps your customizations safe through updates
 - ✅ Separates your configuration from tracked defaults
@@ -13,20 +54,45 @@ This document lists every setting from `config/agent.yaml` that can be overridde
 
 ## Override Precedence
 
-1. **Environment variable** (from `.env`)
-2. **`config/agent.yaml`** (tracked defaults)
-3. **Code-level fallback defaults**
+### Retired No-Op Settings
+
+The following overrides no longer have runtime consumers and are ignored. Remove
+them from existing `.env` files when convenient; setup does not rewrite saved
+configuration just to remove them:
+
+- `AGENT_LLM_PROVIDER` (provider behavior is selected by the model API base URL)
+- `AGENT_MAX_DAILY_COST_USD` (never enforced; use provider-side spending limits)
+- `AGENT_LIMITS_TOOL_TIMEOUT_DEFAULT_SECONDS`
+- `AGENT_SUPERVISOR_REVIEW_MODEL`
+- `AGENT_SUPERVISOR_RECENT_LOG_LIMIT`
+- `AGENT_MEMORY_RECENT_PROMPT_LIMIT` (use `AGENT_MEMORY_STEWARD_MAX_INJECTED_MEMORIES`)
+- `AGENT_MEMORY_STEWARD_MAX_ITERATIONS`
+- `AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS` (use `AGENT_LIMITS_TOOL_TIMEOUT_COMMAND_SECONDS`)
+- `AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS`
+- `AGENT_API_DASHBOARD_ENABLED`
+- `AGENT_API_WORKSPACE_ENABLED`
+- `AGENT_API_MAX_UPLOAD_BYTES`
+- `AGENT_PROJECTS_ENABLED`, `AGENT_PROJECTS_SCHEDULER_POLL_INTERVAL_SECONDS`, `AGENT_PROJECTS_MAX_TASKS`, and `AGENT_PROJECTS_MAX_PROJECTS_PER_TICK` (Projects has been retired)
+
+Workspace indexing is still supported: `AGENT_WORKSPACE_INDEX_ENABLED` controls
+file indexing for keyword and semantic search, not the retired workspace UI.
+Embedding settings configure vector generation separately.
+
+### Active Setting Precedence
+
+1. **`docker-compose.yml` `environment:` entries**
+2. **`overrides.env`**
+3. **`.env`**
+4. **`config/agent.yaml`** (tracked defaults)
+5. **Code-level fallback defaults**
 
 ## How to Use
 
-Add any of these variables to your `.env` file to override the corresponding YAML setting:
+Add any variable below that the wizard does not manage to `overrides.env` to override the corresponding YAML setting. Variables the wizard manages (identity, models, email, embeddings, integrations and the Advanced Settings groups) are listed here for completeness but must be changed with `./scripts/setup.sh`; the setup review rejects them in `overrides.env`.
 
 ```env
-# Example: Change the primary LLM model
-AGENT_LLM_MODEL=anthropic/claude-opus-4
-
-# Example: Increase iteration limit
-AGENT_LIMITS_MAX_ITERATIONS_PER_TASK=100
+# Example: Lower the primary model's sampling temperature
+AGENT_LLM_TEMPERATURE=0.3
 
 # Example: Disable sandbox
 AGENT_SANDBOX_ENABLED=false
@@ -39,7 +105,7 @@ AGENT_SANDBOX_ENABLED=false
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `AGENT_APP_NAME` | `agent.app.name` | string | `assistant` |
-| `AGENT_APP_BASE_URL` | `agent.app.base_url` | string | `http://localhost:8000` |
+| `AGENT_APP_BASE_URL` | `agent.app.base_url` | string | `https://localhost:8000` |
 | `AGENT_APP_REFERER_URL` | `agent.app.referer_url` | string | `https://assistant.local` |
 | `AGENT_TIMEZONE` | `agent.app.timezone` | string | `UTC` |
 
@@ -62,6 +128,21 @@ AGENT_SANDBOX_ENABLED=false
 | `ADMIN_EMAIL` | `agent.admin.email` | string | _(empty)_ **⚠️ Required for core operation** |
 
 ---
+
+## Dropbox
+
+| Environment Variable | YAML Path | Type | Default |
+|---|---|---|---|
+| `DROPBOX_ENABLED` | `agent.dropbox.enabled` | bool | `false` |
+| `DROPBOX_ALLOW_EXPORTS` | `agent.dropbox.allow_exports` | bool | `false` |
+| `DROPBOX_MAX_FILE_BYTES` | `agent.dropbox.max_file_bytes` | int | `26214400` |
+| `DROPBOX_CLIENT_ID` | `agent.dropbox.client_id` | credential | unset |
+| `DROPBOX_REFRESH_TOKEN` | `agent.dropbox.refresh_token` | credential | unset |
+
+Credentials support matching `_FILE` pointers. Use guided setup, not inline
+tokens in `.env`. See [Dropbox](dropbox.md) for App Folder registration and
+standing output authorization. Scanning is mandatory regardless of optional
+email scanning settings.
 
 ## Organization
 
@@ -88,7 +169,6 @@ AGENT_SANDBOX_ENABLED=false
 
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
-| `AGENT_LLM_PROVIDER` | `agent.llm.provider` | string | `openrouter` |
 | `AGENT_LLM_MODEL` | `agent.llm.model` | string | `anthropic/claude-sonnet-4.6` |
 | `AGENT_LLM_FALLBACK_MODEL` | `agent.llm.fallback_model` | string | `openai/gpt-5.4` |
 | `AGENT_LLM_BASE_URL` | `agent.llm.base_url` | string | `https://openrouter.ai/api/v1` |
@@ -110,8 +190,6 @@ AGENT_SANDBOX_ENABLED=false
 | `AGENT_LIMITS_SUMMARIZATION_TIMEOUT_SECONDS` | `agent.limits.summarization_timeout_seconds` | int | `30` |
 | `AGENT_LIMITS_SUMMARIZATION_KEEP_RECENT` | `agent.limits.summarization_keep_recent` | int | `6` |
 | `AGENT_LIMITS_SUMMARIZATION_MAX_INPUT_CHARS` | `agent.limits.summarization_max_input_chars` | int | `80000` |
-| `AGENT_MAX_DAILY_COST_USD` | `agent.limits.max_daily_cost_usd` | float | `10.00` |
-| `AGENT_LIMITS_TOOL_TIMEOUT_DEFAULT_SECONDS` | `agent.limits.tool_timeout_default_seconds` | int | `120` |
 | `AGENT_LIMITS_TOOL_TIMEOUT_COMMAND_SECONDS` | `agent.limits.tool_timeout_command_seconds` | int | `300` |
 | `AGENT_MAX_EMAILS_PER_HOUR` | `agent.limits.max_emails_per_hour` | int | `10` |
 | `AGENT_LIMITS_POLL_INTERVAL_SECONDS` | `agent.limits.poll_interval_seconds` | int | `60` |
@@ -162,8 +240,6 @@ AGENT_SANDBOX_ENABLED=false
 |---|---|---|---|
 | `AGENT_SUPERVISOR_STALL_THRESHOLD_MINUTES` | `agent.supervisor.stall_threshold_minutes` | int | `15` |
 | `AGENT_SUPERVISOR_MAX_TASK_DURATION_MINUTES` | `agent.supervisor.max_task_duration_minutes` | int | `60` |
-| `AGENT_SUPERVISOR_REVIEW_MODEL` | `agent.supervisor.review_model` | string | `openai/gpt-4.1-mini` |
-| `AGENT_SUPERVISOR_RECENT_LOG_LIMIT` | `agent.supervisor.recent_log_limit` | int | `5` |
 
 ---
 
@@ -219,11 +295,9 @@ AGENT_SANDBOX_ENABLED=false
 
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
-| `AGENT_MEMORY_RECENT_PROMPT_LIMIT` | `agent.memory.recent_prompt_limit` | int | `10` |
 | `AGENT_MEMORY_STEWARD_ENABLED` | `agent.memory.steward.enabled` | bool | `true` |
 | `AGENT_MEMORY_STEWARD_MODEL` | `agent.memory.steward.model` | string | `openai/gpt-4.1-mini` |
 | `AGENT_MEMORY_STEWARD_MODE` | `agent.memory.steward.mode` | string | `best_effort` |
-| `AGENT_MEMORY_STEWARD_MAX_ITERATIONS` | `agent.memory.steward.max_iterations` | int | `4` |
 | `AGENT_MEMORY_STEWARD_TIMEOUT_SECONDS` | `agent.memory.steward.timeout_seconds` | int | `45` |
 | `AGENT_MEMORY_STEWARD_MAX_TOKENS_PER_CALL` | `agent.memory.steward.max_tokens_per_call` | int | `1600` |
 | `AGENT_MEMORY_STEWARD_MAX_INJECTED_MEMORIES` | `agent.memory.steward.max_injected_memories` | int | `8` |
@@ -281,7 +355,7 @@ AGENT_SANDBOX_ENABLED=false
 
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
-| `AGENT_REMINDERS_DEFAULT_TIMEZONE` | `agent.reminders.default_timezone` | string | _(empty, uses AGENT_TIMEZONE)_ |
+| `AGENT_REMINDERS_DEFAULT_TIMEZONE` | `agent.reminders.default_timezone` | string | _(deprecated, ignored; use AGENT_TIMEZONE)_ |
 | `AGENT_REMINDERS_SCHEDULER_POLL_INTERVAL_SECONDS` | `agent.reminders.scheduler_poll_interval_seconds` | int | `2` |
 | `AGENT_REMINDERS_MAX_DUE_PER_TICK` | `agent.reminders.max_due_per_tick` | int | `25` |
 
@@ -298,7 +372,7 @@ For full OAuth setup instructions see [docs/calendar-providers.md](calendar-prov
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `CALENDAR_ENABLED` | `agent.calendar.enabled` | bool | `false` |
-| `CALENDAR_TIMEZONE` | `agent.calendar.timezone` | string | _(empty, uses AGENT_TIMEZONE)_ |
+| `CALENDAR_TIMEZONE` | `agent.calendar.timezone` | string | _(deprecated, ignored; use AGENT_TIMEZONE)_ |
 | `CALENDAR_DEFAULT_PROVIDER` | `agent.calendar.default_provider` | string | _(first configured provider)_ |
 | `CALENDAR_DEFAULT_ALERT_MINUTES` | `agent.calendar.default_alert_minutes` | int | `30` |
 | `AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS` | `agent.calendar.policy.allow_read_event_details` | bool | `false` |
@@ -336,17 +410,6 @@ For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE
 
 ---
 
-## Projects
-
-| Environment Variable | YAML Path | Type | Default |
-|---|---|---|---|
-| `AGENT_PROJECTS_ENABLED` | `agent.projects.enabled` | bool | `true` |
-| `AGENT_PROJECTS_SCHEDULER_POLL_INTERVAL_SECONDS` | `agent.projects.scheduler_poll_interval_seconds` | int | `2` |
-| `AGENT_PROJECTS_MAX_TASKS` | `agent.projects.max_tasks` | int | `25` |
-| `AGENT_PROJECTS_MAX_PROJECTS_PER_TICK` | `agent.projects.max_projects_per_tick` | int | `25` |
-
----
-
 ## Deep Research
 
 | Environment Variable | YAML Path | Type | Default |
@@ -379,9 +442,7 @@ For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `AGENT_SANDBOX_ENABLED` | `agent.sandbox.enabled` | bool | `true` |
-| `AGENT_SANDBOX_BASE_URL` | `agent.sandbox.base_url` | string | `http://sandbox:8080` |
-| `AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS` | `agent.sandbox.default_timeout_seconds` | int | `300` |
-| `AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS` | `agent.sandbox.hard_kill_grace_seconds` | int | `30` |
+| `AGENT_SANDBOX_BASE_URL` | `agent.sandbox.base_url` | string | `https://sandbox:8080` |
 | `AGENT_SANDBOX_MAX_ATTEMPTS` | `agent.sandbox.max_attempts` | int | `3` |
 | `AGENT_SANDBOX_RETRY_BACKOFF_SECONDS` | `agent.sandbox.retry_backoff_seconds` | int | `1` |
 
@@ -423,10 +484,7 @@ For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE
 | `AGENT_API_PORT` | `agent.api.port` | int | `8000` |
 | `AGENT_API_DOCS_ENABLED` | `agent.api.docs_enabled` | bool | `false` |
 | `AGENT_API_OPENAPI_ENABLED` | `agent.api.openapi_enabled` | bool | `false` |
-| `AGENT_API_DASHBOARD_ENABLED` | `agent.api.dashboard_enabled` | bool | `true` |
-| `AGENT_API_WORKSPACE_ENABLED` | `agent.api.workspace_enabled` | bool | `true` |
 | `AGENT_API_ALLOW_PUBLIC_BIND` | `agent.api.allow_public_bind` | bool | `false` |
-| `AGENT_API_MAX_UPLOAD_BYTES` | `agent.api.max_upload_bytes` | int | `524288000` |
 
 ---
 
@@ -446,5 +504,5 @@ EMAIL_ACTIONABLE_SENDERS=boss@example.com,team-lead@example.com
 
 - [Configuration Reference](configuration.md) — overview of the configuration system
 - [Advanced Configuration](advanced-configuration.md) — common customization scenarios
-- [`.env.example`](../.env.example) — template for your `.env` file
+- [`.env.example`](../.env.example) — reference for the keys the setup wizard writes to `.env`
 - [`config/agent.yaml`](../config/agent.yaml) — operational defaults (tracked file)

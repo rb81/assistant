@@ -3,6 +3,9 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import httpx
+import pytest
+
 from assistant_agent.calendar.models import CalendarEvent, CreateEventRequest, ProviderConfig, UpdateEventRequest
 from assistant_agent.calendar.providers.zoho import ZohoCalendarProvider, _zoho_to_dt
 
@@ -261,3 +264,76 @@ def test_invalid_oauth_scope_raises_provider_auth_error() -> None:
         except ProviderAuthError as exc:
             assert "INVALID_OAUTHSCOPE" in str(exc)
             assert "ZohoCalendar.event.ALL" in str(exc)
+
+
+def test_persistent_401_retries_once_then_reports_sanitized_auth_error():
+    from assistant_agent.calendar.provider import ProviderAuthError
+
+    provider = _provider()
+    response = httpx.Response(401, text="PRIVATE-TOKEN-CANARY")
+    with patch("assistant_agent.calendar.providers.zoho.httpx.request", return_value=response) as request:
+        with pytest.raises(ProviderAuthError, match="HTTP 401") as error:
+            provider._request("GET", "/calendars")
+    assert request.call_count == 2
+    assert "PRIVATE-TOKEN-CANARY" not in str(error.value)
+
+
+def test_bare_zoho_origin_from_setup_uses_api_v1():
+    provider = _provider()
+    provider._config.extra["api_base"] = "https://calendar.zoho.com/"
+    provider = ZohoCalendarProvider(provider._config, _FakeTokenStore())
+    with patch("assistant_agent.calendar.providers.zoho.httpx.request", return_value=httpx.Response(200, json={"calendars": []})) as request:
+        provider.list_calendars()
+    assert request.call_args.args[1] == "https://calendar.zoho.com/api/v1/calendars"
+    provider._config.extra["api_base"] = "https://calendar.zoho.com/api/v1/"
+    assert ZohoCalendarProvider(provider._config, _FakeTokenStore())._base == "https://calendar.zoho.com/api/v1"
+
+
+@pytest.mark.parametrize("api_base", [
+    "http://calendar.zoho.com/api/v1",
+    "https://calendar.zoho.attacker.example/api/v1",
+    "https://user:password@calendar.zoho.com/api/v1",
+    "https://calendar.zoho.com:8443/api/v1",
+])
+def test_rejects_unsafe_zoho_api_base(api_base: str) -> None:
+    provider = _provider()
+    provider._config.extra["api_base"] = api_base
+    with pytest.raises(ValueError, match="HTTPS on a supported Zoho Calendar host"):
+        ZohoCalendarProvider(provider._config, _FakeTokenStore())
+
+
+def test_free_busy_does_not_swallow_calendar_errors():
+    from assistant_agent.calendar.provider import CalendarError, ProviderAuthError
+
+    for error in (CalendarError("unreachable"), ProviderAuthError("expired")):
+        provider = _provider()
+        with patch.object(provider, "list_events", side_effect=error):
+            with pytest.raises(type(error)):
+                provider.get_free_busy(["default"], datetime.now(timezone.utc), datetime.now(timezone.utc))
+
+
+def test_read_only_verification_checks_events_and_sanitizes_errors():
+    from unittest.mock import MagicMock
+    from assistant_agent.calendar.diagnostics import verify_provider
+    from assistant_agent.calendar.provider import ProviderAuthError
+
+    provider = MagicMock()
+    provider.list_events.side_effect = ProviderAuthError("INVALID_OAUTHSCOPE PRIVATE-TOKEN-CANARY")
+    with patch("assistant_agent.calendar.diagnostics.build_provider", return_value=provider):
+        result = verify_provider(_provider()._config)
+    provider.list_calendars.assert_called_once()
+    provider.list_events.assert_called_once()
+    assert result["status"] == "auth_error"
+    assert "INVALID_OAUTHSCOPE" in result["detail"]
+    assert "PRIVATE-TOKEN-CANARY" not in str(result)
+
+
+def test_failed_token_refresh_does_not_expose_provider_response_body():
+    from assistant_agent.calendar.provider import ProviderAuthError
+    from assistant_agent.calendar.token_store import TokenStore
+
+    response = httpx.Response(401, text="PRIVATE-CREDENTIAL-CANARY")
+    with patch("assistant_agent.calendar.token_store.httpx.post", return_value=response):
+        with pytest.raises(ProviderAuthError, match="HTTP 401") as error:
+            TokenStore(None).get_access_token("zoho", "zoho", "id", "secret", "refresh")
+    assert "PRIVATE-CREDENTIAL-CANARY" not in str(error.value)
