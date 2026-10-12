@@ -86,7 +86,7 @@ class TelegramReceiver:
             """SELECT thread_id FROM request_messages WHERE channel = 'telegram'
                AND sender_id = %s AND conversation_id = %s AND status = 'pending'
                AND NOT (metadata ? 'selection')
-               AND (created_at > now() - interval '2 seconds' OR (%s IS NOT NULL AND metadata->>'media_group_id' = %s))
+             AND (created_at > now() - interval '2 seconds' OR (%s::text IS NOT NULL AND metadata->>'media_group_id' = %s))
                ORDER BY id DESC LIMIT 1""", (sender, conversation, group, group),
         )
         return (recent["thread_id"] if recent else "telegram:%s:%s" % (conversation, message["message_id"])), []

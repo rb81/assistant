@@ -1,6 +1,7 @@
 import logging
 import json
 from concurrent.futures import ThreadPoolExecutor
+from xml.etree import ElementTree
 import os
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
 from assistant_agent.requests import IncomingRequest, RequestService
-from assistant_agent.telegram import TelegramClient, TelegramDelivery, TelegramError, TelegramURLFilter, telegram_destination
+from assistant_agent.telegram import TelegramClient, TelegramDelivery, TelegramError, TelegramURLFilter, telegram_destination, telegram_message_parts
 from assistant_agent.telegram_ingest import RequestPreprocessor, TelegramReceiver, message_files
 from assistant_agent.tools import ToolRuntime, available_function_names
 from assistant_agent.task_agent import TaskAgent
@@ -84,6 +85,43 @@ def test_voice_and_photo_descriptors():
     result = message_files({"photo": [{"file_id": "small", "width": 1, "height": 1},
                                      {"file_id": "large", "width": 10, "height": 10}]})
     assert result[0]["file_id"] == "large"
+
+
+def test_markdown_is_converted_to_telegram_html():
+    parts = telegram_message_parts("# Summary\n\n**Bold** and *italic* and ~~removed~~ with `a < b`.\n\n[Site](https://example.com/?a=1&b=2)\n\n- First\n- Second\n\n3. Third\n4. Fourth\n\n> Quoted\n\n```python\nprint('<hello>')\n```\n\n<script>literal</script>")
+    assert len(parts) == 1
+    markup, plain = parts[0]
+    root = ElementTree.fromstring("<root>" + markup + "</root>")
+    assert set(element.tag for element in root.iter()) <= {"root", "b", "i", "s", "code", "pre", "a", "blockquote"}
+    assert "<b>Summary</b>" in markup and "<b>Bold</b>" in markup
+    assert "<i>italic</i>" in markup and "<s>removed</s>" in markup
+    assert '<a href="https://example.com/?a=1&amp;b=2">Site</a>' in markup
+    assert "<code>a &lt; b</code>" in markup
+    assert '<pre><code class="language-python">' in markup
+    assert "&lt;script&gt;literal&lt;/script&gt;" in markup
+    assert "- First\n- Second" in plain and "3. Third\n4. Fourth" in plain
+    assert "".join(root.itertext()) == plain
+
+
+@pytest.mark.parametrize("markdown", ["**" + "<&\U0001f600" * 1800 + "**", "```\n" + "<&" * 2500 + "\n```", "[" + "link" * 1200 + "](https://example.com)"])
+def test_long_formatted_messages_keep_balanced_tags_and_text(markdown):
+    parts = telegram_message_parts(markdown)
+    assert len(parts) > 1
+    for markup, plain in parts:
+        root = ElementTree.fromstring("<root>" + markup + "</root>")
+        assert "".join(root.itertext()) == plain
+        assert 0 < len(plain.encode("utf-16-le")) // 2 <= 2000
+    expected = markdown[2:-2] if markdown.startswith("**") else markdown[4:-4] if markdown.startswith("```") else "link" * 1200
+    assert "".join(plain for _, plain in parts) == expected
+
+
+def test_task_status_is_opt_in():
+    database = MagicMock()
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    delivery.update_status({"id": 7, "metadata": {"reply_route": {"channel": "telegram", "chat_id": "123"}}}, "Completed")
+    database.fetch_one.assert_not_called()
+    delivery.client.call.assert_not_called()
 
 
 def test_uncertain_send_is_not_replayed():
@@ -215,6 +253,42 @@ def test_text_intake_does_not_wait_for_other_voice_tasks(database):
     assert database.fetch_one("SELECT thread_id FROM jobs")["thread_id"] == "text-task"
 
 
+def test_formatted_delivery_preserves_plain_history_and_reply(database):
+    migrate(database)
+    job = database.fetch_one("INSERT INTO jobs(thread_id) VALUES ('formatted-reply') RETURNING *")
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    delivery.client.call.return_value = {"message_id": 81}
+    assert delivery.send(job, "**Hello** & `world`", destination="123", reply_to=17)["status"] == "sent"
+    method, payload = delivery.client.call.call_args.args
+    assert method == "sendMessage"
+    assert payload["parse_mode"] == "HTML"
+    assert payload["text"] == "<b>Hello</b> &amp; <code>world</code>"
+    assert payload["reply_parameters"]["message_id"] == 17
+    assert database.fetch_one("SELECT body_text FROM channel_deliveries")["body_text"] == "Hello & world"
+    assert delivery.send(job, "**Hello** & `world`", destination="123", reply_to=17)["status"] == "sent"
+    assert delivery.client.call.call_count == 1
+
+
+def test_explicit_task_status_updates_one_message(database):
+    migrate(database)
+    values = config()
+    values.values["agent"]["telegram"]["show_task_status"] = True
+    job = database.fetch_one("INSERT INTO jobs(thread_id) VALUES ('status-reply') RETURNING *")
+    job["task_summary"] = "**literal** <status>"
+    job["metadata"] = {"reply_route": {"channel": "telegram", "chat_id": "123"}}
+    delivery = TelegramDelivery(database, values)
+    delivery.client = MagicMock()
+    delivery.client.call.return_value = {"message_id": 82}
+    delivery.update_status(job, "Working")
+    delivery.update_status(job, "Completed")
+    delivery.update_status(job, "Completed")
+    assert [call.args[0] for call in delivery.client.call.call_args_list] == ["sendMessage", "editMessageText"]
+    assert delivery.client.call.call_args.args[1]["message_id"] == 82
+    assert delivery.client.call.call_args.args[1]["text"].endswith("**literal** &lt;status&gt;")
+    assert delivery.client.call.call_args.args[1]["parse_mode"] == "HTML"
+
+
 def test_partial_delivery_retries_only_failed_part(database):
     migrate(database)
     job = database.fetch_one("INSERT INTO jobs(thread_id) VALUES ('delivery') RETURNING *")
@@ -239,7 +313,7 @@ def test_outgoing_file_is_labeled_and_replies_to_its_task(database):
         attachments=[{"data": b"report", "filename": "report.txt", "content_type": "text/plain", "metadata": {"size_bytes": 6}}])
     assert result["status"] == "sent"
     method, payload = delivery.client.call.call_args.args
-    assert method == "sendDocument" and "Task #%s" % job["id"] in payload["caption"]
+    assert method == "sendDocument" and payload["caption"] == "report.txt"
     assert json.loads(payload["reply_parameters"])["message_id"] == 17
 
 
@@ -316,6 +390,25 @@ def test_followup_during_consolidation_is_not_lost(database):
                                          {"summary": "Answered", "response": "First answer"}, set())
     assert database.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))["status"] == "running"
     assert any("followup" in item.get("content", "") for item in history)
+
+
+@pytest.mark.parametrize("media_group", [None, "album"])
+def test_task_thread_handles_optional_media_group(database, media_group):
+    migrate(database)
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id = database, config(), "9"
+    message = {"chat": {"id": 123}, "message_id": 2}
+    if media_group is not None:
+        message["media_group_id"] = media_group
+    assert receiver.task_thread(message, "9:123", "123") == ("telegram:9:123:2", [])
+    RequestService(database).receive_request(IncomingRequest(
+        "telegram", "9:123:1", "9:123", "123", "existing-task", "first",
+        reply_route={"channel": "telegram", "chat_id": "123"},
+        metadata={"media_group_id": media_group}), queue=False)
+    assert receiver.task_thread(message, "9:123", "123") == ("existing-task", [])
+    database.execute("UPDATE request_messages SET created_at = now() - interval '1 minute'")
+    expected = "existing-task" if media_group is not None else "telegram:9:123:2"
+    assert receiver.task_thread(message, "9:123", "123") == (expected, [])
 
 
 def test_clarification_resumes_the_matching_task(database):

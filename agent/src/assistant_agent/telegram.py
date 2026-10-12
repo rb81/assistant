@@ -3,10 +3,14 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from psycopg.types.json import Jsonb
 
 from .config import AppConfig
@@ -121,6 +125,117 @@ class TelegramClient:
             temporary.unlink(missing_ok=True)
 
 
+def telegram_message_parts(text: str) -> list[tuple[str, str]]:
+    runs: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    tags: list[tuple[str, str]] = []
+    lists: list[Optional[int]] = []
+    quote_depth = 0
+
+    def append(value: str, formatting: Optional[tuple[tuple[str, str], ...]] = None) -> None:
+        if value:
+            runs.append((value, tuple(tags) if formatting is None else formatting))
+
+    def newline(count: int = 1) -> None:
+        if runs:
+            trailing = len(runs[-1][0]) - len(runs[-1][0].rstrip("\n"))
+            append("\n" * max(0, count - trailing))
+
+    def render(tokens: list[Token]) -> None:
+        nonlocal quote_depth
+        styles = {"strong": "b", "em": "i", "s": "s", "heading": "b"}
+        for token in tokens:
+            kind = token.type
+            style = styles.get(kind.rsplit("_", 1)[0])
+            if kind == "inline":
+                render(token.children or [])
+            elif style and token.nesting == 1:
+                tags.append(("<%s>" % style, "</%s>" % style))
+            elif style and token.nesting == -1:
+                tags.pop()
+                if kind == "heading_close":
+                    newline(2)
+            elif kind == "link_open":
+                href = token.attrGet("href") or ""
+                tags.append((('<a href="%s">' % escape(href, quote=True), "</a>")
+                             if urlsplit(href).scheme.lower() in {"http", "https", "mailto", "tg"} else ("", "")))
+            elif kind == "link_close":
+                tags.pop()
+            elif kind == "code_inline":
+                append(token.content, (("<code>", "</code>"),))
+            elif kind in {"fence", "code_block"}:
+                language = token.info.split()[0] if token.info.strip() else ""
+                opening = '<pre><code class="language-%s">' % escape(language, quote=True) if language else "<pre><code>"
+                append(token.content, ((opening, "</code></pre>"),))
+                newline(2)
+            elif kind in {"softbreak", "hardbreak"}:
+                append("\n")
+            elif kind == "paragraph_close":
+                newline(1 if lists else 2)
+            elif kind in {"bullet_list_open", "ordered_list_open"}:
+                newline()
+                lists.append(int(token.attrGet("start") or 1) if kind == "ordered_list_open" else None)
+            elif kind in {"bullet_list_close", "ordered_list_close"}:
+                lists.pop()
+                newline(1 if lists else 2)
+            elif kind == "list_item_open":
+                newline()
+                number = lists[-1]
+                append("  " * (len(lists) - 1) + ("%s. " % number if number is not None else "- "))
+                if number is not None:
+                    lists[-1] = number + 1
+            elif kind == "list_item_close":
+                newline()
+            elif kind == "blockquote_open":
+                if quote_depth == 0:
+                    tags.append(("<blockquote>", "</blockquote>"))
+                quote_depth += 1
+            elif kind == "blockquote_close":
+                quote_depth -= 1
+                if quote_depth == 0:
+                    tags.pop()
+                newline(2)
+            elif kind == "hr":
+                append("---")
+                newline(2)
+            elif kind in {"th_close", "td_close"}:
+                append(" | ")
+            elif kind == "tr_close":
+                newline()
+            elif kind == "table_close":
+                newline(2)
+            elif kind == "image":
+                append("%s (%s)" % (token.content or "Image", token.attrGet("src") or ""))
+            elif token.content:
+                append(token.content)
+
+    render(MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"]).parse(text))
+    while runs and not runs[-1][0].rstrip("\n"):
+        runs.pop()
+    if runs:
+        runs[-1] = (runs[-1][0].rstrip("\n"), runs[-1][1])
+    parts = []
+    markup: list[str] = []
+    plain: list[str] = []
+    active: tuple[tuple[str, str], ...] = ()
+    size = 0
+    for value, formatting in runs:
+        for character in value:
+            units = 2 if ord(character) > 0xFFFF else 1
+            if size + units > 2000:
+                parts.append(("".join(markup) + "".join(closing for _, closing in reversed(active)), "".join(plain)))
+                markup, plain, active, size = [], [], (), 0
+            if active != formatting:
+                markup.extend(closing for _, closing in reversed(active))
+                markup.extend(opening for opening, _ in formatting)
+                active = formatting
+            markup.append(escape(character, quote=False))
+            plain.append(character)
+            size += units
+    if plain:
+        parts.append(("".join(markup) + "".join(closing for _, closing in reversed(active)), "".join(plain)))
+    return parts
+
+
 class TelegramDelivery:
     def __init__(self, db: Database, config: AppConfig):
         self.db = db
@@ -137,15 +252,18 @@ class TelegramDelivery:
         if len(text) > 100000 or len(attachments or []) > 10:
             raise TelegramError("Telegram output exceeds the configured message bounds")
         parts: list[tuple[str, dict[str, Any], Any]] = []
-        for offset in range(0, len(text), 2000):
-            payload: dict[str, Any] = {"chat_id": destination, "text": text[offset:offset + 2000]}
+        rendered = ([(escape(text[offset:offset + 2000], quote=False), text[offset:offset + 2000])
+                     for offset in range(0, len(text), 2000)]
+                    if purpose == "progress" or purpose.startswith("command:") else telegram_message_parts(text))
+        for markup, plain in rendered:
+            payload: dict[str, Any] = {"chat_id": destination, "text": markup, "parse_mode": "HTML"}
             if reply_to:
                 payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
-            parts.append(("sendMessage", payload, None))
+            parts.append(("sendMessage", payload, plain))
         for attachment in attachments or []:
             if len(attachment["data"]) > 50 * 1024 * 1024:
                 raise TelegramError("Telegram uploads are limited to 50 MB")
-            payload = {"chat_id": destination, "caption": "Task #%s: %s" % (job["id"], attachment["filename"][:200])}
+            payload = {"chat_id": destination, "caption": attachment["filename"][:200]}
             if reply_to:
                 payload["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
             parts.append(("sendDocument", payload,
@@ -155,12 +273,13 @@ class TelegramDelivery:
                                "files": [(item["filename"], hashlib.sha256(item["data"]).hexdigest()) for item in attachments or []]}, sort_keys=True)
         prefix = "telegram:%s:%s" % (job["id"], hashlib.sha256(identity.encode()).hexdigest())
         sent_ids = []
-        for index, (method, payload, files) in enumerate(parts):
+        for index, (method, payload, content) in enumerate(parts):
+            files = content if method == "sendDocument" else None
             key = "%s:%s" % (prefix, index)
             row = self.db.fetch_one(
                 """INSERT INTO channel_deliveries(job_id, channel, destination, purpose, request_key, body_text, attachments)
                    VALUES (%s, 'telegram', %s, %s, %s, %s, %s) ON CONFLICT (request_key) DO NOTHING RETURNING *""",
-                (job["id"], destination, purpose, key, payload.get("text", ""),
+                (job["id"], destination, purpose, key, content if method == "sendMessage" else "",
                  Jsonb([item["metadata"] for item in attachments or []])),
             )
             if row is None:
@@ -207,17 +326,19 @@ class TelegramDelivery:
                 "delivery": "telegram_accepted"}
 
     def update_status(self, job: dict[str, Any], label: str) -> None:
+        if not self.config.get_bool("agent.telegram.show_task_status", False):
+            return
         route = (job.get("metadata") or {}).get("reply_route") or {}
         if route.get("channel") != "telegram":
             return
         destination = str(route["chat_id"])
         if destination not in self.config.get_list("agent.telegram.allowed_user_ids"):
             raise TelegramError("Telegram destination is not authorized")
-        body = "Task #%s: %s\n%s" % (job["id"], label, str(job.get("task_summary") or "")[:300])
+        body = ("Task #%s: %s\n%s" % (job["id"], label, str(job.get("task_summary") or "")[:300])).rstrip()
         row = self.db.fetch_one("SELECT * FROM channel_deliveries WHERE job_id = %s AND channel = 'telegram' AND purpose = 'progress' AND status = 'sent' ORDER BY id LIMIT 1", (job["id"],))
         if row and row.get("provider_message_ids"):
             if row["body_text"] != body:
-                self.client.call("editMessageText", {"chat_id": destination, "message_id": row["provider_message_ids"][0], "text": body})
+                self.client.call("editMessageText", {"chat_id": destination, "message_id": row["provider_message_ids"][0], "text": escape(body, quote=False), "parse_mode": "HTML"})
                 self.db.execute("UPDATE channel_deliveries SET body_text = %s WHERE id = %s", (body, row["id"]))
         else:
             self.send(job, body, destination=destination, purpose="progress")

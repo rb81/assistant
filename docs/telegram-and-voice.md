@@ -43,8 +43,15 @@ read the initialization container's original secret mount.
   need answers, choose a task using the provided buttons.
 - `/new` starts a separate task. `/tasks` and `/status` show active tasks.
   `/cancel 123` cancels your active task 123; it cannot undo already completed actions.
-- A task has one editable progress message, then a final answer. There is no token
-  stream or disclosure of internal reasoning.
+- Normal replies contain just the answer, without automatic task-number or completion
+  notifications. `/tasks` and `/status` still expose task IDs when needed. Set
+  `agent.telegram.show_task_status: true` in the YAML configuration to restore one
+  editable progress message per task. There is no token stream or disclosure of
+  internal reasoning.
+- Assistant Markdown is converted to Telegram's supported HTML formatting for
+  bold, italics, strikethrough, links, quotations, and code. Headings become bold
+  text; lists and tables use readable text separators. Long replies are split with
+  balanced formatting, and literal HTML is escaped rather than executed.
 - Documents and photos are downloaded into private storage, scanned, and processed by
   the existing artifact pipeline. Conversion limitations are reported in task context.
 - `telegram_send(text, recipient="me", attachments=...)` is a loadable tool, even in
