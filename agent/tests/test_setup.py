@@ -107,6 +107,31 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             self.assertIn("TRANSCRIPTION_API_TOKEN_FILE", overlay["services"]["transcription-init"]["environment"])
             self.assertNotIn("TRANSCRIPTION_API_TOKEN_FILE", overlay["services"].get("transcription", {}).get("environment", {}))
 
+    def test_automatic_transcription_secret_generation_and_overlay_filtering(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.saved_configuration(root)
+            instance = Installation(root)
+            instance.values["TRANSCRIPTION_ENABLED"] = "true"
+            instance.save()
+            current = Installation(root)
+            self.assertIn("voice", current.values["COMPOSE_PROFILES"].split(","))
+            self.assertGreaterEqual(len(current.secret_values["TRANSCRIPTION_API_TOKEN"]), 32)
+            self.assertEqual(current.values["TRANSCRIPTION_BASE_URL"], "http://transcription:8080")
+            overlay = yaml.safe_load((Path(root) / ".compose-secrets.yaml").read_text())
+            self.assertIn("TRANSCRIPTION_API_TOKEN", overlay["secrets"])
+            self.assertIn("TRANSCRIPTION_API_TOKEN_FILE", overlay["services"]["transcription-init"]["environment"])
+
+            current.values["TRANSCRIPTION_ENABLED"] = "false"
+            current.save()
+            reloaded = Installation(root)
+            self.assertNotIn("voice", reloaded.values.get("COMPOSE_PROFILES", "").split(","))
+            disabled_overlay = yaml.safe_load((Path(root) / ".compose-secrets.yaml").read_text())
+            self.assertNotIn("TRANSCRIPTION_API_TOKEN", disabled_overlay["secrets"])
+
+            from assistant_agent.setup import SetupError, validate_secret
+            with self.assertRaises(SetupError):
+                validate_secret("TRANSCRIPTION_API_TOKEN", "short-token")
+
     def test_direct_section_cancel_preserves_saved_configuration(self):
         import questionary
         with tempfile.TemporaryDirectory() as root:

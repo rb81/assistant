@@ -340,7 +340,7 @@ def validate_secret(name, value):
         raise SetupError("Unknown secret name")
     if not value or not value.strip() or "\x00" in value or "\n" in value or "\r" in value:
         raise SetupError("Credentials must be nonempty single-line values")
-    if name in {"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN"} and len(value) < 32:
+    if name in {"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"} and len(value) < 32:
         raise SetupError("Authentication credentials must contain at least 32 characters")
     if value in WEAK_PASSWORDS:
         raise SetupError("Replace the placeholder credential")
@@ -440,6 +440,8 @@ class Installation:
                 continue
             if name.startswith("DROPBOX_") and self.values.get("DROPBOX_ENABLED", "").lower() == "false":
                 continue
+            if name == "TRANSCRIPTION_API_TOKEN" and self.values.get("TRANSCRIPTION_ENABLED", "").lower() == "false":
+                continue
             declarations[name] = {"file": str(self.directory / name)}
             for service in secret_services(name):
                 if compose_services is not None and service not in compose_services:
@@ -479,6 +481,20 @@ class Installation:
         self.assert_current()
         if not self.secret_values.get("SANDBOX_API_TOKEN"):
             self.secret_values["SANDBOX_API_TOKEN"] = secrets.token_urlsafe(32)
+        if self.values.get("TRANSCRIPTION_ENABLED") == "true":
+            if not self.secret_values.get("TRANSCRIPTION_API_TOKEN"):
+                self.secret_values["TRANSCRIPTION_API_TOKEN"] = secrets.token_urlsafe(32)
+            self.values.setdefault("TRANSCRIPTION_BASE_URL", "http://transcription:8080")
+            self.values.setdefault("TRANSCRIPTION_LANGUAGE", "auto")
+            current_profiles = [p.strip() for p in self.values.get("COMPOSE_PROFILES", "").split(",") if p.strip()]
+            if current_profiles and "voice" not in current_profiles:
+                current_profiles.append("voice")
+                self.values["COMPOSE_PROFILES"] = ",".join(current_profiles)
+        elif self.values.get("TRANSCRIPTION_ENABLED") == "false":
+            current_profiles = [p.strip() for p in self.values.get("COMPOSE_PROFILES", "").split(",") if p.strip()]
+            if "voice" in current_profiles:
+                current_profiles.remove("voice")
+                self.values["COMPOSE_PROFILES"] = ",".join(current_profiles)
         for name, value in self.secret_values.items():
             validate_secret(name, value)
         service_tls_names = {"postgres.crt", "postgres.key", "sandbox.crt", "sandbox.key"}
