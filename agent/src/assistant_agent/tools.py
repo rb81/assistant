@@ -89,7 +89,7 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
     },
     "Zoom": {
         "tools": ZOOM_TOOL_NAMES,
-        "text": "Create or edit managed Zoom meetings natively. Reuse stable creation keys; reconcile uncertain requests instead of creating duplicates. Attach the participant link to a calendar event with zoom_meeting_id. Never disclose host start URLs.",
+        "text": "Create or edit managed Zoom meetings natively. Reuse stable creation keys; reconcile uncertain requests instead of creating duplicates. Create Zoom first, then pass its local managed ID as zoom_meeting_id to calendar_create_event with matching start and duration. The calendar tool automatically appends 'Zoom: <participant join URL>' to your description, adds zoom_meeting_id to metadata, and records the link between the event and meeting; do not also insert the URL into the creation description. Description updates replace the text without reinserting the link, so preserve it when editing. Never disclose host start URLs.",
     },
     "Dropbox": {
         "tools": DROPBOX_TOOL_NAMES,
@@ -1255,7 +1255,7 @@ class ToolRuntime:
     def _send_block_reason(self, recipients: list[str]) -> Optional[str]:
         allowed = [domain.lower() for domain in self.config.get_list("agent.email.allowed_recipient_domains")]
         admin_email = str(self.config.get("agent.admin.email") or "").lower()
-        if allowed:
+        if allowed and "*" not in allowed:
             for recipient in recipients:
                 if recipient.lower() == admin_email:
                     continue
@@ -2870,7 +2870,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
         "type": "function",
         "function": {
             "name": "email_send",
-            "description": "Send an email after allowlist and rate-limit checks. The body may contain Markdown and is sent as both plain text and rendered HTML. For email-thread jobs, prefer replying to the original thread by passing the latest relevant Message-ID as in_reply_to. Send a new email only when a separate thread is justified. Attachments must be an array of objects; each object must contain exactly one of path or content.",
+            "description": "Send an email after allowlist and rate-limit checks. The body may contain Markdown and is sent as both plain text and rendered HTML. The tool automatically appends an AI disclosure footer for external recipients; do not add it yourself. For email-thread jobs, prefer replying to the original thread by passing the latest relevant Message-ID as in_reply_to. Send a new email only when a separate thread is justified. Attachments must be an array of objects; each object must contain exactly one of path or content.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2993,7 +2993,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
         "type": "function",
         "function": {
             "name": "calendar_create_event",
-            "description": "Create an assistant-managed event via a configured calendar provider. The router records ownership and tracks the provider event ID so the event can be updated or deleted later.",
+            "description": "Create an assistant-managed event via a configured calendar provider. The router records ownership and tracks the provider event ID so the event can be updated or deleted later. When zoom_meeting_id is supplied, the tool automatically appends 'Zoom: <participant join URL>' to description and adds zoom_meeting_id to metadata; do not manually duplicate the link in description.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3027,7 +3027,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
                         "type": "string",
                         "description": "Stable key for this event intent within the current job. Reuse only when retrying the same create.",
                     },
-                    "zoom_meeting_id": {"type": "integer", "description": "Optional managed Zoom meeting ID. Start and duration must match. Adds only the participant join link and records the relationship."},
+                    "zoom_meeting_id": {"type": "integer", "description": "Optional local managed Zoom meeting ID, not the Zoom provider meeting number. Start and duration must match. Automatically appends 'Zoom: <participant join URL>' to description, adds zoom_meeting_id to metadata, and records the relationship. Do not also insert the link into description."},
                 },
                 "required": ["title", "start", "end"],
             },
@@ -3037,7 +3037,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
         "type": "function",
         "function": {
             "name": "calendar_update_event",
-            "description": "Update an assistant-managed calendar event. The router refuses events not previously created and recorded by the assistant.",
+            "description": "Update an assistant-managed calendar event. The router refuses events not previously created and recorded by the assistant. Supplying description replaces the existing text; the Zoom participant link is not automatically reinserted, so preserve it when updating a linked event.",
             "parameters": {
                 "type": "object",
                 "properties": {

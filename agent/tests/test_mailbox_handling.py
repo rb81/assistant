@@ -564,6 +564,31 @@ class MailboxHandlingTest(unittest.TestCase):
         self.assertEqual(FakeIMAP.instances[0].append_calls[0][0], '"[Gmail]/Sent Mail"')
         self.assertEqual(FakeIMAP.instances[0].timeout, 60)
 
+    def test_outbound_recipient_wildcard_allows_all_domains_but_keeps_rate_limit(self) -> None:
+        runtime = ToolRuntime(
+            db=FakeOutboundEmailDatabase(),  # type: ignore[arg-type]
+            config=AppConfig({"agent": {"email": {"allowed_recipient_domains": ["*"]}}}),
+            job={"id": 1},
+        )
+        self.assertIsNone(runtime._send_block_reason(["person@example.com", "other@external.test"]))
+        runtime.config.values["agent"]["limits"] = {"max_emails_per_hour": 0}
+        self.assertEqual(runtime._send_block_reason(["person@example.com"]), "email rate limit exceeded")
+
+    def test_outbound_recipient_explicit_domains_still_restrict_delivery(self) -> None:
+        runtime = ToolRuntime(
+            db=FakeOutboundEmailDatabase(),  # type: ignore[arg-type]
+            config=AppConfig({"agent": {
+                "admin": {"email": "admin@external.test"},
+                "email": {"allowed_recipient_domains": ["EXAMPLE.COM"]},
+            }}),
+            job={"id": 1},
+        )
+        self.assertIsNone(runtime._send_block_reason(["person@example.com", "admin@external.test"]))
+        self.assertEqual(
+            runtime._send_block_reason(["person@example.com", "other@external.test"]),
+            "recipient domain is not allowed: other@external.test",
+        )
+
     def test_email_send_records_smtp_acceptance_before_sent_folder_append(self) -> None:
         db = FakeOutboundEmailDatabase()
         runtime = ToolRuntime(

@@ -38,7 +38,7 @@ Additional values for email-driven jobs:
 - `SMTP_USERNAME`
 - `SMTP_PASSWORD`
 
-Set `EMAIL_ALLOWED_RECIPIENT_DOMAINS` before enabling outbound email. The configured allowlist is enforced before SMTP delivery.
+Set `EMAIL_ALLOWED_RECIPIENT_DOMAINS` before enabling outbound email. The configured allowlist is enforced before SMTP delivery. Set `EMAIL_ALLOWED_RECIPIENT_DOMAINS=*` to explicitly allow all recipient domains. This does not bypass sending rate limits or any admin-approval instructions.
 
 `ORG_INTERNAL_EMAIL_DOMAINS` is the domain list considered internal for autonomous-agent disclosure footers; it is separate from the recipient delivery allowlist. External outbound mail receives a short footer using `ORG_NAME` and `ORG_SECURITY_EMAIL`, and inbound replies are stripped before storage so the agent does not see its own disclosure.
 

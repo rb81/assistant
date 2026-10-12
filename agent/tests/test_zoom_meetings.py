@@ -58,12 +58,17 @@ class ZoomMeetingTest(unittest.TestCase):
             request.assert_not_called()
 
     def test_zoom_tools_are_loadable_and_calendar_supports_linking(self):
-        from assistant_agent.tools import available_function_names, FUNCTION_TOOLS
+        from assistant_agent.tools import available_function_names, FUNCTION_TOOLS, TOOL_GUARDRAILS
         available = available_function_names(self.service.config)
         self.assertIn("zoom_create_meeting", available)
         self.assertIn("zoom_update_meeting", available)
         calendar = next(tool["function"] for tool in FUNCTION_TOOLS if tool["function"]["name"] == "calendar_create_event")
         self.assertIn("zoom_meeting_id", calendar["parameters"]["properties"])
+        self.assertIn("automatically appends", calendar["description"])
+        self.assertIn("description", calendar["parameters"]["properties"]["zoom_meeting_id"]["description"])
+        self.assertIn("do not also insert the URL", TOOL_GUARDRAILS["Zoom"]["text"])
+        update = next(tool["function"] for tool in FUNCTION_TOOLS if tool["function"]["name"] == "calendar_update_event")
+        self.assertIn("not automatically reinserted", update["description"])
 
     def test_oauth_rotation_is_persisted_and_reused(self):
         self.service.mode = "oauth"
@@ -93,8 +98,9 @@ class ZoomMeetingTest(unittest.TestCase):
         calendar = MagicMock()
         calendar.create_event.return_value = {"event": {"event_id": "calendar-id"}}
         with patch("assistant_agent.tools.CalendarRouter", return_value=calendar):
-            runtime.calendar_create_event("Meeting", "2026-10-08T14:00:00", "2026-10-08T14:30:00", zoom_meeting_id=1)
-        self.assertIn(self.row["join_url"], calendar.create_event.call_args.kwargs["description"])
+            runtime.calendar_create_event("Meeting", "2026-10-08T14:00:00", "2026-10-08T14:30:00", description="Agenda", metadata={"topic": "planning"}, zoom_meeting_id=1)
+        self.assertEqual(calendar.create_event.call_args.kwargs["description"], "Agenda\n\nZoom: " + self.row["join_url"])
+        self.assertEqual(calendar.create_event.call_args.kwargs["metadata"], {"topic": "planning", "zoom_meeting_id": 1})
         self.assertEqual(calendar.create_event.call_args.kwargs["idempotency_key"], "zoom-calendar:1")
         self.db.fetch_one.return_value = {**self.row, "calendar_event_id": "calendar-id"}
         calendar.update_event.side_effect = CalendarError("provider unavailable")
