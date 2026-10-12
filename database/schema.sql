@@ -569,6 +569,52 @@ CREATE TABLE manual_events (
 
 CREATE INDEX manual_events_created_idx ON manual_events(created_at);
 
+CREATE TABLE request_messages (
+  id bigserial PRIMARY KEY,
+  channel text NOT NULL,
+  external_id text NOT NULL,
+  conversation_id text NOT NULL,
+  sender_id text NOT NULL,
+  thread_id text NOT NULL,
+  email_id bigint UNIQUE REFERENCES emails(id) ON DELETE CASCADE,
+  body_text text NOT NULL DEFAULT '',
+  attachments jsonb NOT NULL DEFAULT '[]'::jsonb,
+  reply_route jsonb NOT NULL DEFAULT '{}'::jsonb,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'ready' CHECK (status IN ('pending', 'processing', 'ready', 'failed')),
+  attempts int NOT NULL DEFAULT 0,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  last_error text,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(channel, external_id)
+);
+CREATE INDEX request_messages_thread_idx ON request_messages(thread_id, received_at, id);
+CREATE INDEX request_messages_pending_idx ON request_messages(status, available_at);
+
+CREATE TABLE channel_deliveries (
+  id bigserial PRIMARY KEY,
+  job_id bigint REFERENCES jobs(id) ON DELETE CASCADE,
+  request_id bigint REFERENCES request_messages(id) ON DELETE CASCADE,
+  channel text NOT NULL,
+  destination text NOT NULL,
+  purpose text NOT NULL DEFAULT 'message',
+  request_key text UNIQUE NOT NULL,
+  body_text text NOT NULL DEFAULT '',
+  attachments jsonb NOT NULL DEFAULT '[]'::jsonb,
+  provider_message_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'uncertain')),
+  error text,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  sent_at timestamptz
+);
+CREATE INDEX channel_deliveries_job_idx ON channel_deliveries(job_id, status);
+CREATE INDEX channel_deliveries_reply_idx ON channel_deliveries(channel, destination);
+ALTER TABLE jobs ADD COLUMN trigger_request_id bigint REFERENCES request_messages(id) ON DELETE SET NULL;
+ALTER TABLE processed_artifacts ADD COLUMN request_id bigint REFERENCES request_messages(id) ON DELETE CASCADE;
+
 CREATE TABLE entities (
   id bigserial PRIMARY KEY,
   name text NOT NULL,

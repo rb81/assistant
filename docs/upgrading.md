@@ -89,6 +89,26 @@ before starting sandbox, including when using `--no-deps`. Initialization failur
 must not fall back to stale runtime credentials. Do not add the broker's old ACL
 workaround or loosen private-key/token modes.
 
+## Telegram and Voice Upgrade
+
+Migration `007_request_channels.sql` runs automatically through `Database.run_migrations`
+when updated workers start, after earlier ordered migrations. Its migration record and
+advisory transaction lock prevent concurrent workers from applying it twice. No manual
+SQL execution is required. Stop old workers and take the database/filesystem backup
+described above before updating; do not mix old and new worker versions.
+
+The migration preserves past task IDs, statuses, logs, and email records, including
+completed, failed, cancelled, waiting, and review-required work. It backfills native
+request identities, links legacy attachment ownership and trigger records, and retains
+historical outbound acceptance logs. Reminder/manual tasks with no trigger email are
+linked by their existing thread. Pending historical mail delivery is marked uncertain,
+never assumed unsent. It does not replay past tasks or invent reminder recipients.
+
+Run setup's review/save to regenerate secret grants for new roles before enabling the
+optional profiles. The transcription model is initialized and checksum-verified in
+a persistent model volume; decoder/inference runs separately without internet access.
+Do not delete production volumes during an upgrade. See [Telegram and voice](telegram-and-voice.md).
+
 ## Rollback
 
 Stop the new stack. Restore the pre-upgrade database and filesystem/config snapshot

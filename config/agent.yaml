@@ -107,6 +107,20 @@ agent:
     allow_exports: false
     max_file_bytes: 26214400
 
+  telegram:
+    enabled: false
+    bot_token:
+    allowed_user_ids: []
+    recipients: {}
+    max_download_bytes: 20971520
+    max_messages_per_hour: 120
+
+  transcription:
+    enabled: false
+    base_url: http://transcription:8080
+    api_token:
+    language: auto
+
   supervisor:
     stall_threshold_minutes: 15
     max_task_duration_minutes: 60

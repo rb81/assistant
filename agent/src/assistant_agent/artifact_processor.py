@@ -203,6 +203,18 @@ class ArtifactProcessor:
                 error=error,
             )
 
+        if extension in {".ogg", ".opus", ".wav", ".mp3", ".m4a", ".flac"} and self.config.get_bool("agent.transcription.enabled", False):
+            from .transcription import transcribe_audio
+            if scan["status"] != "clean":
+                return self.update_artifact(artifact["id"], scan_status=scan["status"], conversion_status="failed", error="Voice requires a clean malware scan")
+            try:
+                transcript = transcribe_audio(self.config, raw_path)
+                markdown_path = self.write_markdown(email_row, filename, transcript["text"])
+                return self.update_artifact(artifact["id"], scan_status="clean", conversion_status="ready",
+                                           markdown_path=markdown_path, metadata=transcript)
+            except ValueError as exc:
+                return self.update_artifact(artifact["id"], scan_status="clean", conversion_status="failed", error=str(exc))
+
         if not self.is_supported_attachment(extension):
             return self.update_artifact(
                 artifact["id"],
@@ -297,10 +309,11 @@ class ArtifactProcessor:
         error: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        source_column = "request_id" if email_row.get("request_id") else "email_id"
         return self.db.fetch_one(
-            """
+            f"""
             INSERT INTO processed_artifacts(
-              email_id,
+              {source_column},
               thread_id,
               source_type,
               source_label,
@@ -324,7 +337,7 @@ class ArtifactProcessor:
             RETURNING *
             """,
             (
-                email_row["id"],
+                email_row.get("request_id") or email_row["id"],
                 email_row["thread_id"],
                 source_type,
                 source_label,
@@ -356,6 +369,7 @@ class ArtifactProcessor:
             "markdown_sha256",
             "markdown_size_bytes",
             "error",
+            "metadata",
         }
         assignments = []
         params: list[Any] = []
@@ -363,7 +377,7 @@ class ArtifactProcessor:
             if key not in allowed:
                 continue
             assignments.append("%s = %%s" % key)
-            params.append(value)
+            params.append(Jsonb(json_safe(value)) if key == "metadata" else value)
         if not assignments:
             row = self.db.fetch_one("SELECT * FROM processed_artifacts WHERE id = %s", (artifact_id,))
             if row is None:
@@ -430,7 +444,7 @@ class ArtifactProcessor:
         return root
 
     def write_markdown(self, email_row: dict[str, Any], source_name: str, markdown: str) -> str:
-        target_dir = self.processed_root / "email" / safe_message_segment(str(email_row["message_id"]))
+        target_dir = self.processed_root / safe_message_segment(str(email_row.get("channel") or "email")) / safe_message_segment(str(email_row["message_id"]))
         target_dir.mkdir(parents=True, exist_ok=True)
         stem = safe_filename(Path(source_name).stem or "artifact")
         target = target_dir / ("%s.md" % stem)

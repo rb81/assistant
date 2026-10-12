@@ -8,6 +8,9 @@ read [the upgrade guide](docs/upgrading.md) before starting new workers.
 
 ### Added
 
+- Shared durable request intake/reply routing and automatic migration of historical task sources.
+- Optional private Telegram messaging, scanned attachments, proactive sends and routed reminders.
+- Isolated, hardened local whisper.cpp English/Arabic transcription with checksum-verified model provisioning.
 - Guided setup/reconfiguration with masked credentials, navigation, optional
   integrations, review-before-save and protected file-backed Docker secrets.
 - CLI secret status, updates, activation, and coordinated database-password

@@ -36,10 +36,11 @@ class ContextSearchTest(unittest.TestCase):
     def test_semantic_sources_filter_compatible_models_before_candidate_limit(self):
         self.db.fetch_all.return_value = []
         self.store._semantic_search("query", [1.0, 0.0], 10)
-        self.assertEqual(self.db.fetch_all.call_count, 6)
-        for call in self.db.fetch_all.call_args_list:
+        self.assertEqual(self.db.fetch_all.call_count, 7)
+        for call in self.db.fetch_all.call_args_list[:6]:
             self.assertIn("embedding_model = %s AND embedding_dimensions = %s", call.args[0])
             self.assertEqual(call.args[1][:2], ("embeddinggemma", 2))
+        self.assertIn("FROM request_messages", self.db.fetch_all.call_args_list[-1].args[0])
 
     def test_no_compatible_vectors_falls_back_to_keywords(self):
         with patch.object(self.store, "_embed_query", return_value=[1.0, 0.0]), patch.object(self.store, "_semantic_search", return_value=[]), patch.object(self.store, "_keyword_search", return_value=[{"id": 1}]) as keywords:

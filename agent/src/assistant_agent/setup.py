@@ -26,12 +26,13 @@ from .validation import WEAK_PASSWORDS
 
 
 AGENT_SERVICES = ("agent-api", "downloader", "task-agent", "workspace-indexer",
-                  "reminder-scheduler", "deep-research-agent", "supervisor", "heartbeat")
+                  "reminder-scheduler", "deep-research-agent", "supervisor", "heartbeat",
+                  "telegram-receiver", "request-preprocessor")
 MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat")
 TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat", "agent-api")
-LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox"}
-GENERATED_SECRETS = {"POSTGRES_PASSWORD", "AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN"}
-SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "api", "advanced", "instructions")
+LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox", "transcription"}
+GENERATED_SECRETS = {"POSTGRES_PASSWORD", "AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"}
+SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "api", "advanced", "instructions")
 ADVANCED_SETTINGS = {
     "Calendar privacy": (
         ("AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS", "agent.calendar.policy.allow_read_event_details", "Allow reading existing event titles, descriptions, locations and attendees? (does not grant edit/delete access)", False, bool, None),
@@ -77,6 +78,8 @@ PROMPT_DEFAULTS = {
     "CALENDAR_ENABLED": "agent.calendar.enabled", "ZOOM_ENABLED": "agent.zoom.enabled",
     "DROPBOX_ENABLED": "agent.dropbox.enabled", "DROPBOX_ALLOW_EXPORTS": "agent.dropbox.allow_exports",
     "DROPBOX_MAX_FILE_BYTES": "agent.dropbox.max_file_bytes",
+    "TELEGRAM_ENABLED": "agent.telegram.enabled", "TELEGRAM_ALLOWED_USER_IDS": "agent.telegram.allowed_user_ids",
+    "TRANSCRIPTION_ENABLED": "agent.transcription.enabled", "TRANSCRIPTION_LANGUAGE": "agent.transcription.language",
      **{"AGENT_EMBEDDINGS_" + field.upper(): "agent.embeddings." + field for field in
          ("enabled", "model", "base_url", "dimensions", "timeout_seconds")},
     **{name: "agent.email." + name.lower() for name in (
@@ -99,6 +102,8 @@ SECTION_KEYS = {
     "calendar": ((), ("CALENDAR_",)),
     "zoom": ((), ("ZOOM_",)),
     "dropbox": ((), ("DROPBOX_",)),
+    "telegram": ((), ("TELEGRAM_",)),
+    "transcription": ((), ("TRANSCRIPTION_",)),
     "api": (("SETUP_API_ENABLED", "AGENT_APP_BASE_URL"), ("AGENT_API_",)),
     "advanced": (tuple(sorted(ADVANCED_ENV_NAMES)), ()),
     "instructions": ((), ()),
@@ -213,7 +218,11 @@ def secret_services(name):
     if name == "IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES, "agent-api")
     if name == "SMTP_PASSWORD":
-        return ("downloader", *MODEL_SERVICES, "agent-api")
+        return ("downloader", *MODEL_SERVICES, "agent-api", "reminder-scheduler")
+    if name == "TELEGRAM_BOT_TOKEN":
+        return ("telegram-receiver", "request-preprocessor", "reminder-scheduler", *TOOL_SERVICES)
+    if name == "TRANSCRIPTION_API_TOKEN":
+        return ("transcription-init", "request-preprocessor", "downloader")
     if name == "ADMIN_COMMAND_SIGNING_KEY":
         return ("downloader",)
     if name == "AGENT_API_AUTH_TOKEN":
@@ -1100,6 +1109,29 @@ def interactive(options):
         options.stage = "configuring Dropbox"
         prompt_dropbox(instance, answer, confirm, console)
 
+    def telegram():
+        if not capability("TELEGRAM_ENABLED", "Enable private Telegram messaging?"):
+            return
+        credential("TELEGRAM_BOT_TOKEN")
+        text("TELEGRAM_ALLOWED_USER_IDS", "Authorized numeric Telegram user IDs (comma-separated)", "")
+        identifiers = [value.strip() for value in instance.values["TELEGRAM_ALLOWED_USER_IDS"].split(",") if value.strip()]
+        if not identifiers or any(not value.isdigit() or int(value) < 1 for value in identifiers):
+            raise SetupError("Telegram requires an explicit list of numeric user IDs")
+        text("TELEGRAM_RECIPIENTS", 'Verified email-to-Telegram identity mapping (JSON object)', "{}")
+        try:
+            identities = json.loads(instance.values["TELEGRAM_RECIPIENTS"])
+            if not isinstance(identities, dict) or any(str(value) not in identifiers for value in identities.values()):
+                raise ValueError
+        except ValueError:
+            raise SetupError("Telegram identity mappings must use authorized numeric IDs") from None
+
+    def transcription():
+        if capability("TRANSCRIPTION_ENABLED", "Enable local English/Arabic voice transcription?"):
+            instance.secret_values.setdefault("TRANSCRIPTION_API_TOKEN", secrets.token_urlsafe(32))
+            instance.values["TRANSCRIPTION_BASE_URL"] = "http://transcription:8080"
+            instance.values["TRANSCRIPTION_LANGUAGE"] = "auto"
+            console.print("The managed multilingual small model is downloaded with SHA-256 verification. Voice processing is isolated from Ollama.")
+
     def api():
         instance.values.pop("AGENT_API_PUBLISHED_HOST", None)
         enabled = capability("SETUP_API_ENABLED", "Enable the optional HTTPS API?")
@@ -1146,6 +1178,8 @@ def interactive(options):
                 ("Calendar", "Connect calendar providers and choose a default calendar.", calendar),
                 ("Zoom", "Configure managed Zoom meeting credentials independently.", zoom),
                 ("Dropbox", "Connect Dropbox and configure file exchange permissions.", dropbox),
+                ("Telegram", "Connect a private bot and explicitly link authorized identities.", telegram),
+                ("Local voice transcription", "Configure isolated whisper.cpp transcription for English and Arabic.", transcription),
                 ("HTTPS API", "Optional machine access requires TLS and a bearer token; no browser dashboard is provided.", api),
                 ("Advanced Settings", "Optional behavior and limits. Current defaults are retained unless you edit a group.",
                  lambda: prompt_advanced_settings(instance, answer, console)),
@@ -1277,15 +1311,16 @@ def interactive(options):
             break
     while True:
         options.stage = "reviewing configuration"
-        profiles = [name for name in existing_profiles if name and name not in {"email", "api"}]
+        profiles = [name for name in existing_profiles if name and name not in {"email", "api", "telegram", "voice"}]
         profiles += [name for setting, name in (("SETUP_EMAIL_ENABLED", "email"), ("SETUP_API_ENABLED", "api")) if instance.values.get(setting) == "true"]
+        profiles += [name for setting, name in (("TELEGRAM_ENABLED", "telegram"), ("TRANSCRIPTION_ENABLED", "voice")) if instance.values.get(setting) == "true"]
         instance.values["COMPOSE_PROFILES"] = ",".join(profiles)
         problems = draft_problems(instance)
         error = problems[0][1] if problems else None
         table = Table(title="Review before saving")
         table.add_column("Setting")
         table.add_column("Value")
-        for name in ("AGENT_NAME", "AGENT_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL", "AGENT_EMBEDDINGS_DIMENSIONS", "COMPOSE_PROFILES", "CALENDAR_ENABLED", "CALENDAR_DEFAULT_PROVIDER", "ZOOM_ENABLED", "ZOOM_AUTH_MODE", "DROPBOX_ENABLED", "DROPBOX_ALLOW_EXPORTS", "DROPBOX_MAX_FILE_BYTES"):
+        for name in ("AGENT_NAME", "AGENT_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL", "AGENT_EMBEDDINGS_DIMENSIONS", "COMPOSE_PROFILES", "CALENDAR_ENABLED", "CALENDAR_DEFAULT_PROVIDER", "ZOOM_ENABLED", "ZOOM_AUTH_MODE", "DROPBOX_ENABLED", "DROPBOX_ALLOW_EXPORTS", "DROPBOX_MAX_FILE_BYTES", "TELEGRAM_ENABLED", "TELEGRAM_ALLOWED_USER_IDS", "TELEGRAM_RECIPIENTS", "TRANSCRIPTION_ENABLED", "TRANSCRIPTION_LANGUAGE"):
             table.add_row(name, instance.values.get(name, ""))
         for settings in ADVANCED_SETTINGS.values():
             for name, *_ in settings:

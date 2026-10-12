@@ -7,6 +7,7 @@ from psycopg.types.json import Jsonb
 from .config import AppConfig, agent_email, message_id_domain
 from .database import Database, json_safe
 from .polling import poll_interval_seconds, run_poll_loop
+from .requests import IncomingRequest, RequestService, TransactionDatabase
 from .time_utils import datetime_context_label, next_recurring_run_at
 
 
@@ -33,7 +34,45 @@ class ReminderScheduler:
     def run_once(self) -> int:
         completed = self.sync_completed_reminders()
         queued = self.queue_due_reminders()
-        return completed + queued
+        delivered = self.deliver_notifications()
+        return completed + queued + delivered
+
+    def deliver_notifications(self) -> int:
+        from .replies import ReplyRouter
+        from .tools import ToolRuntime
+        jobs = self.db.fetch_all(
+            """SELECT j.*, r.task AS notification_text FROM jobs j JOIN reminders r ON r.job_id = j.id
+               WHERE j.status = 'waiting' AND j.run_at <= now() AND r.status = 'queued'
+               AND j.metadata->>'notification_only' = 'true' ORDER BY j.id LIMIT 25"""
+        )
+        delivered = 0
+        for job in jobs:
+            with self.db.connect() as connection:
+                with connection.cursor() as cursor:
+                    key = "reminder-delivery:%s" % job["id"]
+                    cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s)) AS claimed", (key,))
+                    if not cursor.fetchone()["claimed"]:
+                        continue
+                    try:
+                        current = self.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))
+                        if not current or current["status"] != "waiting":
+                            continue
+                        result = ReplyRouter(ToolRuntime(self.db, self.config, job)).send(job["notification_text"], purpose="reminder")
+                        if result.get("status") == "sent":
+                            self.db.execute("UPDATE jobs SET status = 'completed', completed_at = now(), metadata = metadata || %s WHERE id = %s AND status = 'waiting'",
+                                            (Jsonb({"final_response": job["notification_text"]}), job["id"]))
+                            delivered += 1
+                        elif result.get("status") == "uncertain":
+                            self.db.update_job_status(job["id"], "needs_review", last_error="Reminder delivery uncertain; reconcile before retrying")
+                        else:
+                            delay = max(30, int(result.get("retry_after") or 0))
+                            self.db.execute("""UPDATE jobs SET attempts = attempts + 1,
+                                status = CASE WHEN attempts >= 2 THEN 'failed' ELSE 'waiting' END,
+                                last_error = 'Reminder delivery failed', run_at = now() + (%s * interval '1 second')
+                                WHERE id = %s AND status = 'waiting'""", (delay, job["id"]))
+                    finally:
+                        cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", (key,))
+        return delivered
 
     def sync_completed_reminders(self) -> int:
         processed = 0
@@ -146,6 +185,22 @@ class ReminderScheduler:
         return queued
 
     def create_job_for_reminder(self, cur, reminder: dict[str, Any]) -> dict[str, Any]:
+        policy = (reminder.get("metadata") or {}).get("delivery") or {}
+        if policy.get("primary"):
+            database = TransactionDatabase(cur.connection)
+            identity = "reminder:%s:%s" % (reminder["id"], reminder["run_at"].isoformat())
+            RequestService(database).receive_request(IncomingRequest(
+                "reminder", identity, "reminder:%s" % reminder["id"],
+                "reminder:%s" % reminder["id"], identity, reminder["task"],
+                reply_route=policy["primary"], metadata={"reminder_id": reminder["id"]}),
+                summary="Reminder: %s" % reminder["title"])
+            database.execute("UPDATE jobs SET priority = %s, metadata = metadata || %s WHERE thread_id = %s",
+                             (int(reminder.get("priority") or 0), Jsonb({"auto_reply": True,
+                              "reply_fallback": policy.get("fallback") or {},
+                              "notification_only": bool((reminder.get("metadata") or {}).get("notification_only"))}), identity))
+            if (reminder.get("metadata") or {}).get("notification_only"):
+                database.execute("UPDATE jobs SET status = 'waiting', last_error = 'Scheduled notification awaiting delivery' WHERE thread_id = %s AND status = 'queued'", (identity,))
+            return database.fetch_one("SELECT * FROM jobs WHERE thread_id = %s ORDER BY id DESC LIMIT 1", (identity,))
         now = datetime.now(timezone.utc)
         message_id = "<reminder-%s-%s@%s>" % (
             reminder["id"],

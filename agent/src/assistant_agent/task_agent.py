@@ -14,6 +14,8 @@ from .memory_manager import MemorySteward
 from .notifications import notify_admin_job_failure
 from .polling import poll_interval_seconds, run_poll_loop
 from .prompt_context import build_prompt_context, load_agent_prompt
+from .replies import ReplyRouter
+from .telegram import TelegramDelivery
 from .time_utils import datetime_context_label, next_recurring_run_at
 from .tool_result_cache import ToolResultCache
 from .tools import (
@@ -75,7 +77,8 @@ SYSTEM_PROMPT_TEMPLATE = """%(agent_prompt)s
 - Relevant durable memory and recent context from past actions may be injected as a short summary. Do not manage memory unless memory tools are explicitly loaded or the user asks.
 - If you need to recall past actions, emails sent, jobs completed, or prior conversations, use context_search or job_search/job_read. These search across supported data sources including past jobs, outbound emails, reminders, memories, contacts, and inbound emails.
 - If prior action context says a reminder, calendar event, email, file, project, or research run was already created, do not repeat that durable side effect unless explicitly requested or necessary.
-- For normal email jobs with a deliverable sender, reply to the sender via email_send before calling task_complete. Prefer replying in the original email thread by setting in_reply_to to the latest relevant Message-ID from the Email thread context. Set new_thread=true only when starting a separate email thread is materially valuable.
+- For legacy email jobs without automatic reply routing, reply to the sender via email_send before calling task_complete. Prefer replying in the original email thread by setting in_reply_to to the latest relevant Message-ID from the Email thread context. Set new_thread=true only when starting a separate email thread is materially valuable.
+- For Telegram jobs and reminders with an automatic reply destination, task_complete.response is delivered by the reply router. Do not call telegram_send merely to repeat the final answer. Load telegram_send for explicitly requested file delivery, proactive messages, or cross-channel sends.
 - Email thread context after the first model call may include previews instead of full bodies. When exact wording or omitted thread context matters, call email_read with the provided Email ID.
 - For manual dashboard jobs or scheduled reminder jobs whose sender is a local system address ending in @local, do not send a bookkeeping reply to that local address. Perform the requested work, email only requested recipients or the admin as appropriate, then call task_complete with a user-visible response containing the answer or result.
 - If requester clarification is needed, call request_input with recipient="requester". It emails the original sender and pauses the job.
@@ -172,6 +175,7 @@ class TaskAgent:
         return "429" in lower or "too many requests" in lower or "rate limit" in lower or "overloaded" in lower
 
     def process_job(self, job: dict[str, Any]) -> None:
+        self.update_channel_status(job, "Running")
         try:
             llm = LlmClient(self.config)
         except RuntimeError as exc:
@@ -245,8 +249,8 @@ class TaskAgent:
                     prompt = (
                         "You wrote a draft answer but did not call a tool. If this is the final answer, call "
                         "task_complete with summary and response containing the exact user-visible answer. If this "
-                        "is an external email job and you have not sent the requester an email yet, call email_send "
-                        "first. Otherwise call task_failed or request_input as appropriate."
+                        "job has automatic reply routing, task_complete delivers the answer. For legacy external "
+                        "email jobs without automatic routing, call email_send first. Otherwise call task_failed or request_input as appropriate."
                     )
                 else:
                     prompt = "Continue by calling exactly one terminal tool: task_complete, task_failed, or request_input."
@@ -258,9 +262,11 @@ class TaskAgent:
                 )
                 continue
 
-            for tool_call in tool_calls:
+            for call_index, tool_call in enumerate(tool_calls):
                 if not self.still_owns_job(job["id"]):
                     return
+                if self.defer_stale_tool_calls(job, history, tool_calls[call_index:]):
+                    break
                 parsed_call = self.parse_tool_call(job, history, tool_call)
                 if parsed_call is None:
                     continue
@@ -451,11 +457,19 @@ class TaskAgent:
         thread_messages = self.db.latest_thread_messages(job["thread_id"], limit=10)
         instructions = self.db.pending_supervisor_instructions(job["id"])
         reminder = self.linked_reminder(job["id"])
-        memory_context = self.memory_steward.recall(job, emails, reminder, instructions)
         artifact_rows = self.db.processed_artifacts_for_thread(job["thread_id"], limit=100)
         artifacts_by_email: dict[int, list[dict[str, Any]]] = {}
         for artifact in artifact_rows:
-            artifacts_by_email.setdefault(int(artifact["email_id"]), []).append(public_artifact_manifest(artifact))
+            if artifact.get("email_id") is not None:
+                artifacts_by_email.setdefault(int(artifact["email_id"]), []).append(public_artifact_manifest(artifact))
+        request_messages = []
+        if (job.get("metadata") or {}).get("source_channel") not in (None, "email", "local"):
+            request_messages = self.db.fetch_all(
+                "SELECT * FROM request_messages WHERE thread_id = %s ORDER BY received_at DESC, id DESC LIMIT 20",
+                (job["thread_id"],),
+            )
+            request_messages.reverse()
+        memory_context = self.memory_steward.recall(job, request_messages or emails, reminder, instructions)
         if instructions:
             self.db.mark_instructions_consumed(job["id"])
         return {
@@ -465,6 +479,8 @@ class TaskAgent:
             "reminder": reminder,
             "memory_context": memory_context,
             "artifacts_by_email": artifacts_by_email,
+            "request_messages": request_messages,
+            "request_artifacts": [public_artifact_manifest(item) for item in artifact_rows if item.get("email_id") is None],
             "async_context": self.async_status_context(job),
             "prior_actions": self.prior_action_summary(job["id"]),
         }
@@ -485,7 +501,10 @@ class TaskAgent:
             "Thread ID: %s" % job["thread_id"],
         ]
         external_requester = self.latest_external_requester_from_emails(emails)
-        if external_requester:
+        route = (job.get("metadata") or {}).get("reply_route") or {}
+        if route.get("channel") == "telegram" or (job.get("metadata") or {}).get("auto_reply"):
+            content_lines.append("Completion requirement: task_complete.response is automatically delivered to the configured reply channel. Include the full user-visible answer. Use telegram_send only for requested files or separate messages.")
+        elif external_requester:
             content_lines.extend(
                 [
                     "Completion requirement: before task_complete, send a substantive email_send reply to %s." % external_requester,
@@ -541,6 +560,11 @@ class TaskAgent:
         latest_thread_item_id = self.thread_context_item_id(thread_messages[-1]) if thread_messages else None
         artifacts_by_email = context["artifacts_by_email"]
         for item in thread_messages:
+            if item.get("context_type") == "request":
+                continue
+            if item.get("context_type") == "outbound_telegram":
+                content_lines.extend(["", "Telegram reply:", str(item.get("body_text") or "")])
+                continue
             include_full_body = self.include_full_email_body_in_context(
                 item,
                 include_full_email_context=include_full_email_context,
@@ -551,6 +575,16 @@ class TaskAgent:
                 content_lines.append("Attachments: %s" % compact_json([public_attachment_metadata(value) for value in item["attachments"]]))
             if not self.is_outbound_email_context_item(item) and artifacts_by_email.get(int(item["id"])):
                 content_lines.append("Processed artifacts: %s" % compact_json(artifacts_by_email[int(item["id"])]))
+
+        for request in context.get("request_messages") or []:
+            content_lines.extend(["", "Request channel: %s" % request["channel"],
+                                  "Request ID: %s" % request["id"],
+                                  "Requester: %s" % request["sender_id"],
+                                  "Processing status: %s" % request.get("status", "ready"),
+                                  "Processing error: %s" % (request.get("last_error") or "none"),
+                                  "Message:", str(request.get("body_text") or "")])
+        if context.get("request_artifacts"):
+            content_lines.append("Processed request artifacts: %s" % compact_json(context["request_artifacts"]))
 
         return [
             {"role": "system", "content": system_prompt(self.config, job)},
@@ -1033,15 +1067,39 @@ class TaskAgent:
         suffix = "" if interval == 1 else "s"
         return "every %s %s%s" % (interval, unit, suffix)
 
+    def defer_stale_tool_calls(self, job: dict[str, Any], messages: list[dict[str, Any]], calls: list[dict[str, Any]]) -> bool:
+        if not (job.get("metadata") or {}).get("auto_reply"):
+            return False
+        current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
+        if not current or not current["has_new_context"]:
+            return False
+        for call in calls:
+            messages.append({"role": "tool", "tool_call_id": str(call.get("id") or ""),
+                             "name": str((call.get("function") or {}).get("name") or "unknown"),
+                             "content": compact_json({"error": "New requester context arrived. Replan before executing this operation; earlier accepted side effects must not be repeated."})})
+        self.inject_new_context_if_needed(job, messages)
+        return True
+
     def inject_new_context_if_needed(self, job: dict[str, Any], messages: list[dict[str, Any]]) -> None:
         row = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
         if not row or not row["has_new_context"]:
+            return
+        self.db.execute("UPDATE jobs SET has_new_context = false WHERE id = %s", (job["id"],))
+        if (job.get("metadata") or {}).get("auto_reply"):
+            current = self.db.fetch_one("SELECT metadata FROM jobs WHERE id = %s", (job["id"],))
+            if current:
+                job["metadata"] = current["metadata"]
+        if (job.get("metadata") or {}).get("source_channel") not in (None, "email", "local"):
+            requests = self.db.fetch_all("SELECT channel, sender_id, body_text, status, last_error FROM request_messages WHERE thread_id = %s ORDER BY id DESC LIMIT 5", (job["thread_id"],))
+            artifacts = self.db.processed_artifacts_for_thread(job["thread_id"], limit=100)
+            messages.append({"role": "user", "content": "New request context arrived while you were working. Review it before completing.\n" + compact_json(list(reversed(requests))) + "\nProcessed artifacts: " + compact_json([public_artifact_manifest(artifact) for artifact in artifacts])})
             return
         emails = self.db.latest_thread_emails(job["thread_id"], limit=3)
         artifact_rows = self.db.processed_artifacts_for_thread(job["thread_id"], limit=100)
         artifacts_by_email: dict[int, list[dict[str, Any]]] = {}
         for artifact in artifact_rows:
-            artifacts_by_email.setdefault(int(artifact["email_id"]), []).append(public_artifact_manifest(artifact))
+            if artifact.get("email_id") is not None:
+                artifacts_by_email.setdefault(int(artifact["email_id"]), []).append(public_artifact_manifest(artifact))
         content_lines = [
             "New email context arrived while you were working. Bodies are previewed; call email_read with the Email ID if exact content is needed.",
             "",
@@ -1059,7 +1117,6 @@ class TaskAgent:
                 "content": "\n".join(content_lines),
             }
         )
-        self.db.execute("UPDATE jobs SET has_new_context = false WHERE id = %s", (job["id"],))
 
     def handle_tool_call(
         self,
@@ -1089,6 +1146,29 @@ class TaskAgent:
         if name == "task_complete":
             summary = str(arguments.get("summary", "Task completed.")).strip() or "Task completed."
             response = str(arguments.get("response") or "").strip()
+            if (job.get("metadata") or {}).get("auto_reply"):
+                current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
+                if current and current["has_new_context"]:
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "New requester context arrived; review it before completing."})})
+                    self.inject_new_context_if_needed(job, messages)
+                    return False
+            metadata = job.get("metadata") or {}
+            if response and ((metadata.get("reply_route") or {}).get("channel") == "telegram" or metadata.get("auto_reply")):
+                try:
+                    delivery = ReplyRouter(tool_runtime).send(response)
+                except ValueError as exc:
+                    delivery = {"status": "failed", "reason": str(exc)}
+                if delivery.get("status") not in ("sent", "local"):
+                    result = {"error": "Final reply was not accepted. Retry task_complete for definite failures only; never repeat completed operations.", "delivery": delivery}
+                    self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
+                    return False
+                response = str(delivery.get("body") or response)
+                current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
+                if current and current["has_new_context"]:
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "The earlier reply was delivered, but new requester context arrived. Do not repeat earlier side effects; handle the follow-up."})})
+                    self.inject_new_context_if_needed(job, messages)
+                    return False
             blocker = self.completion_blocker(job, response)
             if blocker:
                 result = {"error": blocker}
@@ -1102,11 +1182,29 @@ class TaskAgent:
                     }
                 )
                 return False
-            self.record_final_response(job["id"], response)
-            self.db.log_event(job["id"], "tool_result", tool_name=name, output_data={"summary": summary, "response": response})
-            self.memory_steward.consolidate(job, messages, "completed", summary)
-            self.db.update_job_status(job["id"], "completed", task_summary=summary)
+            if metadata.get("auto_reply"):
+                self.memory_steward.consolidate(job, messages, "completed", summary)
+                completed = self.db.fetch_one(
+                    """UPDATE jobs SET status = 'completed', task_summary = %s, completed_at = now(),
+                       locked_at = NULL, locked_by = NULL
+                       WHERE id = %s AND status = 'running' AND locked_by = %s AND has_new_context = false
+                       AND metadata->>'reply_request_id' IS NOT DISTINCT FROM %s RETURNING id""",
+                    (summary, job["id"], self.locked_by, str((job.get("metadata") or {}).get("reply_request_id"))),
+                )
+                if not completed:
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "Task state changed while delivering the response; handle new context without repeating earlier actions."})})
+                    self.inject_new_context_if_needed(job, messages)
+                    return False
+            else:
+                self.record_final_response(job["id"], response)
+                self.db.log_event(job["id"], "tool_result", tool_name=name, output_data={"summary": summary, "response": response})
+                self.memory_steward.consolidate(job, messages, "completed", summary)
+                self.db.update_job_status(job["id"], "completed", task_summary=summary)
+            if metadata.get("auto_reply"):
+                self.record_final_response(job["id"], response)
+                self.db.log_event(job["id"], "tool_result", tool_name=name, output_data={"summary": summary, "response": response})
             self.update_linked_reminder(job["id"], "completed")
+            self.update_channel_status(job, "Completed")
             return True
 
         if name == "task_failed":
@@ -1115,6 +1213,7 @@ class TaskAgent:
             self.memory_steward.consolidate(job, messages, "failed", reason)
             self.db.update_job_status(job["id"], "failed", last_error=reason)
             self.update_linked_reminder(job["id"], "failed", last_error=reason)
+            self.update_channel_status(job, "Failed")
             notify_admin_job_failure(self.db, self.config, job, "failed", reason, "task_failed")
             return True
 
@@ -1221,6 +1320,9 @@ class TaskAgent:
             )
             return False
 
+        if recipient == "requester" and (job.get("metadata") or {}).get("auto_reply"):
+            if self.defer_stale_tool_calls(job, messages, [{"id": tool_call_id, "function": {"name": name}}]):
+                return False
         if recipient == "requester":
             self.email_original_sender_for_input(job, tool_runtime, question)
             status_reason = "requester input requested"
@@ -1229,22 +1331,32 @@ class TaskAgent:
             status_reason = "admin input requested"
 
         self.db.log_event(job["id"], "tool_result", tool_name=name, output_data={"recipient": recipient, "question": question})
-        self.db.execute(
-            """
-            UPDATE jobs
-            SET status = 'needs_review',
-                run_at = %s,
-                last_error = %s,
-                locked_at = NULL,
-                locked_by = NULL
-            WHERE id = %s
-            """,
-            (datetime.now(timezone.utc) + timedelta(hours=24), question, job["id"]),
-        )
+        requester_wait = recipient == "requester" and bool((job.get("metadata") or {}).get("auto_reply"))
+        input_status = "waiting" if requester_wait else "needs_review"
+        if requester_wait:
+            paused = self.db.fetch_one(
+                """UPDATE jobs SET status = 'waiting', run_at = %s, last_error = %s,
+                   locked_at = NULL, locked_by = NULL, metadata = metadata || %s
+                   WHERE id = %s AND status = 'running' AND locked_by = %s AND has_new_context = false
+                   RETURNING id""",
+                (datetime.now(timezone.utc) + timedelta(hours=24), question,
+                 Jsonb({"waiting_for_input": True}), job["id"], self.locked_by),
+            )
+            if not paused:
+                messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name,
+                                 "content": compact_json({"error": "New context arrived while asking the question; review it before waiting."})})
+                self.inject_new_context_if_needed(job, messages)
+                return False
+        else:
+            self.db.execute(
+                """UPDATE jobs SET status = 'needs_review', run_at = %s, last_error = %s,
+                   locked_at = NULL, locked_by = NULL WHERE id = %s""",
+                (datetime.now(timezone.utc) + timedelta(hours=24), question, job["id"]),
+            )
         self.db.log_event(
             job["id"],
             "status_change",
-            output_data={"status": "needs_review", "reason": status_reason, "recipient": recipient},
+            output_data={"status": input_status, "reason": status_reason, "recipient": recipient},
         )
         self.memory_steward.consolidate(job, messages, "needs_review", "%s: %s" % (status_reason, question))
         return True
@@ -1331,7 +1443,18 @@ class TaskAgent:
         self.email_original_sender_for_async_status(job, tool_runtime, user_status)
         self.memory_steward.consolidate(job, messages, "waiting", reason)
 
+    def update_channel_status(self, job: dict[str, Any], label: str) -> None:
+        if ((job.get("metadata") or {}).get("reply_route") or {}).get("channel") == "telegram":
+            try:
+                TelegramDelivery(self.db, self.config).update_status(job, label)
+            except Exception:
+                LOGGER.warning("could not update Telegram status for job %s", job["id"])
+
     def email_original_sender_for_async_status(self, job: dict[str, Any], tool_runtime: ToolRuntime, body: str) -> None:
+        if (job.get("metadata") or {}).get("reply_route"):
+            result = ReplyRouter(tool_runtime).send(body, purpose="status")
+            self.db.log_event(job["id"], "tool_result", tool_name="reply_send", output_data=result)
+            return
         if not smtp_configured(self.config):
             self.db.log_event(
                 job["id"],
@@ -1362,6 +1485,10 @@ class TaskAgent:
         self.db.log_event(job["id"], "tool_result", tool_name="email_send", output_data=result)
 
     def email_original_sender_for_input(self, job: dict[str, Any], tool_runtime: ToolRuntime, question: str) -> None:
+        if (job.get("metadata") or {}).get("reply_route"):
+            result = ReplyRouter(tool_runtime).send(question, purpose="clarification")
+            self.db.log_event(job["id"], "tool_result", tool_name="reply_send", output_data=result)
+            return
         if not smtp_configured(self.config):
             self.db.log_event(
                 job["id"],

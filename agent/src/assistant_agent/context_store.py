@@ -77,6 +77,7 @@ class ContextStore:
         all_results.extend(self._search_outbound_emails_semantic(query, query_embedding, per_source, days))
         all_results.extend(self._search_inbound_emails_semantic(query, query_embedding, per_source, days))
         all_results.extend(self._search_contacts_semantic(query, query_embedding, per_source))
+        all_results.extend(self._search_requests_keyword(query, per_source, days))
 
         # Sort by score descending and return top results
         all_results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
@@ -89,6 +90,7 @@ class ContextStore:
         all_results: list[dict[str, Any]] = []
 
         all_results.extend(self._search_memories_keyword(query, per_source))
+        all_results.extend(self._search_requests_keyword(query, per_source, days))
         all_results.extend(self._search_jobs_keyword(query, per_source, days))
         all_results.extend(self._search_reminders_keyword(query, per_source, days))
         all_results.extend(self._search_outbound_emails_keyword(query, per_source, days))
@@ -263,6 +265,18 @@ class ContextStore:
             (pattern, pattern, limit),
         )
         return [self._format_outbound_email(row, None) for row in rows]
+
+    def _search_requests_keyword(self, query: str, limit: int, days: int) -> list[dict[str, Any]]:
+        rows = self.db.fetch_all(
+            """SELECT id, channel, sender_id, body_text, thread_id, received_at FROM request_messages
+               WHERE channel NOT IN ('email', 'local') AND status = 'ready'
+               AND received_at > now() - (%s * interval '1 day') AND body_text ILIKE %s
+               ORDER BY received_at DESC LIMIT %s""", (int(days), "%" + query + "%", limit),
+        )
+        return [{"source": "request", "id": row["id"], "channel": row["channel"],
+                 "snippet": str(row.get("body_text") or "")[:250], "thread_id": row["thread_id"],
+                 "score": 0.0, "match_type": "keyword", "received_at": str(row["received_at"])}
+                for row in rows if row.get("channel")]
 
     def _search_inbound_emails_keyword(self, query: str, limit: int, days: int) -> list[dict[str, Any]]:
         pattern = "%%%s%%" % query

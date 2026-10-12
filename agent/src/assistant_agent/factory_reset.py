@@ -32,8 +32,8 @@ CATEGORIES = {
         requires=("reminders",), reason="a queued reminder waits on its job and would never run again",
         notes="Includes deep research runs and Dropbox transfer history."),
     "emails": Category(
-        "Downloaded emails, thread summaries and email attachments",
-        tables=("processed_artifacts", "thread_summaries", "emails"), paths=("artifacts_raw", "artifacts_processed"),
+        "Received messages, thread summaries and attachments",
+        tables=("processed_artifacts", "request_messages", "thread_summaries", "emails"), paths=("artifacts_raw", "artifacts_processed"),
         requires=("jobs",), reason="jobs reply to and quote the email that started them",
         notes="Messages stay in the mailbox; see the mailbox position option."),
     "memories": Category("Memories and memory history", tables=("memory_events", "agent_memories", "note_events", "agent_notes")),
@@ -42,7 +42,7 @@ CATEGORIES = {
         "Calendar and Zoom records the assistant created",
         tables=("zoom_managed_meetings", "calendar_event_audit", "calendar_managed_events"),
         notes="Events and meetings stay in your calendar/Zoom; the assistant just stops treating them as its own."),
-    "outbound": Category("Sent-email log", tables=("outbound_email_logs",), notes="Also resets the hourly sending limit."),
+    "outbound": Category("Sent-message logs", tables=("channel_deliveries", "outbound_email_logs"), notes="Also resets the hourly sending limit."),
     "contacts": Category("Contacts", tables=("entity_object_links", "entities", "contacts")),
     "workspace_index": Category(
         "Workspace search index and converted-document archive",

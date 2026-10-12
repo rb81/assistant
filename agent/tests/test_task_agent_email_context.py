@@ -538,6 +538,8 @@ class DatabaseThreadMessagesTest(unittest.TestCase):
                         "created_at": "2026-06-06T10:05:00Z",
                     }
                 ]
+            if "FROM request_messages" in sql or "FROM channel_deliveries" in sql:
+                return []
             raise AssertionError("unexpected query: %s" % sql)
 
         db.fetch_all = fetch_all  # type: ignore[method-assign]

@@ -191,6 +191,7 @@ class Database:
     ) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("task-log:%s" % job_id,))
                 cur.execute(
                     "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM task_logs WHERE job_id = %s",
                     (job_id,),
@@ -409,6 +410,26 @@ class Database:
                 (thread_id, through, clean_limit),
             )
         messages = emails + [self.outbound_email_context_item(row) for row in reversed(outbound_rows)]
+        requests = self.fetch_all(
+            """SELECT * FROM request_messages WHERE thread_id = %s AND channel NOT IN ('email', 'local')
+               AND (%s::timestamptz IS NULL OR created_at <= %s)
+               ORDER BY received_at DESC, id DESC LIMIT %s""", (thread_id, through, through, clean_limit),
+        )
+        for request in requests:
+            if request.get("channel"):
+                messages.append({**request, "context_type": "request", "direction": "inbound",
+                                 "thread_item_id": "request:%s" % request["id"]})
+        deliveries = self.fetch_all(
+            """SELECT d.* FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
+               WHERE j.thread_id = %s AND d.channel = 'telegram' AND d.status = 'sent'
+               AND (%s::timestamptz IS NULL OR d.sent_at <= %s)
+               ORDER BY d.sent_at DESC, d.id DESC LIMIT %s""", (thread_id, through, through, clean_limit),
+        )
+        for delivery in deliveries:
+            if delivery.get("channel") == "telegram":
+                messages.append({**delivery, "context_type": "outbound_telegram", "direction": "outbound",
+                                 "thread_item_id": "telegram-delivery:%s" % delivery["id"],
+                                 "received_at": delivery.get("sent_at") or delivery["created_at"]})
         messages.sort(key=self.thread_message_sort_key)
         return messages[-clean_limit:]
 
@@ -591,6 +612,8 @@ class Database:
                     "agent_checkpoints": 0,
                     "supervisor_instructions": 0,
                     "outbound_email_logs": 0,
+                    "channel_deliveries": 0,
+                    "request_messages": 0,
                     "agent_memories": 0,
                     "memory_events": 0,
                     "contacts": 0,
@@ -664,6 +687,9 @@ class Database:
                     "DELETE FROM outbound_email_logs WHERE job_id = ANY(%s::bigint[])",
                     (job_ids,),
                 )
+                counts["channel_deliveries"] += self.delete_count(
+                    cur, "DELETE FROM channel_deliveries WHERE job_id = ANY(%s::bigint[])", (job_ids,),
+                )
                 counts["deep_research_events"] += self.delete_count(
                     cur,
                     "DELETE FROM deep_research_events WHERE run_id = ANY(%s::bigint[])",
@@ -710,6 +736,14 @@ class Database:
                     "DELETE FROM processed_artifacts WHERE email_id = ANY(%s::bigint[])",
                     (email_ids,),
                 )
+                if erasable_thread_ids:
+                    counts["processed_artifacts"] += self.delete_count(
+                        cur, "DELETE FROM processed_artifacts WHERE email_id IS NULL AND thread_id = ANY(%s::text[])",
+                        (erasable_thread_ids,),
+                    )
+                    counts["request_messages"] += self.delete_count(
+                        cur, "DELETE FROM request_messages WHERE thread_id = ANY(%s::text[])", (erasable_thread_ids,),
+                    )
                 counts["emails"] += self.delete_count(
                     cur,
                     "DELETE FROM emails WHERE id = ANY(%s::bigint[])",

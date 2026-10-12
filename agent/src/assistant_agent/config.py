@@ -93,6 +93,15 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("DROPBOX_REFRESH_TOKEN", "agent.dropbox.refresh_token", str),
         ("DROPBOX_ALLOW_EXPORTS", "agent.dropbox.allow_exports", bool),
         ("DROPBOX_MAX_FILE_BYTES", "agent.dropbox.max_file_bytes", int),
+        ("TELEGRAM_ENABLED", "agent.telegram.enabled", bool),
+        ("TELEGRAM_BOT_TOKEN", "agent.telegram.bot_token", str),
+        ("TELEGRAM_ALLOWED_USER_IDS", "agent.telegram.allowed_user_ids", list),
+        ("TELEGRAM_RECIPIENTS", "agent.telegram.recipients", str),
+        ("TELEGRAM_MAX_MESSAGES_PER_HOUR", "agent.telegram.max_messages_per_hour", int),
+        ("TRANSCRIPTION_ENABLED", "agent.transcription.enabled", bool),
+        ("TRANSCRIPTION_API_TOKEN", "agent.transcription.api_token", str),
+        ("TRANSCRIPTION_BASE_URL", "agent.transcription.base_url", str),
+        ("TRANSCRIPTION_LANGUAGE", "agent.transcription.language", str),
         
         # Organization
         ("ORG_NAME", "agent.org.name", str),

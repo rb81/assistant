@@ -133,6 +133,26 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
 
     if role in ("downloader", "all") and not imap_configured(config):
         errors.append("IMAP is required for downloader: set IMAP_HOST, IMAP_USERNAME, and IMAP_PASSWORD")
+    if role == "all" and config.get_bool("agent.telegram.enabled", False):
+        errors.append("Telegram requires independent telegram-receiver and request-preprocessor roles; use managed Compose rather than sequential AGENT_ROLE=all")
+
+    if role in ("telegram-receiver", "request-preprocessor"):
+        from .telegram import telegram_configured, telegram_identities, TelegramError
+        if not telegram_configured(config):
+            errors.append("Telegram receiver requires enablement, bot token and allowed numeric user IDs")
+        if any(not value.isdigit() for value in config.get_list("agent.telegram.allowed_user_ids")):
+            errors.append("Telegram allowed user IDs must be positive numeric IDs")
+        try:
+            identities = telegram_identities(config)
+            if any(str(value) not in config.get_list("agent.telegram.allowed_user_ids") for value in identities.values()):
+                errors.append("Telegram identity mappings must refer to allowed user IDs")
+        except TelegramError as exc:
+            errors.append(str(exc))
+    if role in ("request-preprocessor", "downloader") and config.get_bool("agent.transcription.enabled", False):
+        if len(str(config.get("agent.transcription.api_token") or "")) < 32:
+            errors.append("Transcription requires TRANSCRIPTION_API_TOKEN of at least 32 characters")
+        if config.get("agent.transcription.language", "auto") not in {"auto", "en", "ar"}:
+            errors.append("Transcription language must be auto, en or ar")
 
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)

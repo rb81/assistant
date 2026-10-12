@@ -65,6 +65,7 @@ Then use the domain-specific docs below.
 - [configuration.md](configuration.md) — full `.env` and `config/agent.yaml` reference
 - [calendar-providers.md](calendar-providers.md) — OAuth setup for Google Calendar, Microsoft Outlook, and Zoho Calendar
 - [dropbox.md](dropbox.md) - private app-folder file exchange, authorization and transfer limits
+- [telegram-and-voice.md](telegram-and-voice.md) - shared request routing, private Telegram, reminders and hardened local transcription
 - [env-overrides.md](env-overrides.md) — expert `overrides.env` guide and complete list of overridable settings
 - [security.md](security.md) — threat model, hardening checklist, network binding, reverse-proxy examples, and responsible disclosure
 - [docker-setup.md](docker-setup.md) — image builds, Compose topology, networks, and mounts

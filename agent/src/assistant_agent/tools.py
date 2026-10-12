@@ -8,6 +8,7 @@ import socket
 import smtplib
 import ssl
 import time
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from typing import Any, Optional
 from markdown_it import MarkdownIt
 from psycopg.types.json import Jsonb
 
-from .artifact_processor import public_artifact_manifest, public_attachment_metadata
+from .artifact_processor import ArtifactProcessor, public_artifact_manifest, public_attachment_metadata
 from .calendar import CalendarError, CalendarRouter
 from .config import AppConfig, agent_email, agent_name, message_id_domain
 from .contact_store import ContactStore
@@ -33,7 +34,9 @@ from .file_conversion import FileConversionError, FileConversionService
 from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .llm_client import LlmClient
 from .memory_store import MemoryStore
+from .replies import reminder_delivery
 from .secret_store import read_secret
+from .telegram import TELEGRAM_FUNCTION_TOOLS, TelegramDelivery, TelegramError, telegram_configured, telegram_destination
 from .zoom_meetings import ZOOM_FUNCTION_TOOLS, ZOOM_TOOL_NAMES, ZoomError, ZoomMeetings
 from .tool_result_cache import ToolResultCache
 from .threading import safe_filename
@@ -915,6 +918,47 @@ class ToolRuntime:
             "body_truncated": end_index < len(lines),
         }
 
+    def telegram_send(self, text: str, recipient: str = "me",
+                      attachments: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+        try:
+            text = self._clean_text(text)
+            destination = telegram_destination(self.config, self.job, self._clean_text(recipient) or "me")
+            if attachments is not None and (not isinstance(attachments, list) or len(attachments) > 10):
+                raise ToolError("Telegram accepts at most ten attachments")
+            prepared = []
+            processor = ArtifactProcessor(self.db, self.config)
+            for index, item in enumerate(attachments or [], start=1):
+                if not isinstance(item, dict):
+                    raise ToolError("Telegram attachments must be objects")
+                if item.get("artifact_id") is not None:
+                    artifact = self.db.fetch_one("SELECT * FROM processed_artifacts WHERE id = %s AND thread_id = %s AND scan_status = 'clean'", (int(item["artifact_id"]), self.job["thread_id"]))
+                    if not artifact:
+                        raise ToolError("Only clean artifacts belonging to this task can be sent")
+                    path = Path(str(artifact.get("raw_path") or "")).resolve()
+                    root = Path(str(self.config.get("agent.artifacts.raw_root", "/data/private/artifacts"))).resolve()
+                    if root not in path.parents or not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
+                        raise ToolError("Artifact is missing or outside the approved private root")
+                    attachment = {"data": path.read_bytes(), "filename": safe_filename(artifact.get("original_filename") or path.name),
+                                  "content_type": artifact.get("content_type") or "application/octet-stream",
+                                  "metadata": {"source": "artifact", "artifact_id": artifact["id"], "size_bytes": path.stat().st_size}}
+                else:
+                    attachment = self._prepare_email_attachment(item, index, 50 * 1024 * 1024)
+                if sum(len(value["data"]) for value in prepared) + len(attachment["data"]) > 50 * 1024 * 1024:
+                    raise ToolError("Telegram attachment batch exceeds 50 MB")
+                with tempfile.NamedTemporaryFile(prefix="telegram-send-") as handle:
+                    handle.write(attachment["data"])
+                    handle.flush()
+                    if processor.scan_file(Path(handle.name))["status"] != "clean":
+                        raise ToolError("Telegram attachments require a clean malware scan")
+                prepared.append(attachment)
+            return TelegramDelivery(self.db, self.config).send(
+                self.job, text, destination=destination, attachments=prepared,
+                reply_to=((self.job.get("metadata") or {}).get("reply_route") or {}).get("message_id")
+                if str(((self.job.get("metadata") or {}).get("reply_route") or {}).get("chat_id")) == destination else None,
+            )
+        except TelegramError as exc:
+            raise ToolError(str(exc)) from None
+
     def email_send(
         self,
         to: list[str],
@@ -1599,6 +1643,8 @@ class ToolRuntime:
         recurrence_interval: Optional[int] = None,
         metadata: Optional[dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        notification_channel: str = "auto",
+        notification_only: bool = False,
     ) -> dict[str, Any]:
         clean_title = str(title or "").strip()
         clean_task = str(task or "").strip()
@@ -1614,6 +1660,16 @@ class ToolRuntime:
         )
         clean_metadata = metadata if isinstance(metadata, dict) else {}
         clean_metadata = dict(clean_metadata)
+        clean_metadata.pop("delivery", None)
+        try:
+            delivery = reminder_delivery(self.config, self.job, notification_channel)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        if delivery:
+            clean_metadata["delivery"] = delivery
+            clean_metadata["notification_only"] = self._clean_bool(notification_only)
+        elif notification_only:
+            raise ToolError("A simple notification requires a linked Telegram or configured email destination")
         clean_idempotency_key = str(idempotency_key or clean_metadata.get("idempotency_key") or "").strip()
         if clean_idempotency_key:
             clean_metadata["idempotency_key"] = clean_idempotency_key
@@ -1745,6 +1801,7 @@ class ToolRuntime:
         recurrence_unit: Optional[str] = None,
         recurrence_interval: Optional[int] = None,
         metadata: Optional[dict[str, Any]] = None,
+        notification_channel: Optional[str] = None,
     ) -> dict[str, Any]:
         has_title = title is not None
         has_task = task is not None
@@ -1752,7 +1809,7 @@ class ToolRuntime:
         has_priority = priority is not None
         has_recurrence_unit = recurrence_unit is not None
         has_recurrence_interval = recurrence_interval is not None
-        has_metadata = metadata is not None
+        has_metadata = metadata is not None or notification_channel is not None
         if not any([has_title, has_task, has_run_at, has_priority, has_recurrence_unit, has_recurrence_interval, has_metadata]):
             raise ToolError("at least one reminder field must be provided")
         next_title = str(title).strip() if has_title else None
@@ -1764,6 +1821,17 @@ class ToolRuntime:
         existing = self.db.fetch_one("SELECT * FROM reminders WHERE id = %s AND status = 'scheduled'", (reminder_id,))
         if existing is None:
             raise ToolError("scheduled reminder not found")
+
+        next_metadata = dict(metadata if metadata is not None else existing.get("metadata") or {})
+        if (existing.get("metadata") or {}).get("delivery"):
+            next_metadata["delivery"] = existing["metadata"]["delivery"]
+        else:
+            next_metadata.pop("delivery", None)
+        if notification_channel is not None:
+            try:
+                next_metadata["delivery"] = reminder_delivery(self.config, self.job, notification_channel)
+            except ValueError as exc:
+                raise ToolError(str(exc)) from None
 
         next_run_at = parse_datetime(run_at, self.config) if has_run_at else existing["run_at"]
         next_recurrence_unit = existing.get("recurrence_unit")
@@ -1813,7 +1881,7 @@ class ToolRuntime:
                 next_recurrence_unit,
                 next_recurrence_interval,
                 next_recurrence_anchor_day,
-                Jsonb(json_safe(metadata if has_metadata else existing.get("metadata") or {})),
+                Jsonb(json_safe(next_metadata)),
                 reminder_id,
             ),
         )
@@ -2258,6 +2326,7 @@ class ToolRuntime:
             "email_search": self.email_search,
             "email_read": self.email_read,
             "email_send": self.email_send,
+            "telegram_send": self.telegram_send,
             "memory_remember": self.memory_remember,
             "memory_search": self.memory_search,
             "memory_update": self.memory_update,
@@ -2309,7 +2378,7 @@ class ToolRuntime:
         return mapping[name](**arguments)
 
 
-FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
+FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTION_TOOLS + [
     {
         "type": "function",
         "function": {
@@ -2758,6 +2827,8 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
                         "description": "Positive interval for recurrence_unit. For example, day + 3 means every 3 days.",
                     },
                     "priority": {"type": "integer", "default": 0},
+                    "notification_channel": {"type": "string", "enum": ["auto", "email", "telegram"], "default": "auto", "description": "auto prefers the requester's linked Telegram identity, with email fallback. Explicit channels override."},
+                    "notification_only": {"type": "boolean", "default": False, "description": "Use true for a simple reminder notification; false to execute tools or research when due."},
                     "metadata": {"type": "object"},
                     "idempotency_key": {
                         "type": "string",
@@ -2804,6 +2875,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + [
                         "description": "Positive interval for recurrence_unit. For example, week + 2 means every 2 weeks.",
                     },
                     "priority": {"type": "integer"},
+                    "notification_channel": {"type": "string", "enum": ["auto", "email", "telegram"]},
                     "metadata": {"type": "object"},
                 },
                 "required": ["reminder_id"],
@@ -3213,7 +3285,7 @@ CORE_TOOL_NAMES = TERMINAL_TOOL_NAMES | {"email_send"}
 META_TOOL_NAMES = {"get_tool_specs"}
 LOADABLE_TOOL_NAMES = (
     FILE_TOOL_NAMES
-    | {"email_search", "email_read"}
+    | {"email_search", "email_read", "telegram_send"}
     | WEB_SEARCH_TOOL_NAMES
     | MEMORY_TOOL_NAMES
     | CONTACT_TOOL_NAMES
@@ -3273,6 +3345,8 @@ def available_function_names(config: AppConfig, job: Optional[dict[str, Any]] = 
         names.update(WEB_SEARCH_TOOL_NAMES)
     if smtp_configured(config):
         names.add("email_send")
+    if telegram_configured(config):
+        names.add("telegram_send")
     if shared_root_status(config)["available"]:
         names.update(FILE_TOOL_NAMES)
         if config.get_bool("agent.dropbox.enabled", False) and config.get("agent.dropbox.client_id") and config.get("agent.dropbox.refresh_token"):
@@ -3348,6 +3422,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "file_semantic_search": "Search indexed workspace file contents by meaning.",
         "web_search": "Search the live web for current/source-backed information.",
         "email_search": "Search stored email records.",
+        "telegram_send": "Send text or files to a linked Telegram identity, including from an email task.",
         "email_read": "Read a stored email by ID, with optional body paging.",
         "memory_remember": "Store a durable memory explicitly requested by the user.",
         "memory_search": "Search durable memories explicitly when needed.",

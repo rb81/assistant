@@ -80,6 +80,33 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             self.assertEqual(current.secret_values, original.secret_values)
             self.assertTrue(current.state["setup_complete"])
 
+    def test_telegram_section_enables_profile_and_hides_bot_token(self):
+        import questionary
+        with tempfile.TemporaryDirectory() as root:
+            self.saved_configuration(root)
+            responses = [True, "Enter replacement", "PRIVATE-TELEGRAM-CANARY", "123", '{"user@example.com":123}', "save", False]
+            output = io.StringIO()
+            with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
+                interactive(argparse.Namespace(root=Path(root), command=None, section="telegram"))
+            current = Installation(root)
+            self.assertIn("telegram", current.values["COMPOSE_PROFILES"].split(","))
+            self.assertEqual(current.secret_values["TELEGRAM_BOT_TOKEN"], "PRIVATE-TELEGRAM-CANARY")
+            self.assertNotIn("PRIVATE-TELEGRAM-CANARY", output.getvalue())
+            self.assertNotIn("PRIVATE-TELEGRAM-CANARY", (Path(root) / ".env").read_text())
+
+    def test_voice_section_generates_scoped_secret_and_profile(self):
+        import questionary
+        with tempfile.TemporaryDirectory() as root:
+            self.saved_configuration(root)
+            with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=[True, "save", False]):
+                interactive(argparse.Namespace(root=Path(root), command=None, section="transcription"))
+            current = Installation(root)
+            self.assertIn("voice", current.values["COMPOSE_PROFILES"].split(","))
+            self.assertGreaterEqual(len(current.secret_values["TRANSCRIPTION_API_TOKEN"]), 32)
+            overlay = yaml.safe_load((Path(root) / ".compose-secrets.yaml").read_text())
+            self.assertIn("TRANSCRIPTION_API_TOKEN_FILE", overlay["services"]["transcription-init"]["environment"])
+            self.assertNotIn("TRANSCRIPTION_API_TOKEN_FILE", overlay["services"].get("transcription", {}).get("environment", {}))
+
     def test_direct_section_cancel_preserves_saved_configuration(self):
         import questionary
         with tempfile.TemporaryDirectory() as root:
@@ -1078,7 +1105,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "PRIVATE-CANARY-KEY",
                 "anthropic/claude-sonnet-4.6", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", False,
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", False,
             ]
             with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
                 interactive(options)
@@ -1129,7 +1156,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 (path / "config/AGENT.md").write_text("Custom instructions\n")
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, replace, "Next", "save", False]
+                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, replace, "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=path, command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses), patch.object(Installation, "start_containers") as start:
@@ -1146,7 +1173,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             (path / "config/AGENT.md.example").write_text("Example instructions\n")
             responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", True]
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", True]
 
             def started(instance):
                 self.assertTrue((path / ".env").is_file())
@@ -1193,7 +1220,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Keep existing", "model", "", "Next",
                     False, "Next", False, "Next", True, ["zoho"], "Keep existing", "Keep existing", "Keep existing", "zoho-calendar", "https://calendar.zoho.com", "30", False, "Next",
-                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", "done", "Next", "Next", "save", False]
+                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=Path(root), command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses[:-2] + ["cancel"]):
@@ -1222,7 +1249,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         with tempfile.TemporaryDirectory() as root:
             responses = ["Assistant", "BAD_TIMEZONE", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "save", False]
             output = io.StringIO()
             options = argparse.Namespace(root=Path(root), command=None)

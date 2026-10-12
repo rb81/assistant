@@ -20,6 +20,7 @@ from .database import Database, json_safe
 from .email_disclosure import strip_disclosure_html, strip_disclosure_text
 from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .polling import poll_interval_seconds, run_poll_loop
+from .requests import IncomingRequest, RequestService
 from .threading import normalize_subject, parse_addresses, parse_reference_header, safe_filename, safe_message_segment
 
 
@@ -334,7 +335,18 @@ class EmailDownloader:
             from .admin_commands import authenticated_admin
             verified_admin = authenticated_admin(parsed, self.config, subject, body_text)
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
-            self.queue_or_update_job(thread_id, subject, row["id"], from_addresses=from_addresses, body_text=body_text, admin_authenticated=verified_admin)
+            RequestService(self.db).receive_request(
+                IncomingRequest(
+                    channel="email", external_id=message_id, conversation_id=thread_id,
+                    sender_id=from_addresses[0] if from_addresses else "unknown",
+                    thread_id=thread_id, body=body_text, email_id=row["id"],
+                    reply_route={"channel": "email", "to": from_addresses[0] if from_addresses else "",
+                                 "in_reply_to": message_id, "subject": subject or "Reply"},
+                ),
+                summary=subject, admin_authenticated=verified_admin,
+                resume_research=self.resume_waiting_deep_research_for_thread,
+                review_override=self.apply_email_review_override,
+            )
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
         return IngestResult(inserted=True, queued=actionable, message_id=message_id)
 
@@ -530,81 +542,11 @@ class EmailDownloader:
         body_text: str = "",
         admin_authenticated: bool = False,
     ) -> None:
-        resumed_research = self.resume_waiting_deep_research_for_thread(thread_id)
-        open_job = self.db.fetch_one(
-            "SELECT id, status, metadata, last_error FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
-            (thread_id,),
-        )
-        if open_job:
-            if resumed_research and open_job["id"] == resumed_research["original_job_id"]:
-                self.db.execute(
-                    """
-                    UPDATE jobs
-                    SET trigger_email_id = COALESCE(trigger_email_id, %s),
-                        has_new_context = true,
-                        updated_at = now()
-                    WHERE id = %s
-                    """,
-                    (trigger_email_id, open_job["id"]),
-                )
-                self.db.log_event(
-                    open_job["id"],
-                    "status_change",
-                    output_data={
-                        "has_new_context": True,
-                        "reason": "new email arrived; resumed waiting deep research",
-                        "deep_research_run_id": resumed_research["id"],
-                    },
-                )
-                return
-            if open_job["status"] == "needs_review" and admin_authenticated:
-                self.apply_email_review_override(open_job, trigger_email_id, body_text)
-                return
-            if open_job["status"] == "needs_review":
-                return
-            if open_job["status"] in ("waiting", "needs_review"):
-                self.db.execute(
-                    """
-                    UPDATE jobs
-                    SET status = 'queued',
-                        trigger_email_id = COALESCE(trigger_email_id, %s),
-                        run_at = now(),
-                        has_new_context = true,
-                        last_error = NULL,
-                        locked_at = NULL,
-                        locked_by = NULL,
-                        updated_at = now()
-                    WHERE id = %s
-                    """,
-                    (trigger_email_id, open_job["id"]),
-                )
-                self.db.log_event(
-                    open_job["id"],
-                    "status_change",
-                    output_data={"status": "queued", "has_new_context": True, "reason": "new email arrived"},
-                )
-                return
-            self.db.execute(
-                """
-                UPDATE jobs
-                SET trigger_email_id = COALESCE(trigger_email_id, %s),
-                    has_new_context = true,
-                    updated_at = now()
-                WHERE id = %s
-                """,
-                (trigger_email_id, open_job["id"]),
-            )
-            self.db.log_event(
-                open_job["id"],
-                "status_change",
-                output_data={"has_new_context": True, "reason": "new email arrived"},
-            )
-            return
-        if resumed_research:
-            return
-        self.db.execute(
-            "INSERT INTO jobs(thread_id, task_summary, trigger_email_id) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (thread_id, subject, trigger_email_id),
+        RequestService(self.db).queue_or_update_job(
+            thread_id, subject, trigger_email_id,
+            body=body_text, admin_authenticated=admin_authenticated,
+            resume_research=self.resume_waiting_deep_research_for_thread,
+            review_override=self.apply_email_review_override,
         )
 
     def resume_waiting_deep_research_for_thread(self, thread_id: str) -> Optional[dict[str, Any]]:

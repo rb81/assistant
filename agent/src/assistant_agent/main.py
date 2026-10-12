@@ -123,6 +123,12 @@ def run_role(role: str) -> None:
 
     if role == "downloader":
         EmailDownloader(db, config).run_forever(stopper)
+    elif role == "telegram-receiver":
+        from .telegram_ingest import TelegramReceiver
+        TelegramReceiver(db, config).run_forever(stopper)
+    elif role == "request-preprocessor":
+        from .telegram_ingest import RequestPreprocessor
+        RequestPreprocessor(db, config).run_forever(stopper)
     elif role == "reminder-scheduler":
         ReminderScheduler(db, config).run_forever(stopper)
     elif role == "reminder-cron":
