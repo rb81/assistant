@@ -47,7 +47,7 @@ their main conversation, system threads and data. Recognized email replies and
 Telegram selection/reply routing reuse that owner across channels. A new
 unassociated email or an explicit fresh-workstream action creates a new owner;
 completing an execution does not end the conversation.
-See [workstream ownership](data-model.md#workstreams-ownership-and-provenance).
+See [workstream ownership](data-model.md#conversations-and-work-ownership).
 
 Thread assignment order:
 

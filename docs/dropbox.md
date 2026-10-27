@@ -24,7 +24,7 @@ app key; each user authorizes their own account. No client secret is required.
 Run:
 
 ```bash
-./scripts/setup.sh --section dropbox
+./setup.sh --section dropbox
 ```
 
 Enable Dropbox, enter the app key, open the displayed authorization URL on any
@@ -42,9 +42,8 @@ cancellation: revoke it in Dropbox if no longer needed.
 Create `Inbox` inside `/Apps/<your-app-name>` using Dropbox before the first
 import. `Outbox` and its task subfolder are created on the first authorized
 export. Setup's optional verification checks authorization only and creates no
-files or folders. Recreate the affected services using the normal upgrade/setup
-workflow to activate changes. Back up an existing installation before starting
-new code: transfer tracking adds a database table.
+files or folders. Recreate affected services using setup or the Compose workflow
+to activate changes.
 
 ## Use
 

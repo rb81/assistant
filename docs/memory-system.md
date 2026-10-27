@@ -1,7 +1,6 @@
 # Memory System and Semantic Indexing
 
-Assistant keeps one unified memory store. The former separate notes and entity
-registry were retired in v2 and migrated into it (see [upgrading](upgrading.md)).
+Assistant keeps durable and short-lived working context in one memory store.
 
 ## Unified memories
 
@@ -17,14 +16,13 @@ are two kinds of content:
 Similar facts become reviewable **suggestions** rather than silently overwriting
 an existing memory. Administrators review, correct, pin, expire and delete
 memories with email `/admin memory` commands, including controlled erasure of
-logged copies. Sources may be learned again afterwards. See
-[Email Administration](email-administration.md) for the commands and for
-upgrade and retention limits.
+logged copies. Sources
+may be learned again afterwards. See [Email Administration](email-administration.md)
+for the commands and [security](security.md) for deletion limits.
 
 Memory supports keyword search and, when embeddings are available, semantic
-search. Contact details are deliberately not memories: they live in the dedicated
-`contacts` store and contact tools, so mutable records do not contaminate durable
-behavior.
+search. Contact details live in the dedicated `contacts` store and contact tools,
+so mutable records do not contaminate durable behavior.
 
 ## Memory Steward
 
@@ -71,7 +69,7 @@ Embeddings use `EmbeddingClient` and local Ollama endpoint (`agent.embeddings.ba
 
 When embeddings fail/unavailable, relevant features fall back to non-semantic methods where supported.
 
-Use `./scripts/setup.sh --section embeddings` to configure the model, endpoint,
+Use `./setup.sh --section embeddings` to configure the model, endpoint,
 timeout, and output dimensions. Ollama's `embeddinggemma` is the 300M text model,
 not EmbeddingGemma 2. It needs Ollama 0.11.10+, supports 2,048 input tokens and
 768-dimensional output by default, with 512/256/128 reduced dimensions available.
@@ -90,10 +88,10 @@ the rebuild finishes. No source records are deleted to change embedding models.
 After deploying the updated agent image, inspect or rebuild from the repository:
 
 ```sh
-docker compose build task-agent
-docker compose run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance status
-docker compose run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance probe
-docker compose run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance reindex --batch-size 50
+docker compose --env-file data/.env build task-agent
+docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance status
+docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance probe
+docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance reindex --batch-size 50
 ```
 
 `status` lists stale counts for all seven searchable sources. `probe` verifies
@@ -101,7 +99,7 @@ the configured endpoint and vector dimensions. `reindex` replaces only missing
 or incompatible vectors, preserving source data, IDs and content timestamps;
 expired memories and deleted/superseded workspace files are excluded. PostgreSQL
 receives the embedding-only timestamp safeguard before rebuilding; this command
-does not run unrelated pending application migrations. PostgreSQL
+does not run unrelated pending schema changes. PostgreSQL
 must be running for status/reindex; Ollama must be running and the model available
 for probe/reindex. Failed runs retain completed replacements: rerun the same
 command to resume. Concurrent source edits/deletions are not overwritten, and an

@@ -1,85 +1,52 @@
-# Platform Upgrade Notice
+# Documentation index
 
-This platform refresh is a breaking change. Read [the upgrade guide](upgrading.md)
-before starting new code on an existing database. Use [guided setup and secret
-management](configuration.md), [current security guidance](security.md), and
-Local administration is provided by the setup CLI and authenticated email
-commands. The browser interface, management API, Projects, separate notes and
-entities are removed; older feature descriptions elsewhere are historical.
+This is the canonical documentation set for the current Assistant version.
+Use it as a task index; verify implementation details against the current source
+when contributing. For project overview and quick start, see the
+[root README](https://github.com/rb81/assistant#readme).
 
-# Documentation Index
+Source paths in contributor guides refer to a repository checkout. Runtime
+containers receive this documentation, not the host source tree.
 
-This directory is the canonical documentation set for the Assistant project.
+## For agents
 
-For a project overview, quick start, and feature introduction, see the [root README](../README.md).
+1. Read the task-relevant guide below.
+2. Read [tool reference](tools-reference.md) before using or describing tools.
+3. Use `.assistant/docs/README.md` in the shared workspace for runtime
+   environment and diagnostic guidance. It does not grant access to host files,
+   secrets, or service controls.
+4. See [sandbox capabilities](SANDBOX_CAPABILITIES.md) for command environment
+and diagnostic limits.
 
-## ⚠️ Breaking Changes
+## For operators
 
-### Calendar system replaced (CalDAV/vdirsyncer removed)
+- [Running Assistant](running-assistant.md) — setup, start, and local state.
+- [Configuration](configuration.md) — configuration files and credential handling.
+- [Security](security.md) — trust boundaries, approvals, and hardening.
+- [Docker setup](docker-setup.md) — images, Compose services, mounts, and networks.
 
-The local CalDAV/vdirsyncer calendar sync system has been **removed** and replaced with a direct OAuth 2.0 API provider architecture. This is a breaking change for any deployment that had calendar tools configured.
+## System and development
 
-**What changed:**
-- `CalendarGateway` and `calendar_gateway.py` are gone; replaced by `CalendarRouter` (`calendar/router.py`)
-- `CALDAV_URL`, `CALDAV_USERNAME`, `CALDAV_PASSWORD`, and `VDIRSYNCER_CONFIG` env vars are no longer used
-- The `./data/private/calendar` volume mount has been removed
-- `config/vdirsyncer/config` no longer exists
-- `calendar_create_event` no longer has a `calendar` parameter; use `provider` instead
-- `calendar_managed_events` now stores provider IDs instead of CalDAV file metadata; the ordered migrations handle the schema change during startup.
+- [Architecture](architecture.md) — service topology and data flow.
+- [Agent loop](agent-loop.md) — job lifecycle and execution.
+- [Prompting](prompting.md) — prompt and context construction.
+- [Tools reference](tools-reference.md) — available tool groups and constraints.
+- [Extending tools](extending-tools.md) — implementation checklist.
+- [Codebase guide](codebase.md) — source layout and tests.
+- [Data model](data-model.md) — persistent records and ownership.
+- [Concurrent jobs](concurrent-job-processing.md) — task-agent workers.
 
-**Migration steps:**
-1. Follow [the upgrade guide](upgrading.md) before starting the updated stack. Do not apply individual SQL files manually; migrations run in order at startup.
-2. Remove `CALDAV_*` and `VDIRSYNCER_CONFIG` from your `.env` and remove the `./data/private/calendar` bind mount from any custom Compose overrides.
-3. Configure OAuth credentials for at least one provider (Google, Outlook, or Zoho) using [calendar-providers.md](calendar-providers.md).
+## Integrations and operations
 
----
+- [Email and artifacts](email-and-artifacts.md) — inbound email and attachment processing.
+- [Email administration](email-administration.md) — authenticated `/admin` commands.
+- [Calendar providers](calendar-providers.md) — Google, Outlook, Zoho, and Zoom.
+- [Dropbox](dropbox.md) — scoped file exchange.
+- [Telegram and voice](telegram-and-voice.md) — private messaging and transcription.
+- [Memory system](memory-system.md) — memory, embeddings, and workspace search.
+- [OpenRouter](openrouter.md) — model and hosted-tool integration.
+- [Sandbox](sandbox.md) — command execution boundaries.
+- [Environment overrides](env-overrides.md) — setting names and defaults.
 
-If you are new here, read in this order:
-
-1. [advanced-configuration.md](advanced-configuration.md) — models, limits, email, integrations, and deployment topology
-2. [architecture.md](architecture.md) — service topology, runtime boundaries, and data flow
-3. [agent-loop.md](agent-loop.md) — job lifecycle and agent execution loop
-4. [prompting.md](prompting.md) — prompt construction, context, and compaction
-5. [tools-reference.md](tools-reference.md) — all agent tools, grouped by capability
-6. [openrouter.md](openrouter.md) — OpenRouter integration and model/tool usage
-
-Then use the domain-specific docs below.
-
-## Core Guides
-
-- [architecture.md](architecture.md) — service topology, runtime boundaries, and data flow
-- [agent-loop.md](agent-loop.md) — job lifecycle and agent execution loop
-- [prompting.md](prompting.md) — prompt construction, context, and compaction
-- [tools-reference.md](tools-reference.md) — all agent tools, grouped by capability
-- [extending-tools.md](extending-tools.md) — how to add a new tool safely
-- [openrouter.md](openrouter.md) — OpenRouter integration and model/tool usage
-
-## Data & Storage
-
-- [data-model.md](data-model.md) — PostgreSQL schema and data lifecycle
-- [memory-system.md](memory-system.md) — unified memory, embeddings, and workspace indexing
-
-## Configuration and Deployment
-
-- [advanced-configuration.md](advanced-configuration.md) — **start here** for models, limits, email, integrations, and deployment topology
-- [configuration.md](configuration.md) — full `.env` and `config/agent.yaml` reference
-- [calendar-providers.md](calendar-providers.md) — OAuth setup for Google Calendar, Microsoft Outlook, and Zoho Calendar
-- [dropbox.md](dropbox.md) - private app-folder file exchange, authorization and transfer limits
-- [telegram-and-voice.md](telegram-and-voice.md) - shared request routing, private Telegram, reminders and hardened local transcription
-- [env-overrides.md](env-overrides.md) — expert `overrides.env` guide and complete list of overridable settings
-- [security.md](security.md) — threat model, hardening checklist, network binding, reverse-proxy examples, and responsible disclosure
-- [docker-setup.md](docker-setup.md) — image builds, Compose topology, networks, and mounts
-- [running-assistant.md](running-assistant.md) — local and server deployment guide
-- [concurrent-job-processing.md](concurrent-job-processing.md) — task-agent scaling
-
-## Runtime Infrastructure
-
-- [sandbox.md](sandbox.md) — command execution sandbox architecture
-
-## Email Pipeline
-
-- [email-and-artifacts.md](email-and-artifacts.md) — IMAP ingestion, disclosure handling, ClamAV scanning, and MarkItDown artifact conversion
-
-## Contributor Orientation
-
-- [codebase.md](codebase.md) — module map, test structure, and contribution workflow
+The project is a prerelease. For the separate legacy conversion bundle, see
+the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).

@@ -107,8 +107,8 @@ Flagged jobs are moved to `needs_review` and admin notification is sent.
 - flags stale running jobs,
 - notifies failed/review jobs (excluding expected wait states),
 - flags stalled deep-research runs,
-- flags stale projects,
-- runs periodic memory maintenance (reaping stale memories/notes),
+- runs periodic memory maintenance,
 - records health checks in `manual_events`.
 
-Memory maintenance runs on a configurable interval (default: 24h) and reaps low-importance stale memories and archives old active notes.
+Memory maintenance reaps eligible low-importance stale memories on its configured
+interval.

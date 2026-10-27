@@ -9,17 +9,18 @@ their original completion requirements.
 ## Setup
 
 1. Create a bot using Telegram's BotFather and keep its token private.
-2. Run `./scripts/setup.sh --section telegram` on an already configured installation,
+2. Run `./setup.sh --section telegram` on an already configured installation,
    or select Telegram during initial setup. Enter the bot token through the masked prompt.
 3. Supply an explicit allowlist of numeric Telegram user IDs. Private chats only are
    accepted; empty allowlists grant nobody access. `/start` never grants admin rights.
 4. Enter verified identity mappings as JSON, for example
    `{"owner@example.net":123456789}`. Confirm the numeric ID with that person outside
    an untrusted forwarded message. The mapped IDs must also be allowlisted.
-5. Optionally run `./scripts/setup.sh --section transcription`. This generates a
+5. Optionally run `./setup.sh --section transcription`. This generates a
    protected internal token and enables the managed multilingual English/Arabic service.
 6. Review and save, then start or recreate the selected services with
-   `docker compose up -d --build`. Setup selects the `telegram` and `voice` profiles.
+   `docker compose --env-file data/.env up -d --build`. Setup selects the
+   `telegram` and `voice` profiles.
 
 No public Telegram webhook or transcription port is necessary. The receiver uses long
 polling with a durable cursor and a single-receiver database lock. Preprocessors and
@@ -30,7 +31,8 @@ Relevant overrides are `TELEGRAM_ENABLED`, `TELEGRAM_ALLOWED_USER_IDS`,
 `TELEGRAM_RECIPIENTS`, `TELEGRAM_MAX_MESSAGES_PER_HOUR`, `TRANSCRIPTION_ENABLED`,
 `TRANSCRIPTION_BASE_URL`, and `TRANSCRIPTION_LANGUAGE` (`auto`, `en`, or `ar`).
 `TELEGRAM_BOT_TOKEN` and `TRANSCRIPTION_API_TOKEN` are protected file-backed secrets,
-not ordinary overrides. Setup must regenerate the Compose secret overlay on upgrades.
+not ordinary overrides. Setup generates the Compose secret overlay when saving
+configuration.
 The runtime token copy is owned by the unprivileged inference user; the decoder cannot
 read the initialization container's original secret mount.
 
@@ -149,5 +151,3 @@ not stored separately; ordinary jobs and memories retain existing semantic index
 The received-message reset category includes private raw and processed attachments.
 Job erasure removes eligible local native message/artifact records while respecting
 shared-thread history. It does not delete remote Telegram messages or model caches.
-
-See [the upgrade guide](upgrading.md) for automatic history migration and backups.

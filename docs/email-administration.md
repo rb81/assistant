@@ -1,10 +1,12 @@
 # Email-First Administration
 
-Browser administration and shared editing are removed. `/admin` subjects are handled before artifact processing or assistant job creation. All commands and errors bypass chat/embedding models. Ordinary tasks still use the assistant. Private attachments, malware scanning, conversion, sandbox files, and emailed deliverables remain supported. Native reminders are unchanged; CalDAV is deferred.
+`/admin` subjects are handled before artifact processing or assistant job
+creation. Commands and errors bypass chat/embedding models. Ordinary tasks use
+the assistant; administration uses deterministic commands and local setup tools.
 
 ## Authentication
 
-Run `./scripts/setup.sh` to configure the dedicated assistant mailbox and
+Run `./setup.sh` to configure the dedicated assistant mailbox and
 `ADMIN_EMAIL`. Signing keys are no longer used, and Authentication-Results never
 authorize an action. The optional [admin sender authentication](security.md#admin-sender-authentication-spfdkim)
 check quarantines mail that claims your address but fails both DKIM and SPF. It can
@@ -70,12 +72,12 @@ Put memory text, review instructions or `instruct` instructions in the plain-tex
 ## Recovery CLI
 
 ```bash
-docker compose exec task-agent python -m assistant_agent.admin_commands '/admin status'
-docker compose exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
-docker compose exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin status'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
 ```
 
-The CLI uses local OS/container authorization and the same service without models or mailbox dependencies. `--yes` confirms destructive commands locally. `./scripts/setup.sh tools` wraps these commands in menus.
+The CLI uses local OS/container authorization and the same service without models or mailbox dependencies. `--yes` confirms destructive commands locally. `./setup.sh tools` wraps these commands in menus.
 
 ## Memory And Deletion
 
@@ -84,12 +86,6 @@ Unified memory carries evidence, provenance, tags, importance/confidence, pinnin
 Deletion removes memory/embedding rows, scrubs historical versions from controlled database logs and caches, invalidates dependent checkpoints, and leaves a content-free receipt. Active jobs refresh their context after a revision change. Source emails/documents remain and can legitimately cause relearning.
 
 Already-sent emails/model requests, remote provider retention, backups, and external Docker/syslog copies cannot be retracted by this service. Legacy paraphrases lacking provenance cannot always be attributed reliably. Deleting a memory is not erasing every historical occurrence of its underlying fact.
-
-## Upgrade
-
-Stop old workers/project scheduling, back up PostgreSQL, and export project history before upgrading. Do not mix old binaries with the new schema. Migration 005 preserves note content/audit/lifecycle metadata as memories and useful entity labels as tags. Project/task history is retained on parent jobs; waiting parents receive explicit retirement instructions, while admin-review states remain paused. Existing child jobs remain ordinary jobs; unstarted project tasks are not queued. Retired tables are removed and feature bootstrap does not recreate them.
-
-The historical base schema retains compatibility definitions consumed and retired by ordered migrations before workers operate. Backup restore is the rollback procedure. Migrations apply at startup; this change does not migrate an existing running deployment automatically.
 
 ## Security screening approvals
 
@@ -102,4 +98,3 @@ admin-authenticated. A held tool call (outbound email or script) pauses the job
 as `needs_review`. Approving that review allows exactly the same call once; for
 scripts, only while the file contents are unchanged. With YOLO mode on, these
 items proceed and you are notified instead.
-

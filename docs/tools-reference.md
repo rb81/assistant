@@ -1,6 +1,7 @@
 # Tools Reference
 
-Assistant tools are defined in `assistant_agent/tools.py` and executed through `ToolRuntime.run(name, arguments)`.
+Assistant tools are defined in `src/agent/src/assistant_agent/tools.py` and
+executed through `ToolRuntime.run(name, arguments)`.
 
 ## Tool Exposure Model
 
@@ -23,7 +24,7 @@ execution details. Specify a research system thread with
 `workstream_attach(kind, key)` explicitly adopts an existing live contact or
 file into the current workstream without copying it. Use its native record
 ID/key, or a workspace path for `file`. Other object categories cannot be newly
-adopted. Existing legacy retaining links remain valid after upgrade.
+adopted. Retaining links preserve ownership when an object is intentionally shared.
 Searching, reading and editing do not adopt objects or switch the active
 conversation. Updates require current object versions where exposed and retain
 the original ownership; successful changes notify affected workstream context,
@@ -91,7 +92,7 @@ Memory:
 - `memory_update`
 - `memory_forget`
 
-Notes and entities are retired and migrated into unified memory; see [Memory System](memory-system.md).
+Memory and contact details use distinct tool groups; see [Memory System](memory-system.md).
 
 ## Contacts Tools
 
@@ -153,7 +154,7 @@ Calendar tools are exposed only when at least one provider has credentials confi
 including supported image/audio generation and multimodal inputs. It does not
 inherit the assistant's context or tools and does not execute returned tool calls.
 
-Enable it with `./scripts/setup.sh --section advanced` → **Model preset tool**.
+Enable it with `./setup.sh --section advanced` → **Model preset tool**.
 It requires `OPENROUTER_API_KEY` and an available shared workspace, even if the
 main assistant uses a different model provider. It is disabled by default.
 

@@ -1,99 +1,64 @@
-# System Architecture
+# Architecture
 
-This document describes how Assistant is structured in production and local development.
+Assistant runs as a Docker Compose application. PostgreSQL stores durable
+application state; Python services perform intake, job execution, indexing,
+scheduling, and monitoring.
 
-## Runtime Topology (Docker Compose)
+## Services
 
-The default stack runs these services:
+- `postgres` — jobs, messages, logs, memories, reminders, integrations, and indexes.
+- `downloader` — optional email intake (the `email` profile).
+- `telegram-receiver` and `request-preprocessor` — optional private Telegram intake.
+- `task-agent` — LLM-driven execution of queued tasks.
+- `deep-research-agent` — asynchronous research execution.
+- `workspace-indexer` — workspace document indexing.
+- `reminder-scheduler` — queues due reminders.
+- `supervisor` and `heartbeat` — job review and queue-health monitoring.
+- `ollama` and `ollama-model-puller` — local embedding service and model setup.
+- `clamav` — artifact scanning.
+- `transcription` and `transcription-init` — optional local voice processing (`voice` profile).
+- `sandbox` and `sandbox-init` — authenticated command broker and protected runtime setup.
 
-- `postgres` — durable state (jobs, logs, memories, reminders, research, contacts, and related records).
-- `clamav` — malware scanning support for inbound artifacts.
-- `downloader` — IMAP ingestion and job creation.
-- `task-agent` — main LLM-driven autonomous worker loop.
-- `workspace-indexer` — semantic indexer for shared workspace files.
-- `reminder-scheduler` — schedules due reminders into normal jobs.
-- `deep-research-agent` — asynchronous constrained research loop.
-- `supervisor` — stalled/failure review monitor.
-- `heartbeat` — rule-based queue health checks and notifications.
-- `ollama` — embedding service for supported semantic search and memory operations.
-- `sandbox` — command-execution broker that starts isolated run containers.
+Most application roles use the Python agent image and select behavior through
+`AGENT_ROLE`. Services and optional profiles are defined in `src/docker-compose.yml`.
 
-## Networks
+## Request and job flow
 
-- `database_net`, `model_net`, and `clamav_net` are internal networks scoped to their clients.
-- `sandbox_net` is internal and carries authenticated HTTPS control traffic.
-- `egress_net` permits outbound provider access while disabling bridge inter-container forwarding.
+Email or Telegram intake validates and records a request, processes permitted
+attachments, and queues work. A task-agent claims a job through PostgreSQL,
+builds context, calls the configured model, and executes available tools. Side
+effects and progress are recorded in PostgreSQL. Research and reminders run
+through their own workers and return results to the associated conversation.
 
-The sandbox broker itself sits on `sandbox_net`. Per-command run containers are created dynamically by the broker on separate ephemeral bridge networks.
+Task-agent workers claim jobs with database locking, so deployments can scale
+them without intentionally assigning the same queued job twice.
 
-## Storage Layout
+## Runtime boundaries
 
-Compose bind-mounts runtime data under `./data` by default:
+The agent's file tools are rooted at `/data/share`. That workspace is not the
+host repository. Protected credentials, database files, and private artifacts
+are kept outside it.
 
-- `./data/postgres` — PostgreSQL files.
-- `./data/share` — the shared workspace: the working directory the agent's file tools and the sandbox read and write. It is not exposed through any browser UI; the old shared editor was removed.
-- `./data/private/artifacts` — private raw/processed artifact storage.
-- `./data/ollama` — local Ollama model/cache storage.
-- `./data/clamav` — ClamAV signatures/state.
+Command execution is delegated to the sandbox broker. For each command, the
+broker starts a disposable container with the shared workspace mount. It does
+not give the command container application credentials, the Docker socket, or
+access to the host repository. The broker itself has Docker daemon access; see
+[security](security.md) for the residual risk and host requirements.
 
-Database schema lives at `database/schema.sql` and is initialized into PostgreSQL on first start.
+The canonical host documentation directory is mounted read-only at
+`/data/share/.assistant/docs` for task-agent, the sandbox broker, and
+per-command containers. An agent can read these files through normal workspace
+tools when diagnosing task or command failures. This is diagnostic information,
+not access to host secrets, host source files, or controls for restarting
+services. Runtime docs are mounted rather than copied into the workspace.
 
-## Service Roles and `AGENT_ROLE`
+PostgreSQL and sandbox control traffic use verified TLS. Compose networks scope
+internal service communication; the application does not publish an operator
+web interface.
 
-Most roles share the same Python image and are selected by `AGENT_ROLE` in `assistant_agent.main:run_role`:
+## Persistent state
 
-- `downloader`
-- `task-agent`
-- `workspace-indexer`
-- `reminder-scheduler`
-- `deep-research-agent`
-- `supervisor`
-- `heartbeat`
-
-There are also one-shot cron-style roles (for host cron usage) such as `reminder-cron`, `deep-research-cron`, `workspace-index-cron`, `heartbeat-cron`, and `tool-cache-cleanup-cron`.
-
-## End-to-End Flow
-
-### 1) Inbound request
-
-- Email-driven: `downloader` pulls IMAP messages, stores in `emails`, decides actionability, and queues/updates jobs.
-- CLI-driven: a local operator uses the setup tools to inspect and manage jobs.
-
-### 2) Job execution
-
-- `task-agent` claims queued jobs using DB locking (`FOR UPDATE SKIP LOCKED` pattern in DB layer).
-- It builds context (thread, memory, supervisor instructions, prior actions) and runs the tool-driven LLM loop.
-
-### 3) Durable side effects
-
-Depending on tool calls, the job may:
-
-- send emails,
-- read/write shared workspace files,
-- execute sandbox commands,
-- create reminders,
-- start deep research runs,
-- update contacts or calendar records.
-
-All important events are logged to `task_logs`.
-
-### 4) Monitoring & intervention
-
-- `supervisor` checks running/review-needed jobs for stalls/failure patterns.
-- `heartbeat` performs rule-based queue health checks and sends notifications.
-- Admin notifications are sent on failure/review conditions.
-
-## Security Boundaries
-
-- File tools are restricted to configured shared root (`agent.filesystem.shared_root`).
-- `.assistant` subtree is read-only for agent file writes/deletes.
-- Command execution is delegated to sandbox service, not run in agent process.
-- Outbound email is rate-limited and constrained by recipient allowlist.
-- Large tool outputs are cached and redacted in prompt history to control context size.
-
-## Key Operational Characteristics
-
-- Durable DB-first architecture.
-- Horizontal task-agent scaling supported (`TASK_AGENT_WORKERS` replicas).
-- Clear separation between control loops: downloader, agent, schedulers, supervisor, heartbeat.
-- Explicit fallback behavior for unavailable semantic services (e.g., embeddings).
+Local deployment state is under the gitignored `data/` directory, including
+`.env`, optional overrides, credentials, setup state, PostgreSQL, private files,
+and the shared workspace. Tracked defaults and templates live under `src/config`.
+See [running Assistant](running-assistant.md) for paths and commands.

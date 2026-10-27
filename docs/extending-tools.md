@@ -4,7 +4,7 @@ This guide covers how to add a new tool to Assistant safely.
 
 ## Overview
 
-Tool definitions and runtime dispatch live in `agent/src/assistant_agent/tools.py`.
+Tool definitions and runtime dispatch live in `src/agent/src/assistant_agent/tools.py`.
 
 You add a tool in three places:
 
@@ -74,7 +74,7 @@ Add short entry in `tool_catalog(...)` descriptions map so the model sees meanin
 
 ### 8) Add tests
 
-Add/extend tests under `agent/tests/`:
+Add/extend tests under `src/agent/tests/`:
 
 - happy path,
 - invalid arguments,

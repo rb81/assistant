@@ -47,13 +47,14 @@ socket mounted and therefore retains root-equivalent daemon authority; these
 containers are not fully isolated from host compromise. `SANDBOX_RUN_IMAGE` must
 be set.
 
-`container` is the default in both `docker-compose.yml` and `sandbox/server.py`. You do not need to set anything to use it.
+`container` is the default in both `src/docker-compose.yml` and
+`src/sandbox/server.py`. You do not need to set anything to use it.
 
 ### `SANDBOX_ISOLATION_MODE=process` (development only)
 
 ⚠️ **Process mode is unsuitable for production.** It is provided as a fallback for environments where Docker is unavailable (e.g., bare-metal local development).
 
-To enable it, set in `.env`:
+To enable it, set it in `data/.env`:
 
 ```env
 SANDBOX_ISOLATION_MODE=process
@@ -90,7 +91,7 @@ Retry exhaustion raises `SandboxAttemptsExhausted` and is surfaced with attempt 
 
 ## Configuration Highlights
 
-From app config (`config/agent.yaml`):
+From application defaults (`src/config/agent.yaml`):
 
 - `agent.sandbox.enabled`
 - `agent.sandbox.base_url`

@@ -1,10 +1,24 @@
 # Changelog
 
+## Unreleased: Repository and documentation refresh
+
+- Application code, scripts, deployment files, and defaults now live under `src/`.
+- All repository-side local state belongs under ignored `data/`, including
+  settings, credentials, configuration, setup dependencies, and backups.
+- Root `./setup.sh` remains the single setup and administration entry point.
+- Refreshed the README and task-oriented documentation for the current product.
+- Canonical `docs/` is mounted read-only for agent tools and sandbox commands.
+- Fresh databases initialize directly from the current schema baseline.
+  Unsupported baselines are refused without automatic conversion.
+- Legacy conversion scripts and instructions are distributed separately in the
+  [transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).
+  V1 is retired and preserved by the `v1-retired` tag.
+
 ## v2.0.0 (prerelease): Platform Refresh
 
-This breaking release lives on `main`. The previous version is preserved
-unchanged as v1 (`v1` branch, release `v1.0.0`). v2 is not an in-place `git pull` of v1:
-read [the upgrade guide](docs/upgrading.md) before starting new workers.
+Historical prerelease changes are recorded below. Older installations must use
+the [transition package](https://github.com/rb81/assistant/releases/tag/layout-transition)
+before starting the current code.
 
 ### Added
 
@@ -55,9 +69,9 @@ read [the upgrade guide](docs/upgrading.md) before starting new workers.
 
 ### Security
 
-- Upgrade interlock: migration 005 (which drops retired tables) refuses to run on a
-  database holding v1 data until `ASSISTANT_ACCEPT_V2_MIGRATION=yes` is set in `.env`.
-- Optional API requires TLS and bearer authentication, including health endpoints.
+- Earlier prereleases gated legacy table retirement behind an explicit
+  acknowledgement; conversion now lives in the separate transition package.
+- Internal sandbox API requires TLS and bearer authentication, including health endpoints.
 - Setup moves known credentials out of `.env` and grants secret mounts by service.
 - File-secret errors fail closed; admin responses redact file-backed credentials.
 - Job erasure follows migrated children without retired-table queries and removes

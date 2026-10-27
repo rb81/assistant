@@ -2,15 +2,12 @@
 
 ## Workstream deletion
 
-Back up the database and runtime files before upgrading. Rebuild/start the
-updated stack so the ordered workstream migrations run, then open
-`./scripts/setup.sh tools` -> **Workstreams and data deletion**.
-The existing terminal menus list workstreams, their parents and retained objects,
-and allow explicit attachments.
+Open `./setup.sh tools` -> **Workstreams and data deletion**. The terminal
+menus list workstreams, their parents and retained objects, and allow explicit
+attachments.
 
 New explicit adoption is restricted to contacts and files. Inspection or edits
-do not create retaining links. Older shared-object links survive upgrades and
-are still included in deletion previews. There are three deletion policies:
+do not create retaining links. There are three deletion policies:
 
 1. **Preserve shared objects (default):** delete the selected workstream and its
    descendants, their messages, and objects with no retaining workstream outside
@@ -76,9 +73,8 @@ and installation-level state are not task data and are not deleted.
 
 ## Access model
 
-The deployment publishes no application port. Browser administration, shared
-editing, and the optional management API are removed.
-PostgreSQL, Ollama, ClamAV and sandbox broker ports remain private. PostgreSQL
+The deployment publishes no application port. PostgreSQL, Ollama, ClamAV and
+sandbox broker ports remain private. PostgreSQL
 connections and sandbox RPC use verified TLS; the sandbox also requires its
 service-scoped bearer token.
 
@@ -93,10 +89,10 @@ are excluded from model context.
 
 ## Docker secrets
 
-Run `./scripts/setup.sh` to configure credentials without editing `.env`.
-Credentials are stored in gitignored `.secrets` files with directory mode `0700`
-and file mode `0600`. A generated `.compose-secrets.yaml` grants read-only mounts
-under `/run/secrets` only to relevant services. `.env` contains non-secret settings.
+Run `./setup.sh` to configure credentials without editing `data/.env`.
+Credentials are stored in gitignored `data/.secrets/` files with directory mode `0700`
+and file mode `0600`. Generated `data/.compose-secrets.yaml` grants read-only mounts
+under `/run/secrets` only to relevant services. `data/.env` contains non-secret settings.
 
 ### Optional Docker volume storage
 
@@ -104,10 +100,10 @@ Choose **Move credentials to a dedicated Docker volume** at the wizard's final
 review, or in the post-setup configuration menu. The choice takes effect only on
 **Save**. Setup copies credentials into an installation-specific external Docker
 volume, verifies their contents and volume-subpath support, then deletes the
-original `.secrets` credential files. Failed migration leaves the original
+original `data/.secrets` credential files. A failed transfer leaves the original
 configuration and credential files intact. Setup then recreates running services
 that use credentials so they switch to the volume mounts; if that step fails, run
-`./scripts/setup.sh secrets apply` to retry.
+`./setup.sh secrets apply` to retry.
 
 The generated overlay mounts a separate service-specific directory from the
 volume read-only at `/run/secrets`, so services do not receive each other's
@@ -124,35 +120,35 @@ once this option is enabled. If migration uses explicitly authorized noninteract
 sudo, subsequent volume access uses that authorization too.
 
 The volume remains **plaintext**. This option keeps credentials out of ordinary
-project reads, indexing and project archives; it does not protect against Docker
+file reads and indexing; it does not protect against Docker
 administrators or compromise of a service authorized to read a credential.
-Setup metadata stays in `.secrets/state.json`; TLS files under `data/private/tls`
+Setup metadata stays in `data/.secrets/state.json`; TLS files under `data/private/tls`
 and OAuth tokens persisted in PostgreSQL are not moved by this option.
 Keep `state.json`: it contains no credential values, but records the active volume,
 setup completion and pending credential activation. Removing it prevents setup
-from finding the selected store reliably. The otherwise empty `.secrets` directory
+from finding the selected store reliably. The otherwise empty `data/.secrets` directory
 is retained for this metadata.
 
 To reverse the move, choose **Move credentials back to plaintext host files** in
 the post-setup menu or final review, then **Save and finish**. Setup restores
-restricted `.secrets` files (`0700` directory, `0600` files), switches the Compose
+restricted `data/.secrets` files (`0700` directory, `0600` files), switches the Compose
 overlay back to file-backed secrets, then handles the cleanup automatically: it
 confirms the host files match, recreates running services with host mounts,
 removes stopped containers of this installation that still reference the volume
-(the next `docker compose up` recreates them), and destroys the volume. Setup
+(the next `docker compose --env-file data/.env up` recreates them), and destroys the volume. Setup
 refuses to remove a volume used by containers from another Compose project. If
-any step fails, `.secrets` stays authoritative, the volume is kept, and setup
+any step fails, `data/.secrets` stays authoritative, the volume is kept, and setup
 retries removal the next time it opens. Moving back to the
 volume later copies the current host values, including intervening updates.
 
-Factory reset preserves both credential stores and `.secrets/state.json`; it
+Factory reset preserves both credential stores and `data/.secrets/state.json`; it
 does not delete Docker volumes. Selecting the runtime-state reset category can
 still clear cached provider tokens and pending approvals in PostgreSQL, as
 described by that category; it does not erase the stored setup credentials.
 
-Back up the credential volume **and** `.secrets/state.json`, `.env` and
-`.compose-secrets.yaml`. Backing up the project directory alone no longer includes
-these credentials. The volume is external, so `docker compose down --volumes`
+Back up the credential volume **and** `data/.secrets/state.json`, `data/.env` and
+`data/.compose-secrets.yaml`. Backing up the tracked source tree alone does not include
+these credentials. The volume is external, so `docker compose --env-file data/.env down --volumes`
 does not remove it; explicit volume removal or pruning unused volumes can still
 destroy it. Do not remove it until its credentials have been backed up or revoked.
 Deleting source files does not remove copies in older backups.
@@ -176,8 +172,8 @@ read credentials. Secret files reduce accidental exposure, not those privileges.
 
 Never bake secrets into images, build arguments, Git commits, shell arguments,
 logs, or the agent-accessible `data/share` directory. Do not print fully rendered
-Compose configuration from a legacy inline-secret deployment. Protect backups:
-`.secrets`, TLS keys, database dumps and runtime OAuth token caches are confidential.
+Compose configuration. Protect backups: `data/.secrets`, TLS keys, database dumps,
+and runtime OAuth token caches are confidential.
 Providers can store refreshed access/refresh tokens in PostgreSQL; file-backed
 initial credentials do not encrypt those database records.
 
@@ -205,10 +201,10 @@ removal does not retract remote files or revoke Dropbox authorization. See the
 ## Updating credentials
 
 ```bash
-./scripts/setup.sh secrets status
-./scripts/setup.sh secrets update
-./scripts/setup.sh secrets update OPENROUTER_API_KEY
-./scripts/setup.sh secrets apply
+./setup.sh secrets status
+./setup.sh secrets update
+./setup.sh secrets update OPENROUTER_API_KEY
+./setup.sh secrets apply
 ```
 
 Status shows names, not values. Updates use masked input and explicit confirmation.
@@ -223,7 +219,7 @@ Database-password updates use a coordinated maintenance flow: stop consumers,
 alter the database role, replace the file, verify network authentication, and
 recreate consumers. `POSTGRES_PASSWORD_FILE` alone only controls initialization,
 not the password in an existing database. If interrupted, use
-`./scripts/setup.sh secrets recover` to restore the previous credential and resume
+`./setup.sh secrets recover` to restore the previous credential and resume
 the recorded services. Recovery data is protected locally; database and filesystem
 changes are not one atomic transaction. Custom/external databases require a
 deployment-specific rotation procedure and are explicitly refused by this flow.
@@ -263,12 +259,13 @@ the `sandbox` service; disabling the tool alone does not remove a running broker
 socket mount. Use a dedicated Docker host/daemon for stronger isolation. Validate
 gVisor/networking overrides before production use.
 
-## Retention and upgrades
+## Retention
 
 Controlled-copy deletion cannot retract already-sent mail/model requests,
 third-party data, external logs or backups. Source documents may cause relearning.
 Read [deletion limits](email-administration.md#memory-and-deletion) and
-[upgrade/rollback requirements](upgrading.md) before deployment.
+[backup guidance](running-assistant.md#data-locations) before making operational
+changes.
 
 ## Email and action screening
 
@@ -393,7 +390,7 @@ slug, as with the agent model. Examples are `perplexity/pplx-decider-v1.2`
 `GET https://openrouter.ai/api/v1/models?output_modalities=decisions`. Pin a
 version rather than a `~...-latest` alias so thresholds stay calibrated. This
 route reuses `OPENROUTER_API_KEY`. Setup grants that key to the downloader only
-while screening uses OpenRouter, for both `.secrets` files and the credential
+while screening uses OpenRouter, for both `data/.secrets` files and the credential
 volume.
 
 Direct provider APIs are optional and use the `SECURITY_DECISION_API_KEY`

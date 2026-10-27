@@ -4,7 +4,7 @@ Assistant connects to calendar services directly via OAuth 2.0 APIs. This docume
 
 ## Supported providers
 
-Zoom is a separate conferencing integration. All implicit calendar/reminder times use `AGENT_TIMEZONE`; legacy feature timezone overrides are ignored. Local and UTC request clocks refresh on every model call.
+Zoom is a separate conferencing integration. `AGENT_TIMEZONE` controls implicit calendar and reminder times. Request-time context includes local and UTC clocks.
 
 | Provider | Identifier | Required env vars |
 |----------|-----------|-------------------|
@@ -12,7 +12,7 @@ Zoom is a separate conferencing integration. All implicit calendar/reminder time
 | Microsoft Outlook / Microsoft 365 | `outlook` | `CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`, `CALENDAR_OUTLOOK_TENANT_ID` |
 | Zoho Calendar | `zoho` | `CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN` |
 
-Calendar tools stay disabled until `CALENDAR_ENABLED=true` and at least one provider's `*_CLIENT_ID` / `*_CLIENT_SECRET` / `*_REFRESH_TOKEN` are set. No `config/agent.yaml` edits are required.
+Calendar tools stay disabled until `CALENDAR_ENABLED=true` and at least one provider's `*_CLIENT_ID` / `*_CLIENT_SECRET` / `*_REFRESH_TOKEN` are set. No edits to tracked defaults are required.
 
 ## Zoom
 
@@ -88,7 +88,7 @@ The response will contain `refresh_token`. Copy it.
 
 ### Step 4 — Store the credentials
 
-Enter them in `./scripts/setup.sh --section calendar` (stored as protected secrets, not in `.env`), or update later with `./scripts/setup.sh secrets update NAME`. The names are:
+Enter them in `./setup.sh --section calendar` (stored as protected secrets, not in `data/.env`), or update later with `./setup.sh secrets update NAME`. The names are:
 
 ```text
 CALENDAR_GOOGLE_CLIENT_ID
@@ -96,7 +96,7 @@ CALENDAR_GOOGLE_CLIENT_SECRET
 CALENDAR_GOOGLE_REFRESH_TOKEN
 ```
 
-The optional target calendar (defaults to `primary`) is the non-secret setting `CALENDAR_GOOGLE_CALENDAR_ID`, which the wizard writes to `.env`.
+The optional target calendar (defaults to `primary`) is the non-secret setting `CALENDAR_GOOGLE_CALENDAR_ID`, which the wizard writes to `data/.env`.
 
 The `CalendarRouter` will automatically refresh the access token when it expires using the stored refresh token.
 
@@ -154,7 +154,7 @@ Copy `refresh_token` from the response.
 
 ### Step 5 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./scripts/setup.sh --section calendar` (stored as protected secrets), or update later with `./scripts/setup.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `.env` through the wizard:
+Enter the client ID, client secret and refresh token in `./setup.sh --section calendar` (stored as protected secrets), or update later with `./setup.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `data/.env` through the wizard:
 
 ```env
 CALENDAR_OUTLOOK_TENANT_ID=your-tenant-id
@@ -210,16 +210,15 @@ Copy `refresh_token` from the response.
 
 ### Step 4 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./scripts/setup.sh --section calendar` (stored as protected secrets), or update later with `./scripts/setup.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `.env` through the wizard:
+Enter the client ID, client secret and refresh token in `./setup.sh --section calendar` (stored as protected secrets), or update later with `./setup.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `data/.env` through the wizard:
 
 ```env
-# Optional: target a specific calendar UID (can also be set in agent.yaml at
-# agent.calendar.zoho.calendar_id). If omitted, the integration uses "default",
+# Optional: target a specific calendar UID. If omitted, the integration uses "default",
 # which may be empty if your events are stored in another Zoho calendar.
 # CALENDAR_ZOHO_CALENDAR_ID=849d6badb4e04acc91860c43db0fb109
 
-# Optional: override the API base (can also be set in agent.yaml at
-# agent.calendar.zoho.api_base). Default: https://calendar.zoho.com/api/v1
+# Optional: override the API base with CALENDAR_ZOHO_API_BASE in
+# data/overrides.env. Default: https://calendar.zoho.com/api/v1
 # CALENDAR_ZOHO_API_BASE=https://calendar.zoho.eu/api/v1
 ```
 
@@ -242,7 +241,6 @@ These variables apply across all providers:
 |----------|---------|-------------|
 | `CALENDAR_ENABLED` | `false` | Set `true` to expose calendar tools when provider credentials are present |
 | `AGENT_TIMEZONE` | `UTC` | Authoritative timezone for implicit event times and all-day boundaries (e.g. `America/New_York`) |
-| `CALENDAR_TIMEZONE` | deprecated | Ignored; use `AGENT_TIMEZONE` |
 | `CALENDAR_DEFAULT_PROVIDER` | first discovered | Which provider to use when the agent does not specify one |
 | `CALENDAR_DEFAULT_ALERT_MINUTES` | `30` | Minutes before each event to set a reminder alert (0 to suppress) |
 
@@ -250,20 +248,18 @@ These variables apply across all providers:
 
 ## Verifying configuration
 
-For an existing installation, run `./scripts/setup.sh --section calendar`.
+Run `./setup.sh --section calendar`.
 The optional read-only verification uses a fresh access token and checks both
 calendar discovery and event access, without creating events or persisting the
 test token. Verification failure does not prevent saving an offline draft, and
 no credentials are automatically rotated.
 
 Zoho `.com` accounts use `https://accounts.zoho.com/oauth/v2/token` and
-`https://calendar.zoho.com/api/v1`. Older setup versions saved the bare calendar
-origin without `/api/v1`; the provider now normalizes that origin to the API
-route. A persistent HTTP 401 after one token refresh is an authentication error,
+`https://calendar.zoho.com/api/v1`. A persistent HTTP 401 after one token refresh is an authentication error,
 not proof of an empty calendar. If it persists after fixing the route, verify the
 client ID/secret and matching refresh token. `INVALID_OAUTHSCOPE` requires renewed
 consent for `ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`: token refresh
-cannot grant missing scopes. Use setup or `./scripts/setup.sh secrets update`
+cannot grant missing scopes. Use setup or `./setup.sh secrets update`
 to store replacements, and explicitly activate/recreate affected consumers.
 
 `calendar_list_busy` returns `status`, `complete`, and `provider_errors` alongside
@@ -273,7 +269,7 @@ providers, healthy-provider windows remain available but `status=degraded` and
 providers, `status=no_providers` and `complete=false`.
 
 After adding credentials and activating the affected services, check tool status
-with `./scripts/setup.sh tools`. Calendar-provider requests continue to use
+with `./setup.sh tools`. Calendar-provider requests continue to use
 verified HTTPS; never use plain HTTP or disable certificate verification. The
 response lists active providers and whether calendar tools are exposed.
 
@@ -281,6 +277,6 @@ response lists active providers and whether calendar tools are exposed.
 
 ## Security notes
 
-- Refresh tokens grant long-lived access to your calendar. Store `.secrets/` securely and never commit it to source control.
+- Refresh tokens grant long-lived access to your calendar. Store `data/.secrets/` securely and never commit it to source control.
 - The assistant can only create, update, and delete events that it created itself — it cannot modify third-party events.
 - Set `agent.calendar.policy.allow_read_event_details: false` (the default) to redact event titles and descriptions from free/busy results; the agent will only see time windows, not content.
