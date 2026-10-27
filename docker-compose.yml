@@ -1,9 +1,6 @@
 name: assistant
 
 x-agent-secrets: &agent-secrets
-  AGENT_APP_BASE_URL: ${AGENT_APP_BASE_URL:-}
-  AGENT_API_DOCS_ENABLED: ${AGENT_API_DOCS_ENABLED:-}
-  AGENT_API_OPENAPI_ENABLED: ${AGENT_API_OPENAPI_ENABLED:-}
   AGENT_NAME: ${AGENT_NAME:-}
   AGENT_EMAIL: ${AGENT_EMAIL:-}
   ADMIN_NAME: ${ADMIN_NAME:-}
@@ -142,45 +139,6 @@ services:
     networks:
       - clamav_net
       - service_egress_net
-
-  agent-api:
-    <<: *agent-common
-    profiles: ["api"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      sandbox:
-        condition: service_started
-    environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
-      AGENT_ROLE: api
-      AGENT_API_BIND_HOST: ${AGENT_API_BIND_HOST:-0.0.0.0}
-      AGENT_API_ALLOW_PUBLIC_BIND: "true"
-    volumes:
-      - ./data/share:/data/share
-      - type: bind
-        source: ./data/private/tls/server.crt
-        target: /run/assistant/tls/server.crt
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./data/private/tls/server.key
-        target: /run/assistant/tls/server.key
-        read_only: true
-        bind:
-          create_host_path: false
-      - *postgres-tls-volume
-      - *sandbox-tls-volume
-      - *agent-config-volume
-    ports:
-      - "127.0.0.1:${AGENT_API_PUBLISHED_PORT:-8000}:8000"
-    networks:
-      - database_net
-      - model_net
-      - egress_net
-      - sandbox_net
 
   downloader:
     <<: *agent-common

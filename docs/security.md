@@ -46,8 +46,8 @@ leave a pending/failed deletion with its identifiers and database records intact
 some already-completed remote/file removals may be irreversible. Writer services
 stay stopped when a deletion remains incomplete. **Resume an incomplete
 deletion** retries that original scope. A successful receipt contains no deleted
-message bodies or object contents. The old per-job API erase operation refuses
-workstream-owned jobs because it bypasses shared-object retention.
+message bodies or object contents. The old per-job deletion path refused workstream-owned jobs because it bypassed
+shared-object retention.
 
 Browsing lists object relationships; deletion preview additionally verifies
 physical files and cleanup dependencies. Workstream command failures identify
@@ -67,18 +67,20 @@ and installation-level state are not task data and are not deleted.
 
 ## Access model
 
-The email-first deployment publishes no application port. Browser administration
-and shared editing are removed. The optional API requires HTTPS and bearer
-authentication for every route, including `/health`. See [API access](dashboard-and-api.md).
+The deployment publishes no application port. Browser administration, shared
+editing, and the optional management API are removed.
 PostgreSQL, Ollama, ClamAV and sandbox broker ports remain private. PostgreSQL
 connections and sandbox RPC use verified TLS; the sandbox also requires its
 service-scoped bearer token.
 
 Use a dedicated assistant mailbox, sender/recipient allowlists, verified admin
 identity, and explicit review for sensitive actions. See [email administration](email-administration.md).
-DMARC authenticates a domain, not an individual mailbox. Only trust receiving
-providers that strip forged authentication headers and enforce the authorized
-mailbox identity. HMAC-signed admin commands provide a separate verification path.
+Admin requests require a one-use OTP and request hash delivered in an independent
+email to the configured admin, valid for ten minutes. From headers alone cannot
+authorize requests. This trusts possession of the admin mailbox; a leaked
+confirmation or compromised mailbox defeats that trust. The hash binds the
+pending action and is not a second authentication factor. Approval credentials
+are excluded from model context.
 
 ## Docker secrets
 
@@ -86,16 +88,78 @@ Run `./scripts/setup.sh` to configure credentials without editing `.env`.
 Credentials are stored in gitignored `.secrets` files with directory mode `0700`
 and file mode `0600`. A generated `.compose-secrets.yaml` grants read-only mounts
 under `/run/secrets` only to relevant services. `.env` contains non-secret settings.
+
+### Optional Docker volume storage
+
+Choose **Move credentials to a dedicated Docker volume** at the wizard's final
+review, or in the post-setup configuration menu. The choice takes effect only on
+**Save**. Setup copies credentials into an installation-specific external Docker
+volume, verifies their contents and volume-subpath support, then deletes the
+original `.secrets` credential files. Failed migration leaves the original
+configuration and credential files intact. Setup then recreates running services
+that use credentials so they switch to the volume mounts; if that step fails, run
+`./scripts/setup.sh secrets apply` to retry.
+
+The generated overlay mounts a separate service-specific directory from the
+volume read-only at `/run/secrets`, so services do not receive each other's
+credentials. This requires Docker Engine and Compose versions supporting volume
+subpaths. A disposable `python:3.12-slim` helper (pulled on first use if absent)
+reads and updates the volume with no network, dropped capabilities, and container
+logging disabled. Credentials are passed over stdin, not command arguments or
+environment variables; setup does not stage plaintext copies on the host.
+No additional persistent service is needed.
+
+`secrets status`, `secrets update`, `secrets apply` and database rotation/recovery
+continue to use the selected store. Docker must be available to manage credentials
+once this option is enabled. If migration uses explicitly authorized noninteractive
+sudo, subsequent volume access uses that authorization too.
+
+The volume remains **plaintext**. This option keeps credentials out of ordinary
+project reads, indexing and project archives; it does not protect against Docker
+administrators or compromise of a service authorized to read a credential.
+Setup metadata stays in `.secrets/state.json`; TLS files under `data/private/tls`
+and OAuth tokens persisted in PostgreSQL are not moved by this option.
+Keep `state.json`: it contains no credential values, but records the active volume,
+setup completion and pending credential activation. Removing it prevents setup
+from finding the selected store reliably. The otherwise empty `.secrets` directory
+is retained for this metadata.
+
+To reverse the move, choose **Move credentials back to plaintext host files** in
+the post-setup menu or final review, then **Save and finish**. Setup restores
+restricted `.secrets` files (`0700` directory, `0600` files), switches the Compose
+overlay back to file-backed secrets, then handles the cleanup automatically: it
+confirms the host files match, recreates running services with host mounts,
+removes stopped containers of this installation that still reference the volume
+(the next `docker compose up` recreates them), and destroys the volume. Setup
+refuses to remove a volume used by containers from another Compose project. If
+any step fails, `.secrets` stays authoritative, the volume is kept, and setup
+retries removal the next time it opens. Moving back to the
+volume later copies the current host values, including intervening updates.
+
+Factory reset preserves both credential stores and `.secrets/state.json`; it
+does not delete Docker volumes. Selecting the runtime-state reset category can
+still clear cached provider tokens and pending approvals in PostgreSQL, as
+described by that category; it does not erase the stored setup credentials.
+
+Back up the credential volume **and** `.secrets/state.json`, `.env` and
+`.compose-secrets.yaml`. Backing up the project directory alone no longer includes
+these credentials. The volume is external, so `docker compose down --volumes`
+does not remove it; explicit volume removal or pruning unused volumes can still
+destroy it. Do not remove it until its credentials have been backed up or revoked.
+Deleting source files does not remove copies in older backups.
+
+### Runtime access
+
 The sandbox initialization helper receives only its broker token and TLS pair.
 It has no network or Docker socket and temporarily uses `DAC_READ_SEARCH` to read
 protected host-owned sources. It stages root-owned keys/token (`0600`) into a
 private Docker-managed volume. The capability-free broker mounts this volume
 read-only; its runtime credentials are never made world-readable. The token is
-also mounted only into its two callers (`task-agent` and the optional API).
+also mounted only into its caller (`task-agent`).
 Ephemeral command containers receive no credential mounts.
 
-This is ordinary Docker Compose, not Swarm: host source files are plaintext, not
-encrypted. Compose file-backed mounts do not reliably implement requested
+This is ordinary Docker Compose, not Swarm: both host source files and optional
+volume contents are plaintext, not encrypted. Compose file-backed mounts do not reliably implement requested
 `uid`/`gid`/`mode` remapping; verify effective access on the deployment host. Keep
 host permissions restrictive and use FileVault/LUKS if disk encryption is needed.
 Host administrators, Docker-daemon users and compromised authorized services can
@@ -139,14 +203,12 @@ removal does not retract remote files or revoke Dropbox authorization. See the
 ```
 
 Status shows names, not values. Updates use masked input and explicit confirmation.
-Generated client tokens/signing keys are shown only after a separate reveal request.
 Activation recreates affected running containers: a plain restart may retain the
 old file bind mount after atomic replacement. Inactive profiles are not started.
 Saved credentials can remain pending; inspect service health after activation.
 
 Obtain replacement third-party credentials from the provider, apply and verify
 them, then revoke the old credentials. The CLI does not rotate keys at providers.
-API-token/signing-key changes invalidate clients still using the previous value.
 
 Database-password updates use a coordinated maintenance flow: stop consumers,
 alter the database role, replace the file, verify network authentication, and
@@ -156,22 +218,6 @@ not the password in an existing database. If interrupted, use
 the recorded services. Recovery data is protected locally; database and filesystem
 changes are not one atomic transaction. Custom/external databases require a
 deployment-specific rotation procedure and are explicitly refused by this flow.
-
-## API exposure
-
-Compose publishes the optional API only on `127.0.0.1`; remote LAN/VPN binding is
-not supported by the managed setup. The API binds inside its container for Docker
-port forwarding, but host access remains loopback-only. Use an SSH tunnel for
-remote administration rather than widening the host bind. Do not expose the Docker
-daemon through unauthenticated TCP: use OS-controlled sockets, SSH, or mTLS.
-
-Import a trusted, hostname-valid TLS certificate for production. The wizard's
-development certificate covers localhost/127.0.0.1 only; explicitly trust its
-certificate in development clients instead of disabling certificate verification.
-Keep API docs/OpenAPI disabled unless needed. A reverse proxy must retain a secure
-HTTPS backend and correct, narrowly trusted forwarding configuration if one is
-used on the host; HTTP is rejected by the API. The managed deployment does not
-publish the API for remote clients.
 
 ## Transport security
 

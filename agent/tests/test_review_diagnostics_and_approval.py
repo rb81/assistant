@@ -4,10 +4,8 @@ Tests for:
   2. _diagnostics() SQL token-format robustness (malformed/missing fields degrade gracefully)
   3. email-based admin approval override via EmailDownloader.apply_email_review_override()
   4. request_limit_increase tool handler status-transition (TaskAgent)
-  5. /api/jobs/{id}/poll endpoint shape (lightweight integration)
 """
 
-import os
 import sys
 import types
 import unittest
@@ -19,8 +17,6 @@ from unittest.mock import MagicMock
 # ---------------------------------------------------------------------------
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 
-# Set DATABASE_URL to bypass POSTGRES_PASSWORD check in api.py module initialization
-os.environ.setdefault("DATABASE_URL", "postgresql://stub:stub@localhost/stub?sslmode=verify-full&sslrootcert=%2Fdev%2Fnull")
 
 psycopg_module = types.ModuleType("psycopg")
 # MagicMock returns a context manager that supports with statement and has cursor() method
@@ -291,6 +287,9 @@ class _ApprovalQueueDb:
         self.logged: list[tuple[Any, ...]] = []
 
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
+        if "UPDATE jobs" in sql:
+            self.executed.append((sql, params))
+            return self._job
         if "FROM deep_research_runs" in sql:
             return None
         if "FROM jobs" in sql:
@@ -329,6 +328,14 @@ def _make_downloader(db: Any, extra_config: Optional[dict[str, Any]] = None) -> 
 
 
 class EmailApprovalOverrideTest(unittest.TestCase):
+    def test_stale_review_does_not_append_instructions_or_log_success(self):
+        db = _ApprovalQueueDb()
+        downloader = _make_downloader(db)
+        with self.assertRaisesRegex(ValueError, "no longer awaiting"):
+            downloader.apply_email_review_override({"id": 99, "metadata": {}}, 0, "Do not duplicate")
+        self.assertFalse(any("supervisor_instructions" in sql for sql, _ in db.executed))
+        self.assertEqual(db.logged, [])
+
     def test_is_admin_sender_matches_plain_admin_email(self) -> None:
         # from_addresses in the ingest pipeline are plain email addresses
         # (already parsed from headers), not RFC 2822 display-name format.
@@ -529,86 +536,6 @@ class RequestLimitIncreaseFormatTest(unittest.TestCase):
         self.assertNotIn("agent limit increase request", d["explanation"])
         self.assertIn("Need X tokens for Y", d["explanation"])
 
-
-# ===========================================================================
-# 5. /api/jobs/{id}/poll endpoint shape
-#    Lightweight check: build a minimal FastAPI test client to call the
-#    new endpoint without a live DB.
-# ===========================================================================
-
-class PollEndpointShapeTest(unittest.TestCase):
-    """Verify the poll endpoint returns the expected top-level keys.
-
-    We monkey-patch the module-level `db` and `config` used by api.py so no
-    real database or config file is needed.
-    """
-
-    def test_poll_endpoint_returns_expected_keys(self) -> None:
-        try:
-            from fastapi.testclient import TestClient
-        except ImportError:
-            self.skipTest("fastapi[testclient] not available in this environment")
-
-        import assistant_agent.api as api_module  # noqa: PLC0415
-
-        # Stub the module-level db and config
-        stub_db = _PollStubDb()
-        api_module.db = stub_db  # type: ignore[attr-defined]
-        api_module.config = AppConfig({"agent": {"limits": {}, "api": {"auth_token": "test-token"}}})  # type: ignore[attr-defined]
-
-        client = TestClient(api_module.app, raise_server_exceptions=True, base_url="https://testserver", headers={"Authorization": "Bearer test-token"})
-        resp = client.get("/api/jobs/1/poll?after_sequence=0")
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        for key in ("job", "usage", "actions", "new_logs"):
-            self.assertIn(key, body, "Missing key '%s' in poll response" % key)
-
-    def test_poll_endpoint_returns_404_for_missing_job(self) -> None:
-        try:
-            from fastapi.testclient import TestClient
-        except ImportError:
-            self.skipTest("fastapi[testclient] not available in this environment")
-
-        import assistant_agent.api as api_module  # noqa: PLC0415
-
-        stub_db = _PollStubDb(job=None)
-        api_module.db = stub_db  # type: ignore[attr-defined]
-        api_module.config = AppConfig({"agent": {"limits": {}, "api": {"auth_token": "test-token"}}})  # type: ignore[attr-defined]
-
-        client = TestClient(api_module.app, raise_server_exceptions=False, base_url="https://testserver", headers={"Authorization": "Bearer test-token"})
-        resp = client.get("/api/jobs/999/poll")
-        self.assertEqual(resp.status_code, 404)
-
-
-class _PollStubDb:
-    def __init__(self, job: Any = ...) -> None:
-        if job is ...:
-            self._job: Optional[dict[str, Any]] = {
-                "id": 1,
-                "status": "running",
-                "last_error": None,
-                "task_summary": "test",
-                "updated_at": None,
-                "locked_at": None,
-                "attempts": 0,
-                "completed_at": None,
-                "metadata": {},
-                "thread_id": "thread-1",
-            }
-        else:
-            self._job = job
-
-
-    def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
-        if "FROM jobs" in sql:
-            return self._job
-        return {"count": 0, "total_tokens": 0, "api_call_count": 0, "cost_total": 0.0}
-
-    def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return []
-
-    def log_event(self, *args: Any, **kwargs: Any) -> None:
-        pass
 
 
 if __name__ == "__main__":

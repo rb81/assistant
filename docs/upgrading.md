@@ -1,8 +1,7 @@
 # Upgrading from v1 to v2
 
-This is a breaking upgrade: browser administration/shared editing, Projects,
-separate notes and entities are retired. The retained API now requires TLS and
-bearer authentication. Do not blindly pull `main` into a running v1
+This is a breaking upgrade: browser administration/shared editing, the optional
+management API, Projects, separate notes and entities are retired. Do not blindly pull `main` into a running v1
 deployment. v1 stays available unchanged on the `v1` branch and the `v1.0.0`
 release; v2 is on `main`.
 
@@ -16,7 +15,11 @@ already-migrated databases are not affected.
 
 1. Record current commit/image versions and preserve the old code.
 2. Stop old workers/downloaders/schedulers, including the project scheduler.
-   Do not mix old/new workers against the same database.
+   If the old Compose configuration includes `agent-api`, stop and remove that
+   container before updating:
+   `docker compose stop agent-api && docker compose rm -f agent-api`.
+   This removes only the container, not PostgreSQL or other data. Do not mix
+   old/new workers against the same database.
 3. With PostgreSQL still available, take a logical backup. For the default database:
    `docker compose exec -T postgres pg_dump -U assistant -d assistant > assistant-before-upgrade.sql`.
    Protect the dump as confidential and test restoration into a disposable database.
@@ -35,7 +38,7 @@ already-migrated databases are not affected.
   children remain ordinary jobs; unstarted project tasks are not queued. Jobs
   awaiting admin review stay paused.
 - Use email `/admin` commands or the local CLI instead of browser pages. Removed
-  browser/project/note/entity routes do not provide compatibility views.
+  browser/API/project/note/entity routes do not provide compatibility views.
 - Calendar, reminders and requests use `AGENT_TIMEZONE`. Deprecated overrides no
   longer control implicit times; explicit offsets preserve their instant.
 - Zoom support is optional. Job erasure removes local meeting records, not meetings
@@ -52,17 +55,21 @@ already-migrated databases are not affected.
    conflicting/duplicate credentials before proceeding.
    Decline replacing customized instructions. Decline optional container startup
    until all upgrade preparations and client changes are complete.
-3. Configure authenticated email administration. For the optional API, import a
-   trusted hostname-valid certificate and configure clients with the bearer token.
-   Development certificates only cover localhost/127.0.0.1; never disable verification.
+3. Configure authenticated email administration. Setup removes retired
+   management API options, old admin-signing settings/secrets, and API-only TLS
+   files when saving.
 4. Once your backup is verified, add `ASSISTANT_ACCEPT_V2_MIGRATION=yes` to `.env`
    (setup preserves it). Then accept the wizard's optional startup, or run
-   `docker compose up -d --build`. Starting before this step makes workers exit
-   with "Upgrade blocked" and changes nothing. Ordered migrations run automatically at
-   startup. Do not apply individual SQL files manually without migration tracking.
+   `docker compose up -d --build`. If you did not remove the old API container
+   before updating, inspect `docker compose ps -a --orphans`; after confirming
+   the orphan is only `agent-api`, run `docker compose down --remove-orphans`
+   (without `--volumes`) and then start the stack again. This stops/removes
+   containers and networks but preserves data volumes and bind-mounted data.
+   Starting before the migration acknowledgement makes workers exit with
+   "Upgrade blocked" and changes nothing. Ordered migrations run automatically
+   at startup. Do not apply individual SQL files manually without migration tracking.
 5. Verify service health, `/admin status`, migrated memories, child-job history,
-   reminders and optional integrations. API health checks need HTTPS and bearer auth.
-   Confirm backend ports and secrets remain private.
+   reminders and optional integrations. Confirm backend ports and secrets remain private.
 
 Old backups/history may retain plaintext credentials. File migration does not erase
 those copies; rotate exposed provider credentials after successful verification.

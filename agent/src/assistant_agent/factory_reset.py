@@ -65,7 +65,8 @@ CATEGORIES = {
         notes="Also removes all task data; does not delete remote provider objects."),
 }
 
-PRESERVED = (".env, overrides.env, .secrets/, .compose-secrets.yaml, config/ (agent.yaml, AGENT.md), data/skills, "
+PRESERVED = (".env, overrides.env, .secrets/ (including setup state), credential Docker volumes, "
+             ".compose-secrets.yaml, config/ (agent.yaml, AGENT.md), data/skills, "
              "TLS certificates, Ollama models, ClamAV signatures and database schema/migration history")
 
 

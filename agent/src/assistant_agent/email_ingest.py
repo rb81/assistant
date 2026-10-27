@@ -1,3 +1,4 @@
+import base64
 import email
 import hashlib
 import imaplib
@@ -252,7 +253,11 @@ class EmailDownloader:
             raise RuntimeError("IMAP EXPUNGE after archive copy failed: %s" % status)
         LOGGER.info("archived IMAP UID %s to %s via COPY/EXPUNGE fallback", uid_text, target_folder)
 
-    def ingest_raw(self, raw_bytes: bytes, folder: str = "INBOX") -> IngestResult:
+    def ingest_raw(
+        self, raw_bytes: bytes, folder: str = "INBOX", *,
+        approved_instruction: Optional[str] = None, approved_thread_id: Optional[str] = None,
+        approved_review: Optional[dict[str, Any]] = None,
+    ) -> IngestResult:
         parsed = email.message_from_bytes(raw_bytes)
         message_id = json_safe(message_id_for(raw_bytes, parsed, message_id_domain(self.config)))
         existing = self.db.fetch_one("SELECT id, is_actionable FROM emails WHERE message_id = %s", (message_id,))
@@ -261,21 +266,67 @@ class EmailDownloader:
 
         subject = json_safe(decode_mime_header(parsed.get("Subject")) or "")
         from .admin_commands import AdminCommands, is_admin_subject
+        from .email_approvals import EmailApprovals, admin_sender, approval_reply, reply_text
+        if approved_instruction is None:
+            try:
+                approval = approval_reply(parsed)
+                if approval:
+                    if not admin_sender(parsed, self.config):
+                        LOGGER.warning("admin approval rejected from an unauthorized or automated sender: %s", message_id)
+                        return IngestResult(inserted=True, queued=False, message_id=message_id)
+                    token, digest, instruction = approval
+                    payload = EmailApprovals(self.db, self.config).consume(token, digest)
+                    if payload["kind"] == "email":
+                        current = self.db.fetch_one(
+                            "SELECT * FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
+                            (payload["thread_id"],),
+                        )
+                        snapshot = {"id": current["id"], "review_version": str(current["updated_at"]) if current["status"] == "needs_review" else None} if current else None
+                        if snapshot != payload["job"]:
+                            raise ValueError("The target job has changed. Send a fresh request.")
+                        return self.ingest_raw(
+                            base64.b64decode(payload["raw"]), payload["folder"], approved_instruction=instruction,
+                            approved_thread_id=payload["thread_id"],
+                            approved_review=current if current and current["status"] == "needs_review" else None,
+                        )
+                    if payload["kind"] == "review":
+                        job = self.db.fetch_one(
+                            "SELECT * FROM jobs WHERE id = %s AND status = 'needs_review' AND updated_at = %s",
+                            (payload["job_id"], payload["version"]),
+                        )
+                        if not job:
+                            raise ValueError("The job has changed since this approval was requested. Send /admin review JOB_ID again.")
+                        self.apply_email_review_override(job, 0, instruction)
+                        response = "Job %s approved." % payload["job_id"]
+                    else:
+                        body = payload["body"]
+                        guidance_unused = False
+                        if instruction:
+                            words = payload["subject"].split()
+                            if len(words) >= 2 and words[1] in {"review", "instruct"}:
+                                body = (body + "\n\n" + instruction).strip()
+                            else:
+                                guidance_unused = True
+                        try:
+                            response = AdminCommands(self.db, self.config).execute(payload["subject"], body, confirmed=True)
+                        except (ValueError, TypeError) as exc:
+                            response = "Command error: %s" % exc
+                        if guidance_unused:
+                            response += "\n\nAdditional text was not applied: this command has no LLM job. Use /admin instruct JOB_ID for job guidance."
+                    AdminCommands(self.db, self.config).reply(parsed, response)
+                    return IngestResult(inserted=True, queued=False, message_id=message_id)
+            except ValueError as exc:
+                LOGGER.warning("admin approval rejected for %s: %s", message_id, exc)
+                return IngestResult(inserted=True, queued=False, message_id=message_id)
         if is_admin_subject(subject):
-            body = "\n".join(payload_to_text(part) for part in parsed.walk() if part.get_content_type() == "text/plain")
-            handled = AdminCommands(self.db, self.config).handle(parsed, subject, body)
-            return IngestResult(inserted=handled, queued=True, message_id=message_id)
+            handled = AdminCommands(self.db, self.config).handle(parsed, subject, reply_text(parsed))
+            return IngestResult(inserted=handled, queued=False, message_id=message_id)
         in_reply_to = json_safe(parsed.get("In-Reply-To"))
         references = json_safe(parse_reference_header(parsed.get("References")))
         from_addresses = json_safe(parse_addresses(parsed.get("From")))
         to_addresses = json_safe(parse_addresses(parsed.get("To")))
         cc_addresses = json_safe(parse_addresses(parsed.get("Cc")))
-        body_text, body_html, attachments = extract_bodies_and_attachments(parsed, self.attachment_root, message_id)
-        body_text = strip_disclosure_text(body_text)
-        body_html = strip_disclosure_html(body_html)
-        body_text = json_safe(body_text)
-        body_html = json_safe(body_html)
-        thread_id = self.resolve_thread_id(
+        thread_id = approved_thread_id or self.resolve_thread_id(
             message_id,
             in_reply_to,
             references,
@@ -286,6 +337,31 @@ class EmailDownloader:
         if actionable and self.is_managed_calendar_notification(parsed):
             LOGGER.info("storing calendar notification %s for an assistant-managed event without queueing", message_id)
             actionable = False
+        configured_admin = str(self.config.get("agent.admin.email") or "").strip().lower()
+        if actionable and approved_instruction is None and configured_admin in {address.lower() for address in from_addresses}:
+            if not admin_sender(parsed, self.config):
+                LOGGER.warning("admin request rejected from an ambiguous or automated sender: %s", message_id)
+                return IngestResult(inserted=True, queued=False, message_id=message_id)
+            job = self.db.fetch_one(
+                "SELECT id, status, updated_at FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
+                (thread_id,),
+            )
+            EmailApprovals(self.db, self.config).request(
+                message_id,
+                {
+                    "kind": "email", "raw": base64.b64encode(raw_bytes).decode("ascii"), "folder": folder,
+                    "thread_id": thread_id,
+                    "job": {"id": job["id"], "review_version": str(job["updated_at"]) if job["status"] == "needs_review" else None} if job else None,
+                },
+                "Process this email as an authenticated admin request:\n%s\n\n%s" % (subject, reply_text(parsed)),
+            )
+            return IngestResult(inserted=True, queued=False, message_id=message_id)
+        body_text, body_html, attachments = extract_bodies_and_attachments(parsed, self.attachment_root, message_id)
+        body_text = json_safe(strip_disclosure_text(body_text))
+        body_html = json_safe(strip_disclosure_html(body_html))
+        if approved_instruction:
+            body_text = (body_text + "\n\nAdmin instruction:\n" + approved_instruction).strip()
+            body_html = None
 
         row = self.db.fetch_one(
             """
@@ -332,8 +408,7 @@ class EmailDownloader:
         self.process_artifacts(row, attachments, body_text, body_html)
 
         if actionable:
-            from .admin_commands import authenticated_admin
-            verified_admin = authenticated_admin(parsed, self.config, subject, body_text)
+            verified_admin = approved_instruction is not None
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
             RequestService(self.db).receive_request(
                 IncomingRequest(
@@ -345,7 +420,9 @@ class EmailDownloader:
                 ),
                 summary=subject, admin_authenticated=verified_admin,
                 resume_research=self.resume_waiting_deep_research_for_thread,
-                review_override=self.apply_email_review_override,
+                review_override=(
+                    lambda _job, email_id, body: self.apply_email_review_override(approved_review, email_id, body)
+                ) if approved_review is not None else None,
             )
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
         return IngestResult(inserted=True, queued=actionable, message_id=message_id)
@@ -494,7 +571,7 @@ class EmailDownloader:
         if instruction:
             override["instruction"] = instruction
 
-        self.db.execute(
+        claimed = self.db.fetch_one(
             """
             UPDATE jobs
             SET metadata = metadata || %s,
@@ -507,9 +584,13 @@ class EmailDownloader:
                 updated_at = now()
             WHERE id = %s
               AND status = 'needs_review'
+              AND (%s::timestamptz IS NULL OR updated_at = %s::timestamptz)
+            RETURNING id
             """,
-            (Jsonb(json_safe({"admin_review_override": override})), job_id),
+            (Jsonb(json_safe({"admin_review_override": override})), job_id, job.get("updated_at"), job.get("updated_at")),
         )
+        if not claimed:
+            raise ValueError("Job is no longer awaiting this review. Send a fresh request.")
         if instruction:
             self.db.execute(
                 "INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",

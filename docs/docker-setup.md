@@ -12,8 +12,8 @@ The image uses `python:3.12-slim`, installs runtime OS packages (`pandoc`,
 Run `./scripts/setup.sh` first. It creates non-secret `.env` settings, protected
 credential files and a generated Compose overlay with per-service secret mounts.
 Start from the repository directory with `docker compose up -d --build`.
-The `email` profile selects the downloader; `api` is separately opt-in. The
-wizard configures both through `COMPOSE_PROFILES`.
+The `email` profile selects the downloader. The wizard configures it through
+`COMPOSE_PROFILES`.
 
 Existing saved installations open a section picker, even if credential activation
 is pending. Use `./scripts/setup.sh --section embeddings` to update semantic
@@ -59,7 +59,6 @@ Main services in `docker-compose.yml`:
 
 - `postgres`
 - `clamav`
-- `agent-api`
 - `downloader`
 - `task-agent`
 - `workspace-indexer`
@@ -90,8 +89,8 @@ ClamAV need egress for model downloads and signature updates; their separate
 service egress bridge disables inter-container forwarding. Keeping this bridge
 separate from agent egress ensures service DNS resolves through the clients'
 scoped internal networks rather than a blocked shared egress address.
-The sandbox broker is reachable only from
-`agent-api` and `task-agent` over verified HTTPS with a separate bearer token.
+The sandbox broker is reachable only from `task-agent` over verified HTTPS with
+a separate bearer token.
 
 Per-command run containers are created by the broker on ephemeral per-run bridge
 networks (not on application networks). They run as root for package installation,
@@ -107,7 +106,6 @@ Default bind mounts:
 - `./data/ollama` → Ollama model cache
 - `./data/clamav` → ClamAV signatures/state
 - `./config` (read-only) → `/app/config`
-- API certificate/key files (read-only) → the optional API only
 - PostgreSQL and sandbox service certificates (read-only) → agent clients
 - PostgreSQL and sandbox private keys (read-only) → only their respective servers
 - Selected `.secrets` files (read-only) → `/run/secrets` in authorized services

@@ -106,7 +106,7 @@ must be running for status/reindex; Ollama must be running and the model availab
 for probe/reindex. Failed runs retain completed replacements: rerun the same
 command to resume. Concurrent source edits/deletions are not overwritten, and an
 unfinished rebuild exits nonzero. Recreate all enabled embedding consumers after
-saving settings, including `agent-api` when enabled, rather than merely restarting
+saving settings, including `task-agent` when enabled, rather than merely restarting
 containers with their old environment. The rebuild does not enable workers itself.
 
 ## Workspace Semantic Index

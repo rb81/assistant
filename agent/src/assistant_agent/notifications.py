@@ -45,12 +45,25 @@ def notify_admin_job_failure(
             )
             return
 
-        result = ToolRuntime(db, config, job).email_send(
-            to=[config.get("agent.admin.email")],
-            subject=_subject(config, job_id, clean_reason),
-            body=_body(db, config, job, clean_status, clean_reason, clean_source),
-            new_thread=True,
-        )
+        if clean_status == "needs_review":
+            from .email_approvals import EmailApprovals
+            current = db.fetch_one("SELECT updated_at FROM jobs WHERE id = %s AND status = 'needs_review'", (job_id,))
+            if not current:
+                LOGGER.info("job %s is no longer awaiting review; not sending an approval", job_id)
+                return
+            sent = EmailApprovals(db, config).request(
+                "review:%s:%s" % (job_id, current["updated_at"]),
+                {"kind": "review", "job_id": job_id, "version": str(current["updated_at"])},
+                _body(db, config, job, clean_status, clean_reason, clean_source),
+            )
+            result = {"status": "sent" if sent else "already_requested"}
+        else:
+            result = ToolRuntime(db, config, job).email_send(
+                to=[config.get("agent.admin.email")],
+                subject=_subject(config, job_id, clean_reason),
+                body=_body(db, config, job, clean_status, clean_reason, clean_source),
+                new_thread=True,
+            )
         sent = result.get("status") == "sent"
         db.log_event(
             job_id,
@@ -160,10 +173,11 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
     lines.extend([
         "",
         "─── Remote Approval ────────────────────────────",
-        "Reply to this email to approve and continue the job.",
+        "For a needs-review job, reply to the separate OTP/hash confirmation to approve.",
         "  • Your reply body will be passed to the agent as an instruction.",
         "  • Both limits will be increased by %s%%." % increase_pct,
-        "  • Leave the body empty to approve with no additional instruction.",
+        "  • Keep the original confirmation quoted; add no text to approve without instructions.",
+        "  • If it expires, send /admin review %s to request a fresh confirmation." % job["id"],
     ])
 
     return "\n".join(lines)

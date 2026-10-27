@@ -5,6 +5,7 @@ import io
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import stat
@@ -25,14 +26,26 @@ from .transport_security import validate_embedding_url
 from .validation import WEAK_PASSWORDS
 
 
-AGENT_SERVICES = ("agent-api", "downloader", "task-agent", "workspace-indexer",
+AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
                   "reminder-scheduler", "deep-research-agent", "supervisor", "heartbeat",
                   "telegram-receiver", "request-preprocessor")
 MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat")
-TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat", "agent-api")
+TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat")
 LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox", "transcription"}
-GENERATED_SECRETS = {"POSTGRES_PASSWORD", "AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"}
-SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "api", "advanced", "instructions")
+GENERATED_SECRETS = {"POSTGRES_PASSWORD", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"}
+RETIRED_MANAGEMENT_ENV_NAMES = frozenset({
+    "AGENT_APP_BASE_URL", "AGENT_API_AUTH_TOKEN", "AGENT_API_TLS_CERT_FILE",
+    "AGENT_API_TLS_KEY_FILE", "AGENT_API_BIND_HOST", "AGENT_API_PORT",
+    "AGENT_API_DOCS_ENABLED", "AGENT_API_OPENAPI_ENABLED",
+    "AGENT_API_ALLOW_PUBLIC_BIND", "AGENT_API_PUBLISHED_PORT",
+    "AGENT_API_PUBLISHED_HOST", "AGENT_API_DASHBOARD_ENABLED",
+    "AGENT_API_WORKSPACE_ENABLED", "AGENT_API_MAX_UPLOAD_BYTES",
+    "SETUP_API_ENABLED", "ADMIN_COMMAND_SIGNING_KEY",
+    "ADMIN_TRUSTED_AUTHSERV_IDS",
+})
+RETIRED_MANAGEMENT_SECRET_NAMES = frozenset({"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"})
+RETIRED_API_TLS_FILES = ("server.crt", "server.key")
+SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "advanced", "instructions")
 ADVANCED_SETTINGS = {
     "Calendar privacy": (
         ("AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS", "agent.calendar.policy.allow_read_event_details", "Allow reading existing event titles, descriptions, locations and attendees? (does not grant edit/delete access)", False, bool, None),
@@ -72,7 +85,7 @@ PROMPT_DEFAULTS = {
     "AGENT_NAME": "agent.identity.name", "AGENT_EMAIL": "agent.identity.email",
     "ADMIN_NAME": "agent.admin.name", "ADMIN_EMAIL": "agent.admin.email",
     "ORG_NAME": "agent.org.name", "ORG_SECURITY_EMAIL": "agent.org.security_email",
-    "AGENT_TIMEZONE": "agent.app.timezone", "AGENT_APP_BASE_URL": "agent.app.base_url",
+    "AGENT_TIMEZONE": "agent.app.timezone",
     "AGENT_LLM_BASE_URL": "agent.llm.base_url", "AGENT_LLM_MODEL": "agent.llm.model",
     "AGENT_LLM_FALLBACK_MODEL": "agent.llm.fallback_model",
     "CALENDAR_ENABLED": "agent.calendar.enabled", "ZOOM_ENABLED": "agent.zoom.enabled",
@@ -97,14 +110,12 @@ SECTION_KEYS = {
     "identity": (("AGENT_NAME", "AGENT_TIMEZONE", "ADMIN_NAME", "ADMIN_EMAIL", "ORG_NAME", "ORG_SECURITY_EMAIL", "ORG_INTERNAL_EMAIL_DOMAINS"), ()),
     "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "POSTGRES_PASSWORD"), ()),
     "embeddings": ((), ("AGENT_EMBEDDINGS_",)),
-    "email": (("SETUP_EMAIL_ENABLED", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_EMAIL",
-               "ADMIN_TRUSTED_AUTHSERV_IDS", "ADMIN_COMMAND_SIGNING_KEY"), ("IMAP_", "SMTP_")),
+    "email": (("SETUP_EMAIL_ENABLED", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_EMAIL"), ("IMAP_", "SMTP_")),
     "calendar": ((), ("CALENDAR_",)),
     "zoom": ((), ("ZOOM_",)),
     "dropbox": ((), ("DROPBOX_",)),
     "telegram": ((), ("TELEGRAM_",)),
     "transcription": ((), ("TRANSCRIPTION_",)),
-    "api": (("SETUP_API_ENABLED", "AGENT_APP_BASE_URL"), ("AGENT_API_",)),
     "advanced": (tuple(sorted(ADVANCED_ENV_NAMES)), ()),
     "instructions": ((), ()),
 }
@@ -170,7 +181,7 @@ def overrides_template(root, defaults):
         section = path.split(".")[1]
         if section != group:
             group = section
-            lines.append("\n# --- " + {"llm": "LLM", "api": "API"}.get(section, section.replace("_", " ").title()) + " ---\n")
+            lines.append("\n# --- " + {"llm": "LLM"}.get(section, section.replace("_", " ").title()) + " ---\n")
         value = defaults.get(path)
         shown = "unset" if value is None else ",".join(map(str, value)) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else str(value)
         kind = caster.__name__ if caster else "str"
@@ -216,21 +227,17 @@ def secret_services(name):
     if name == "DATABASE_URL":
         return AGENT_SERVICES
     if name in {"OPENROUTER_API_KEY", "OPENAI_API_KEY"}:
-        return (*MODEL_SERVICES, "agent-api")
+        return MODEL_SERVICES
     if name == "IMAP_PASSWORD":
-        return ("downloader", *MODEL_SERVICES, "agent-api")
+        return ("downloader", *MODEL_SERVICES)
     if name == "SMTP_PASSWORD":
-        return ("downloader", *MODEL_SERVICES, "agent-api", "reminder-scheduler")
+        return ("downloader", *MODEL_SERVICES, "reminder-scheduler")
     if name == "TELEGRAM_BOT_TOKEN":
         return ("telegram-receiver", "request-preprocessor", "reminder-scheduler", *TOOL_SERVICES)
     if name == "TRANSCRIPTION_API_TOKEN":
         return ("transcription-init", "request-preprocessor", "downloader")
-    if name == "ADMIN_COMMAND_SIGNING_KEY":
-        return ("downloader",)
-    if name == "AGENT_API_AUTH_TOKEN":
-        return ("agent-api",)
     if name == "SANDBOX_API_TOKEN":
-        return ("sandbox-init", "sandbox", "agent-api", "task-agent")
+        return ("sandbox-init", "sandbox", "task-agent")
     if name.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
         return TOOL_SERVICES
     raise SetupError("Unknown secret name")
@@ -342,14 +349,14 @@ def validate_secret(name, value):
         raise SetupError("Unknown secret name")
     if not value or not value.strip() or "\x00" in value or "\n" in value or "\r" in value:
         raise SetupError("Credentials must be nonempty single-line values")
-    if name in {"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"} and len(value) < 32:
+    if name in {"SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"} and len(value) < 32:
         raise SetupError("Authentication credentials must contain at least 32 characters")
     if value in WEAK_PASSWORDS:
         raise SetupError("Replace the placeholder credential")
 
 
 class Installation:
-    def __init__(self, root):
+    def __init__(self, root, recovering=False):
         self.root = Path(root).resolve()
         self.directory = self.root / ".secrets"
         if self.directory.is_symlink() or (self.directory.exists() and not self.directory.is_dir()):
@@ -358,6 +365,21 @@ class Installation:
         self.env_original = read_regular(self.env_path)
         self.env_text = (self.env_original or b"").decode("utf-8")
         self.values, _ = parse_environment(self.env_text)
+        self.values = {
+            name: value for name, value in self.values.items()
+            if name not in RETIRED_MANAGEMENT_ENV_NAMES and name.removesuffix("_FILE") not in RETIRED_MANAGEMENT_ENV_NAMES
+        }
+        profiles = [name.strip() for name in self.values.get("COMPOSE_PROFILES", "").split(",")
+                    if name.strip() and name.strip() != "api"]
+        if "COMPOSE_PROFILES" in self.values:
+            self.values["COMPOSE_PROFILES"] = ",".join(profiles)
+        self.retired_management_secrets = {
+            name: read_regular(self.directory / name) for name in RETIRED_MANAGEMENT_SECRET_NAMES
+        }
+        retired_tls_directory = self.root / "data/private/tls"
+        self.retired_api_tls_files = {
+            name: read_regular(retired_tls_directory / name) for name in RETIRED_API_TLS_FILES
+        }
         defaults = read_regular(self.root / "config/agent.yaml")
         try:
             parsed = yaml.safe_load(defaults.decode()) if defaults else {}
@@ -383,14 +405,32 @@ class Installation:
         self.state_original = state
         self.overlay_original = read_regular(self.root / ".compose-secrets.yaml")
         self.state = json.loads(state) if state else {"pending": []}
-        if read_regular(self.directory / "rotation.json"):
+        self.credential_volume = None
+        self.use_credential_volume = bool(self.state.get("credential_volume"))
+        if self.state.get("previous_credential_volume"):
+            self.use_sudo = bool(self.state.get("previous_credential_volume_sudo"))
+        if self.use_credential_volume:
+            self.use_sudo = bool(self.state.get("credential_volume_sudo"))
+            from .credential_volume import CredentialVolume
+            name = self.state["credential_volume"]
+            if not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", name):
+                raise SetupError("Invalid credential volume name in setup state")
+            self.credential_volume = CredentialVolume(self, name)
+            self.credential_volume.load()
+        self.state["pending"] = [name for name in self.state.get("pending", []) if name not in RETIRED_MANAGEMENT_SECRET_NAMES]
+        self.state["removed"] = [name for name in self.state.get("removed", []) if name not in RETIRED_MANAGEMENT_SECRET_NAMES]
+        if not recovering and self.read_credential("rotation.json"):
             raise SetupError("Database rotation recovery is pending; run secrets recover first")
         names = set(SECRET_NAMES) | {name for name in self.values if is_secret_name(name)}
         names |= {name.removesuffix("_FILE") for name in self.values if is_secret_name(name.removesuffix("_FILE"))}
         if self.directory.exists():
             names |= {path.name for path in self.directory.iterdir() if is_secret_name(path.name)}
+        if self.credential_volume:
+            names |= {name for name in self.credential_volume.record.get("values", {}) if is_secret_name(name)}
         for name in sorted(names):
-            stored = read_regular(self.directory / name)
+            if self.credential_volume and read_regular(self.directory / name) is not None:
+                raise SetupError("Host credential files conflict with Docker volume storage; move them aside before setup: " + name)
+            stored = self.read_credential(name)
             self.snapshots[name] = stored
             value = stored.decode("utf-8") if stored is not None else None
             inline = self.values.get(name) or None
@@ -416,6 +456,33 @@ class Installation:
                 self.migrated.add(name)
             if value:
                 self.secret_values[name] = value
+
+    def read_credential(self, name):
+        if self.credential_volume:
+            value = self.credential_volume.record.get("values", {}).get(name)
+            return value.encode("utf-8") if value is not None else None
+        return read_regular(self.directory / name)
+
+    def credential_grants(self):
+        return {
+            service: sorted(key.removesuffix("_FILE") for key, value in spec.get("environment", {}).items()
+                            if key.endswith("_FILE") and str(value).startswith("/run/secrets/"))
+            for service, spec in self.overlay()["services"].items()
+            if any(str(value).startswith("/run/secrets/") for value in spec.get("environment", {}).values())
+        }
+
+    def write_credential(self, name, value):
+        if self.credential_volume:
+            values = dict(self.credential_volume.record.get("values", {}))
+            if value is None:
+                values.pop(name, None)
+            else:
+                values[name] = value.decode("utf-8")
+            self.credential_volume.write(values, self.credential_grants())
+        elif value is None:
+            (self.directory / name).unlink(missing_ok=True)
+        else:
+            atomic_write(self.directory / name, value)
 
     def remove_settings(self, prefix):
         if not prefix.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
@@ -465,6 +532,22 @@ class Installation:
                 embedding_settings[name] = str(value).lower() if isinstance(value, bool) else str(value)
             if compose_services is None or "ollama-model-puller" in compose_services:
                 services["ollama-model-puller"] = {"environment": embedding_settings}
+        if self.use_credential_volume:
+            from .credential_volume import CredentialVolume
+            for service, spec in services.items():
+                if spec.pop("secrets", []):
+                    spec["volumes"] = [{
+                        "type": "volume", "source": "assistant-credentials",
+                        "target": "/run/secrets", "read_only": True,
+                        "volume": {"nocopy": True, "subpath": "services/" + service},
+                    }]
+            return {
+                "services": services,
+                "volumes": {"assistant-credentials": {
+                    "external": True,
+                    "name": self.state.get("credential_volume") or CredentialVolume.name_for(self.root),
+                }},
+            }
         return {"services": services, "secrets": declarations}
 
     def save(self):
@@ -475,9 +558,19 @@ class Installation:
         if (read_regular(self.env_path) != self.env_original or read_regular(self.state_path) != self.state_original
                 or read_regular(self.root / ".compose-secrets.yaml") != self.overlay_original):
             raise SetupError("Configuration changed during this session; reopen setup")
+        if self.credential_volume:
+            self.credential_volume.assert_current()
         for name, snapshot in self.snapshots.items():
+            if self.credential_volume and read_regular(self.directory / name) is not None:
+                raise SetupError("Host credential files appeared during this session; reopen setup")
+            if self.read_credential(name) != snapshot:
+                raise SetupError("Credentials changed during this session; reopen setup")
+        for name, snapshot in self.retired_management_secrets.items():
             if read_regular(self.directory / name) != snapshot:
                 raise SetupError("Credentials changed during this session; reopen setup")
+        for name, snapshot in self.retired_api_tls_files.items():
+            if read_regular(self.root / "data/private/tls" / name) != snapshot:
+                raise SetupError("TLS files changed during this session; reopen setup")
 
     def save_locked(self):
         self.assert_current()
@@ -540,12 +633,50 @@ class Installation:
         changed = {name for name, value in self.secret_values.items()
                    if self.snapshots.get(name) != value.encode("utf-8")}
         self.state["pending"] = sorted(set(self.state.get("pending", [])) | changed | self.migrated | deleted_secrets)
+        storage_changed = self.use_credential_volume != bool(self.credential_volume)
+        if storage_changed:
+            self.state["pending"] = sorted(set(self.state["pending"]) | self.secret_values.keys())
         self.state["removed"] = sorted((set(self.state.get("removed", [])) | deleted_secrets) - self.secret_values.keys())
         writes = {self.directory / name: value.encode("utf-8") for name, value in self.secret_values.items()}
         writes.update({self.directory / name: None for name in deleted_secrets})
+        volume_previous = None
+        if self.use_credential_volume:
+            from .credential_volume import CredentialVolume
+            if not self.credential_volume:
+                volume = CredentialVolume(self, CredentialVolume.name_for(self.root))
+                volume.load(create=True)
+                if (volume.record.get("values") and volume.record.get("values") != self.secret_values
+                        and self.state.get("previous_credential_volume") != volume.name):
+                    raise SetupError("Credential volume already contains different data; no host credentials were removed")
+            else:
+                volume = self.credential_volume
+            volume_previous = volume.record
+            volume_values = dict(volume.record.get("values", {}))
+            for path, content in writes.items():
+                if content is None:
+                    volume_values.pop(path.name, None)
+                else:
+                    volume_values[path.name] = content.decode("utf-8")
+            self.state["credential_volume"] = volume.name
+            self.state["credential_volume_sudo"] = bool(getattr(self, "use_sudo", False))
+            self.state.pop("previous_credential_volume", None)
+            self.state.pop("previous_credential_volume_sudo", None)
+            # Only remove host sources after the volume has verified the copy.
+            writes = {path: None for path in writes}
+        elif self.credential_volume:
+            self.state["previous_credential_volume"] = self.credential_volume.name
+            self.state["previous_credential_volume_sudo"] = bool(getattr(self, "use_sudo", False))
+            self.state.pop("credential_volume", None)
+            self.state.pop("credential_volume_sudo", None)
         writes[self.root / ".compose-secrets.yaml"] = yaml.safe_dump(self.overlay(), sort_keys=True).encode()
         writes[self.env_path] = render_environment(self.env_text, updates, removed).encode()
         writes[self.state_path] = json.dumps(self.state).encode()
+        for name, snapshot in self.retired_management_secrets.items():
+            if snapshot is not None:
+                writes[self.directory / name] = None
+        for name, snapshot in self.retired_api_tls_files.items():
+            if snapshot is not None:
+                writes[self.root / "data/private/tls" / name] = None
         for name, value in self.tls_files.items():
             writes[self.root / "data/private/tls" / name] = value
         for name in existing_service_tls:
@@ -566,13 +697,36 @@ class Installation:
                 if parent.is_symlink():
                     raise SetupError("Configuration directories must not be symlinks")
             originals[path] = read_regular(path)
-        write_transaction(writes, originals)
+        try:
+            if volume_previous is not None:
+                volume.write(volume_values, self.credential_grants())
+                if not self.credential_volume:
+                    probe = self.overlay()
+                    for spec in probe["services"].values():
+                        spec["image"] = "python:3.12-slim"
+                    self.docker(["compose", "-f", "-", "config", "--quiet"], input_text=yaml.safe_dump(probe))
+                    volume.verify_mount()
+            write_transaction(writes, originals)
+        except BaseException:
+            if volume_previous is not None:
+                volume.write(volume_previous.get("values", {}), volume_previous.get("grants", {}))
+            raise
+        if self.use_credential_volume:
+            self.credential_volume = volume
+        else:
+            self.credential_volume = None
         self.env_original = read_regular(self.env_path)
         self.env_text = self.env_original.decode()
         self.values, _ = parse_environment(self.env_text)
         self.state_original = read_regular(self.state_path)
         self.overlay_original = read_regular(self.root / ".compose-secrets.yaml")
-        self.snapshots = {name: read_regular(self.directory / name) for name in self.secret_values}
+        self.snapshots = {name: self.read_credential(name) for name in self.secret_values}
+        self.retired_management_secrets = {
+            name: read_regular(self.directory / name) for name in RETIRED_MANAGEMENT_SECRET_NAMES
+        }
+        self.retired_api_tls_files = {
+            name: read_regular(self.root / "data/private/tls" / name) for name in RETIRED_API_TLS_FILES
+        }
         self.prompt_original = read_regular(prompt)
         self.prompt_copy = None
         self.migrated.clear()
@@ -586,6 +740,27 @@ class Installation:
         if (self.root / ".compose-secrets.yaml").is_file():
             command += ["-f", str(self.root / ".compose-secrets.yaml")]
         return command
+
+    def remove_retired_api_overlay(self):
+        path = self.root / ".compose-secrets.yaml"
+        with installation_lock(self.root):
+            original = read_regular(path)
+            if original is None:
+                return
+            try:
+                overlay = yaml.safe_load(original)
+            except yaml.YAMLError:
+                raise SetupError("Generated Compose overlay must be valid YAML; reopen setup to repair it") from None
+            if not isinstance(overlay, dict) or not isinstance(overlay.get("services", {}), dict):
+                raise SetupError("Generated Compose overlay must contain a services mapping; reopen setup to repair it")
+            if "agent-api" not in overlay.get("services", {}):
+                return
+            if original != self.overlay_original:
+                raise SetupError("Configuration changed during this session; reopen setup")
+            del overlay["services"]["agent-api"]
+            updated = yaml.safe_dump(overlay, sort_keys=True).encode()
+            write_transaction({path: updated}, {path: original})
+            self.overlay_original = updated
 
     def docker_environment(self):
         return {key: value for key, value in os.environ.items()
@@ -687,7 +862,7 @@ class Installation:
             deleted = set(self.state.get("removed", []))
             grants = self.overlay()["services"]
             applied = {name for name in self.state.get("pending", []) if any(service in services and
-                       (name in deleted or name in grants.get(service, {}).get("secrets", [])) for service in secret_services(name))}
+                       (name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")) for service in secret_services(name))}
             self.state["pending"] = sorted(set(self.state.get("pending", [])) - applied)
             self.state["removed"] = sorted(deleted - applied)
             atomic_write(self.state_path, json.dumps(self.state).encode())
@@ -699,11 +874,56 @@ class Installation:
             self.assert_current()
             return self.apply_locked(names)
 
+    def retire_previous_volume(self):
+        """Activate host credential mounts, detach every container, then destroy the old volume."""
+        name = self.state.get("previous_credential_volume")
+        if not name:
+            return []
+        if not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", name):
+            raise SetupError("Invalid previous credential volume name in setup state")
+        with installation_lock(self.root):
+            self.assert_current()
+            for secret, value in self.secret_values.items():
+                if read_regular(self.directory / secret) != value.encode("utf-8"):
+                    raise SetupError("Host credential files are incomplete; the credential volume was kept")
+            targets = []
+            if self.docker(["volume", "ls", "-q", "--filter", "name=^" + name + "$"]).strip():
+                project = json.loads(self.compose(["config", "--format", "json"]))["name"]
+                targets = self.apply_locked(sorted(self.secret_values))
+
+                def users():
+                    rows = self.docker(["ps", "-a", "--filter", "volume=" + name, "--format",
+                                        '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.project"}}\t'
+                                        '{{.Label "com.docker.compose.service"}}\t{{.Names}}'])
+                    return [line.split("\t") for line in rows.splitlines() if line.strip()]
+
+                containers = users()
+                outside = [row[4] for row in containers if row[2] != project]
+                if outside:
+                    raise SetupError("Credential volume is used by containers outside this installation ("
+                                     + ", ".join(outside) + "); it was kept")
+                running = sorted({row[3] for row in containers if row[1] == "running"})
+                if running:
+                    self.compose(["up", "-d", "--no-deps", "--force-recreate", *running])
+                    targets = sorted(set(targets) | set(running))
+                # Stopped containers are recreated with host mounts by the next "compose up".
+                stopped = [row[0] for row in users() if row[1] != "running"]
+                if stopped:
+                    self.docker(["rm", *stopped])
+                if users():
+                    raise SetupError("Credential volume is still in use; it was kept and removal will be retried")
+                self.docker(["volume", "rm", name])
+            self.state.pop("previous_credential_volume", None)
+            self.state.pop("previous_credential_volume_sudo", None)
+            atomic_write(self.state_path, json.dumps(self.state).encode())
+            self.state_original = read_regular(self.state_path)
+            return targets
+
     def apply_locked(self, names):
         grants = self.overlay()["services"]
         deleted = set(self.state.get("removed", []))
         affected = {service for name in names for service in secret_services(name)
-                if name in deleted or name in grants.get(service, {}).get("secrets", [])}
+                if name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")}
         running = set(self.compose(["ps", "--status", "running", "--services"]).split())
         targets = sorted(affected & running)
         compose_source = read_regular(self.root / "docker-compose.yml")
@@ -721,7 +941,7 @@ class Installation:
             self.verify_sandbox_runtime()
         pending = set(self.state.get("pending", []))
         applied = {name for name in names if any(service in running and
-               (name in deleted or name in grants.get(service, {}).get("secrets", [])) for service in secret_services(name))}
+               (name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")) for service in secret_services(name))}
         if staged_sandbox:
             applied.add("SANDBOX_API_TOKEN")
         self.state["pending"] = sorted(pending - applied)
@@ -733,7 +953,7 @@ class Installation:
     def rotate_database(self, replacement):
         with installation_lock(self.root):
             self.assert_current()
-            if read_regular(self.directory / "rotation.json"):
+            if self.read_credential("rotation.json"):
                 raise SetupError("Database rotation recovery is pending; run secrets recover first")
             self.rotate_database_locked(replacement)
 
@@ -751,8 +971,7 @@ class Installation:
         consumers = sorted(running & set(AGENT_SERVICES))
         self.directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(self.directory, 0o700)
-        journal = self.directory / "rotation.json"
-        atomic_write(journal, json.dumps({"previous": previous, "replacement": replacement, "consumers": consumers}).encode())
+        self.write_credential("rotation.json", json.dumps({"previous": previous, "replacement": replacement, "consumers": consumers}).encode())
         try:
             if consumers:
                 self.compose(["stop", *consumers])
@@ -765,7 +984,7 @@ class Installation:
             self.state["pending"] = [name for name in self.state.get("pending", []) if name != "POSTGRES_PASSWORD"]
             atomic_write(self.state_path, json.dumps(self.state).encode())
             self.state_original = read_regular(self.state_path)
-            journal.unlink()
+            self.write_credential("rotation.json", None)
         except BaseException:
             raise SetupError("Database rotation is incomplete. Consumers may be stopped; run secrets recover before any other changes") from None
 
@@ -785,6 +1004,20 @@ def recover_database(root):
 
 
 def recover_database_locked(root):
+    state = json.loads(read_regular(root / ".secrets/state.json") or b"{}")
+    if state.get("credential_volume"):
+        instance = Installation(root, recovering=True)
+        contents = instance.read_credential("rotation.json")
+        if not contents:
+            raise SetupError("No database rotation needs recovery")
+        record = json.loads(contents)
+        instance.set_database_password(record["previous"])
+        instance.write_credential("POSTGRES_PASSWORD", record["previous"].encode())
+        instance.verify_database_password(record["previous"])
+        instance.compose(["up", "-d", "--wait", "--wait-timeout", "90", "--no-deps", "--force-recreate", "postgres", *record["consumers"]])
+        instance.verify_database_password(record["previous"])
+        instance.write_credential("rotation.json", None)
+        return
     path = root / ".secrets/rotation.json"
     contents = read_regular(path)
     if not contents:
@@ -872,7 +1105,7 @@ def activate_embeddings(instance, confirm, console):
     if confirm("Rebuild incompatible embeddings now? Source data is preserved; interrupted work can be resumed.", False):
         instance.compose(["up", "-d", "--wait", "--wait-timeout", "180", "postgres"], timeout=240)
         console.print(instance.compose(command + ["reindex"], timeout=1800), markup=False)
-    console.print("Recreate existing embedding consumers to activate saved settings: docker compose up -d --no-deps --force-recreate task-agent workspace-indexer deep-research-agent supervisor heartbeat (also agent-api when enabled)")
+    console.print("Recreate existing embedding consumers to activate saved settings: docker compose up -d --no-deps --force-recreate task-agent workspace-indexer deep-research-agent supervisor heartbeat")
 
 
 def interactive(options):
@@ -902,6 +1135,9 @@ def interactive(options):
         return
     options.stage = "loading saved configuration"
     instance = Installation(options.root)
+    if instance.state.get("previous_credential_volume"):
+        options.stage = "removing the previous credential volume"
+        finish_host_storage(instance, console)
     if options.command in {"tools", "reset"}:
         if not instance.state.get("setup_complete"):
             raise SetupError("Complete and save setup before using " + options.command)
@@ -924,8 +1160,6 @@ def interactive(options):
             raise SetupError("Unknown secret name")
         console.print("Values are masked. Provider credentials must be obtained from the provider first.")
         console.print("Affected services: " + ", ".join(secret_services(name)))
-        if name in {"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"}:
-            console.print("Clients and signed commands using the previous credential will stop working after activation.")
         if name == "POSTGRES_PASSWORD":
             console.print("Database rotation stops consumers, updates the role, and recreates containers. Keep a current backup.")
         value = prompt_credential(answer, name, None)
@@ -940,17 +1174,14 @@ def interactive(options):
                 instance.apply([name])
             else:
                 console.print("Saved; activation pending. Run secrets apply when ready.")
-        if name in {"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"} and confirm("Reveal the new credential once for secure client configuration?"):
-            console.print(value, markup=False, highlight=False)
         console.print("Update saved. Verify service connectivity before revoking an old provider credential.")
         return
 
-    console.print("Assistant setup\nSecrets use protected host files and Docker Compose mounts, not encryption.")
+    console.print("Assistant setup\nSecrets use protected files, not encryption. At review, you can move credentials into a private Docker volume.")
     if instance.migrated:
         console.print("Existing inline credentials will be moved out of .env only when you confirm the final save.")
     console.print("Use a dedicated assistant mailbox, never your personal mailbox.")
     existing_profiles = instance.values.get("COMPOSE_PROFILES", "").split(",")
-    instance.values.setdefault("SETUP_API_ENABLED", str("api" in existing_profiles).lower())
     instance.values.setdefault("SETUP_EMAIL_ENABLED", str("email" in existing_profiles).lower())
     configured = bool(instance.env_original and instance.state.get("setup_complete"))
     if instance.env_original and not configured:
@@ -1054,8 +1285,7 @@ def interactive(options):
             domain = instance.values.get("ADMIN_EMAIL", "").partition("@")[2]
             text("EMAIL_ALLOWED_RECIPIENT_DOMAINS", "Allowed outgoing recipient domains", domain)
             text("AGENT_EMAIL", "Assistant email identity", instance.values.get("SMTP_FROM", ""))
-            text("ADMIN_TRUSTED_AUTHSERV_IDS", "Trusted receiving-provider authserv IDs (optional; provider must strip forged headers)")
-            credential("ADMIN_COMMAND_SIGNING_KEY")
+            console.print("Admin requests use a separate, ten-minute OTP/hash email confirmation. No signing key is needed.")
         instance.values["AGENT_DEEP_RESEARCH_ENABLED"] = str(enabled and "openrouter.ai" in instance.values.get("AGENT_LLM_BASE_URL", "")).lower()
         instance.values.setdefault("AGENT_HEARTBEAT_ADMIN_DIGEST_INTERVAL_HOURS", str(
             instance.defaults.get("agent.heartbeat.admin_digest_interval_hours", 0)))
@@ -1151,24 +1381,6 @@ def interactive(options):
             instance.values["TRANSCRIPTION_LANGUAGE"] = "auto"
             console.print("The managed multilingual small model is downloaded with SHA-256 verification. Voice processing is isolated from Ollama.")
 
-    def api():
-        instance.values.pop("AGENT_API_PUBLISHED_HOST", None)
-        enabled = capability("SETUP_API_ENABLED", "Enable the optional HTTPS API?")
-        if not enabled:
-            return
-        instance.values["AGENT_API_DOCS_ENABLED"] = "false"
-        instance.values["AGENT_API_OPENAPI_ENABLED"] = "false"
-        credential("AGENT_API_AUTH_TOKEN")
-        console.print("The API is published only on this host's loopback interface and requires HTTPS.")
-        text("AGENT_API_PUBLISHED_PORT", "Host API port", "8000")
-        text("AGENT_APP_BASE_URL", "Public HTTPS application URL", "https://localhost:" + instance.values["AGENT_API_PUBLISHED_PORT"])
-        mode = answer(questionary.select("TLS certificates", choices=["Keep installed certificates", "Import certificate and private key", "Generate localhost development certificate"]))
-        if mode == "Generate localhost development certificate" and urlsplit(instance.values["AGENT_APP_BASE_URL"]).hostname not in {"localhost", "127.0.0.1"}:
-            raise SetupError("Local development certificates only cover localhost and 127.0.0.1; import a certificate for other hosts")
-        instance.tls_files = prepare_tls(instance.root, mode, answer)
-        instance.values["AGENT_API_TLS_CERT_FILE"] = "/run/assistant/tls/server.crt"
-        instance.values["AGENT_API_TLS_KEY_FILE"] = "/run/assistant/tls/server.key"
-
     def instructions():
         prompt = instance.root / "config/AGENT.md"
         console.print("Edit your assistant's instructions later at:")
@@ -1199,22 +1411,45 @@ def interactive(options):
                 ("Dropbox", "Connect Dropbox and configure file exchange permissions.", dropbox),
                 ("Telegram", "Connect a private bot and explicitly link authorized identities.", telegram),
                 ("Local voice transcription", "Configure isolated whisper.cpp transcription for English and Arabic.", transcription),
-                ("HTTPS API", "Optional machine access requires TLS and a bearer token; no browser dashboard is provided.", api),
                 ("Advanced Settings", "Optional behavior and limits. Current defaults are retained unless you edit a group.",
                  lambda: prompt_advanced_settings(instance, answer, console)),
                 ("Assistant instructions", "Choose whether to copy the example instructions. Existing files are never replaced without confirmation.", instructions)]
     section_map = dict(zip(SECTION_IDS, sections))
     baseline = copy.deepcopy((instance.values, instance.secret_values))
+    initial_volume_choice = instance.use_credential_volume
     visited = set()
 
     def unsaved_changes():
-        return (instance.values, instance.secret_values) != baseline or bool(instance.tls_files) or instance.prompt_copy is not None
+        return ((instance.values, instance.secret_values) != baseline or bool(instance.tls_files)
+                or instance.prompt_copy is not None or instance.use_credential_volume != initial_volume_choice)
+
+    def choose_credential_storage():
+        if instance.use_credential_volume:
+            console.print("Restores plaintext credential files in .secrets with directory mode 0700 and file mode 0600 "
+                          "on Save, briefly recreates running services to use them, then destroys the credential volume. "
+                          "If removal cannot finish, setup keeps the volume and retries automatically.")
+            if confirm("Store credentials in plaintext host files when saving?", False):
+                instance.use_credential_volume = False
+                console.print("Host storage selected. Select Save and finish to apply; nothing has been moved yet.")
+                return True
+            return False
+        console.print("Moves credential files out of .secrets into an unencrypted Docker volume on Save. "
+                      "Docker administrators can still read them. Services retain individual access. "
+                      "Requires Docker volume subpath support; the first use may pull python:3.12-slim. "
+                      "Back up the volume separately. TLS files and database OAuth tokens are not moved.")
+        if confirm("Move credentials to a dedicated Docker volume when saving?", False):
+            instance.use_credential_volume = True
+            console.print("Migration is pending. Select Save and finish to move credentials; nothing has been moved yet.")
+            return True
+        return False
+
+    def credential_storage_label():
+        return ("Move credentials back to plaintext host files" if instance.use_credential_volume else
+                "Move credentials to a dedicated Docker volume")
 
     def section_changed(key):
         if key == "instructions":
             return instance.prompt_copy is not None
-        if key == "api" and instance.tls_files:
-            return True
         return section_settings(instance.values, instance.secret_values, key) != section_settings(*baseline, key)
 
     def section_label(key, problems):
@@ -1281,6 +1516,7 @@ def interactive(options):
                 *[questionary.Choice(section_label(key, problems), value=key) for key in SECTION_IDS],
                 questionary.Choice("Review and save", value="review"),
                 questionary.Choice("Run full wizard", value="wizard"),
+                questionary.Choice(credential_storage_label(), value="credential-volume"),
                 questionary.Separator(),
                 questionary.Choice("Tools and troubleshooting", value="tools"),
                 questionary.Choice("Factory reset (delete data, keep settings)", value="reset"),
@@ -1289,6 +1525,11 @@ def interactive(options):
             if selected == "cancel":
                 console.print("Cancelled. No changes saved.")
                 return
+            if selected == "credential-volume":
+                if choose_credential_storage():
+                    selected = "review"
+                    break
+                continue
             if selected in {"tools", "reset"}:
                 if unsaved_changes():
                     console.print("Unsaved setting changes are kept in this session; tools use the saved configuration.", markup=False)
@@ -1331,7 +1572,7 @@ def interactive(options):
     while True:
         options.stage = "reviewing configuration"
         profiles = [name for name in existing_profiles if name and name not in {"email", "api", "telegram", "voice"}]
-        profiles += [name for setting, name in (("SETUP_EMAIL_ENABLED", "email"), ("SETUP_API_ENABLED", "api")) if instance.values.get(setting) == "true"]
+        profiles += [name for setting, name in (("SETUP_EMAIL_ENABLED", "email"),) if instance.values.get(setting) == "true"]
         profiles += [name for setting, name in (("TELEGRAM_ENABLED", "telegram"), ("TRANSCRIPTION_ENABLED", "voice")) if instance.values.get(setting) == "true"]
         instance.values["COMPOSE_PROFILES"] = ",".join(profiles)
         problems = draft_problems(instance)
@@ -1347,6 +1588,7 @@ def interactive(options):
                     table.add_row(name, instance.values[name])
         for name in sorted(instance.secret_values):
             table.add_row(name, "configured (hidden)")
+        table.add_row("Credential storage", "Private Docker volume (unencrypted)" if instance.use_credential_volume else "Protected .secrets files")
         removed_credentials = {name for name, data in instance.snapshots.items() if data is not None and name not in instance.secret_values}
         removed_credentials |= instance.migrated - instance.secret_values.keys()
         for name in sorted(removed_credentials):
@@ -1363,6 +1605,7 @@ def interactive(options):
         selection = menu(lambda: questionary.select("Finish setup", choices=[
             questionary.Choice("Save and finish", value="save", disabled="Fix the validation error first" if error else None),
             questionary.Choice("Edit a section", value="edit"),
+            questionary.Choice(credential_storage_label(), value="credential-volume"),
             questionary.Choice("Cancel without saving", value="cancel"),
         ]))
         if selection == "cancel":
@@ -1370,6 +1613,8 @@ def interactive(options):
             return
         if selection == "save" and not error:
             break
+        if selection == "credential-volume":
+            choose_credential_storage()
         if selection == "edit":
             key = choose_section("Edit configuration")
             if key == "back":
@@ -1380,7 +1625,23 @@ def interactive(options):
     console.print("Existing backups may retain inline credentials. Saving alone does not start containers or migrate the database.")
     options.stage = "saving configuration"
     instance.state["setup_complete"] = True
+    storage_changed = instance.use_credential_volume != bool(instance.credential_volume)
+    if storage_changed:
+        ensure_docker_access(instance, confirm)
     instance.save()
+    if storage_changed and instance.credential_volume:
+        console.print("Credentials saved in Docker volume " + instance.credential_volume.name + ". Plaintext .secrets sources removed.")
+        options.stage = "activating credential volume mounts"
+        try:
+            targets = instance.apply(sorted(instance.secret_values))
+            console.print("Recreated with volume mounts: " + (", ".join(targets) or "none running; mounts apply at startup"))
+        except SetupError as error:
+            console.print("Credentials are saved, but activation failed: " + str(error)
+                          + "\nRun ./scripts/setup.sh secrets apply to retry.", markup=False)
+    elif storage_changed:
+        console.print("Credentials saved in protected plaintext .secrets files.")
+        options.stage = "removing the previous credential volume"
+        finish_host_storage(instance, console)
     if embeddings_edited and instance.values.get("AGENT_EMBEDDINGS_ENABLED") == "true":
         options.stage = "embedding provisioning (configuration already saved)"
         console.print("Embedding settings saved. Source data is preserved; semantic recall may be incomplete until incompatible vectors are rebuilt.")
@@ -1388,11 +1649,8 @@ def interactive(options):
     console.print("Saved. Edit your assistant's instructions later at:")
     console.print(str(instance.root / "config/AGENT.md"), markup=False, highlight=False, soft_wrap=True)
     if not profiles:
-        console.print("No external task intake is enabled. Configure email or the API when ready to submit tasks.")
+        console.print("No external task intake is enabled. Configure email when ready to submit tasks.")
     console.print("For an existing installation, follow docs/upgrading.md before starting workers.")
-    for name in ("AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"):
-        if name in instance.secret_values and confirm("Reveal " + name + " once for secure client configuration?"):
-            console.print(instance.secret_values[name], markup=False, highlight=False)
     console.print("Starting containers builds images, applies pending database migrations, and enables workers. Existing inbox messages may be processed.")
     if not confirm("Start the Docker containers now and check their status?", False):
         console.print("Start later from the repository directory: docker compose up -d --build --wait --wait-timeout 180")
@@ -1410,7 +1668,21 @@ def interactive(options):
     configure_docker_boot(instance, confirm, console)
 
 
+def finish_host_storage(instance, console):
+    name = instance.state["previous_credential_volume"]
+    try:
+        targets = instance.retire_previous_volume()
+    except SetupError as error:
+        console.print("Credential volume " + name + " was kept: " + str(error)
+                      + "\nSetup retries removal the next time it opens; credentials in .secrets remain authoritative.", markup=False)
+        return False
+    console.print("Recreated with host mounts: " + (", ".join(targets) or "none running; mounts apply at startup"))
+    console.print("Previous credential volume destroyed: " + name, markup=False)
+    return True
+
+
 def run_maintenance(command, instance, answer, confirm, console):
+    instance.remove_retired_api_overlay()
     if command == "tools":
         from .setup_tools import tools_menu
         tools_menu(instance, answer, confirm, console)
@@ -1575,36 +1847,6 @@ def prompt_credential(answer, name, existing):
             print(str(exc))
 
 
-def prepare_tls(root, mode, answer):
-    import questionary
-    import ssl
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = Path(temporary)
-        certificate, key = directory / "server.crt", directory / "server.key"
-        if mode == "Generate localhost development certificate":
-            result = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-nodes", "-days", "365",
-                                     "-keyout", str(key), "-out", str(certificate), "-subj", "/CN=localhost",
-                                     "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], capture_output=True, timeout=60)
-            if result.returncode:
-                raise SetupError("Certificate generation failed")
-        else:
-            source_certificate = root / "data/private/tls/server.crt"
-            source_key = root / "data/private/tls/server.key"
-            if mode == "Import certificate and private key":
-                source_certificate = Path(answer(questionary.path("Certificate PEM file"))).expanduser()
-                source_key = Path(answer(questionary.path("Private key PEM file"))).expanduser()
-            certificate_data, key_data = read_regular(source_certificate), read_regular(source_key)
-            if not certificate_data or not key_data:
-                raise SetupError("Readable certificate and private key files are required")
-            atomic_write(certificate, certificate_data)
-            atomic_write(key, key_data)
-        try:
-            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(certificate, key, password="")
-        except (ssl.SSLError, OSError):
-            raise SetupError("TLS certificate/key must be a matching, unencrypted PEM pair") from None
-        return {"server.crt": certificate.read_bytes(), "server.key": key.read_bytes()}
-
-
 def prepare_internal_tls():
     if not shutil.which("openssl"):
         raise SetupError("OpenSSL is required to provision internal service TLS certificates")
@@ -1735,7 +1977,7 @@ def draft_problems(instance):
         ZoneInfo(values.get("AGENT_TIMEZONE", "UTC"))
     except (ValueError, ZoneInfoNotFoundError):
         problem("identity", "Check the timezone (IANA identifier, e.g. Europe/London)")
-    for name, section in (("IMAP_PORT", "email"), ("SMTP_PORT", "email"), ("AGENT_API_PUBLISHED_PORT", "api")):
+    for name, section in (("IMAP_PORT", "email"), ("SMTP_PORT", "email")):
         try:
             if values.get(name) and not 1 <= int(values[name]) <= 65535:
                 raise ValueError
@@ -1748,7 +1990,7 @@ def draft_problems(instance):
         problem("models", "Keep credentials out of the model API URL")
     required = {"POSTGRES_PASSWORD": "models", ("OPENROUTER_API_KEY" if "openrouter.ai" in base_url else "OPENAI_API_KEY"): "models"}
     if values.get("SETUP_EMAIL_ENABLED") == "true":
-        required.update(dict.fromkeys(("IMAP_PASSWORD", "SMTP_PASSWORD", "ADMIN_COMMAND_SIGNING_KEY"), "email"))
+        required.update(dict.fromkeys(("IMAP_PASSWORD", "SMTP_PASSWORD"), "email"))
         for name in ("ADMIN_EMAIL", "IMAP_HOST", "IMAP_USERNAME", "SMTP_HOST", "SMTP_USERNAME", "SMTP_FROM", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS"):
             if not values.get(name):
                 problem("identity" if name == "ADMIN_EMAIL" else "email", "Email operation requires " + name)
@@ -1778,10 +2020,6 @@ def draft_problems(instance):
                 raise ValueError
         except ValueError:
             problem("dropbox", "DROPBOX_MAX_FILE_BYTES must be between 1 byte and 150 MiB")
-    if values.get("SETUP_API_ENABLED") == "true":
-        required["AGENT_API_AUTH_TOKEN"] = "api"
-        if not values.get("AGENT_APP_BASE_URL", "").startswith("https://"):
-            problem("api", "API application URL must use HTTPS")
     for name in sorted(required):
         try:
             validate_secret(name, instance.secret_values.get(name, ""))

@@ -55,8 +55,10 @@ class Tools:
             self.console.print("\nStopped.")
             return None
         if code:
-            self.console.print("Command exited with status " + str(code) + ". PostgreSQL must be running for job, memory and reminder tools; "
-                               "if a command is reported as unknown, rebuild the tool image: docker compose build task-agent", markup=False)
+            self.console.print("Command exited with status " + str(code) + ". See the command output above.", markup=False)
+            if arguments[:len(ADMIN)] == ADMIN:
+                self.console.print("PostgreSQL must be running for job, memory and reminder tools; "
+                                   "if a command is reported as unknown, rebuild the tool image: docker compose build task-agent", markup=False)
         return code
 
     def admin(self, subject, body=None, mutating=False):

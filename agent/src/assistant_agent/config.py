@@ -65,7 +65,6 @@ def _set_nested(values: dict[str, Any], path: str, value: Any) -> None:
 ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         # App settings
         ("AGENT_APP_NAME", "agent.app.name", str),
-        ("AGENT_APP_BASE_URL", "agent.app.base_url", str),
         ("AGENT_APP_REFERER_URL", "agent.app.referer_url", str),
         ("AGENT_TIMEZONE", "agent.app.timezone", str),
         
@@ -76,11 +75,6 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         # Admin contact
         ("ADMIN_NAME", "agent.admin.name", str),
         ("ADMIN_EMAIL", "agent.admin.email", str),
-        ("ADMIN_TRUSTED_AUTHSERV_IDS", "agent.admin.trusted_authserv_ids", list),
-        ("ADMIN_COMMAND_SIGNING_KEY", "agent.admin.command_signing_key", str),
-        ("AGENT_API_AUTH_TOKEN", "agent.api.auth_token", str),
-        ("AGENT_API_TLS_CERT_FILE", "agent.api.tls_cert_file", str),
-        ("AGENT_API_TLS_KEY_FILE", "agent.api.tls_key_file", str),
         ("ZOOM_ENABLED", "agent.zoom.enabled", bool),
         ("ZOOM_AUTH_MODE", "agent.zoom.auth_mode", str),
         ("ZOOM_CLIENT_ID", "agent.zoom.client_id", str),
@@ -294,12 +288,6 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_FUSION_MAX_COMPLETION_TOKENS", "agent.fusion.max_completion_tokens", int),
         ("AGENT_FUSION_TEMPERATURE", "agent.fusion.temperature", float),
         
-        # API
-        ("AGENT_API_BIND_HOST", "agent.api.bind_host", str),
-        ("AGENT_API_PORT", "agent.api.port", int),
-        ("AGENT_API_DOCS_ENABLED", "agent.api.docs_enabled", bool),
-        ("AGENT_API_OPENAPI_ENABLED", "agent.api.openapi_enabled", bool),
-        ("AGENT_API_ALLOW_PUBLIC_BIND", "agent.api.allow_public_bind", bool),
 ]
 
 

@@ -1,22 +1,13 @@
 import argparse
-import hashlib
-import hmac
 import json
-import os
-import secrets
 import shlex
-import smtplib
-import ssl
-from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage, Message
-from email.utils import getaddresses
+from datetime import datetime, timezone
+from email.message import Message
 from typing import Any
 
-import authres
-from psycopg.types.json import Jsonb
-
-from .config import agent_email, database_url, load_config
+from .config import database_url, load_config
 from .database import Database
+from .email_approvals import EmailApprovals, admin_sender, send_admin_email
 from .memory_store import MemoryStore
 from .secret_store import configured_secret_names, read_secret
 
@@ -34,47 +25,12 @@ HELP = """Admin commands (subject line):
 /admin memory create (memory text in message body)
 /admin reminders [--limit N]
 /admin reminder-cancel ID
-/admin confirm TOKEN
 Memory update text and review instructions go in the message body.
 """
 
 
 def is_admin_subject(subject: str) -> bool:
     return subject.strip().lower().startswith("/admin")
-
-
-def authenticated_admin(message: Message, config, subject: str, body: str) -> bool:
-    admin = str(config.get("agent.admin.email") or "").strip().lower()
-    headers = message.get_all("From", [])
-    addresses = getaddresses(headers)
-    if not admin or len(headers) != 1 or len(addresses) != 1 or addresses[0][1].lower() != admin:
-        return False
-    if str(message.get("Auto-Submitted", "no")).lower() != "no" or str(message.get("Precedence", "")).lower() in {"bulk", "list", "junk"}:
-        return False
-    signing_key = str(config.get("agent.admin.command_signing_key") or "")
-    signature = message.get("X-Assistant-Admin-Signature", "")
-    timestamp = message.get("X-Assistant-Admin-Timestamp", "")
-    if signing_key and signature:
-        try:
-            if abs(datetime.now(timezone.utc).timestamp() - int(timestamp)) > 300:
-                return False
-            payload = "\n".join((message.get("Message-ID", ""), subject, body, timestamp))
-            expected = hmac.new(signing_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
-            return hmac.compare_digest(signature, expected)
-        except ValueError:
-            return False
-    trusted = config.get_list("agent.admin.trusted_authserv_ids")
-    results = message.get_all("Authentication-Results", [])
-    if not trusted or not results:
-        return False
-    try:
-        header = authres.AuthenticationResultsHeader.parse("Authentication-Results: " + results[0])
-        if header.authserv_id not in trusted:
-            return False
-        domain = admin.rsplit("@", 1)[-1]
-        return any(result.method == "dmarc" and result.result == "pass" and any(prop.type == "header" and prop.name == "from" and prop.value.lower() == domain for prop in result.properties) for result in header.results)
-    except (ValueError, authres.SyntaxError):
-        return False
 
 
 def redact_secrets(value: Any) -> Any:
@@ -101,26 +57,14 @@ class AdminCommands:
         self.config = config
 
     def handle(self, message: Message, subject: str, body: str) -> bool:
-        if not authenticated_admin(message, self.config, subject, body):
+        if not admin_sender(message, self.config):
             return False
         message_id = message.get("Message-ID")
         if not message_id:
             return False
-        recent = self.db.fetch_one("SELECT count(*) AS count FROM runtime_state WHERE key LIKE 'admin-command:%%' AND updated_at > now() - interval '1 minute'")
-        if recent and recent["count"] >= 10:
-            return False
-        key = "admin-command:" + hashlib.sha256(message_id.encode()).hexdigest()
-        claimed = self.db.fetch_one("INSERT INTO runtime_state(key, value) VALUES (%s, '{\"status\":\"claimed\"}'::jsonb) ON CONFLICT DO NOTHING RETURNING key", (key,))
-        if not claimed:
-            return False
-        try:
-            response = self.execute(subject, body)
-        except (ValueError, TypeError) as exc:
-            response = "Command error: %s\n\n%s" % (exc, HELP)
-        self.db.set_state(key, {"status": "executed"})
-        self.reply(message, response)
-        self.db.set_state(key, {"status": "replied"})
-        return True
+        return EmailApprovals(self.db, self.config).request(
+            message_id, {"kind": "command", "subject": subject, "body": body}, subject + "\n\n" + body,
+        )
 
     def execute(self, subject: str, body: str = "", confirmed: bool = False) -> str:
         words = shlex.split(subject)
@@ -158,7 +102,7 @@ class AdminCommands:
         elif command in {"cancel", "reminder-cancel", "review", "requeue"} and len(args) == 1:
             identifier = int(args[0])
             if command != "review" and not confirmed:
-                return self.confirmation(subject)
+                return "This action requires confirmation. Reply to its approval email, or use the local CLI with --yes."
             if command == "requeue":
                 if not self.db.requeue_job(identifier, "requeued by admin command"):
                     raise ValueError("job not found or cannot be requeued from its current status")
@@ -182,12 +126,6 @@ class AdminCommands:
             if not self.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (identifier,)):
                 raise ValueError("job not found")
             result = {"id": identifier, "status": self.db.add_job_instruction(identifier, body.strip(), "admin")}
-        elif command == "confirm" and len(args) == 1:
-            key = "admin-confirm:" + hashlib.sha256(args[0].encode()).hexdigest()
-            row = self.db.fetch_one("DELETE FROM runtime_state WHERE key = %s RETURNING value", (key,))
-            if not row or row["value"]["admin"] != self.config.get("agent.admin.email") or datetime.fromisoformat(row["value"]["expires"]) <= datetime.now(timezone.utc):
-                raise ValueError("confirmation is expired, invalid, or already used")
-            return self.execute(row["value"]["subject"], confirmed=True)
         else:
             raise ValueError("unknown command or invalid arguments")
         return json.dumps(redact_secrets(result), default=str, indent=2)
@@ -197,11 +135,6 @@ class AdminCommands:
         if len(rows) == limit:
             response += "\n\nNext: " + template % (rows[-1][cursor_field], limit)
         return response
-
-    def confirmation(self, subject):
-        token = secrets.token_urlsafe(24)
-        self.db.set_state("admin-confirm:" + hashlib.sha256(token.encode()).hexdigest(), {"subject": subject, "admin": self.config.get("agent.admin.email"), "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
-        return "Confirm this action within 10 minutes:\n/admin confirm " + token
 
     def memory(self, args, body, query, limit, confirmed):
         if not args:
@@ -222,7 +155,7 @@ class AdminCommands:
                 result = store.update(identifier, content=body, actor="admin", include_expired=True, embed=False)
             elif action == "delete":
                 if not confirmed:
-                    return self.confirmation("/admin memory delete %s" % identifier)
+                    return "This action requires confirmation. Reply to its approval email, or use the local CLI with --yes."
                 result = store.delete(identifier, actor="admin", include_expired=True)
             elif action in {"approve", "reject"}:
                 memory = store.get(identifier, include_expired=True)
@@ -240,22 +173,7 @@ class AdminCommands:
         return json.dumps(redact_secrets(result), default=str, indent=2)
 
     def reply(self, original, body):
-        message = EmailMessage()
-        message["From"] = agent_email(self.config)
-        message["To"] = self.config.get("agent.admin.email")
-        message["Subject"] = "Assistant admin response"
-        message["Auto-Submitted"] = "auto-replied"
-        message["In-Reply-To"] = original["Message-ID"]
-        message.set_content(body[:100000])
-        host = self.config.get("agent.email.smtp_host")
-        port = self.config.get_int("agent.email.smtp_port", 587)
-        context = ssl.create_default_context()
-        client = smtplib.SMTP_SSL(host, port, context=context) if port == 465 else smtplib.SMTP(host, port)
-        with client:
-            if port != 465:
-                client.starttls(context=context)
-            client.login(self.config.get("agent.email.smtp_username"), self.config.get("agent.email.smtp_password"))
-            client.send_message(message)
+        send_admin_email(self.config, "Assistant admin response", body[:100000])
 
 
 def main():

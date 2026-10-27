@@ -18,7 +18,6 @@
 agent:
   app:
     name: assistant
-    base_url: https://localhost:8000
     referer_url: https://assistant.local
     timezone: UTC
 
@@ -33,8 +32,6 @@ agent:
   admin:
     name:
     email:
-    trusted_authserv_ids: []
-    command_signing_key:
 
   # Organization details — override via ORG_NAME / ORG_SECURITY_EMAIL /
   # ORG_INTERNAL_EMAIL_DOMAINS env vars.
@@ -293,11 +290,3 @@ agent:
     max_tool_calls: 8
     max_completion_tokens:
     temperature:
-
-  api:
-    # Bind host for the uvicorn server inside the container. Compose publishes
-    # the host port on 127.0.0.1 only.
-    bind_host: 127.0.0.1
-    port: 8000
-    docs_enabled: false
-    openapi_enabled: false

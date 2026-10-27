@@ -52,6 +52,24 @@ class FakeDatabase:
 
 
 class NotificationDedupeTest(unittest.TestCase):
+    def test_review_notification_uses_standalone_confirmation_for_current_job_version(self):
+        db = MagicMock()
+        db.fetch_one.return_value = {"updated_at": "2026-10-27T09:00:00+00:00"}
+        with patch("assistant_agent.notifications._already_sent", return_value=False), patch(
+            "assistant_agent.notifications.admin_configured", return_value=True
+        ), patch("assistant_agent.notifications.smtp_configured", return_value=True), patch(
+            "assistant_agent.notifications._body", return_value="Review diagnostics"
+        ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval, patch(
+            "assistant_agent.notifications.ToolRuntime.email_send"
+        ) as ordinary_email:
+            notify_admin_job_failure(db, AppConfig({"agent": {}}), {"id": 31}, "needs_review", "limit", "worker")
+        approval.assert_called_once_with(
+            "review:31:2026-10-27T09:00:00+00:00",
+            {"kind": "review", "job_id": 31, "version": "2026-10-27T09:00:00+00:00"},
+            "Review diagnostics",
+        )
+        ordinary_email.assert_not_called()
+
     def test_admin_input_email_requests_reply_without_retired_dashboard(self) -> None:
         from assistant_agent.task_agent import TaskAgent
 
@@ -84,7 +102,7 @@ class NotificationDedupeTest(unittest.TestCase):
         ), patch("assistant_agent.notifications._diagnostics", return_value=diagnostics):
             body = _body(FakeDatabase(), config, {"id": 11}, "needs_review", "Tool failure", "task-agent")
 
-        self.assertIn("Reply to this email to approve and continue the job.", body)
+        self.assertIn("reply to the separate OTP/hash confirmation", body)
         self.assertIn("Both limits will be increased by 20%.", body)
         self.assertNotIn("dashboard", body.lower())
         self.assertNotIn("localhost", body)

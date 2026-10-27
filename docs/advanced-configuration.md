@@ -121,7 +121,7 @@ EMAIL_ALLOWED_RECIPIENT_DOMAINS=example.com     # Agent can only email these dom
 ORG_INTERNAL_EMAIL_DOMAINS=example.com          # These domains don't get disclosure footers
 ```
 
-If `EMAIL_ACTIONABLE_SENDERS` is blank, inbound email does not create new jobs. Jobs can still be submitted through the optional authenticated API when enabled. If `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is blank, only your `ADMIN_EMAIL` can receive outbound mail.
+If `EMAIL_ACTIONABLE_SENDERS` is blank, inbound email does not create new jobs. If `EMAIL_ALLOWED_RECIPIENT_DOMAINS` is blank, only your `ADMIN_EMAIL` can receive outbound mail.
 
 See [docs/email-and-artifacts.md](email-and-artifacts.md) for the full email pipeline guide.
 
@@ -146,31 +146,6 @@ ORG_INTERNAL_EMAIL_DOMAINS=example.com
 `ORG_NAME` and `ORG_SECURITY_EMAIL` appear in autonomous-agent disclosure footers added to outbound emails sent to external recipients.
 
 ---
-
-## Optional API Access
-
-The browser dashboard, workspace UI and workspace-upload routes have been retired.
-Use email administration or the optional authenticated HTTPS API for supported
-operations. Workspace-file indexing remains active for agent search; it is not
-a browser-UI setting and is separate from embedding model configuration.
-
-The API is published only on host loopback and requires HTTPS plus a bearer
-token. For remote administration, use an SSH tunnel; managed Compose does not
-publish the API on a LAN interface. See [docs/security.md](security.md) for the
-transport and certificate requirements.
-
----
-
-## API Documentation
-
-Interactive API docs (`/docs`, `/redoc`) and the OpenAPI schema (`/openapi.json`) are disabled by default. To enable them locally for development, use the API section of `./scripts/setup.sh` (they are wizard-managed `.env` settings, not `overrides.env` ones):
-
-```env
-AGENT_API_DOCS_ENABLED=true
-AGENT_API_OPENAPI_ENABLED=true
-```
-
-Disable them before connecting to any network you don't fully control.
 
 ---
 

@@ -120,12 +120,6 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         default_timezone(config)
     except ValueError as exc:
         errors.append(str(exc))
-    if role == "api":
-        if len(str(config.get("agent.api.auth_token") or "")) < 32:
-            errors.append("API requires AGENT_API_AUTH_TOKEN of at least 32 characters")
-        for setting in ("agent.api.tls_cert_file", "agent.api.tls_key_file"):
-            if not config.get(setting) or not Path(str(config.get(setting))).is_file():
-                errors.append("API requires a readable TLS file: %s" % setting)
     try:
         database_url(config)
     except RuntimeError as exc:

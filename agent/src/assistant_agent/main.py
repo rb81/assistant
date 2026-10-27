@@ -3,8 +3,6 @@ import os
 import signal
 import time
 
-import uvicorn
-
 from .config import database_url, load_config
 from .database import Database, MigrationBlockedError
 from .deep_research import DeepResearchAgent
@@ -21,7 +19,7 @@ from .workspace_index import WorkspaceIndex
 
 
 LOGGER = logging.getLogger("assistant.agent")
-PROMPT_FILE_SEED_ROLES = {"api", "downloader", "task-agent", "deep-research-agent", "deep-research-cron", "all"}
+PROMPT_FILE_SEED_ROLES = {"downloader", "task-agent", "deep-research-agent", "deep-research-cron", "all"}
 PROMPT_REQUIRED_ROLES = {"task-agent", "all"}
 
 
@@ -94,21 +92,6 @@ def run_role(role: str) -> None:
                 "task-agent running without ADMIN_EMAIL configuration: admin notifications and "
                 "request_input recipient='admin' will be unavailable."
             )
-
-    if role == "api":
-        port = config.get_int("agent.api.port", 8000)
-        host = config.get("agent.api.bind_host", "0.0.0.0")
-        if host == "0.0.0.0" and not config.get_bool("agent.api.allow_public_bind", False):
-            LOGGER.error(
-                "Refusing to bind the dashboard to 0.0.0.0 without an explicit override. "
-                "This listens on every container interface and may expose the API to other networks. "
-                "To allow this, set AGENT_API_ALLOW_PUBLIC_BIND=true (or agent.api.allow_public_bind: true "
-                "in config/agent.yaml). Managed Compose publishes only on host loopback. "
-                "See docs/security.md for details."
-            )
-            raise SystemExit(78)
-        uvicorn.run("assistant_agent.api:app", host=host, port=port, ssl_certfile=config.get("agent.api.tls_cert_file"), ssl_keyfile=config.get("agent.api.tls_key_file"))
-        return
 
     db = Database(database_url(config))
     db.ensure_feature_schema()

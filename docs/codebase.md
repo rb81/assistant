@@ -14,7 +14,6 @@ This document helps contributors navigate the repository quickly.
 ## Core Python Modules (high-level)
 
 - `main.py` — role bootstrap and process entrypoint.
-- `api.py` — optional authenticated FastAPI JSON API.
 - `task_agent.py` — primary autonomous loop.
 - `tools.py` — tool schemas, runtime execution, availability gating.
 - `database.py` — DB helpers and queue operations.
@@ -33,9 +32,8 @@ This document helps contributors navigate the repository quickly.
 
 ## Browser UI
 
-The browser dashboard and workspace editor have been retired. The optional API
-serves JSON endpoints only; retained files under `agent/src/assistant_agent/ui/`
-are not served by the application.
+The browser dashboard, workspace editor, and optional management API have been
+retired. Local operator workflows remain available through the setup CLI.
 
 ## Test Suite
 
@@ -46,7 +44,7 @@ Tests are under `agent/tests/` and cover:
 - reminder/tool behavior,
 - calendar router and provider configuration,
 - mailbox/threading handling,
-- prompt context and API route exposure,
+- prompt context and local operator workflows,
 - sandbox retry handling,
 - memory/context search and workspace index interactions.
 

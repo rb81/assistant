@@ -38,9 +38,10 @@ class ConfigTest(unittest.TestCase):
             "AGENT_MEMORY_STEWARD_MAX_ITERATIONS": "agent.memory.steward.max_iterations",
             "AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS": "agent.sandbox.default_timeout_seconds",
             "AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS": "agent.sandbox.hard_kill_grace_seconds",
-            "AGENT_API_DASHBOARD_ENABLED": "agent.api.dashboard_enabled",
-            "AGENT_API_WORKSPACE_ENABLED": "agent.api.workspace_enabled",
-            "AGENT_API_MAX_UPLOAD_BYTES": "agent.api.max_upload_bytes",
+            "AGENT_API_BIND_HOST": "agent.api.bind_host",
+            "AGENT_API_PORT": "agent.api.port",
+            "AGENT_API_DOCS_ENABLED": "agent.api.docs_enabled",
+            "AGENT_API_AUTH_TOKEN": "agent.api.auth_token",
         }
         with tempfile.TemporaryDirectory() as root:
             with patch.dict(os.environ, {"AGENT_CONFIG": root + "/missing", **dict.fromkeys(retired, "99")}, clear=True):
@@ -163,7 +164,6 @@ class ConfigTest(unittest.TestCase):
             env = {
                 "AGENT_CONFIG": config_file.name,
                 "AGENT_APP_NAME": "assistant",
-                "AGENT_APP_BASE_URL": "https://assistant.example.com",
                 "AGENT_NAME": "Agent",
                 "AGENT_EMAIL": "agent@acme.example",
             }
@@ -171,67 +171,8 @@ class ConfigTest(unittest.TestCase):
                 config = load_config()
 
         self.assertEqual(config.get("agent.app.name"), "assistant")
-        self.assertEqual(config.get("agent.app.base_url"), "https://assistant.example.com")
         self.assertEqual(config.get("agent.identity.name"), "Agent")
         self.assertEqual(config.get("agent.identity.email"), "agent@acme.example")
-
-    def test_blank_agent_app_base_url_env_does_not_override_config(self) -> None:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
-            config_file.write("agent:\n  app:\n    base_url: https://configured.example.com\n")
-            config_file.flush()
-
-            env = {
-                "AGENT_CONFIG": config_file.name,
-                "AGENT_APP_BASE_URL": "",
-            }
-            loaded_values = {"agent": {"app": {"base_url": "https://configured.example.com"}}}
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("assistant_agent.config.yaml.safe_load", return_value=loaded_values),
-            ):
-                config = load_config()
-
-        self.assertEqual(config.get("agent.app.base_url"), "https://configured.example.com")
-
-    def test_api_env_overrides_map_to_config(self) -> None:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
-            config_file.write("agent: {}\n")
-            config_file.flush()
-
-            env = {
-                "AGENT_CONFIG": config_file.name,
-                "AGENT_API_BIND_HOST": "0.0.0.0",
-                "AGENT_API_PORT": "9000",
-                "AGENT_API_DOCS_ENABLED": "false",
-                "AGENT_API_OPENAPI_ENABLED": "false",
-            }
-            with patch.dict(os.environ, env, clear=True):
-                config = load_config()
-
-        self.assertEqual(config.get("agent.api.bind_host"), "0.0.0.0")
-        self.assertEqual(config.get("agent.api.port"), 9000)
-        self.assertFalse(config.get_bool("agent.api.docs_enabled", True))
-        self.assertFalse(config.get_bool("agent.api.openapi_enabled", True))
-
-    def test_blank_api_bool_env_does_not_override_config(self) -> None:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
-            config_file.write("agent:\n  api:\n    docs_enabled: true\n    openapi_enabled: true\n")
-            config_file.flush()
-
-            env = {
-                "AGENT_CONFIG": config_file.name,
-                "AGENT_API_DOCS_ENABLED": "",
-                "AGENT_API_OPENAPI_ENABLED": "",
-            }
-            loaded_values = {"agent": {"api": {"docs_enabled": True, "openapi_enabled": True}}}
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("assistant_agent.config.yaml.safe_load", return_value=loaded_values),
-            ):
-                config = load_config()
-
-        self.assertTrue(config.get_bool("agent.api.docs_enabled", False))
-        self.assertTrue(config.get_bool("agent.api.openapi_enabled", False))
 
     def test_blank_string_env_does_not_override_config(self) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:

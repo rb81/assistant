@@ -4,22 +4,23 @@ from unittest.mock import MagicMock, patch
 
 class AdminCommandTest(unittest.TestCase):
     def setUp(self):
-        global AdminCommands, authenticated_admin
-        from assistant_agent.admin_commands import AdminCommands, authenticated_admin
+        global AdminCommands, admin_sender
+        from assistant_agent.admin_commands import AdminCommands
+        from assistant_agent.email_approvals import admin_sender
         from assistant_agent.config import AppConfig
 
-        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com", "trusted_authserv_ids": ["receiver.example"]}}})
+        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}}})
         self.message = EmailMessage()
         self.message["From"] = "admin@example.com"
         self.message["Message-ID"] = "<admin-test@example.com>"
         self.message["Authentication-Results"] = "receiver.example; dmarc=pass header.from=example.com"
 
-    def test_unverified_sender_and_injected_authentication_result_fail_closed(self):
-        self.assertTrue(authenticated_admin(self.message, self.config, "/admin", ""))
-        del self.message["Authentication-Results"]
-        self.message["Authentication-Results"] = "untrusted.example; dmarc=fail header.from=example.com"
-        self.message["Authentication-Results"] = "receiver.example; dmarc=pass header.from=example.com"
-        self.assertFalse(authenticated_admin(self.message, self.config, "/admin", ""))
+    def test_from_match_only_requests_confirmation_without_executing(self):
+        service = AdminCommands(MagicMock(), self.config)
+        with patch("assistant_agent.admin_commands.EmailApprovals.request", return_value=True) as request, patch.object(service, "execute") as execute:
+            self.assertTrue(service.handle(self.message, "/admin cancel 1", ""))
+        request.assert_called_once_with("<admin-test@example.com>", {"kind": "command", "subject": "/admin cancel 1", "body": ""}, "/admin cancel 1\n\n")
+        execute.assert_not_called()
 
     def test_help_and_errors_do_not_call_models_or_create_jobs(self):
         db = MagicMock()
@@ -39,22 +40,23 @@ class AdminCommandTest(unittest.TestCase):
         self.assertIn("/admin logs 42 --cursor 9 --limit 1", response)
         self.assertEqual(db.fetch_all.call_args.args[1], (42, 8, 1))
 
-    def test_malformed_authentication_results_fail_closed(self):
-        del self.message["Authentication-Results"]
-        self.message["Authentication-Results"] = "not a valid authentication result"
-        self.assertFalse(authenticated_admin(self.message, self.config, "/admin", ""))
+    def test_other_sender_cannot_request_admin_commands(self):
+        self.message.replace_header("From", "other@example.com")
+        with patch("assistant_agent.admin_commands.EmailApprovals.request") as request:
+            self.assertFalse(AdminCommands(MagicMock(), self.config).handle(self.message, "/admin", ""))
+        request.assert_not_called()
 
     def test_deletion_requires_confirmation_without_loading_content(self):
         db = MagicMock()
         service = AdminCommands(db, self.config)
         response = service.execute("/admin memory delete 7")
-        self.assertIn("/admin confirm", response)
+        self.assertIn("--yes", response)
         db.fetch_one.assert_not_called()
 
     def test_requeue_requires_confirmation_and_uses_shared_status_rules(self):
         db = MagicMock()
         service = AdminCommands(db, self.config)
-        self.assertIn("/admin confirm", service.execute("/admin requeue 5"))
+        self.assertIn("--yes", service.execute("/admin requeue 5"))
         db.requeue_job.assert_not_called()
         db.requeue_job.return_value = True
         self.assertIn('"queued"', service.execute("/admin requeue 5", confirmed=True))
@@ -90,7 +92,7 @@ class AdminCommandTest(unittest.TestCase):
     def test_reply_to_and_auto_generated_messages_cannot_redirect_admin_access(self):
         self.message["Reply-To"] = "attacker@example.com"
         self.message["Auto-Submitted"] = "auto-replied"
-        self.assertFalse(authenticated_admin(self.message, self.config, "/admin", ""))
+        self.assertFalse(admin_sender(self.message, self.config))
 
     def test_stale_job_snapshot_cannot_authorize_memory_deletion(self):
         from assistant_agent.tools import ToolRuntime, ToolError

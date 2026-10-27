@@ -24,7 +24,7 @@
 > - **Running v1?** Do **not** pull this branch into a running deployment until you have followed the **[upgrade guide](docs/upgrading.md)**. As a safety net, v2 refuses to migrate a database that holds v1 data until you set `ASSISTANT_ACCEPT_V2_MIGRATION=yes` in `.env`; workers exit with an "Upgrade blocked" message and nothing is changed.
 > - v2 permanently **drops** the Projects, separate Notes and Entity tables from the database. Supported history is migrated first, but the change cannot be undone without a backup.
 > - **Back up your database and files first** (`pg_dump` plus your `data/`, `.env` and `config/`), and rehearse the upgrade on a copy.
-> - The browser dashboard and shared workspace editor are gone. Plain-HTTP API clients stop working.
+> - The browser dashboard, shared workspace editor, and optional management HTTPS API are gone.
 > - **Staying on v1?** It remains available and unchanged on the [`v1` branch](https://github.com/rb81/assistant/tree/v1) and the `v1.0.0` release. If you already pulled v2 by mistake, run `git checkout v1` and restart; your data is untouched. Ongoing legacy maintenance is not promised.
 
 ## Which version do I want?
@@ -34,21 +34,21 @@
 | Status | Stable, unchanged | Prerelease |
 | Code | [`v1` branch](https://github.com/rb81/assistant/tree/v1), release `v1.0.0` | `main` branch |
 | Configuration | Hand-edited `.env` | Guided setup wizard, protected secrets, optional `overrides.env` |
-| Interface | Email, browser dashboard, workspace editor | Email (plus optional authenticated HTTPS API) |
+| Interface | Email, browser dashboard, workspace editor | Email and local CLI |
 | Integrations | Calendar | Calendar, **Zoom**, **Dropbox** |
 | Upgrade path | n/a | [Upgrade guide](docs/upgrading.md) (breaking) |
 
 ## What's new in v2
 
-- **Guided setup wizard.** `./scripts/setup.sh` configures identity, models, embeddings, email, integrations, the API and advanced settings, with review-before-save, Back/Edit/Cancel navigation and no secrets in your shell history. Existing installs get a section picker instead of repeating everything.
-- **Protected secrets.** Credentials live in gitignored `.secrets/` files mounted only into the services that need them. Update or rotate them with `./scripts/setup.sh secrets`.
+- **Guided setup wizard.** `./scripts/setup.sh` configures identity, models, embeddings, email, integrations and advanced settings, with review-before-save, Back/Edit/Cancel navigation and no secrets in your shell history. Existing installs get a section picker instead of repeating everything.
+- **Protected secrets.** Credentials live in gitignored `.secrets/` files or an optional dedicated Docker volume, mounted only into the services that need them. Update or rotate them with `./scripts/setup.sh secrets`.
 - **Native Zoom connector.** Create, edit and cancel managed meetings, linked to your calendar events. Opt-in.
 - **Native Dropbox connector.** A private App Folder Inbox/Outbox for on-demand file exchange: malware-scanned, size-limited, no public links, no overwrites. Opt-in. See [Dropbox](docs/dropbox.md).
 - **Memory and data tools.** Unified memories (durable facts plus expiring working context, with reviewable suggestions), `setup tools` troubleshooting menus, and `setup reset`, a selective factory reset that takes a backup first.
 - **Workstream provenance.** Channel-neutral task ownership, parent/child workstreams and shared-object attachments. `setup tools` previews and confirms workstream deletion with three explicit sharing policies and retryable local/provider cleanup. See [deletion behavior and limits](docs/security.md#workstream-deletion).
 - **Expert `overrides.env`.** An optional, gitignored file for advanced settings the wizard does not manage. See [Expert overrides](#expert-overrides).
 - **Email administration.** Authenticated `/admin` commands (`jobs`, `logs`, `memory`, `reminders`, `requeue`, `instruct`) that never invoke a model. See [Email Administration](docs/email-administration.md).
-- **Smaller, safer surface.** No browser UI, no published application port by default, and an optional HTTPS API that requires TLS and bearer authentication.
+- **Smaller, safer surface.** No browser UI or management API; administration is through email and the local CLI.
 
 ### Removed in v2
 
@@ -82,7 +82,7 @@ Useful commands:
 | Command | Purpose |
 |---|---|
 | `./scripts/setup.sh` | Full wizard (new) or section picker (existing) |
-| `./scripts/setup.sh --section <name>` | Jump to `identity`, `models`, `embeddings`, `email`, `calendar`, `zoom`, `dropbox`, `api`, `advanced` or `instructions` |
+| `./scripts/setup.sh --section <name>` | Jump to `identity`, `models`, `embeddings`, `email`, `calendar`, `zoom`, `dropbox`, `advanced` or `instructions` |
 | `./scripts/setup.sh secrets status\|update\|apply` | Manage credentials |
 | `./scripts/setup.sh tools` | Status, logs, restarts, jobs, memories, reminders, embeddings |
 | `./scripts/setup.sh reset` | Factory reset of selected data, with backup; keeps settings and `AGENT.md` |
@@ -110,7 +110,7 @@ What happens to your data:
 | Projects and project tasks | Snapshots kept on the parent jobs; waiting parents are requeued with retirement instructions; unstarted tasks are not queued |
 | Working context | Migrated working context **expires after 14 days**; pin or review anything that must persist |
 | Jobs, emails, memories, reminders, calendar records | Preserved |
-| Browser UI URLs and plain-HTTP API clients | **No longer work** |
+| Browser UI URLs and management API clients | **No longer work** |
 
 Email intake now requires the `email` Compose profile; the wizard selects it. `AGENT_TIMEZONE` is authoritative for implicit times.
 
@@ -145,7 +145,11 @@ Separate services handle email ingestion, job execution, native reminders, deep 
 
 ## Configuration
 
-Credentials live in gitignored `.secrets/` files and non-secret settings in `.env`; both are written by the wizard. You never need to copy `.env.example`: it is only a reference for the keys setup writes. Compose does not encrypt host source files.
+Credentials live in gitignored `.secrets/` files by default; non-secret settings live in `.env`. Choose **Move credentials to a dedicated Docker volume** during setup review or in the post-setup menu to move credential files out of the installation directory. The volume is not encrypted. Service-specific read-only mounts are preserved, and original credential files are removed only after the copy and volume mounts are verified. See [credential storage](docs/security.md#docker-secrets) for requirements and backup precautions.
+
+The same menu offers **Move credentials back to plaintext host files** when volume storage is selected; setup recreates affected services and destroys the volume automatically. Keep `.secrets/state.json` in either mode: it contains setup metadata, not credentials. Factory reset preserves both credential stores.
+
+You never need to copy `.env.example`: it is only a reference for the keys setup writes.
 
 ```bash
 ./scripts/setup.sh --section advanced   # task limits, email behavior, memory, search, research
@@ -166,21 +170,19 @@ Details: [Manual overrides file](docs/configuration.md#manual-overrides-file).
 ## Security and autonomy
 
 > [!WARNING]
-> The optional API requires TLS and bearer authentication and is excluded from the default Compose profile. Enable it only with a valid server certificate/key and a strong `AGENT_API_AUTH_TOKEN`. Admin email requests must come from an authenticated identity, not merely a matching From address; see [Email Administration](docs/email-administration.md).
+> PostgreSQL, sandbox, SMTP/IMAP, and external-service connections retain their required TLS verification. Admin email requests must come from an authenticated identity; see [Email Administration](docs/email-administration.md).
 
 Secure defaults:
 
 - No application port is published, and no browser UI exists.
 - No email triggers until you set `EMAIL_ACTIONABLE_SENDERS`.
 - No outbound email beyond your admin address until you set `EMAIL_ALLOWED_RECIPIENT_DOMAINS`.
-- API docs and the OpenAPI schema are off by default.
 
 Before going live:
 
 - [ ] `POSTGRES_PASSWORD` is strong and unique (the wizard keeps your existing one on upgrade)
 - [ ] `ADMIN_EMAIL` is your own address
 - [ ] `EMAIL_ACTIONABLE_SENDERS` and `EMAIL_ALLOWED_RECIPIENT_DOMAINS` are locked down
-- [ ] If the API is enabled: loopback only, HTTPS with a verified certificate, bearer token
 - [ ] Docker daemon access uses local sockets, SSH or mutual TLS, never unauthenticated TCP
 
 See [docs/security.md](docs/security.md) for the threat model, sandbox socket risks and hardening.
@@ -195,7 +197,7 @@ Start with [Configuration](docs/configuration.md), [Architecture](docs/architect
 | Configuration | [Advanced configuration](docs/advanced-configuration.md), [Configuration reference](docs/configuration.md), [Environment overrides](docs/env-overrides.md), [Docker setup](docs/docker-setup.md), [Running Assistant](docs/running-assistant.md) |
 | Integrations | [Calendar providers](docs/calendar-providers.md), [Dropbox](docs/dropbox.md), [OpenRouter](docs/openrouter.md) |
 | Internals | [Agent loop](docs/agent-loop.md), [Prompting](docs/prompting.md), [Tools reference](docs/tools-reference.md), [Data model](docs/data-model.md), [Memory system](docs/memory-system.md), [Sandbox](docs/sandbox.md), [Email and artifacts](docs/email-and-artifacts.md), [Concurrent jobs](docs/concurrent-job-processing.md) |
-| Extending | [Extending tools](docs/extending-tools.md), [Codebase guide](docs/codebase.md), [HTTPS API](docs/dashboard-and-api.md) |
+| Extending | [Extending tools](docs/extending-tools.md), [Codebase guide](docs/codebase.md) |
 
 ## Contributing
 

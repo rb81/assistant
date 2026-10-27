@@ -3,9 +3,9 @@
 This platform refresh is a breaking change. Read [the upgrade guide](upgrading.md)
 before starting new code on an existing database. Use [guided setup and secret
 management](configuration.md), [current security guidance](security.md), and
-[the authenticated HTTPS API](dashboard-and-api.md). Browser editing/administration,
-Projects, separate notes and entities are removed; older feature descriptions
-elsewhere in the documentation are historical, not supported setup instructions.
+Local administration is provided by the setup CLI and authenticated email
+commands. The browser interface, management API, Projects, separate notes and
+entities are removed; older feature descriptions elsewhere are historical.
 
 # Documentation Index
 
@@ -80,8 +80,6 @@ Then use the domain-specific docs below.
 
 - [email-and-artifacts.md](email-and-artifacts.md) — IMAP ingestion, disclosure handling, ClamAV scanning, and MarkItDown artifact conversion
 
-## API & Contributor Orientation
+## Contributor Orientation
 
-- [dashboard-and-api.md](dashboard-and-api.md) — authenticated HTTPS API setup and endpoint map
 - [codebase.md](codebase.md) — module map, test structure, and contribution workflow
-

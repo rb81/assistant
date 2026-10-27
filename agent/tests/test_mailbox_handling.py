@@ -659,7 +659,7 @@ class MailboxHandlingTest(unittest.TestCase):
             downloader.queue_or_update_job = lambda *args, **kwargs: None  # type: ignore[method-assign]
             downloader.db.execute = lambda *args, **kwargs: None  # type: ignore[attr-defined]
 
-            with patch("assistant_agent.admin_commands.authenticated_admin", lambda *args: False), patch(
+            with patch(
                 "assistant_agent.email_ingest.RequestService.receive_request", return_value={}
             ):
                 result = downloader.ingest_raw(invitation(uid))

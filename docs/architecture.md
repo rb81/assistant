@@ -8,7 +8,6 @@ The default stack runs these services:
 
 - `postgres` — durable state (jobs, logs, memories, reminders, research, contacts, and related records).
 - `clamav` — malware scanning support for inbound artifacts.
-- `agent-api` — optional authenticated FastAPI JSON API; no browser UI is served.
 - `downloader` — IMAP ingestion and job creation.
 - `task-agent` — main LLM-driven autonomous worker loop.
 - `workspace-indexer` — semantic indexer for shared workspace files.
@@ -43,7 +42,6 @@ Database schema lives at `database/schema.sql` and is initialized into PostgreSQ
 
 Most roles share the same Python image and are selected by `AGENT_ROLE` in `assistant_agent.main:run_role`:
 
-- `api`
 - `downloader`
 - `task-agent`
 - `workspace-indexer`
@@ -59,7 +57,7 @@ There are also one-shot cron-style roles (for host cron usage) such as `reminder
 ### 1) Inbound request
 
 - Email-driven: `downloader` pulls IMAP messages, stores in `emails`, decides actionability, and queues/updates jobs.
-- API-driven: a client creates a manual job through the optional HTTPS API (`POST /api/jobs`).
+- CLI-driven: a local operator uses the setup tools to inspect and manage jobs.
 
 ### 2) Job execution
 

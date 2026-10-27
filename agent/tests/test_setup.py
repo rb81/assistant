@@ -12,18 +12,357 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import yaml
 
-from assistant_agent.setup import Installation, SetupError, atomic_write, configure_docker_boot, interactive, parse_environment, prepare_internal_tls, prepare_tls, prompt_calendar_providers, render_environment, setup_failure_message, validate_draft
+from assistant_agent.setup import Installation, SetupError, atomic_write, configure_docker_boot, interactive, parse_environment, prepare_internal_tls, prompt_calendar_providers, render_environment, setup_failure_message, validate_draft
 from assistant_agent.setup import ADVANCED_SETTINGS, advanced_value_error, prompt_advanced_settings
 from assistant_agent.setup import DockerCommandError, start_saved_containers
 from assistant_agent.config import load_config
 
 
 class SetupTest(unittest.TestCase):
+    @contextmanager
+    def credential_volume_backend(self):
+        from assistant_agent.credential_volume import CredentialVolume
+        records = {}
+
+        def request(volume, payload):
+            previous = json.loads(json.dumps(records.get(volume.name, {})))
+            if payload["operation"] == "write":
+                if previous != payload["expected"]:
+                    raise SetupError("Credential volume changed")
+                previous = payload["record"]
+                records[volume.name] = json.loads(json.dumps(previous))
+            return json.loads(json.dumps(previous))
+
+        with patch.object(CredentialVolume, "request", autospec=True, side_effect=request), patch.object(Installation, "docker", return_value=""):
+            yield records
+
+    def test_credential_volume_migration_updates_and_service_scoping(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            instance.state["pending"] = []
+            instance.save()
+            credentials = dict(instance.secret_values)
+            instance.use_credential_volume = True
+            instance.save()
+            self.assertEqual(set(instance.state["pending"]), set(credentials))
+            self.assertFalse((Path(root) / ".secrets/POSTGRES_PASSWORD").exists())
+            self.assertFalse((Path(root) / ".secrets/OPENROUTER_API_KEY").exists())
+            reopened = Installation(root)
+            self.assertEqual(reopened.secret_values, credentials)
+            overlay = reopened.overlay()
+            self.assertNotIn("secrets", overlay)
+            worker = overlay["services"]["task-agent"]
+            self.assertEqual(worker["volumes"][0]["volume"]["subpath"], "services/task-agent")
+            self.assertTrue(worker["volumes"][0]["read_only"])
+            grants = reopened.credential_volume.record["grants"]
+            self.assertEqual(grants["postgres"], ["POSTGRES_PASSWORD"])
+            self.assertIn("OPENROUTER_API_KEY", grants["task-agent"])
+            self.assertNotIn("OPENROUTER_API_KEY", grants["workspace-indexer"])
+            reopened.secret_values["OPENROUTER_API_KEY"] = "replacement-key"
+            reopened.save()
+            with patch.object(reopened, "compose", side_effect=["task-agent\nworkspace-indexer\n", ""]) as compose:
+                self.assertEqual(reopened.apply(["OPENROUTER_API_KEY"]), ["task-agent"])
+            self.assertIn("--force-recreate", compose.call_args.args[0])
+            self.assertEqual(Installation(root).secret_values["OPENROUTER_API_KEY"], "replacement-key")
+            self.assertFalse((Path(root) / ".secrets/OPENROUTER_API_KEY").exists())
+
+    def test_volume_failure_preserves_host_credentials_and_allows_retry(self):
+        from assistant_agent.credential_volume import CredentialVolume
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            previous_env = instance.env_path.read_bytes()
+            instance.use_credential_volume = True
+            with patch.object(CredentialVolume, "verify_mount", side_effect=DockerCommandError("Subpath unsupported")):
+                with self.assertRaisesRegex(SetupError, "Subpath unsupported"):
+                    instance.save()
+            self.assertEqual(instance.env_path.read_bytes(), previous_env)
+            self.assertEqual(Installation(root).secret_values, instance.secret_values)
+            instance.save()
+            self.assertFalse((Path(root) / ".secrets/POSTGRES_PASSWORD").exists())
+
+    def test_volume_save_rolls_back_when_configuration_write_fails(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            previous = dict(instance.secret_values)
+            instance.secret_values["OPENROUTER_API_KEY"] = "not-committed"
+            with patch("assistant_agent.setup.write_transaction", side_effect=SetupError("Save failed")):
+                with self.assertRaisesRegex(SetupError, "Save failed"):
+                    instance.save()
+            self.assertEqual(Installation(root).secret_values, previous)
+
+    def test_volume_save_rejects_concurrent_changes(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend() as records:
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            name = instance.credential_volume.name
+            records[name]["values"]["OPENROUTER_API_KEY"] = "concurrent-update"
+            with self.assertRaisesRegex(SetupError, "changed during this session"):
+                instance.save()
+            self.assertEqual(Installation(root).secret_values["OPENROUTER_API_KEY"], "concurrent-update")
+
+    def test_move_credentials_back_to_host_and_then_volume_again(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend() as records:
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            name = instance.credential_volume.name
+            previous = json.loads(json.dumps(records[name]))
+            instance.state["pending"] = []
+            instance.use_credential_volume = False
+            instance.save()
+            instance.assert_current()
+            self.assertIsNone(instance.credential_volume)
+            self.assertNotIn("credential_volume", instance.state)
+            self.assertEqual(instance.state["previous_credential_volume"], name)
+            self.assertEqual(set(instance.state["pending"]), set(instance.secret_values))
+            self.assertEqual(records[name], previous)
+            directory = Path(root) / ".secrets"
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+            for name, value in instance.secret_values.items():
+                self.assertEqual((directory / name).read_text(), value)
+                self.assertEqual(stat.S_IMODE((directory / name).stat().st_mode), 0o600)
+            self.assertIn("secrets", instance.overlay())
+            reopened = Installation(root)
+            reopened.secret_values["OPENROUTER_API_KEY"] = "host-updated-key"
+            reopened.save()
+            reopened.use_credential_volume = True
+            reopened.save()
+            reopened.assert_current()
+            self.assertNotIn("previous_credential_volume", reopened.state)
+            self.assertEqual(Installation(root).secret_values["OPENROUTER_API_KEY"], "host-updated-key")
+            self.assertFalse((directory / "OPENROUTER_API_KEY").exists())
+
+    def test_move_back_to_host_recreates_services_and_destroys_volume(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            name = instance.credential_volume.name
+            instance.use_credential_volume = False
+            instance.save()
+            users = ["c1\trunning\tother\tx\tforeign-app\n"]
+            calls = []
+
+            def docker(arguments, input_text=None, timeout=180):
+                calls.append(arguments)
+                if arguments[:2] == ["volume", "ls"]:
+                    return name + "\n"
+                if arguments[:1] == ["ps"]:
+                    return users.pop(0) if users else ""
+                if "config" in arguments:
+                    return '{"name": "assistant"}'
+                if "ps" in arguments:
+                    return "task-agent\n"
+                return ""
+
+            with patch.object(Installation, "docker", side_effect=docker):
+                with self.assertRaisesRegex(SetupError, "foreign-app"):
+                    Installation(root).retire_previous_volume()
+                self.assertNotIn(["volume", "rm", name], calls)
+                self.assertEqual(Installation(root).state["previous_credential_volume"], name)
+                users[:] = ["c2\trunning\tassistant\tworkspace-indexer\tw\nc3\texited\tassistant\tsandbox-init\ts\n",
+                            "c3\texited\tassistant\tsandbox-init\ts\n", ""]
+                reopened = Installation(root)
+                self.assertEqual(reopened.retire_previous_volume(), ["task-agent", "workspace-indexer"])
+            self.assertIn(["rm", "c3"], calls)
+            self.assertEqual(calls[-1], ["volume", "rm", name])
+            self.assertNotIn("previous_credential_volume", Installation(root).state)
+            self.assertTrue((Path(root) / ".secrets/POSTGRES_PASSWORD").exists())
+
+    def test_failed_move_back_to_host_preserves_volume_and_configuration(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend() as records:
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            previous = json.loads(json.dumps(records))
+            instance.use_credential_volume = False
+            with patch("assistant_agent.setup.write_transaction", side_effect=SetupError("Save failed")):
+                with self.assertRaisesRegex(SetupError, "Save failed"):
+                    instance.save()
+            self.assertEqual(records, previous)
+            reopened = Installation(root)
+            self.assertTrue(reopened.use_credential_volume)
+            self.assertEqual(reopened.secret_values, instance.secret_values)
+
+    def test_post_setup_option_restores_plaintext_credentials_on_save_only(self):
+        import questionary
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            for finish in ("cancel", "save"):
+                with self.subTest(finish=finish):
+                    responses = ["credential-volume", True, finish] + ([False] if finish == "save" else [])
+                    with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary, "select", wraps=questionary.select) as select_prompt, patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
+                        interactive(argparse.Namespace(root=Path(root), command=None))
+                    choices = select_prompt.call_args_list[0].kwargs["choices"]
+                    self.assertTrue(any(getattr(choice, "title", "") == "Move credentials back to plaintext host files" for choice in choices))
+                    self.assertEqual(Installation(root).use_credential_volume, finish == "cancel")
+                    self.assertEqual((Path(root) / ".secrets/POSTGRES_PASSWORD").exists(), finish == "save")
+
+    def test_factory_reset_preserves_migrated_credentials_and_setup_state(self):
+        from assistant_agent.factory_reset import expand
+        from assistant_agent.setup_tools import run_factory_reset
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend() as records:
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            previous = json.loads(json.dumps(records))
+            files = {path: path.read_bytes() for path in
+                     (instance.state_path, instance.env_path, Path(root) / ".compose-secrets.yaml")}
+            with patch.object(instance, "compose", return_value="task-agent\npostgres\n"), patch.object(instance, "compose_interactive", return_value=0) as compose:
+                run_factory_reset(instance, MagicMock(), expand(["workstreams"])[0], False, False)
+            self.assertFalse(any("down" in call.args[0] or "volume" in call.args[0] for call in compose.call_args_list))
+            self.assertEqual(records, previous)
+            for path, content in files.items():
+                self.assertEqual(path.read_bytes(), content)
+            instance.assert_current()
+            self.assertEqual(Installation(root).secret_values, instance.secret_values)
+
+    def test_volume_database_rotation_recovery_keeps_journal_out_of_host_files(self):
+        from assistant_agent.setup import recover_database
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            instance.save()
+            previous = instance.secret_values["POSTGRES_PASSWORD"]
+            with patch.object(instance, "compose", return_value="postgres\ntask-agent\n"), patch.object(instance, "set_database_password"), patch.object(instance, "verify_database_password", side_effect=SetupError("Probe failed")):
+                with self.assertRaisesRegex(SetupError, "rotation is incomplete"):
+                    instance.rotate_database("replacement-database-password")
+            self.assertFalse((Path(root) / ".secrets/rotation.json").exists())
+            with self.assertRaisesRegex(SetupError, "recovery is pending"):
+                Installation(root)
+            with patch.object(Installation, "compose"), patch.object(Installation, "set_database_password"), patch.object(Installation, "verify_database_password"):
+                recover_database(root)
+            self.assertEqual(Installation(root).secret_values["POSTGRES_PASSWORD"], previous)
+
+    def test_volume_option_is_available_in_review_and_post_setup_menu(self):
+        import questionary
+        for responses in (
+            ["credential-volume", True, "cancel"],
+            ["review", "credential-volume", True, "cancel"],
+            ["credential-volume", False, "cancel"],
+        ):
+            with self.subTest(responses=responses), tempfile.TemporaryDirectory() as root:
+                instance = self.saved_configuration(root)
+                previous = instance.env_path.read_bytes()
+                with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses), patch.object(Installation, "docker") as docker:
+                    interactive(argparse.Namespace(root=Path(root), command=None))
+                docker.assert_not_called()
+                self.assertEqual(instance.env_path.read_bytes(), previous)
+                self.assertTrue((Path(root) / ".secrets/POSTGRES_PASSWORD").exists())
+
+    def test_post_setup_volume_confirmation_goes_to_review_and_save_migrates(self):
+        import questionary
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            instance = self.saved_configuration(root)
+            output = io.StringIO()
+            responses = ["credential-volume", True, "save", False]
+            with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary, "select", wraps=questionary.select) as select_prompt, patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
+                interactive(argparse.Namespace(root=Path(root), command=None))
+            prompts = [call.args[0] for call in select_prompt.call_args_list]
+            self.assertEqual(prompts, ["Update configuration", "Finish setup"])
+            self.assertIn("Migration is pending", output.getvalue())
+            self.assertIn("Plaintext .secrets sources removed", output.getvalue())
+            self.assertTrue(Installation(root).credential_volume)
+            self.assertFalse((Path(root) / ".secrets/POSTGRES_PASSWORD").exists())
+
+    def test_volume_migration_with_retired_credentials_can_start_in_same_session(self):
+        with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+            self.saved_configuration(root)
+            path = Path(root)
+            (path / ".secrets/AGENT_API_AUTH_TOKEN").write_text("retired-token")
+            (path / ".secrets/ADMIN_COMMAND_SIGNING_KEY").write_text("retired-key")
+            (path / "data/private/tls/server.crt").write_text("retired-certificate")
+            (path / "data/private/tls/server.key").write_text("retired-private-key")
+            instance = Installation(root)
+            instance.use_credential_volume = True
+            instance.save()
+            # Startup checks this same object, not a freshly reopened installation.
+            with patch.object(instance, "compose", return_value='{"services": {}}') as compose:
+                with self.assertRaisesRegex(SetupError, "No enabled long-running"):
+                    instance.start_containers()
+            compose.assert_called_once_with(["config", "--format", "json"])
+            instance.save()
+            (path / ".secrets/ADMIN_COMMAND_SIGNING_KEY").write_text("unexpected-key")
+            with self.assertRaisesRegex(SetupError, "Credentials changed"):
+                instance.assert_current()
+
+    @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
+    def test_live_credential_volume_migration_mounts_and_rotation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "docker-compose.yml").write_text(yaml.safe_dump({
+                "name": "assistant-volume-test-" + path.name.lower(),
+                "services": {
+                    service: {"image": "python:3.12-slim", "command": ["sleep", "300"]}
+                    for service in ("task-agent", "workspace-indexer")
+                },
+            }))
+            instance = self.saved_configuration(root)
+            instance.use_credential_volume = True
+            from assistant_agent.credential_volume import CredentialVolume
+            name = CredentialVolume.name_for(instance.root)
+            try:
+                instance.save()
+                instance.compose(["up", "-d"])
+                self.assertEqual(Installation(root).secret_values, instance.secret_values)
+                result = instance.compose(["exec", "-T", "workspace-indexer", "python", "-c",
+                                           "from pathlib import Path; print(','.join(sorted(p.name for p in Path('/run/secrets').iterdir())))"])
+                self.assertEqual(result.strip(), "POSTGRES_PASSWORD")
+                instance.secret_values["OPENROUTER_API_KEY"] = "replacement-test-key"
+                instance.save()
+                instance.apply(["OPENROUTER_API_KEY"])
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "from pathlib import Path; assert Path('/run/secrets/OPENROUTER_API_KEY').read_text() == 'replacement-test-key'"])
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "import os; from pathlib import Path; p=Path('/run/secrets/OPENROUTER_API_KEY'); "
+                                  "assert p.stat().st_mode & 0o777 == 0o600; assert not os.access(p, os.W_OK)"])
+                instance.docker([
+                    "run", "--rm", "-i", "--log-driver", "none", "--network", "none",
+                    "--mount", "type=volume,source=" + name + ",target=/credentials",
+                    "python:3.12-slim", "python", "-c",
+                    "import sys; from pathlib import Path; root=Path('/credentials'); "
+                    "(root/'recovery.json').write_text(sys.stdin.read()); "
+                    "(root/'services/task-agent/OPENROUTER_API_KEY').write_text('interrupted-write')",
+                ], input_text=json.dumps(instance.credential_volume.record))
+                self.assertEqual(Installation(root).secret_values, instance.secret_values)
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "from pathlib import Path; assert Path('/run/secrets/OPENROUTER_API_KEY').read_text() == 'replacement-test-key'"])
+                instance.use_credential_volume = False
+                instance.save()
+                instance.assert_current()
+                self.assertFalse(Installation(root).use_credential_volume)
+                instance.compose(["stop", "workspace-indexer"])
+                self.assertIn("task-agent", instance.retire_previous_volume())
+                self.assertEqual(instance.docker(["volume", "ls", "-q", "--filter", "name=^" + name + "$"]).strip(), "")
+                self.assertNotIn("previous_credential_volume", Installation(root).state)
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "from pathlib import Path; assert Path('/run/secrets/OPENROUTER_API_KEY').read_text() == 'replacement-test-key'"])
+                instance.secret_values["OPENROUTER_API_KEY"] = "host-updated-key"
+                instance.save()
+                instance.use_credential_volume = True
+                instance.save()
+                instance.apply(list(instance.secret_values))
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "from pathlib import Path; assert Path('/run/secrets/OPENROUTER_API_KEY').read_text() == 'host-updated-key'"])
+                instance.secret_values.pop("OPENROUTER_API_KEY")
+                instance.save()
+                instance.apply(["OPENROUTER_API_KEY"])
+                instance.compose(["exec", "-T", "task-agent", "python", "-c",
+                                  "from pathlib import Path; assert not Path('/run/secrets/OPENROUTER_API_KEY').exists()"])
+            finally:
+                instance.compose(["down", "--volumes"])
+                instance.docker(["volume", "rm", name])
+
     def test_calendar_verification_without_runtime_database_dependencies(self):
         script = """
 import importlib.abc
@@ -58,7 +397,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         instance = Installation(root)
         instance.values = {"AGENT_NAME": "Original", "AGENT_TIMEZONE": "UTC", "AGENT_LLM_MODEL": "model",
                            "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1", "COMPOSE_PROFILES": "custom",
-                           "AGENT_API_DOCS_ENABLED": "true", "UNRELATED": "preserve"}
+                           "UNRELATED": "preserve"}
         instance.secret_values = {"POSTGRES_PASSWORD": "database-password", "OPENROUTER_API_KEY": "model-key"}
         instance.save()
         return instance
@@ -75,10 +414,144 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             current = Installation(root)
             self.assertEqual(current.values["AGENT_NAME"], "Changed")
             self.assertEqual(current.values["COMPOSE_PROFILES"], "custom")
-            self.assertEqual(current.values["AGENT_API_DOCS_ENABLED"], "true")
             self.assertEqual(current.values["UNRELATED"], "preserve")
             self.assertEqual(current.secret_values, original.secret_values)
             self.assertTrue(current.state["setup_complete"])
+
+    def test_maintenance_repairs_retired_api_overlay_without_saving_settings(self):
+        from assistant_agent.setup import run_maintenance
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / ".env").write_text("COMPOSE_PROFILES=api,email\n")
+            overlay = {
+                "services": {
+                    "agent-api": {"environment": {"AGENT_API_AUTH_TOKEN_FILE": "/run/secrets/old"}},
+                    "task-agent": {"environment": {"SMTP_PASSWORD_FILE": "/run/secrets/smtp"}, "secrets": ["smtp"]},
+                    "custom": {"image": "custom:test"},
+                },
+                "secrets": {"smtp": {"file": "./smtp"}},
+            }
+            overlay_path = path / ".compose-secrets.yaml"
+            overlay_path.write_text(yaml.safe_dump(overlay))
+            instance = Installation(path)
+            environment = (path / ".env").read_bytes()
+
+            def tools(*args):
+                repaired = yaml.safe_load(overlay_path.read_text())
+                self.assertNotIn("agent-api", repaired["services"])
+                self.assertEqual(repaired["services"]["task-agent"], overlay["services"]["task-agent"])
+                self.assertEqual(repaired["services"]["custom"], overlay["services"]["custom"])
+                self.assertEqual(repaired["secrets"], overlay["secrets"])
+                instance.assert_current()
+
+            with patch("assistant_agent.setup_tools.tools_menu", side_effect=tools), patch.object(instance, "save") as save:
+                run_maintenance("tools", instance, None, None, MagicMock())
+                first = overlay_path.read_bytes()
+                run_maintenance("tools", instance, None, None, MagicMock())
+                self.assertEqual(overlay_path.read_bytes(), first)
+                save.assert_not_called()
+            self.assertEqual((path / ".env").read_bytes(), environment)
+
+    def test_retired_overlay_repair_rejects_concurrent_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            overlay = path / ".compose-secrets.yaml"
+            overlay.write_text("services:\n  agent-api: {}\n")
+            instance = Installation(path)
+            overlay.write_text("services:\n  agent-api: {}\n  custom: {image: custom:test}\n")
+            changed = overlay.read_bytes()
+            with self.assertRaisesRegex(SetupError, "changed during this session"):
+                instance.remove_retired_api_overlay()
+            self.assertEqual(overlay.read_bytes(), changed)
+
+    @unittest.skipUnless(shutil.which("docker"), "requires Docker Compose")
+    def test_retired_overlay_repair_passes_actual_compose_validation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / ".env").write_text("COMPOSE_PROFILES=api\n")
+            (path / "docker-compose.yml").write_text("services:\n  task-agent:\n    image: python:3.14-slim\n")
+            (path / ".compose-secrets.yaml").write_text("services:\n  agent-api:\n    environment:\n      OLD: value\n  task-agent:\n    environment:\n      KEEP: value\n")
+            instance = Installation(path)
+            instance.remove_retired_api_overlay()
+            rendered = json.loads(instance.compose(["config", "--format", "json"]))
+            self.assertEqual(set(rendered["services"]), {"task-agent"})
+            self.assertEqual(rendered["services"]["task-agent"]["environment"]["KEEP"], "value")
+
+    def test_saving_configuration_removes_legacy_management_settings_and_secrets(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            path.mkdir(exist_ok=True)
+            (path / ".env").write_text(
+                "AGENT_API_PORT=8443\nAGENT_APP_BASE_URL=https://localhost:8443\n"
+                "AGENT_API_AUTH_TOKEN=inline-retired-api-token\n"
+                "AGENT_API_AUTH_TOKEN_FILE=/run/secrets/AGENT_API_AUTH_TOKEN\n"
+                "ADMIN_COMMAND_SIGNING_KEY_FILE=/run/secrets/ADMIN_COMMAND_SIGNING_KEY\n"
+                "ADMIN_TRUSTED_AUTHSERV_IDS=mx.example.org\nCOMPOSE_PROFILES=api,email\n",
+                encoding="utf-8",
+            )
+            secrets = path / ".secrets"
+            secrets.mkdir()
+            retired_token = secrets / "AGENT_API_AUTH_TOKEN"
+            retired_token.write_text("retired-api-secret-token-value-32-bytes", encoding="utf-8")
+            retired_signing_key = secrets / "ADMIN_COMMAND_SIGNING_KEY"
+            retired_signing_key.write_text("retired-signing-secret-key-value-32-bytes", encoding="utf-8")
+            retired_tls_directory = path / "data/private/tls"
+            retired_tls_directory.mkdir(parents=True)
+            for name in ("server.crt", "server.key"):
+                (retired_tls_directory / name).write_text("retired API TLS " + name, encoding="utf-8")
+            (secrets / "state.json").write_text(
+                json.dumps({"pending": ["AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"], "removed": ["ADMIN_COMMAND_SIGNING_KEY"]}),
+                encoding="utf-8",
+            )
+            (path / ".compose-secrets.yaml").write_text(
+                yaml.safe_dump({
+                    "services": {"downloader": {
+                        "environment": {
+                            "AGENT_API_AUTH_TOKEN": None,
+                            "AGENT_API_AUTH_TOKEN_FILE": "/run/secrets/AGENT_API_AUTH_TOKEN",
+                            "ADMIN_COMMAND_SIGNING_KEY": None,
+                            "ADMIN_COMMAND_SIGNING_KEY_FILE": "/run/secrets/ADMIN_COMMAND_SIGNING_KEY",
+                        },
+                        "secrets": ["AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"],
+                    }},
+                    "secrets": {
+                        "AGENT_API_AUTH_TOKEN": {"file": str(retired_token)},
+                        "ADMIN_COMMAND_SIGNING_KEY": {"file": str(retired_signing_key)},
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            instance = Installation(path)
+            self.assertNotIn("AGENT_API_PORT", instance.values)
+            self.assertNotIn("AGENT_API_AUTH_TOKEN", instance.secret_values)
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", instance.values)
+            self.assertNotIn("ADMIN_TRUSTED_AUTHSERV_IDS", instance.values)
+            self.assertEqual(instance.values["COMPOSE_PROFILES"], "email")
+            instance.save()
+            instance.assert_current()
+
+            environment = (path / ".env").read_text(encoding="utf-8")
+            self.assertNotIn("AGENT_API_", environment)
+            self.assertNotIn("AGENT_APP_BASE_URL", environment)
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", environment)
+            self.assertNotIn("ADMIN_TRUSTED_AUTHSERV_IDS", environment)
+            self.assertNotIn("api", instance.values["COMPOSE_PROFILES"])
+            self.assertFalse(retired_token.exists())
+            self.assertFalse(retired_signing_key.exists())
+            self.assertFalse((retired_tls_directory / "server.crt").exists())
+            self.assertFalse((retired_tls_directory / "server.key").exists())
+            for name in ("postgres.crt", "postgres.key", "sandbox.crt", "sandbox.key"):
+                self.assertTrue((retired_tls_directory / name).is_file())
+            overlay = yaml.safe_load((path / ".compose-secrets.yaml").read_text(encoding="utf-8"))
+            self.assertNotIn("AGENT_API_AUTH_TOKEN", overlay.get("secrets", {}))
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", overlay.get("secrets", {}))
+            self.assertNotIn("AGENT_API_AUTH_TOKEN", str(overlay))
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", str(overlay))
+            state = json.loads((secrets / "state.json").read_text(encoding="utf-8"))
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", state["pending"])
+            self.assertNotIn("AGENT_API_AUTH_TOKEN", state["pending"])
+            self.assertNotIn("ADMIN_COMMAND_SIGNING_KEY", state["removed"])
 
     def test_telegram_section_enables_profile_and_hides_bot_token(self):
         import questionary
@@ -315,7 +788,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         self.assertIn("clamav_net", task_agent["networks"])
         self.assertNotIn(mount, configuration["services"]["sandbox"]["volumes"])
 
-    def test_compose_segments_service_networks_and_publishes_api_on_loopback(self):
+    def test_compose_segments_service_networks_without_management_api(self):
         repository = Path(__file__).resolve().parents[2]
         configuration = yaml.safe_load((repository / "docker-compose.yml").read_text())
         services = configuration["services"]
@@ -341,7 +814,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         self.assertIn("no-new-privileges:true", services["task-agent"]["security_opt"])
         self.assertIn("NET_RAW", services["task-agent"]["cap_drop"])
         self.assertIn("/tmp:rw,nosuid,nodev,size=512m", services["task-agent"]["tmpfs"])
-        self.assertIn("127.0.0.1:${AGENT_API_PUBLISHED_PORT:-8000}:8000", services["agent-api"]["ports"])
+        self.assertNotIn("agent-api", services)
         self.assertIn("hostnossl all all all reject", (repository / "database/pg_hba.conf").read_text())
         for name in services:
             if services[name].get("environment", {}).get("AGENT_ROLE"):
@@ -511,7 +984,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             self.assertEqual(listed, {name for name, _, _ in manual_override_entries(path)})
             for name in listed:
                 self.assertFalse(wizard_managed(name) or is_secret_name(name) or name in blocked, name)
-            for name in ("AGENT_NAME", "AGENT_LLM_MODEL", "IMAP_HOST", "AGENT_SEARCH_ENABLED", "AGENT_CALENDAR_DEFAULT_ALERT_MINUTES", "OPENROUTER_API_KEY", "AGENT_API_PORT"):
+            for name in ("AGENT_NAME", "AGENT_LLM_MODEL", "IMAP_HOST", "AGENT_SEARCH_ENABLED", "AGENT_CALENDAR_DEFAULT_ALERT_MINUTES", "OPENROUTER_API_KEY"):
                 self.assertNotIn(name, listed)
             covered = listed | {name for name, _, _ in ENV_OVERRIDES if wizard_managed(name) or is_secret_name(name) or name in blocked}
             self.assertLessEqual({name for name, _, _ in ENV_OVERRIDES} - covered, {"AGENT_CALENDAR_DEFAULT_ALERT_MINUTES"})
@@ -590,9 +1063,9 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         from assistant_agent.setup import draft_problems
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)
-            instance.values.update({"AGENT_TIMEZONE": "invalid-timezone", "SETUP_API_ENABLED": "true", "AGENT_APP_BASE_URL": "http://insecure"})
+            instance.values.update({"AGENT_TIMEZONE": "invalid-timezone"})
             sections = [section for section, _ in draft_problems(instance)]
-            self.assertEqual(sections, ["identity", "api", "api"])
+            self.assertEqual(sections, ["identity"])
             instance.save()
             responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Jump to section", "advanced", "done", "Review and save", "cancel"]
             with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary, "select", wraps=questionary.select) as selection, patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
@@ -600,7 +1073,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             jump = next(call for call in selection.call_args_list if call.args[0] == "Jump to section")
             labels = {choice.value: choice.title for choice in jump.kwargs["choices"]}
             self.assertEqual(labels["identity"], "Identity and timezone  [changed]")
-            self.assertEqual(labels["api"], "HTTPS API  [needs attention]")
+            self.assertNotIn("api", labels)
             self.assertEqual(labels["models"], "Models and spending")
 
     def test_prompt_copy_requires_explicit_choice_and_preserves_existing_file(self):
@@ -1130,7 +1603,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "PRIVATE-CANARY-KEY",
                 "anthropic/claude-sonnet-4.6", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", False,
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", False,
             ]
             with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
                 interactive(options)
@@ -1181,7 +1654,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 (path / "config/AGENT.md").write_text("Custom instructions\n")
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, replace, "Next", "save", False]
+                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, replace, "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=path, command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses), patch.object(Installation, "start_containers") as start:
@@ -1198,7 +1671,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             (path / "config/AGENT.md.example").write_text("Example instructions\n")
             responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", True]
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", True, "Next", "save", True]
 
             def started(instance):
                 self.assertTrue((path / ".env").is_file())
@@ -1245,7 +1718,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Keep existing", "model", "", "Next",
                     False, "Next", False, "Next", True, ["zoho"], "Keep existing", "Keep existing", "Keep existing", "zoho-calendar", "https://calendar.zoho.com", "30", False, "Next",
-                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "save", False]
+                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=Path(root), command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses[:-2] + ["cancel"]):
@@ -1274,7 +1747,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         with tempfile.TemporaryDirectory() as root:
             responses = ["Assistant", "BAD_TIMEZONE", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "save", False]
             output = io.StringIO()
             options = argparse.Namespace(root=Path(root), command=None)
@@ -1295,14 +1768,6 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             instance.secret_values = {"POSTGRES_PASSWORD": "database-password", "OPENROUTER_API_KEY": "model-key", "ZOOM_CLIENT_ID": "client", "ZOOM_ACCOUNT_ID": "account"}
             with self.assertRaisesRegex(SetupError, "ZOOM_CLIENT_SECRET"):
                 validate_draft(instance)
-
-    @unittest.skipUnless(shutil.which("openssl"), "requires OpenSSL")
-    def test_local_tls_certificate_is_valid_and_not_saved_until_confirmation(self):
-        with tempfile.TemporaryDirectory() as root:
-            files = prepare_tls(Path(root), "Generate localhost development certificate", None)
-            self.assertIn(b"BEGIN CERTIFICATE", files["server.crt"])
-            self.assertIn(b"PRIVATE KEY", files["server.key"])
-            self.assertEqual(list(Path(root).iterdir()), [])
 
     @unittest.skipUnless(shutil.which("openssl"), "requires OpenSSL")
     def test_internal_tls_certificates_have_service_hostname_identity(self):
@@ -1338,15 +1803,15 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             repository = Path(__file__).resolve().parents[2]
             shutil.copyfile(repository / "docker-compose.yml", path / "docker-compose.yml")
             instance = Installation(root)
-            instance.values = {"COMPOSE_PROFILES": "api,email", "COMPOSE_PROJECT_NAME": "assistant-secret-test-" + path.name.lower(), "LITERAL_SETTING": "literal$#'\\value"}
-            instance.secret_values = {"POSTGRES_PASSWORD": "DATABASE-PRIVATE-CANARY", "OPENROUTER_API_KEY": "MODEL-PRIVATE-CANARY", "AGENT_API_AUTH_TOKEN": "api" * 12}
+            instance.values = {"COMPOSE_PROFILES": "email", "COMPOSE_PROJECT_NAME": "assistant-secret-test-" + path.name.lower(), "LITERAL_SETTING": "literal$#'\\value"}
+            instance.secret_values = {"POSTGRES_PASSWORD": "DATABASE-PRIVATE-CANARY", "OPENROUTER_API_KEY": "MODEL-PRIVATE-CANARY"}
             instance.save()
             rendered = json.loads(instance.compose(["config", "--format", "json"]))
             for name, service in rendered["services"].items():
                 environment = service.get("environment", {})
                 self.assertNotIn("DATABASE-PRIVATE-CANARY", json.dumps(environment))
                 self.assertNotIn("MODEL-PRIVATE-CANARY", json.dumps(environment))
-                if name in {"task-agent", "downloader", "agent-api"}:
+                if name in {"task-agent", "downloader"}:
                     self.assertEqual(environment["LITERAL_SETTING"].replace("$$", "$"), "literal$#'\\value")
             self.assertEqual(rendered["services"]["postgres"]["environment"]["POSTGRES_PASSWORD_FILE"], "/run/secrets/POSTGRES_PASSWORD")
             self.assertNotIn("secrets", rendered["services"]["sandbox"])
@@ -1425,6 +1890,13 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
 
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
     def test_live_database_rotation_preserves_data_and_changes_authentication(self):
+        self.live_database_rotation(use_volume=False)
+
+    @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
+    def test_live_volume_database_rotation_preserves_data_and_changes_authentication(self):
+        self.live_database_rotation(use_volume=True)
+
+    def live_database_rotation(self, use_volume):
         from assistant_agent.setup import AGENT_SERVICES
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
@@ -1449,6 +1921,9 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             instance.secret_values["POSTGRES_PASSWORD"] = previous
             instance.save()
             try:
+                if use_volume:
+                    instance.use_credential_volume = True
+                    instance.save()
                 instance.compose(["up", "-d", "--wait", "postgres"])
                 instance.compose(["exec", "-T", "postgres", "psql", "-U", "assistant", "-d", "assistant", "-c", "CREATE TABLE preserved_canary(id int); INSERT INTO preserved_canary VALUES (7)"])
                 instance.rotate_database(replacement)
@@ -1462,6 +1937,8 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 self.assertFalse((path / ".secrets/rotation.json").exists())
             finally:
                 instance.compose(["down", "--volumes"])
+                if instance.credential_volume:
+                    instance.docker(["volume", "rm", instance.credential_volume.name])
 
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
     def test_live_startup_waits_for_health_and_leaves_one_shot_policy_unchanged(self):
@@ -1488,42 +1965,6 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             finally:
                 instance.compose(["down"])
 
-    @unittest.skipUnless(os.getenv("ASSISTANT_TEST_AGENT_IMAGE") and os.getenv("ASSISTANT_TEST_DOCKER") == "1", "requires a built agent image and opt-in Docker tests")
-    def test_https_api_starts_with_mounted_credentials_and_certificate(self):
-        from assistant_agent.setup import AGENT_SERVICES
-        with tempfile.TemporaryDirectory() as root:
-            path = Path(root)
-            repository = Path(__file__).resolve().parents[2]
-            (path / "config").mkdir()
-            (path / "config/agent.yaml").write_text("agent:\n  app:\n    timezone: UTC\n")
-            shutil.copyfile(repository / "config/AGENT.md.example", path / "config/AGENT.md.example")
-            tls = prepare_tls(path, "Generate localhost development certificate", None)
-            probe = 'import ssl, urllib.request; context=ssl.create_default_context(cafile="/run/assistant/tls/server.crt"); token=open("/run/secrets/AGENT_API_AUTH_TOKEN").read(); request=urllib.request.Request("https://localhost:8443/health", headers={"Authorization":"Bearer "+token}); assert urllib.request.urlopen(request, context=context).status == 200'
-            base = {"name": "assistant-api-test-" + path.name.lower(), "services": {
-                name: {"image": "postgres:16", "profiles": ["unused"]} for name in AGENT_SERVICES
-            }, "volumes": {"test_database": {}}}
-            base["services"]["postgres"] = {"image": "postgres:16", "environment": {"POSTGRES_USER": "assistant", "POSTGRES_DB": "assistant"},
-                "volumes": ["test_database:/var/lib/postgresql/data", str(repository / "database/schema.sql") + ":/docker-entrypoint-initdb.d/001.sql:ro"],
-                "healthcheck": {"test": ["CMD", "pg_isready", "-U", "assistant", "-d", "assistant"], "interval": "1s", "retries": 30}}
-            base["services"]["agent-api"] = {"image": os.environ["ASSISTANT_TEST_AGENT_IMAGE"], "entrypoint": ["python", "-m", "assistant_agent.main"],
-                "depends_on": {"postgres": {"condition": "service_healthy"}},
-                "environment": {"AGENT_ROLE": "api", "AGENT_CONFIG": "/app/config/agent.yaml", "PYTHONPATH": "/workspace/src",
-                    "AGENT_API_BIND_HOST": "127.0.0.1", "AGENT_API_PORT": "8443", "AGENT_API_TLS_CERT_FILE": "/run/assistant/tls/server.crt", "AGENT_API_TLS_KEY_FILE": "/run/assistant/tls/server.key"},
-                "volumes": [str(repository / "agent/src") + ":/workspace/src:ro", str(path / "config") + ":/app/config:ro", str(path / "data/private/tls") + ":/run/assistant/tls:ro"],
-                "healthcheck": {"test": ["CMD", "python", "-c", probe], "interval": "1s", "retries": 30}}
-            atomic_write(path / "docker-compose.yml", yaml.safe_dump(base).encode())
-            instance = Installation(path)
-            instance.secret_values = {"POSTGRES_PASSWORD": "API-SMOKE-DATABASE-PASSWORD", "AGENT_API_AUTH_TOKEN": "SYNTHETIC-API-TOKEN" * 3}
-            instance.tls_files = tls
-            instance.copy_prompt_example()
-            instance.save()
-            try:
-                instance.compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres", "agent-api"])
-                instance.compose(["exec", "-T", "agent-api", "python", "-c", probe])
-                rejection = 'import httpx, ssl; context=ssl.create_default_context(cafile="/run/assistant/tls/server.crt"); response=httpx.get("https://localhost:8443/health", verify=context); assert response.status_code == 401'
-                instance.compose(["exec", "-T", "agent-api", "python", "-c", rejection])
-            finally:
-                instance.compose(["down", "--volumes"])
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ settings in `.env`. Use `overrides.env` for the rest of the list below.
   values, credentials (use `./scripts/setup.sh secrets update`), and names the
   wizard or `docker-compose.yml` already controls, which would conflict or be
   silently ignored. Remove those lines.
-- **Not for Compose variables:** `TASK_AGENT_WORKERS`, `AGENT_API_PUBLISHED_PORT`,
+- **Not for Compose variables:** `TASK_AGENT_WORKERS`,
   `SANDBOX_ISOLATION_MODE` and `COMPOSE_PROFILES` are read by Compose for
   interpolation from `.env` only.
 - **Apply:** `docker compose up -d --force-recreate`.
@@ -69,9 +69,6 @@ configuration just to remove them:
 - `AGENT_MEMORY_STEWARD_MAX_ITERATIONS`
 - `AGENT_SANDBOX_DEFAULT_TIMEOUT_SECONDS` (use `AGENT_LIMITS_TOOL_TIMEOUT_COMMAND_SECONDS`)
 - `AGENT_SANDBOX_HARD_KILL_GRACE_SECONDS`
-- `AGENT_API_DASHBOARD_ENABLED`
-- `AGENT_API_WORKSPACE_ENABLED`
-- `AGENT_API_MAX_UPLOAD_BYTES`
 - `AGENT_PROJECTS_ENABLED`, `AGENT_PROJECTS_SCHEDULER_POLL_INTERVAL_SECONDS`, `AGENT_PROJECTS_MAX_TASKS`, and `AGENT_PROJECTS_MAX_PROJECTS_PER_TICK` (Projects has been retired)
 
 Workspace indexing is still supported: `AGENT_WORKSPACE_INDEX_ENABLED` controls
@@ -105,7 +102,6 @@ AGENT_SANDBOX_ENABLED=false
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `AGENT_APP_NAME` | `agent.app.name` | string | `assistant` |
-| `AGENT_APP_BASE_URL` | `agent.app.base_url` | string | `https://localhost:8000` |
 | `AGENT_APP_REFERER_URL` | `agent.app.referer_url` | string | `https://assistant.local` |
 | `AGENT_TIMEZONE` | `agent.app.timezone` | string | `UTC` |
 
@@ -475,16 +471,6 @@ For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE
 | `AGENT_FUSION_TEMPERATURE` | `agent.fusion.temperature` | float | _(empty, uses AGENT_LLM_TEMPERATURE)_ |
 
 ---
-
-## API
-
-| Environment Variable | YAML Path | Type | Default |
-|---|---|---|---|
-| `AGENT_API_BIND_HOST` | `agent.api.bind_host` | string | `127.0.0.1` |
-| `AGENT_API_PORT` | `agent.api.port` | int | `8000` |
-| `AGENT_API_DOCS_ENABLED` | `agent.api.docs_enabled` | bool | `false` |
-| `AGENT_API_OPENAPI_ENABLED` | `agent.api.openapi_enabled` | bool | `false` |
-| `AGENT_API_ALLOW_PUBLIC_BIND` | `agent.api.allow_public_bind` | bool | `false` |
 
 ---
 

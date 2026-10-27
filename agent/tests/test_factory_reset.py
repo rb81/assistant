@@ -254,6 +254,18 @@ class ResetOrchestrationTest(unittest.TestCase):
 
 
 class ToolsMenuTest(unittest.TestCase):
+    def test_service_failures_do_not_show_database_tool_guidance(self):
+        from assistant_agent.setup_tools import ADMIN, Tools
+        instance = MagicMock(use_sudo=False)
+        instance.compose_interactive.return_value = 1
+        console = MagicMock()
+        tools = Tools(instance, None, lambda *args: True, console)
+        tools.run(["restart"])
+        self.assertNotIn("PostgreSQL must", str(console.print.call_args_list))
+        console.reset_mock()
+        tools.run([*ADMIN, "/admin status"])
+        self.assertIn("PostgreSQL must", str(console.print.call_args_list))
+
     def test_commands_are_shown_and_changes_need_confirmation(self):
         from assistant_agent.setup_tools import ADMIN, Tools
         instance = MagicMock(use_sudo=True)

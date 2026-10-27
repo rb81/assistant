@@ -17,12 +17,8 @@ Run the setup wizard; it creates and maintains every local configuration file:
 
 `.env.example` is only a reference for the keys the wizard writes; you do not need to copy it. `config/agent.yaml` is a tracked file with sensible operational defaults for model names, limits, feature settings, ports, paths, and tool behavior — you should not need to edit it for normal deployments. For anything beyond the wizard, use `overrides.env` rather than editing tracked files, so updates never conflict with your changes.
 
-Jobs can be submitted by email or through the optional authenticated HTTPS API.
-The API is published only on the server's loopback interface by default. Use
-`https://localhost:8000` on the host; remote access should use an SSH tunnel, not a
-LAN bind. Configure the API profile and its TLS certificate through guided setup.
-
-`AGENT_APP_BASE_URL` sets the HTTPS hostname used when configuring the optional API certificate; it does not add dashboard links to admin emails. See [API access](dashboard-and-api.md) for certificate and connection requirements.
+Jobs can be submitted by email. Local operators can administer the system through
+the setup CLI.
 
 Persistent data defaults to the repository-local `./data` directory. Docker Compose bind-mounts PostgreSQL data, the shared workspace, private artifacts, ClamAV data, and Ollama model/cache data under that directory.
 
@@ -52,7 +48,7 @@ Fusion uses OpenRouter's `openrouter:fusion` server tool for multi-model deliber
 
 `request_input` emails either the original sender (`recipient=requester`) or `ADMIN_EMAIL` (`recipient=admin`) and pauses the job. The configured admin email is included in runtime prompt context and is the approval/contact endpoint for admin escalation.
 
-`task_complete` requires a user-visible `response`. The optional API includes job details and execution logs for API-submitted jobs. For external email jobs, Assistant rejects completion until a sent `email_send` reply exists for the latest external requester.
+`task_complete` requires a user-visible `response`. For external email jobs, Assistant rejects completion until a sent `email_send` reply exists for the latest external requester.
 
 Prompt context and agent docs:
 
@@ -138,7 +134,6 @@ docker compose up -d --force-recreate
 
 Services:
 
-- `agent-api`: optional FastAPI JSON API on `https://localhost:8000` (loopback only).
 - `downloader`: IMAP polling and job creation.
 - `task-agent`: LLM tool loop for queued jobs.
 - `reminder-scheduler`: Queues due reminders as jobs.
@@ -153,9 +148,7 @@ Services:
 
 ## First Run
 
-1. Enable the optional API in setup if API access is required.
-2. Use a client that trusts the configured certificate and supplies the bearer token.
-3. Keep host publication on loopback; use an SSH tunnel for remote administration.
+Follow the setup wizard and submit tasks through the configured mailbox.
 
 If required configuration is missing, the affected service exits at startup instead of running in a degraded state.
 
@@ -182,34 +175,6 @@ Install it as a weekly host cron entry on the machine running Docker Compose:
 ```
 
 Use the actual repository path in place of `/srv/assistant`. The cron user must be allowed to run Docker commands.
-
-## API
-
-Useful endpoints:
-
-- `GET /health`
-- `GET /api/config/status`
-- `GET /api/jobs`
-- `POST /api/jobs`
-- `GET /api/jobs/{job_id}`
-- `POST /api/jobs/{job_id}/requeue`
-- `POST /api/jobs/{job_id}/cancel`
-- `POST /api/jobs/{job_id}/instructions`
-- `GET /api/memories`
-- `POST /api/memories`
-- `GET /api/memories/{memory_id}`
-- `PATCH /api/memories/{memory_id}`
-- `DELETE /api/memories/{memory_id}`
-- `GET /api/emails`
-
-Manual job payload:
-
-```json
-{
-  "subject": "Summarize this file",
-  "body": "Read the configured shared workspace file input.txt and write a summary to summary.txt"
-}
-```
 
 ## Data Locations
 
@@ -257,9 +222,6 @@ Prompt context is loaded from `config/AGENT.md` (or the file named by `agent.pro
 
 Before exposing this beyond local development:
 
-- Keep the optional API published only on `127.0.0.1` and use HTTPS with a trusted certificate and bearer token.
-- Use an SSH tunnel for remote API access instead of widening the host bind.
-- Disable generated API docs with `AGENT_API_DOCS_ENABLED=false` and `AGENT_API_OPENAPI_ENABLED=false`, or set `agent.api.docs_enabled: false` and `agent.api.openapi_enabled: false` in `config/agent.yaml`.
 - Replace example config values and rotate secrets.
 - Restrict SMTP domains to the minimum required list.
 - Add backup and retention policies for PostgreSQL and attachments.

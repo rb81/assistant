@@ -273,9 +273,9 @@ providers, healthy-provider windows remain available but `status=degraded` and
 providers, `status=no_providers` and `complete=false`.
 
 After adding credentials and activating the affected services, check tool status
-through the optional authenticated HTTPS API using a trusted certificate. Never
-use plain HTTP or disable certificate verification. The response lists active
-providers and whether calendar tools are exposed.
+with `./scripts/setup.sh tools`. Calendar-provider requests continue to use
+verified HTTPS; never use plain HTTP or disable certificate verification. The
+response lists active providers and whether calendar tools are exposed.
 
 ---
 

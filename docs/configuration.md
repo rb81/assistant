@@ -10,9 +10,9 @@ Install Python 3.12+ and Docker Compose, then run from any directory:
 
 The launcher resolves its repository root and asks before creating an isolated
 `.venv-setup` or installing setup dependencies. Set `PYTHON` to a suitable Python
-executable if necessary. The wizard has eight sections: identity/timezone, models
+executable if necessary. The wizard has seven sections: identity/timezone, models
 and spending, embeddings/search, email/administration, optional Calendar/Zoom/Dropbox,
-optional HTTPS API, Advanced Settings, and assistant instructions.
+Advanced Settings, and assistant instructions.
 Back/Edit/Cancel are available. The final review offers **Save and finish**,
 **Edit a section**, and **Cancel without saving**. If validation fails, the review
 shows the error and disables saving until it is fixed. Secret errors name the
@@ -57,7 +57,7 @@ and `config/agent.yaml`, but never over `environment:` entries in
 `./scripts/setup.sh secrets update NAME`. Setup's review step rejects unknown or
 misspelled names, wrongly typed values, credentials, and settings that the wizard
 or Compose already controls. Compose-only variables read for interpolation
-(`TASK_AGENT_WORKERS`, `AGENT_API_PUBLISHED_PORT`, `SANDBOX_ISOLATION_MODE`,
+(`TASK_AGENT_WORKERS`, `SANDBOX_ISOLATION_MODE`,
 `COMPOSE_PROFILES`) are not read from `overrides.env`; keep them in `.env`.
 Changes apply after `docker compose up -d --force-recreate`.
 
@@ -246,8 +246,9 @@ initial setup. Third-party credentials must first be issued at their provider.
 The wizard selects the `email` Compose profile for the downloader. Email-led
 operation requires a dedicated mailbox, IMAP/SMTP credentials, an admin address,
 and sender/recipient guardrails. Do not use a personal mailbox. SMTP supports
-STARTTLS on 587 and implicit TLS on 465. Administration uses a generated signing
-key and optionally explicitly trusted receiving-provider authority IDs.
+STARTTLS on 587 and implicit TLS on 465. Admin requests require replying to a
+separate, ten-minute OTP/hash confirmation sent only to the configured admin;
+no client signing key or trusted receiving-provider authority IDs are required.
 
 `EMAIL_ACTIONABLE_SENDERS` restricts new jobs; replies to existing threads remain
 context inputs. `EMAIL_ALLOWED_RECIPIENT_DOMAINS` restricts outgoing delivery,
@@ -256,8 +257,8 @@ footers, not delivery permission. Message-ID threading is preferred; normalized
 subject fallback is opt-in. `AGENT_EMAIL_SAVE_TO_SENT` controls IMAP Sent copies.
 
 Local-only setup omits the downloader and disables email-dependent research/digests.
-Local administration remains available inside `task-agent`. Without email or the
-optional API enabled, there is no external task-intake endpoint.
+Local administration remains available through the CLI; external task intake
+requires email.
 
 ## Models and integrations
 
@@ -295,14 +296,6 @@ This storage is also confidential; secret-file mounts do not encrypt the databas
 `AGENT_TIMEZONE` is authoritative for implicit times, reminders and calendars.
 Explicit offsets preserve the instant. Deprecated calendar/reminder timezone
 settings no longer override it; invalid/ambiguous times require correction.
-
-## Optional API
-
-The wizard adds the `api` profile only on request. All routes require TLS and bearer
-authentication. It imports a matching PEM certificate/key or generates a localhost
-development pair; private keys are protected under `data/private/tls`. Production
-trust and certificate renewal remain operator responsibilities. No browser UI is
-provided. See [API access](dashboard-and-api.md).
 
 ## Advanced settings and persistent data
 
