@@ -211,7 +211,10 @@ class ArtifactProcessor:
                 transcript = transcribe_audio(self.config, raw_path)
                 markdown_path = self.write_markdown(email_row, filename, transcript["text"])
                 return self.update_artifact(artifact["id"], scan_status="clean", conversion_status="ready",
-                                           markdown_path=markdown_path, metadata=transcript)
+                                           markdown_path=markdown_path,
+                                           markdown_sha256=sha256_text(transcript["text"]),
+                                           markdown_size_bytes=len(transcript["text"].encode("utf-8")),
+                                           metadata=transcript)
             except ValueError as exc:
                 return self.update_artifact(artifact["id"], scan_status="clean", conversion_status="failed", error=str(exc))
 

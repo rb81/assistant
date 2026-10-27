@@ -171,7 +171,7 @@ class DropboxClient:
             return {"deleted": False, "path": path, "already_missing": True}
         if current["rev"] != revision:
             raise DropboxError("Dropbox file changed; list it again before deleting")
-        self.request("files/delete_v2", {"path": current["id"]})
+        self.request("files/delete_v2", {"path": current["id"], "parent_rev": revision})
         return {"deleted": True, "path": path, "revision": revision}
 
     def cursor(self, folder, cursor):

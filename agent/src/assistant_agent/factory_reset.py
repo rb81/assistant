@@ -56,6 +56,13 @@ CATEGORIES = {
     "runtime_state": Category(
         "Runtime state: cached provider tokens, rate-limit backoffs, pending admin confirmations",
         notes="Provider access tokens are fetched again automatically."),
+    "workstreams": Category(
+        "All workstreams, ownership and deletion history",
+        tables=("workstream_deletions", "workstream_attachments", "workstream_threads",
+                "workstream_files", "workstream_objects", "workstreams"),
+        requires=("emails", "memories", "reminders", "calendar", "outbound", "contacts", "workspace_files", "runtime_state"),
+        reason="workstreams own or retain all task data",
+        notes="Also removes all task data; does not delete remote provider objects."),
 }
 
 PRESERVED = (".env, overrides.env, .secrets/, .compose-secrets.yaml, config/ (agent.yaml, AGENT.md), data/skills, "
@@ -183,6 +190,8 @@ def reset_database(connection, categories, keep_mailbox_position=True):
         cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'")
         existing = {row[0] if isinstance(row, tuple) else row["table_name"] for row in cur.fetchall()}
         tables = [table for key in categories for table in CATEGORIES[key].tables if table in existing]
+        if "workstreams" in categories:
+            cur.execute("SELECT set_config('assistant.workstream_cleanup', 'yes', true)")
         for table in tables:
             # Plain DELETE honours ON DELETE SET NULL; TRUNCATE ... CASCADE would empty kept tables too.
             cur.execute('DELETE FROM "%s"' % table)

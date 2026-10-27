@@ -154,6 +154,12 @@ class ReminderScheduler:
                     FROM reminders
                     WHERE status = 'scheduled'
                       AND run_at <= now()
+                      AND EXISTS (
+                        SELECT 1 FROM workstream_objects o
+                        JOIN workstream_attachments a ON a.object_id = o.id
+                        JOIN workstreams w ON w.id = a.workstream_id
+                        WHERE o.id = reminders.object_id AND NOT o.deleting AND w.status = 'active'
+                      )
                     ORDER BY run_at ASC, id ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT %s
@@ -185,6 +191,18 @@ class ReminderScheduler:
         return queued
 
     def create_job_for_reminder(self, cur, reminder: dict[str, Any]) -> dict[str, Any]:
+        if reminder.get("object_id"):
+            cur.execute(
+                """SELECT w.id FROM workstream_attachments a JOIN workstreams w ON w.id = a.workstream_id
+                   JOIN workstream_objects o ON o.id = a.object_id
+                   WHERE a.object_id = %s AND w.status = 'active' AND NOT o.deleting
+                   ORDER BY (w.id = o.origin_workstream_id) DESC, w.id LIMIT 1""",
+                (reminder["object_id"],),
+            )
+            parent = cur.fetchone()
+            if parent is None:
+                raise RuntimeError("reminder has no active workstream")
+            cur.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)", (str(parent["id"]),))
         policy = (reminder.get("metadata") or {}).get("delivery") or {}
         if policy.get("primary"):
             database = TransactionDatabase(cur.connection)

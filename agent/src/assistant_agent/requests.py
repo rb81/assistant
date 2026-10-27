@@ -21,6 +21,7 @@ class IncomingRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     email_id: Optional[int] = None
     received_at: Optional[datetime] = None
+    parent_workstream_id: Optional[int] = None
 
 
 class TransactionDatabase(Database):
@@ -42,6 +43,9 @@ class RequestService:
             raise ValueError("request identity and task thread are required")
         with self.db.connect() as connection:
             database = TransactionDatabase(connection)
+            if request.parent_workstream_id is not None:
+                database.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)",
+                                 (str(request.parent_workstream_id),))
             database.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("request:" + request.thread_id,))
             row = database.fetch_one(
                 """INSERT INTO request_messages(channel, external_id, conversation_id, sender_id, thread_id,

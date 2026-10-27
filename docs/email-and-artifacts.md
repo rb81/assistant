@@ -42,6 +42,11 @@ This removes the autonomous-agent disclosure sentence/block added to outbound ex
 
 ## Thread resolution
 
+Transport thread IDs route conversations; a channel-neutral **workstream** owns
+their data and descendants. Existing email/Telegram follow-up resolution reuses
+that owner. A new task creates a new owner even for the same sender or chat.
+See [workstream ownership](data-model.md#workstreams-ownership-and-provenance).
+
 Thread assignment order:
 
 1. Parse candidate IDs from `In-Reply-To`, then `References`.

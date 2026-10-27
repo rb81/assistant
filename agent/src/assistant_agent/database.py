@@ -62,9 +62,23 @@ class Database:
     def __init__(self, database_url: str):
         self.database_url = database_url
 
+    def for_job(self, job_id: int) -> "Database":
+        database = Database(self.database_url)
+        database.job_id = job_id
+        return database
+
+    def for_workstream(self, workstream_id: int) -> "Database":
+        database = Database(self.database_url)
+        database.workstream_id = workstream_id
+        return database
+
     @contextmanager
     def connect(self) -> Iterator[psycopg.Connection]:
         with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
+            if getattr(self, "job_id", None) is not None:
+                conn.execute("SELECT set_config('assistant.job_id', %s, true)", (str(self.job_id),))
+            if getattr(self, "workstream_id", None) is not None:
+                conn.execute("SELECT set_config('assistant.workstream_id', %s, true)", (str(self.workstream_id),))
             yield conn
 
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
@@ -235,6 +249,7 @@ class Database:
                       FROM jobs
                       WHERE status = 'queued'
                         AND run_at <= now()
+                        AND EXISTS (SELECT 1 FROM workstreams w WHERE w.id = jobs.workstream_id AND w.status = 'active')
                       ORDER BY priority DESC, created_at ASC
                       FOR UPDATE SKIP LOCKED
                       LIMIT 1
@@ -314,12 +329,15 @@ class Database:
         from_address: str = "dashboard@local",
         agent_address: str = "agent@local",
         message_domain: str = "assistant.local",
+        parent_workstream_id: Optional[int] = None,
     ) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         message_id = "<manual-%s@%s>" % (int(now.timestamp() * 1000000), message_domain)
         thread_id = message_id
         with self.connect() as conn:
             with conn.cursor() as cur:
+                if parent_workstream_id is not None:
+                    cur.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)", (str(parent_workstream_id),))
                 cur.execute(
                     """
                     INSERT INTO emails(
@@ -522,6 +540,8 @@ class Database:
                 root_job = cur.fetchone()
                 if root_job is None:
                     raise ValueError("job not found")
+                if root_job.get("workstream_id") is not None:
+                    raise ValueError("Use setup tools > Workstreams and data deletion; job erasure bypasses shared-object ownership")
 
                 job_ids = self.associated_job_ids(cur, job_id)
                 cur.execute("SELECT * FROM jobs WHERE id = ANY(%s::bigint[]) FOR UPDATE", (job_ids,))

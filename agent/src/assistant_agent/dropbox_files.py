@@ -12,6 +12,7 @@ from .dropbox_provider import DropboxClient, DropboxError, content_hash
 from .secret_store import SECRET_NAMES
 from .threading import safe_filename
 from .workspace_index import WorkspaceIndex
+from .workstream_files import WorkstreamFileTracker
 
 
 LOGGER = logging.getLogger("assistant.dropbox")
@@ -20,6 +21,7 @@ LOGGER = logging.getLogger("assistant.dropbox")
 class DropboxFiles:
     def __init__(self, db, config, job):
         self.db, self.config, self.job = db, config, job
+        self.workstream_files = WorkstreamFileTracker(db, config, job.get("id"))
         self.client = DropboxClient(config, db)
         self.scanner = ArtifactProcessor(db, config)
         self.shared_root = Path(config.get("agent.filesystem.shared_root", "/data/share")).resolve()
@@ -94,6 +96,8 @@ class DropboxFiles:
                 if content_hash(original) == metadata["content_hash"] and hashlib.sha256(markdown.read_bytes()).hexdigest() == row.get("markdown_sha256"):
                     self.scan(original, key)
                     self.scan(markdown, key)
+                    self.workstream_files.track_file(original)
+                    self.workstream_files.track_file(markdown)
                     WorkspaceIndex(self.db, self.config).index_path_best_effort(markdown, source="dropbox")
                     return self.public_import(original, markdown, metadata)
             try:
@@ -117,12 +121,16 @@ class DropboxFiles:
                         if not original.is_file() or not markdown.is_file() or content_hash(original) != metadata["content_hash"] or markdown.read_bytes() != converted.read_bytes():
                             raise DropboxError("Dropbox import destination changed; remove the old import before retrying")
                     else:
+                        self.workstream_files.register_path(original)
+                        self.workstream_files.register_path(markdown)
                         with tempfile.TemporaryDirectory(prefix=".publish-", dir=parent) as publication:
                             bundle = Path(publication) / "bundle"
                             (bundle / "original").mkdir(parents=True)
                             shutil.copyfile(source, bundle / "original" / name)
                             shutil.copyfile(converted, bundle / "content.md")
                             os.rename(bundle, destination)
+                    self.workstream_files.track_file(original)
+                    self.workstream_files.track_file(markdown)
                 self.ready(key, metadata, original, markdown)
                 WorkspaceIndex(self.db, self.config).index_path_best_effort(markdown, source="dropbox")
                 return self.public_import(original, markdown, metadata)

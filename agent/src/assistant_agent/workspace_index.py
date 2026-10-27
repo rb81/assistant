@@ -14,6 +14,7 @@ from .document_text import DocumentTextExtractor, UnsupportedDocumentError
 from .embedding_client import EmbeddingClient
 from .memory_store import cosine_similarity
 from .threading import safe_filename
+from .workstream_files import WorkstreamFileTracker
 
 
 LOGGER = logging.getLogger("assistant.workspace_index")
@@ -33,6 +34,7 @@ class WorkspaceNormalizer:
         self.config = config
         self.shared_root = Path(config.get("agent.filesystem.shared_root", "/data/share")).resolve()
         self.extractor = DocumentTextExtractor(config)
+        self.file_tracker = WorkstreamFileTracker(db, config, None)
 
     def enabled(self) -> bool:
         return self.config.get_bool("agent.workspace.normalize_documents", True)
@@ -84,7 +86,12 @@ class WorkspaceNormalizer:
             markdown = self.extractor.convert_to_markdown(path)
             markdown_path = destination_path.resolve() if destination_path else self.available_markdown_path(path)
             markdown_path.parent.mkdir(parents=True, exist_ok=True)
-            markdown_path.write_text(markdown, encoding="utf-8")
+            self.file_tracker.register_derivative_path(markdown_path, path)
+            try:
+                markdown_path.write_text(markdown, encoding="utf-8")
+            finally:
+                if markdown_path.is_file() and not markdown_path.is_symlink():
+                    self.file_tracker.track_derivative_file(markdown_path, path)
             self.record_conversion(
                 original_path=path,
                 markdown_path=markdown_path,

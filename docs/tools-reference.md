@@ -10,6 +10,19 @@ Assistant tools are defined in `assistant_agent/tools.py` and executed through `
 
 Availability is computed by `available_function_names(...)` from runtime config and job context.
 
+## Workstream relationships
+
+`workstream_attach(kind, key)` retains a reusable object in the current job's
+workstream without copying it. Use its native record ID/key, or a workspace
+path for `file`. Supported aggregates include files, memories, contacts,
+reminders, jobs, research, artifacts, calendar events, Zoom meetings and Dropbox
+transfers. Inbound/outbound messages cannot be shared. Research attachment also
+retains its execution job. Artifact/import attachments retain their registered
+local files; linked calendar/Zoom objects are retained together.
+A search result or read does not itself attach data.
+Deletion belongs to the confirmed administrator terminal workflow, not an LLM
+tool. See [workstream deletion](security.md#workstream-deletion).
+
 ## File Tools
 
 - `file_list`

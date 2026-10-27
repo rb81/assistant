@@ -1,5 +1,70 @@
 # Security Guide
 
+## Workstream deletion
+
+Back up the database and runtime files before upgrading. Rebuild/start the
+updated stack so migration 008 runs, then open
+`./scripts/setup.sh tools` -> **Workstreams and data deletion**.
+The existing terminal menus list workstreams, their parents and retained objects,
+allow explicit attachments, and offer three deletion policies:
+
+1. **Preserve shared objects (default):** delete the selected workstream and its
+   descendants, their messages, and objects with no retaining workstream outside
+   that tree. Shared objects survive; their links to the deleted tree do not.
+2. **Delete all attached objects:** also remove shared objects from surviving
+   workstreams. The preview identifies those affected workstreams.
+3. **Delete the connected group:** recursively include all workstreams connected
+   through shared objects, and all their descendants. A widely shared object
+   can connect most or all of the installation; review the complete list.
+
+The terminal shows per-table counts, shared-object relationships, local-file
+counts, remote cleanup operations and blockers. It stops the writer services,
+refreshes the preview, and requires a separate default-No confirmation of that
+exact scope. A changed inventory invalidates confirmation. Running jobs/research
+must finish first; deleting records is not a way to interrupt an in-flight call.
+Shared reminders with queued work in the deletion tree must finish or be
+cancelled first, rather than silently leaving a stranded queued reminder.
+Schema changes are applied at normal service startup, not by a preview.
+The helper uses task-agent's integration credentials and a one-shot mount of
+the complete private artifact store; it does not publish an application port.
+
+Filesystem cleanup checks exact managed paths and recorded SHA-256 digests,
+rejects symlinks/protected documentation, and removes only named regular files.
+Files changed outside tracked operations must be reconciled before deletion.
+Artifact Markdown paths are resolved relative to the shared workspace. Voice
+transcriptions record their Markdown digest and byte size; older voice artifacts
+without a digest are checked against the exact transcript retained in their
+metadata. A changed file remains blocked, not automatically trusted.
+File tools and shared-workspace command snapshots record creations and changes
+even when indexing is disabled. File-tool moves retain identity and sharing links.
+Dropbox uploads use the recorded revision; changed or uncertain remote objects
+must be reconciled, rather than deleting an unverified replacement. Calendar
+events and Zoom meetings are deleted through their configured providers.
+
+Each cleanup step is journaled before database erasure. Failures or interruptions
+leave a pending/failed deletion with its identifiers and database records intact for retry;
+some already-completed remote/file removals may be irreversible. Writer services
+stay stopped when a deletion remains incomplete. **Resume an incomplete
+deletion** retries that original scope. A successful receipt contains no deleted
+message bodies or object contents. The old per-job API erase operation refuses
+workstream-owned jobs because it bypasses shared-object retention.
+
+Browsing lists object relationships; deletion preview additionally verifies
+physical files and cleanup dependencies. Workstream command failures identify
+the failing operation and report safe application errors without exposing raw
+Docker, database or provider diagnostics. If deletion was already confirmed,
+inspect **Resume an incomplete deletion** before starting another deletion.
+
+This is **deletion, not rollback or universal erasure**. Sent email/Telegram
+messages, provider/model copies, backups and logs outside managed storage cannot
+be recalled. Imported Dropbox Inbox originals remain at their source. Retained
+shared objects and other workstreams may contain quoted or derived information.
+Untracked host writes, files outside managed roots, and sandbox effects outside
+its shared mount have no reliable ownership and are not guessed or erased.
+Arbitrary script network effects cannot be enumerated or undone by this model.
+Empty containing directories may remain. Settings, credentials, service tokens
+and installation-level state are not task data and are not deleted.
+
 ## Access model
 
 The email-first deployment publishes no application port. Browser administration

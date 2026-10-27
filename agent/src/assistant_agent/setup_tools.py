@@ -82,6 +82,7 @@ class Tools:
             "Follow live logs (Ctrl-C returns here)": self.follow_logs,
             "Restart / start / stop services": self.lifecycle,
             "Jobs and tasks": self.jobs,
+            "Workstreams and data deletion": self.workstreams,
             "Memories": self.memories,
             "Reminders": self.reminders,
             "Embeddings and search index": self.embeddings,
@@ -93,6 +94,10 @@ class Tools:
             if selected == "Back":
                 return
             sections[selected]()
+
+    def workstreams(self):
+        from .setup_workstreams import WorkstreamTools
+        WorkstreamTools(self.instance, self.answer, self.confirm, self.console).menu()
 
     def recent_logs(self):
         service = self.select("Service", ["All services", *self.services()])

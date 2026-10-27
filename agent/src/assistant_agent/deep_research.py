@@ -95,6 +95,10 @@ class DeepResearchAgent:
                       FROM deep_research_runs
                       WHERE status = 'queued'
                         AND run_at <= now()
+                        AND EXISTS (SELECT 1 FROM jobs j JOIN workstreams w ON w.id = j.workstream_id
+                                    WHERE j.id = deep_research_runs.original_job_id AND w.status = 'active')
+                        AND EXISTS (SELECT 1 FROM workstream_objects o
+                                    WHERE o.id = deep_research_runs.object_id AND NOT o.deleting)
                       ORDER BY priority DESC, created_at ASC
                       FOR UPDATE SKIP LOCKED
                       LIMIT 1

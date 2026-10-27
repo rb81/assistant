@@ -205,7 +205,9 @@ def overrides_problems(root, text):
 
 
 class DockerCommandError(SetupError):
-    pass
+    def __init__(self, message, *, stdout=None):
+        super().__init__(message)
+        self.stdout = stdout
 
 
 def secret_services(name):
@@ -615,7 +617,8 @@ class Installation:
                 "is not allowed to execute", "sudo: authentication is required",
             )):
                 raise DockerCommandError("Noninteractive sudo authorization failed; no password was requested")
-            raise DockerCommandError("Docker command failed; output was suppressed to protect credentials")
+            raise DockerCommandError("Docker command failed; output was suppressed to protect credentials",
+                                     stdout=result.stdout)
         return result.stdout
 
     def stage_sandbox_runtime(self):

@@ -44,6 +44,7 @@ from .time_utils import local_datetime_iso, parse_datetime, recurrence_anchor_da
 from .transport_security import open_https_request, validate_https_url
 from .validation import calendar_configured, fusion_configured, sandbox_configured, search_configured, shared_root_status, smtp_configured
 from .workspace_index import WorkspaceIndex
+from .workstream_files import WorkstreamFileTracker
 
 
 LOGGER = logging.getLogger("assistant.tools")
@@ -221,12 +222,13 @@ class ToolRuntime:
         cache_read_job_ids: Optional[set[int]] = None,
         search_model_override: Optional[str] = None,
     ):
-        self.db = db
+        self.db = db.for_job(job["id"]) if isinstance(db, Database) and job.get("id") else db
         self.config = config
         self.job = job
         self.shared_root = Path(config.get("agent.filesystem.shared_root", "/data/share")).resolve()
         self.trash_dir = Path(config.get("agent.filesystem.trash_directory", str(self.shared_root / ".trash"))).resolve()
         self.tool_cache_root = ToolResultCache(config).root
+        self.workstream_files = WorkstreamFileTracker(self.db, config, job.get("id"))
         self.allow_cache_reads = allow_cache_reads
         self.cache_read_job_ids = cache_read_job_ids
         self.search_model_override = search_model_override
@@ -330,6 +332,24 @@ class ToolRuntime:
         resolved = path.resolve()
         resolved_parent = parent.resolve()
         return resolved == resolved_parent or resolved_parent in resolved.parents
+
+    def reject_symlink_path(self, value: str) -> None:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = self.shared_root / candidate
+        candidate = Path(os.path.abspath(candidate))
+        try:
+            relative = candidate.relative_to(self.shared_root)
+        except ValueError as exc:
+            raise ToolError("path must stay under shared root") from exc
+        current = self.shared_root
+        for segment in relative.parts:
+            current = current / segment
+            try:
+                if current.is_symlink():
+                    raise ToolError("symlink paths cannot be moved or deleted")
+            except OSError:
+                continue
 
     def check_write_allowed(self, target: Path) -> None:
         assistant_dir = (self.shared_root / ".assistant").resolve()
@@ -443,8 +463,13 @@ class ToolRuntime:
     def file_write(self, path: str, content: str) -> dict[str, Any]:
         target = self.resolve_path(path)
         self.check_write_allowed(target)
+        self.workstream_files.register_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        try:
+            target.write_text(content, encoding="utf-8")
+        finally:
+            if target.is_file() and not target.is_symlink():
+                self.workstream_files.track_file(target)
         canonical = self.normalize_and_index_path(target, source="agent")
         return {
             "path": str(canonical),
@@ -455,9 +480,14 @@ class ToolRuntime:
     def file_append(self, path: str, content: str) -> dict[str, Any]:
         target = self.resolve_path(path)
         self.check_write_allowed(target)
+        self.workstream_files.register_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(content)
+        try:
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(content)
+        finally:
+            if target.is_file() and not target.is_symlink():
+                self.workstream_files.track_file(target)
         canonical = self.normalize_and_index_path(target, source="agent")
         return {
             "path": str(canonical),
@@ -466,6 +496,8 @@ class ToolRuntime:
         }
 
     def file_move(self, source_path: str, destination_path: str) -> dict[str, Any]:
+        self.reject_symlink_path(source_path)
+        self.reject_symlink_path(destination_path)
         source = self.resolve_path(source_path)
         destination = self.resolve_path(destination_path)
         if not source.exists():
@@ -481,8 +513,11 @@ class ToolRuntime:
         self.check_delete_allowed(source)
         self.check_write_allowed(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        recursive = source.is_dir()
         shutil.move(str(source), str(destination))
         moved = destination.resolve()
+        self.workstream_files.move_path(source, moved, recursive=recursive)
+        self.workstream_files.track_tree(moved)
         self.mark_index_deleted(source, recursive=moved.is_dir())
         moved = self.normalize_and_index_path(moved, source="agent")
         return {
@@ -508,9 +543,20 @@ class ToolRuntime:
         self.check_write_allowed(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.is_dir():
-            shutil.copytree(source, destination)
+            for item in source.rglob("*"):
+                if item.is_symlink() or not item.is_file():
+                    continue
+                self.workstream_files.register_path(destination / item.relative_to(source))
         else:
-            shutil.copy2(source, destination)
+            self.workstream_files.register_path(destination)
+        try:
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            else:
+                shutil.copy2(source, destination)
+        finally:
+            if destination.exists() and not destination.is_symlink():
+                self.workstream_files.track_tree(destination.resolve())
         copied = destination.resolve()
         copied = self.normalize_and_index_path(copied, source="agent")
         return {
@@ -538,10 +584,14 @@ class ToolRuntime:
         if destination.exists():
             raise ToolError("destination already exists")
         self.check_write_allowed(destination)
+        self.workstream_files.register_path(destination)
         try:
             result = service.convert(source, clean_format, destination)
         except FileConversionError as exc:
             raise ToolError(str(exc)) from exc
+        finally:
+            if destination.is_file() and not destination.is_symlink():
+                self.workstream_files.track_file(destination)
 
         index = WorkspaceIndex(self.db, self.config)
         if index.enabled():
@@ -568,14 +618,19 @@ class ToolRuntime:
         }
 
     def file_delete(self, path: str) -> dict[str, Any]:
+        self.reject_symlink_path(path)
         target = self.resolve_path(path)
         if not target.exists():
             raise ToolError("path does not exist")
+        if target == self.shared_root:
+            raise ToolError("protected paths cannot be deleted")
         self.check_delete_allowed(target)
         self.trash_dir.mkdir(parents=True, exist_ok=True)
         destination = self.trash_dir / ("%s-%s" % (int(time.time()), target.name))
         recursive = target.is_dir()
         shutil.move(str(target), str(destination))
+        self.workstream_files.move_path(target, destination, recursive=recursive)
+        self.workstream_files.track_tree(destination)
         self.mark_index_deleted(target, recursive=recursive)
         return {"deleted_path": str(target), "trash_path": str(destination)}
 
@@ -1463,6 +1518,13 @@ class ToolRuntime:
             "linked_reminder": linked_reminder,
         }
 
+    def workstream_attach(self, kind: str, key: str) -> dict[str, Any]:
+        from .workstreams import WorkstreamStore
+        job = self.db.fetch_one("SELECT workstream_id FROM jobs WHERE id = %s", (self.job["id"],))
+        if job is None:
+            raise ToolError("job has no active workstream")
+        return WorkstreamStore(self.db, self.config).attach(job["workstream_id"], kind, key)
+
     def _compact_job_result(self, row: dict[str, Any]) -> dict[str, Any]:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         final_response = str(metadata.get("final_response") or "")[:200]
@@ -2044,39 +2106,44 @@ class ToolRuntime:
         attempt_errors: list[dict[str, Any]] = []
         last_message = ""
 
-        for attempt in range(1, max_attempts + 1):
-            request = urllib.request.Request(
-                "%s/execute" % base_url,
-                data=payload,
-                headers={"Content-Type": "application/json", "Authorization": "Bearer " + sandbox_token},
-                method="POST",
-            )
-            try:
-                with open_https_request(request, timeout=timeout + 10, context=tls_context) as response:
-                    result = json.loads(response.read().decode("utf-8"))
-                    result["attempts"] = attempt
-                    if attempt_errors:
-                        result["retry_errors"] = attempt_errors
-                    return result
-            except urllib.error.HTTPError as exc:
-                detail = self._http_error_detail(exc)
-                message = "sandbox request failed: HTTP %s" % exc.code
-                if detail:
-                    message = "%s: %s" % (message, detail)
-                config_error = self._sandbox_host_configuration_error(message)
-                if config_error:
-                    raise SandboxHostConfigurationError(config_error) from exc
-                if exc.code < 500:
-                    raise ToolError(message) from exc
-                last_message = message
-            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-                last_message = "sandbox request failed: %s" % exc
+        before = self.workstream_files.snapshot() if self.workstream_files.enabled else None
+        try:
+            for attempt in range(1, max_attempts + 1):
+                request = urllib.request.Request(
+                    "%s/execute" % base_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer " + sandbox_token},
+                    method="POST",
+                )
+                try:
+                    with open_https_request(request, timeout=timeout + 10, context=tls_context) as response:
+                        result = json.loads(response.read().decode("utf-8"))
+                        result["attempts"] = attempt
+                        if attempt_errors:
+                            result["retry_errors"] = attempt_errors
+                        return result
+                except urllib.error.HTTPError as exc:
+                    detail = self._http_error_detail(exc)
+                    message = "sandbox request failed: HTTP %s" % exc.code
+                    if detail:
+                        message = "%s: %s" % (message, detail)
+                    config_error = self._sandbox_host_configuration_error(message)
+                    if config_error:
+                        raise SandboxHostConfigurationError(config_error) from exc
+                    if exc.code < 500:
+                        raise ToolError(message) from exc
+                    last_message = message
+                except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                    last_message = "sandbox request failed: %s" % exc
 
-            attempt_errors.append({"attempt": attempt, "error": last_message})
-            if attempt < max_attempts and retry_backoff > 0:
-                time.sleep(min(retry_backoff * attempt, 10.0))
+                attempt_errors.append({"attempt": attempt, "error": last_message})
+                if attempt < max_attempts and retry_backoff > 0:
+                    time.sleep(min(retry_backoff * attempt, 10.0))
 
-        raise SandboxAttemptsExhausted(max_attempts, last_message or "unknown sandbox failure", attempt_errors)
+            raise SandboxAttemptsExhausted(max_attempts, last_message or "unknown sandbox failure", attempt_errors)
+        finally:
+            if before is not None:
+                self.workstream_files.reconcile(before, self.workstream_files.snapshot())
 
     def _sandbox_host_configuration_error(self, message: str) -> str:
         clean = " ".join(str(message or "").split())
@@ -2370,6 +2437,7 @@ class ToolRuntime:
             "context_search": self.context_search,
             "job_search": self.job_search,
             "job_read": self.job_read,
+            "workstream_attach": self.workstream_attach,
         }
         if name not in available_function_names(self.config, self.job):
             raise ToolError("tool is not available with the current configuration: %s" % name)
@@ -2379,6 +2447,21 @@ class ToolRuntime:
 
 
 FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTION_TOOLS + [
+    {
+        "type": "function",
+        "function": {
+            "name": "workstream_attach",
+            "description": "Retain an existing live data object in this workstream. This creates a relationship, not a copy or snapshot. Use when deliberately reusing data that should survive deletion of its original workstream. Inbound/outbound messages cannot be attached.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["job", "memory", "contact", "reminder", "research", "calendar_event", "zoom_meeting", "dropbox_transfer", "artifact", "file"]},
+                    "key": {"type": "string", "description": "The object's native ID/key; for file, a workspace-relative path is also accepted."},
+                },
+                "required": ["kind", "key"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -3278,7 +3361,7 @@ REMINDER_TOOL_NAMES = {"reminder_create", "reminder_list", "reminder_update", "r
 DEEP_RESEARCH_REQUEST_TOOL_NAMES = {"deep_research_request"}
 DEEP_RESEARCH_STATUS_TOOL_NAMES = {"deep_research_status"}
 DEEP_RESEARCH_TOOL_NAMES = DEEP_RESEARCH_REQUEST_TOOL_NAMES | DEEP_RESEARCH_STATUS_TOOL_NAMES
-CONTEXT_TOOL_NAMES = {"context_search", "job_search", "job_read"}
+CONTEXT_TOOL_NAMES = {"context_search", "job_search", "job_read", "workstream_attach"}
 ASYNC_REQUEST_TOOL_NAMES = DEEP_RESEARCH_REQUEST_TOOL_NAMES
 TERMINAL_TOOL_NAMES = {"task_complete", "task_failed", "request_input"}
 CORE_TOOL_NAMES = TERMINAL_TOOL_NAMES | {"email_send"}
@@ -3457,6 +3540,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "context_search": "Semantic search across supported data sources (jobs, reminders, emails, memories, contacts).",
         "job_search": "Search past jobs by keyword with optional status filter.",
         "job_read": "Read full details of a past job by ID.",
+        "workstream_attach": "Attach a reusable live object to this workstream; messages cannot be shared.",
     }
     available = sorted((available_function_names(config, job) & LOADABLE_TOOL_NAMES) - CORE_TOOL_NAMES)
     if not available:

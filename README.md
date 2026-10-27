@@ -45,6 +45,7 @@
 - **Native Zoom connector.** Create, edit and cancel managed meetings, linked to your calendar events. Opt-in.
 - **Native Dropbox connector.** A private App Folder Inbox/Outbox for on-demand file exchange: malware-scanned, size-limited, no public links, no overwrites. Opt-in. See [Dropbox](docs/dropbox.md).
 - **Memory and data tools.** Unified memories (durable facts plus expiring working context, with reviewable suggestions), `setup tools` troubleshooting menus, and `setup reset`, a selective factory reset that takes a backup first.
+- **Workstream provenance.** Channel-neutral task ownership, parent/child workstreams and shared-object attachments. `setup tools` previews and confirms workstream deletion with three explicit sharing policies and retryable local/provider cleanup. See [deletion behavior and limits](docs/security.md#workstream-deletion).
 - **Expert `overrides.env`.** An optional, gitignored file for advanced settings the wizard does not manage. See [Expert overrides](#expert-overrides).
 - **Email administration.** Authenticated `/admin` commands (`jobs`, `logs`, `memory`, `reminders`, `requeue`, `instruct`) that never invoke a model. See [Email Administration](docs/email-administration.md).
 - **Smaller, safer surface.** No browser UI, no published application port by default, and an optional HTTPS API that requires TLS and bearer authentication.

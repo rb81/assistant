@@ -164,12 +164,11 @@ class MemoryErasureDatabaseTest(unittest.TestCase):
         unrelated = self.db.fetch_one("INSERT INTO jobs(thread_id, status) VALUES ('retirement-child', 'completed') RETURNING id")
         descendant = self.db.fetch_one("INSERT INTO jobs(thread_id, metadata) VALUES ('descendant', %s) RETURNING id", (Jsonb({"parent_job_id": child["id"]}),))
         meeting = self.db.fetch_one("INSERT INTO zoom_managed_meetings(request_key, request_payload, title, starts_at, duration_minutes, created_by_job_id) VALUES ('erasure-canary', '{}'::jsonb, 'Private meeting canary', now(), 30, %s) RETURNING id", (child["id"],))
-        result = self.db.erase_job(parent["id"])
-        self.assertEqual(result["job_ids"], sorted([parent["id"], child["id"], descendant["id"]]))
-        self.assertIn("retirement-child", result["shared_thread_ids"])
+        with self.assertRaisesRegex(ValueError, "Workstreams and data deletion"):
+            self.db.erase_job(parent["id"])
         self.assertIsNotNone(self.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (unrelated["id"],)))
-        self.assertIsNone(self.db.fetch_one("SELECT id FROM zoom_managed_meetings WHERE id = %s", (meeting["id"],)))
-        self.assertEqual(result["deleted"]["zoom_managed_meetings"], 1)
+        self.assertIsNotNone(self.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (descendant["id"],)))
+        self.assertIsNotNone(self.db.fetch_one("SELECT id FROM zoom_managed_meetings WHERE id = %s", (meeting["id"],)))
 
     def test_stale_unified_memories_expire_but_pinned_memories_survive(self):
         from assistant_agent.memory_manager import MemorySteward

@@ -1191,7 +1191,7 @@ def erase_job(job_id: int) -> dict[str, Any]:
     try:
         summary = db.erase_job(job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404 if str(exc) == "job not found" else 409, detail=str(exc)) from exc
     return {"erased": summary}
 
 

@@ -71,7 +71,7 @@ class DropboxProviderTest(unittest.TestCase):
         with patch.object(self.client, "metadata", return_value=current), patch.object(self.client, "request", return_value={}) as request:
             result = self.client.delete_file("/Inbox/file.txt", "r1", "Inbox")
         self.assertEqual(result, {"deleted": True, "path": "/Inbox/file.txt", "revision": "r1"})
-        request.assert_called_once_with("files/delete_v2", {"path": "id:1"})
+        request.assert_called_once_with("files/delete_v2", {"path": "id:1", "parent_rev": "r1"})
         for folder, path in [("Other", "/Other/file.txt"), ("Inbox", "/Outbox/file.txt")]:
             with self.subTest(folder=folder), self.assertRaises(DropboxError):
                 self.client.delete_file(path, "r1", folder)
@@ -705,6 +705,7 @@ class DropboxDatabaseTest(unittest.TestCase):
         cls.db.execute("DROP TABLE dropbox_transfers")
         cls.db.ensure_feature_schema()
         cls.db.ensure_feature_schema()
+        cls.db.run_migrations()
 
     @classmethod
     def tearDownClass(cls):
@@ -729,7 +730,7 @@ class DropboxDatabaseTest(unittest.TestCase):
         service.client.download.side_effect = lambda metadata, path: path.write_bytes(b"hello")
         return service, metadata
 
-    def test_import_and_export_persist_retry_identity_and_cascade_with_task(self):
+    def test_import_and_export_persist_retry_identity_and_keep_workstream_ownership(self):
         with tempfile.TemporaryDirectory() as root:
             service, metadata = self.service(root)
             result = service.import_file("/Inbox/file.txt", "r1")
@@ -756,6 +757,9 @@ class DropboxDatabaseTest(unittest.TestCase):
             self.assertEqual(saved["content_hash"], content_hash(source))
             self.db.execute("DELETE FROM jobs WHERE id = %s", (service.job["id"],))
             self.assertEqual(self.db.fetch_all("SELECT * FROM dropbox_transfers WHERE job_id = %s", (service.job["id"],)), [])
+            retained = self.db.fetch_one("SELECT * FROM dropbox_transfers WHERE request_key = %s", (row["request_key"],))
+            self.assertIsNone(retained["job_id"])
+            self.assertIsNotNone(retained["object_id"])
             self.assertTrue(source.exists())
 
     def test_export_staging_failure_persists_failed_without_upload(self):
@@ -786,5 +790,5 @@ class DropboxDatabaseTest(unittest.TestCase):
             self.assertIsNone(row["local_path"])
             self.assertFalse(list(service.shared_root.iterdir()))
             ownership = self.db.fetch_one("SELECT is_nullable FROM information_schema.columns WHERE table_schema = %s AND table_name = 'processed_artifacts' AND column_name = 'email_id'", (self.schema,))
-            self.assertEqual(ownership["is_nullable"], "NO")
+            self.assertEqual(ownership["is_nullable"], "YES")
             self.assertEqual(self.db.fetch_one("SELECT count(*) AS count FROM emails")["count"], 0)
