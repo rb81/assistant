@@ -12,6 +12,9 @@ from .database import Database, json_safe
 from .llm_client import LlmClient
 from .notifications import notify_admin_job_failure
 from .polling import poll_interval_seconds, run_poll_loop
+from .replies import ReplyRouter
+from .requests import TransactionDatabase
+from .task_agent import TaskAgent
 from .tool_result_cache import ToolResultCache
 from .tools import EMAIL_TOOL_NAMES, FILE_TOOL_NAMES, FUNCTION_TOOLS, WEB_SEARCH_TOOL_NAMES, ToolError, ToolRuntime, tool_name
 from .validation import admin_configured, search_configured, shared_root_status, smtp_configured
@@ -78,11 +81,13 @@ class DeepResearchAgent:
         if run is None:
             return False
         LOGGER.info("claimed deep research run %s", run["id"])
+        processor = DeepResearchAgent(self.db.for_job(run["execution_job_id"]), self.config)
+        processor.locked_by = self.locked_by
         try:
-            self.process_run(run)
+            processor.process_run(run)
         except Exception as exc:
             LOGGER.exception("deep research run %s failed during processing", run["id"])
-            self.handle_run_exception(run, str(exc))
+            processor.handle_run_exception(run, str(exc))
         return True
 
     def claim_run(self) -> Optional[dict[str, Any]]:
@@ -124,20 +129,25 @@ class DeepResearchAgent:
         if original_job is None:
             self.update_run_status(run["id"], "failed", "original job not found")
             return
+        execution_job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["execution_job_id"],))
+        if execution_job is None:
+            self.fail_run(run, "research execution job not found")
+            return
+        context_agent = TaskAgent(self.db, self.config)
 
         llm = LlmClient(
             self.config,
             model=self.config.get("agent.deep_research.model") or self.config.get("agent.llm.model"),
             timeout_seconds=self.config.get_int("agent.deep_research.timeout_seconds", 180),
         )
-        messages = self.build_messages(run, original_job)
+        messages = self.build_messages(run, execution_job)
         tools = research_tools(self.config)
         max_iterations = self.config.get_int("agent.deep_research.max_iterations", 15)
 
         for _iteration in range(max_iterations):
-            current_run = self.current_run(run["id"])
-            if current_run is None or current_run["status"] != "running":
+            if not self.still_owns_run(run):
                 return
+            context_agent.inject_new_context_if_needed(execution_job, messages)
             self.log_event(
                 run["id"],
                 "llm_request",
@@ -169,15 +179,36 @@ class DeepResearchAgent:
                 )
                 continue
 
-            for tool_call in tool_calls:
-                terminal = self.handle_tool_call(run, original_job, messages, tool_call)
+            for index, tool_call in enumerate(tool_calls):
+                if not self.still_owns_run(run):
+                    return
+                if context_agent.defer_stale_tool_calls(execution_job, messages, tool_calls[index:]):
+                    break
+                terminal = self.handle_tool_call(run, execution_job, messages, tool_call)
                 if terminal:
                     return
 
         self.fail_run(run, "deep research max iterations reached")
 
-    def build_messages(self, run: dict[str, Any], original_job: dict[str, Any]) -> list[dict[str, Any]]:
+    def still_owns_run(self, run: dict[str, Any]) -> bool:
+        current = self.db.fetch_one(
+            """SELECT r.status, r.locked_by, j.status AS execution_status, source.status AS source_status
+               FROM deep_research_runs r JOIN jobs j ON j.id = r.execution_job_id
+               JOIN jobs source ON source.id = r.original_job_id WHERE r.id = %s""", (run["id"],),
+        )
+        if not current or current["status"] != "running" or current["locked_by"] != self.locked_by:
+            return False
+        if current["execution_status"] == "cancelled" or current["source_status"] == "cancelled":
+            self.update_run_status(run["id"], "cancelled", "research execution cancelled")
+            return False
+        return current["execution_status"] == "running"
+
+    def build_messages(self, run: dict[str, Any], execution_job: dict[str, Any]) -> list[dict[str, Any]]:
         emails = self.db.latest_thread_emails(run["original_thread_id"], limit=12)
+        context = TaskAgent(self.db, self.config).build_base_context(execution_job)
+        execution_job["_seen_change_event_id"] = max(
+            (int(item["id"]) for item in context.get("change_events") or []), default=0,
+        )
         events = self.db.fetch_all(
             """
             SELECT event_type, tool_name, input_data, output_data, created_at
@@ -192,13 +223,29 @@ class DeepResearchAgent:
         events = list(reversed(events))
         content_lines = [
             "Deep research run ID: %s" % run["id"],
-            "Original job ID: %s" % original_job["id"],
+            "Original job ID: %s" % run["original_job_id"],
             "Original thread ID: %s" % run["original_thread_id"],
+            "Research system thread ID: %s" % execution_job["thread_id"],
             "Research question:",
             run["research_question"],
         ]
         if run.get("instructions"):
             content_lines.extend(["", "Additional instructions:", run["instructions"]])
+        for label, items in (
+            ("Main conversation", context.get("main_conversation")),
+            ("Research conversation", context.get("thread_messages")),
+            ("Object change notifications", context.get("change_events")),
+        ):
+            if items:
+                content_lines.extend(["", label + ":", compact_json([
+                    {key: truncate_text(item[key], 2500) for key in
+                     ("id", "channel", "sender_id", "from_address", "body_text", "changes", "actor_workstream_id")
+                     if key in item}
+                    for item in items
+                ])])
+        memory_summary = str((context.get("memory_context") or {}).get("summary") or "").strip()
+        if memory_summary:
+            content_lines.extend(["", "Relevant memory recall:", memory_summary])
         artifact_rows = self.db.processed_artifacts_for_thread(run["original_thread_id"], limit=100)
         artifacts_by_email: dict[int, list[dict[str, Any]]] = {}
         for artifact in artifact_rows:
@@ -228,6 +275,11 @@ class DeepResearchAgent:
                 content_lines.append("Attachments: %s" % compact_json([public_attachment_metadata(value) for value in item["attachments"]]))
             if artifacts_by_email.get(int(item["id"])):
                 content_lines.append("Processed artifacts: %s" % compact_json(artifacts_by_email[int(item["id"])]))
+        research_artifacts = list(context.get("request_artifacts") or [])
+        for items in (context.get("artifacts_by_email") or {}).values():
+            research_artifacts.extend(items)
+        if research_artifacts:
+            content_lines.extend(["", "Research attachments:", compact_json(research_artifacts)])
         if events:
             content_lines.extend(["", "Prior research events:"])
             for event in events:
@@ -248,7 +300,7 @@ class DeepResearchAgent:
     def handle_tool_call(
         self,
         run: dict[str, Any],
-        original_job: dict[str, Any],
+        execution_job: dict[str, Any],
         messages: list[dict[str, Any]],
         tool_call: dict[str, Any],
     ) -> bool:
@@ -277,8 +329,12 @@ class DeepResearchAgent:
 
         if name == "research_request_human_input":
             question = str(arguments.get("question") or "Research guidance is required.").strip()
-            self.email_original_sender_for_input(run, original_job, question)
             self.pause_for_input(run, question)
+            TaskAgent(self.db, self.config).record_system_task_notification(
+                execution_job, "input_requested", "input:%s" % tool_call["id"],
+                "Research input requested: %s" % run["title"], question,
+            )
+            self.email_original_sender_for_input(run, execution_job, question)
             self.log_event(run["id"], "tool_result", tool_name=name, output_data={"question": question})
             return True
 
@@ -287,7 +343,7 @@ class DeepResearchAgent:
             result = {"error": "deep research tool call budget exceeded; call research_complete or research_failed"}
             self.log_event(run["id"], "error", tool_name=name, input_data=arguments, output_data=result)
         else:
-            runtime = ResearchToolRuntime(self.db, self.config, current_run, original_job, self)
+            runtime = ResearchToolRuntime(self.db, self.config, current_run, execution_job, self)
             try:
                 started = datetime.now(timezone.utc)
                 result = runtime.run(name, arguments)
@@ -297,7 +353,7 @@ class DeepResearchAgent:
                 duration_ms = None
                 self.log_event(run["id"], "error", tool_name=name, input_data=arguments, output_data=result)
             else:
-                result = self.prepare_tool_result_for_model(original_job["id"], name, result)
+                result = self.prepare_tool_result_for_model(execution_job["id"], name, result)
                 self.increment_tool_count(run["id"])
                 self.log_event(
                     run["id"],
@@ -337,23 +393,23 @@ class DeepResearchAgent:
     def complete_run(self, run: dict[str, Any], summary: str, result_data: dict[str, Any]) -> None:
         rich_result_data = dict(result_data or {})
         rich_result_data.setdefault("research_context", self.result_context(run["id"]))
-        self.db.execute(
-            """
-            UPDATE deep_research_runs
-            SET status = 'completed',
-                result_summary = %s,
-                result_data = %s,
-                completed_at = now(),
-                last_error = NULL,
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            (summary, Jsonb(json_safe(rich_result_data)), run["id"]),
-        )
-        self.log_event(run["id"], "status_change", output_data={"status": "completed", "summary": summary})
-        self.notify_original_job(run, "completed", summary, rich_result_data)
+        self.finish_run(run, "completed", summary, rich_result_data)
+
+    def finish_run(self, run: dict[str, Any], status: str, summary: str, result_data: dict[str, Any]) -> None:
+        with self.db.connect() as connection:
+            finisher = DeepResearchAgent(TransactionDatabase(connection), self.config)
+            updated = finisher.db.fetch_one(
+                """UPDATE deep_research_runs SET status = %s, result_summary = %s,
+                   result_data = %s, completed_at = now(), last_error = %s,
+                   locked_at = NULL, locked_by = NULL
+                   WHERE id = %s AND status NOT IN ('completed', 'failed', 'cancelled')
+                   RETURNING id""",
+                (status, summary, Jsonb(json_safe(result_data)),
+                 summary if status == "failed" else None, run["id"]),
+            )
+            if updated:
+                finisher.log_event(run["id"], "status_change", output_data={"status": status, "summary": summary})
+                finisher.notify_original_job(run, status, summary, result_data)
 
     def result_context(self, run_id: int) -> dict[str, Any]:
         rows = self.db.fetch_all(
@@ -391,22 +447,7 @@ class DeepResearchAgent:
         return {"search_results": search_results[-8:], "file_tool_results": tool_results[-8:]}
 
     def fail_run(self, run: dict[str, Any], reason: str) -> None:
-        self.db.execute(
-            """
-            UPDATE deep_research_runs
-            SET status = 'failed',
-                result_summary = %s,
-                completed_at = now(),
-                last_error = %s,
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            (reason, reason, run["id"]),
-        )
-        self.log_event(run["id"], "status_change", output_data={"status": "failed", "reason": reason})
-        self.notify_original_job(run, "failed", reason, {})
+        self.finish_run(run, "failed", reason, {})
         original_job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["original_job_id"],))
         if original_job:
             notify_admin_job_failure(
@@ -442,6 +483,12 @@ class DeepResearchAgent:
         summary: str,
         result_data: dict[str, Any],
     ) -> None:
+        if run.get("execution_job_id"):
+            TaskAgent(self.db, self.config).record_system_task_notification(
+                {"id": run["execution_job_id"]}, "completed", "final",
+                "Research %s: %s" % (status, run["title"]), summary,
+            )
+        public_result = {key: value for key, value in (result_data or {}).items() if key != "research_context"}
         instruction = "\n".join(
             [
                 "Deep research run #%s has %s." % (run["id"], status),
@@ -450,10 +497,10 @@ class DeepResearchAgent:
                 run["research_question"],
                 "",
                 "Summary:",
-                summary,
+                truncate_text(summary),
                 "",
                 "Result data:",
-                compact_json(result_data or {}),
+                truncate_text(public_result),
                 "",
                 "Continue the original task using these research results. Reply to the user when the original task is complete.",
             ]
@@ -467,16 +514,16 @@ class DeepResearchAgent:
                 cur.execute(
                     """
                     UPDATE jobs
-                    SET status = CASE WHEN status IN ('needs_review', 'waiting') THEN 'queued' ELSE status END,
-                        run_at = CASE WHEN status IN ('needs_review', 'waiting') THEN now() ELSE run_at END,
+                    SET status = CASE WHEN status = 'waiting' THEN 'queued' ELSE status END,
+                        run_at = CASE WHEN status = 'waiting' THEN now() ELSE run_at END,
                         has_new_context = true,
-                        last_error = CASE WHEN status IN ('queued', 'needs_review', 'waiting') THEN NULL ELSE last_error END,
-                        locked_at = CASE WHEN status IN ('needs_review', 'waiting') THEN NULL ELSE locked_at END,
-                        locked_by = CASE WHEN status IN ('needs_review', 'waiting') THEN NULL ELSE locked_by END,
+                        last_error = CASE WHEN status IN ('queued', 'waiting') THEN NULL ELSE last_error END,
+                        locked_at = CASE WHEN status = 'waiting' THEN NULL ELSE locked_at END,
+                        locked_by = CASE WHEN status = 'waiting' THEN NULL ELSE locked_by END,
                         updated_at = now()
                     WHERE id = %s
                       AND status NOT IN ('completed', 'failed', 'cancelled')
-                    RETURNING id
+                    RETURNING id, status
                     """,
                     (run["original_job_id"],),
                 )
@@ -486,11 +533,19 @@ class DeepResearchAgent:
                         cur,
                         run["original_job_id"],
                         "status_change",
-                        output_data={"status": "queued", "reason": "deep research %s" % status, "deep_research_run_id": run["id"]},
+                        output_data={"status": updated["status"], "reason": "deep research %s" % status, "deep_research_run_id": run["id"]},
                     )
 
     def email_original_sender_for_input(self, run: dict[str, Any], original_job: dict[str, Any], question: str) -> None:
         tool_runtime = ToolRuntime(self.db, self.config, original_job)
+        if (original_job.get("metadata") or {}).get("reply_route"):
+            result = ReplyRouter(tool_runtime).send(question, purpose="clarification")
+            self.db.log_event(original_job["id"], "tool_result", tool_name="reply_send", output_data=result)
+            if result.get("status") != "sent":
+                reason = "Research guidance delivery requires attention: %s" % result.get("status")
+                self.db.update_job_status(original_job["id"], "needs_review", last_error=reason)
+                raise ToolError(reason)
+            return
         emails = self.db.latest_thread_emails(run["original_thread_id"], limit=1)
         latest = emails[-1] if emails else {}
         recipient = latest.get("from_address")
@@ -525,6 +580,14 @@ class DeepResearchAgent:
         self.db.log_event(original_job["id"], "tool_result", tool_name="email_send", output_data=result)
 
     def handle_run_exception(self, run: dict[str, Any], reason: str) -> None:
+        current = self.current_run(run["id"])
+        if current and current["status"] in {"completed", "failed", "cancelled"}:
+            self.log_event(run["id"], "error", output_data={"reason": reason, "retry": False})
+            return
+        execution = self.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (run["execution_job_id"],))
+        if execution and execution["status"] == "needs_review":
+            self.log_event(run["id"], "error", output_data={"reason": reason, "retry": False})
+            return
         attempts = int(run.get("attempts") or 1)
         max_attempts = int(run.get("max_attempts") or 3)
         if attempts >= max_attempts:
@@ -662,24 +725,14 @@ class ResearchToolRuntime:
 
     def cache_read_job_ids(self) -> set[int]:
         ids = {int(self.original_job["id"])}
-        try:
-            rows = self.db.fetch_all(
-                """
-                SELECT id
-                FROM jobs
-                WHERE thread_id = %s
-                ORDER BY id DESC
-                LIMIT 50
-                """,
-                (self.original_job["thread_id"],),
-            )
-        except Exception:
-            return ids
-        for row in rows:
-            try:
-                ids.add(int(row["id"]))
-            except (KeyError, TypeError, ValueError):
-                continue
+        if self.run_data.get("original_job_id"):
+            ids.add(int(self.run_data["original_job_id"]))
+        rows = self.db.fetch_all(
+            """SELECT id FROM jobs WHERE thread_id IN (%s, %s)
+               ORDER BY id DESC LIMIT 50""",
+            (self.original_job["thread_id"], self.run_data["original_thread_id"]),
+        )
+        ids.update(int(row["id"]) for row in rows)
         return ids
 
 RESEARCH_COMPLETE_TOOL = {

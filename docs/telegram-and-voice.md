@@ -36,12 +36,23 @@ read the initialization container's original secret mount.
 
 ## Conversations and Files
 
-- A standalone message starts a task. Brief text/file bursts and albums are grouped.
+- With no existing selection or association, a standalone message starts a
+  workstream. Brief text/file bursts and albums are grouped.
+- `/list` shows workstreams and lets you select one. Ordinary messages continue
+  its main conversation until you switch or use `/new`; selection survives
+  receiver restarts. Email-created workstreams are selectable too.
 - Reply to a task message or its status message to continue that task, including after
-  completion. Task identity is separate from chat identity.
+  completion. Explicit replies take precedence without switching the saved
+  selection. Replies to deleted conversations start fresh, with a routing notice;
+  an unavailable saved selection requires `/list` or `/new` rather than silently
+  redirecting the message.
 - An answer to the only waiting requester clarification resumes it. If several tasks
   need answers, choose a task using the provided buttons.
-- `/new` starts a separate task. `/tasks` and `/status` show active tasks.
+- `/new` creates and selects a fresh workstream, with or without an initial
+  request. Its temporary title is **New workstream**. After three user messages
+  the runtime requests a concise name; naming retries up to three times without
+  blocking normal execution, and shorter conversations keep the temporary title.
+  `/tasks` and `/status` show active execution jobs.
   `/cancel 123` cancels your active task 123; it cannot undo already completed actions.
 - Normal replies contain just the answer, without automatic task-number or completion
   notifications. `/tasks` and `/status` still expose task IDs when needed. Set
@@ -106,13 +117,17 @@ only. Benchmark the actual Ubuntu host before increasing transcription worker co
 
 ## Reminders and Delivery
 
-New reminders prefer the requester's linked Telegram destination, otherwise email.
+New reminders use the initiating channel when available, otherwise prefer the
+requester's linked Telegram destination, then email.
 The destination is saved when scheduling, not inferred again from a later active chat.
 Use `notification_channel="email"` or `"telegram"` to override; an explicit Telegram
 selection does not silently fall back to email. Automatic selection can fall back to
 email after a definite Telegram failure. It never does so after an ambiguous timeout.
 Set `notification_only=true` for simple notifications that need no model invocation;
 other reminders execute ordinary jobs and route their final results.
+Reminder occurrences and research runs use system threads in their owning
+workstream, not new workstreams. Input requests keep an explicit source-task
+link, so guidance resumes that task rather than repeating completed tool calls.
 
 Accepted message/file parts are recorded individually. Retrying the same send skips
 accepted parts and respects Telegram backoff. Pending final reply content is kept

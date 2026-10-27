@@ -1081,7 +1081,8 @@ class TaskAgent:
         runs = self.db.fetch_all(
             """
             SELECT id, title, research_question, status, tool_call_count, max_tool_calls,
-                   result_summary, result_data, completed_at, last_error, updated_at
+                   result_summary, result_data - 'research_context' AS result_data,
+                   completed_at, last_error, updated_at
             FROM deep_research_runs
             WHERE original_job_id = %s
             ORDER BY created_at DESC
@@ -1251,8 +1252,6 @@ class TaskAgent:
         return "every %s %s%s" % (interval, unit, suffix)
 
     def defer_stale_tool_calls(self, job: dict[str, Any], messages: list[dict[str, Any]], calls: list[dict[str, Any]]) -> bool:
-        if not (job.get("metadata") or {}).get("auto_reply"):
-            return False
         current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
         if not current or not current["has_new_context"]:
             return False

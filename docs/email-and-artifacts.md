@@ -43,8 +43,10 @@ This removes the autonomous-agent disclosure sentence/block added to outbound ex
 ## Thread resolution
 
 Transport thread IDs route conversations; a channel-neutral **workstream** owns
-their data and descendants. Existing email/Telegram follow-up resolution reuses
-that owner. A new task creates a new owner even for the same sender or chat.
+their main conversation, system threads and data. Recognized email replies and
+Telegram selection/reply routing reuse that owner across channels. A new
+unassociated email or an explicit fresh-workstream action creates a new owner;
+completing an execution does not end the conversation.
 See [workstream ownership](data-model.md#workstreams-ownership-and-provenance).
 
 Thread assignment order:
@@ -75,9 +77,12 @@ also be screened first; see [Email and action screening](security.md#email-and-a
 `queue_or_update_job` handles existing thread jobs carefully:
 
 - running/queued job: set `has_new_context=true`
-- waiting/needs_review job: requeue immediately and clear lock/error fields
+- waiting job: requeue immediately and clear lock/error fields
+- needs_review job: remain paused unless explicitly approved
 - admin reply on `needs_review`: apply review override (increase limits, optional instruction)
-- waiting deep-research run on same thread: resume research queue first
+- waiting deep-research run: guidance to its linked system thread (or an
+  unambiguous original conversation) resumes that same research run first;
+  its original task remains waiting until research returns its result
 
 ## Artifact pipeline
 

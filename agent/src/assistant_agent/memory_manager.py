@@ -171,6 +171,15 @@ class MemorySteward:
         query = self.task_query(job, emails, reminder, instructions)
         limit = self.config.get_int("agent.memory.steward.max_injected_memories", 8)
         seen: dict[int, dict[str, Any]] = {}
+        if job.get("workstream_id"):
+            for row in self.store.semantic_search(
+                query, limit=max(limit, 4), workstream_id=job["workstream_id"],
+            ):
+                seen[int(row["id"])] = row
+            for row in self.store.keyword_search(
+                query[:500], limit=max(limit, 4), workstream_id=job["workstream_id"],
+            ):
+                seen[int(row["id"])] = row
         for row in self.store.semantic_search(query, limit=max(limit, 4)):
             seen[int(row["id"])] = row
         for row in self.store.keyword_search(query[:500], limit=max(limit, 4)):

@@ -43,6 +43,7 @@ class Supervisor:
             FROM jobs j
             LEFT JOIN task_logs l ON l.job_id = j.id
             WHERE j.status IN ('running', 'waiting', 'needs_review')
+              AND COALESCE(j.metadata->>'worker', '') <> 'deep-research-agent'
             GROUP BY j.id
             ORDER BY j.updated_at ASC
             LIMIT 100

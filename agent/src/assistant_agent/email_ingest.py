@@ -778,33 +778,9 @@ class EmailDownloader:
         )
 
     def resume_waiting_deep_research_for_thread(self, thread_id: str) -> Optional[dict[str, Any]]:
-        run = self.db.fetch_one(
-            """
-            SELECT id, original_job_id
-            FROM deep_research_runs
-            WHERE original_thread_id = %s
-              AND status = 'waiting_for_input'
-            ORDER BY waiting_since DESC NULLS LAST, id DESC
-            LIMIT 1
-            """,
-            (thread_id,),
-        )
+        run = RequestService(self.db).resume_waiting_research(thread_id)
         if run is None:
             return None
-        self.db.execute(
-            """
-            UPDATE deep_research_runs
-            SET status = 'queued',
-                run_at = now(),
-                waiting_since = NULL,
-                last_error = NULL,
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            (run["id"],),
-        )
         self.log_deep_research_event(run["id"], "status_change", output_data={"status": "queued", "reason": "new email arrived"})
         return run
 

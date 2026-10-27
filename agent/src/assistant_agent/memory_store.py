@@ -360,12 +360,17 @@ class MemoryStore:
         query: str = "",
         tags: Optional[list[str]] = None,
         limit: int = 10,
+        *,
+        workstream_id: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         max_rows = min(max(int(limit or 10), 1), 100)
         clean_query = str(query or "").strip()
         clean_tags = self.clean_tags(tags)
         params: list[Any] = []
         filters = [self.active_filter()]
+        if workstream_id is not None:
+            filters.append("object_id IN (SELECT id FROM workstream_objects WHERE origin_workstream_id = %s)")
+            params.append(workstream_id)
         if clean_query:
             pattern = "%%%s%%" % clean_query
             terms = list(dict.fromkeys(term.lower() for term in re.findall(r"\w{3,}", clean_query) if term.lower() not in {"the", "and", "for", "this", "that", "with", "from", "please", "email", "task", "send", "have", "will", "your"}))[:12]
@@ -410,17 +415,25 @@ class MemoryStore:
         self.touch([row["id"] for row in rows])
         return rows
 
-    def semantic_search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def semantic_search(
+        self, query: str, limit: int = 10, *, workstream_id: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
         clean_query = str(query or "").strip()
+        options = {"workstream_id": workstream_id} if workstream_id is not None else {}
         if not clean_query:
-            return self.keyword_search("", limit=limit)
+            return self.keyword_search("", limit=limit, **options)
         try:
             query_embedding = self.embedding_client.embed(clean_query)
         except Exception as exc:
             LOGGER.warning("semantic memory search falling back to keyword search: %s", exc)
-            return self.keyword_search(clean_query, limit=limit)
+            return self.keyword_search(clean_query, limit=limit, **options)
 
         candidate_limit = self.config.get_int("agent.memory.embeddings.candidate_limit", 500)
+        ownership_filter = ""
+        ownership_params: tuple[Any, ...] = ()
+        if workstream_id is not None:
+            ownership_filter = "AND object_id IN (SELECT id FROM workstream_objects WHERE origin_workstream_id = %s)"
+            ownership_params = (workstream_id,)
         rows = self.db.fetch_all(
             f"""
             SELECT {MEMORY_COLUMNS}, embedding
@@ -428,10 +441,12 @@ class MemoryStore:
             WHERE embedding IS NOT NULL
                             AND embedding_model = %s AND embedding_dimensions = %s
               AND {self.active_filter()}
+              {ownership_filter}
             ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
             LIMIT %s
             """,
-            (self.embedding_client.model, len(query_embedding), min(max(candidate_limit, 10), 2000)),
+            (self.embedding_client.model, len(query_embedding), *ownership_params,
+             min(max(candidate_limit, 10), 2000)),
         )
         scored = []
         recency_boost_max = self.config.get_float("agent.memory.embeddings.recency_boost_max", 0.1)
@@ -465,12 +480,12 @@ class MemoryStore:
             clean_row["similarity"] = score - recency_boost
             scored.append(clean_row)
         scored.sort(key=lambda item: (item.get("score") or 0.0, item.get("importance") or 0), reverse=True)
-        keywords = self.keyword_search(clean_query, limit=limit)
+        keywords = self.keyword_search(clean_query, limit=limit, **options)
         seen = {row["id"] for row in keywords}
         result = (keywords + [row for row in scored if row["id"] not in seen])[: min(max(int(limit or 10), 1), 100)]
         self.touch([row["id"] for row in result])
         if not result:
-            return self.keyword_search(clean_query, limit=limit)
+            return self.keyword_search(clean_query, limit=limit, **options)
         return result
 
 

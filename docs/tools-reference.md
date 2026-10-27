@@ -12,14 +12,22 @@ Availability is computed by `available_function_names(...)` from runtime config 
 
 ## Workstream relationships
 
-`workstream_attach(kind, key)` retains a reusable object in the current job's
-workstream without copying it. Use its native record ID/key, or a workspace
-path for `file`. Supported aggregates include files, memories, contacts,
-reminders, jobs, research, artifacts, calendar events, Zoom meetings and Dropbox
-transfers. Inbound/outbound messages cannot be shared. Research attachment also
-retains its execution job. Artifact/import attachments retain their registered
-local files; linked calendar/Zoom objects are retained together.
-A search result or read does not itself attach data.
+`workstream_list(query, before_id, limit)` discovers workstreams by title/ID,
+with bounded results and a cursor for older entries.
+`workstream_read(workstream_id, thread_id, before, limit, ...)` reads paginated
+main-thread history by default. Use `next_before` for the next page. Optional
+flags expose system threads, owned/adopted objects, object-change events and
+execution details. Specify a research system thread with
+`include_execution_details=true` to inspect its research events and results.
+
+`workstream_attach(kind, key)` explicitly adopts an existing live contact or
+file into the current workstream without copying it. Use its native record
+ID/key, or a workspace path for `file`. Other object categories cannot be newly
+adopted. Existing legacy retaining links remain valid after upgrade.
+Searching, reading and editing do not adopt objects or switch the active
+conversation. Updates require current object versions where exposed and retain
+the original ownership; successful changes notify affected workstream context,
+not external recipients.
 Deletion belongs to the confirmed administrator terminal workflow, not an LLM
 tool. See [workstream deletion](security.md#workstream-deletion).
 

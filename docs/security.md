@@ -3,10 +3,14 @@
 ## Workstream deletion
 
 Back up the database and runtime files before upgrading. Rebuild/start the
-updated stack so migration 008 runs, then open
+updated stack so the ordered workstream migrations run, then open
 `./scripts/setup.sh tools` -> **Workstreams and data deletion**.
 The existing terminal menus list workstreams, their parents and retained objects,
-allow explicit attachments, and offer three deletion policies:
+and allow explicit attachments.
+
+New explicit adoption is restricted to contacts and files. Inspection or edits
+do not create retaining links. Older shared-object links survive upgrades and
+are still included in deletion previews. There are three deletion policies:
 
 1. **Preserve shared objects (default):** delete the selected workstream and its
    descendants, their messages, and objects with no retaining workstream outside
@@ -25,6 +29,11 @@ must finish first; deleting records is not a way to interrupt an in-flight call.
 Shared reminders with queued work in the deletion tree must finish or be
 cancelled first, rather than silently leaving a stranded queued reminder.
 Schema changes are applied at normal service startup, not by a preview.
+Deletion includes owned system threads and research execution jobs. It
+invalidates saved Telegram selections and retains only hashed reply references,
+not deleted conversation content. Where an object survives elsewhere, its
+change history retains actor workstream identifiers and relevant object
+differences, but clears deleted actor job references and copied reasons.
 The helper uses task-agent's integration credentials and a one-shot mount of
 the complete private artifact store; it does not publish an application port.
 

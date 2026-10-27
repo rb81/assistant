@@ -5,46 +5,74 @@ This document summarizes `database/schema.sql` and the ordered migrations in
 
 ## Workstreams: ownership and provenance
 
-Migration 008 introduces a channel-neutral root above transport-specific threads:
+Migrations 008, 009 and 011 define a channel-neutral conversation and data-lifecycle
+boundary above transport-specific references:
 
-- `workstreams`: title, immutable parent relationship, active/deleting state.
-- `workstream_threads`: maps existing logical conversation identifiers to owners.
+- `workstreams`: title, main thread, originating channel, naming state, immutable
+  legacy parent relationship, and active/deleting state.
+- `workstream_threads`: main/system thread identities mapped to their owner.
 - `workstream_objects`: typed reusable objects with immutable origin identifiers.
 - `workstream_attachments`: many-to-many retaining relationships.
 - `workstream_files`: physical file paths and digests, independent of indexing.
 - `workstream_deletions`: retryable cleanup journal; successful entries retain
   only identifiers, counts and completion status, not deleted content.
 
-A first email, Telegram request or manual/API task establishes a workstream.
-Follow-ups resolved to the same task reuse it; sharing a sender or chat alone
-does not merge tasks. Existing channel routing continues to determine task
-identity. Spawned reminders create child workstreams, preferring the reminder's
-original owner while it survives. Producers running in a job-scoped database
-inherit that job's workstream as parent for new conversations; other producers
-can explicitly provide `parent_workstream_id`. Descendants remain part of the
-original parent's tree.
+A new email establishes a workstream named from its subject. Telegram starts
+with a temporary title and saves an explicit selection; `/list` switches that
+selection and `/new` creates a fresh workstream. Linked email/Telegram
+references resolve to the same main conversation, without merging unrelated
+tasks just because they share a sender or chat.
 
-Jobs, memories, contacts, reminders, research, calendar events, Zoom meetings,
-Dropbox transfers, received artifacts and files are reusable object aggregates.
-Logs/checkpoints belong to their job, research events to their run, and search
-chunks to their file. Attaching research also retains its execution job;
-artifact/import attachments retain their registered local files, and linked
-managed calendar/Zoom objects are retained together.
+Each reminder, including a one-off reminder, executes in its owning workstream's
+`reminder:<id>` system thread; recurring occurrences create separate jobs there.
+Each research run has a `research:<id>` system thread and an `execution_job_id`
+reserved for the research worker, not the general task queue. Its tool effects
+are attributed to that job. Results and input requests retain their source link
+in `workstream_task_notifications` and are available to the main conversation.
+Research guidance resumes the existing run, preserving its events and tool
+budget. Completion wakes the original task to deliver the user-visible answer.
+Main-thread context includes bounded outcomes, not research tool transcripts;
+explicit workstream/job/research reads expose execution details.
+
+Contacts and files are the only newly adoptable object categories. Jobs,
+memories, reminders, research, calendar events, Zoom meetings, Dropbox transfers
+and received artifacts have an owning workstream. Logs/checkpoints belong to
+their job, research events to their run, and search chunks to their file.
 Inbound messages and outbound delivery/email records have exclusive workstream
 ownership and cannot be attached. Provider inputs are not owned remote outputs:
 importing a Dropbox Inbox file does not grant deletion ownership of that file.
 
-New objects attach to their creating workstream automatically. Updating an
-object from another job also attaches that job's workstream; merely finding or
-reading an object does not. `workstream_attach` explicitly retains an existing
-object. Attachments share the live object, not snapshots. The original origin
-identifier remains even if that workstream is later erased.
+New objects attach to their creating workstream automatically. Searching,
+reading or editing another workstream's object does not adopt it or change its
+owner. `workstream_attach` explicitly adopts a live contact or file, not a
+snapshot. The original origin identifier remains if another retaining
+workstream survives its deletion. Memories retain their owner and source
+evidence during cross-workstream recall; relevant local memories are preferred.
+
+`workstream_object_events` records successful field changes, actor provenance
+and supplied reasons. `workstream_context_events` notifies affected retaining
+workstreams idempotently without sending messages or waking agents. Running
+jobs refresh context before further tool calls; version-checked mutations
+reject stale state. Provider changes use the durable `provider_mutations`
+journal to reconcile uncertain responses before recording success.
 
 Migration backfills known thread/job links and unambiguous execution ancestry.
 Objects without reliable source links are placed in an explicitly unattributed
 administrative/legacy workstream, not attributed by semantic similarity.
 Existing disk files are registered when modified or explicitly attached; the
 migration does not guess ownership of unindexed, out-of-band files.
+Existing shared non-contact/file objects and historical reminder child
+workstreams retain their IDs and retention links rather than losing data during
+upgrade. New reminder occurrences use owned system threads. Migration 011 adds
+research execution jobs without resetting existing runs or their event history,
+and preserves legacy retaining links to their execution.
+
+Confirmed deletion removes owned main/system conversations, jobs, memories and
+eligible derived data. Explicitly retained contacts/files (and pre-existing
+legacy shared objects) can survive. Surviving object-change events retain
+object differences and actor workstream IDs, but lose deleted actor job IDs and
+copied reasons. Deleted routing references are hashed tombstones; stale Telegram
+selections are marked unavailable rather than redirected or resurrected.
 
 ## Core Pipeline Entities
 

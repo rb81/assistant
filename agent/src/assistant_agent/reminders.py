@@ -39,6 +39,7 @@ class ReminderScheduler:
 
     def deliver_notifications(self) -> int:
         from .replies import ReplyRouter
+        from .task_agent import TaskAgent
         from .tools import ToolRuntime
         jobs = self.db.fetch_all(
             """SELECT j.*, r.task AS notification_text FROM jobs j JOIN reminders r ON r.job_id = j.id
@@ -59,9 +60,14 @@ class ReminderScheduler:
                             continue
                         result = ReplyRouter(ToolRuntime(self.db, self.config, job)).send(job["notification_text"], purpose="reminder")
                         if result.get("status") == "sent":
-                            self.db.execute("UPDATE jobs SET status = 'completed', completed_at = now(), metadata = metadata || %s WHERE id = %s AND status = 'waiting'",
-                                            (Jsonb({"final_response": job["notification_text"]}), job["id"]))
-                            delivered += 1
+                            database = TransactionDatabase(connection)
+                            completed = database.fetch_one(
+                                """UPDATE jobs SET status = 'completed', completed_at = now()
+                                   WHERE id = %s AND status = 'waiting' RETURNING id""", (job["id"],),
+                            )
+                            if completed:
+                                TaskAgent(database, self.config).record_final_response(job["id"], job["notification_text"])
+                                delivered += 1
                         elif result.get("status") == "uncertain":
                             self.db.update_job_status(job["id"], "needs_review", last_error="Reminder delivery uncertain; reconcile before retrying")
                         else:

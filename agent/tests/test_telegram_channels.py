@@ -185,6 +185,7 @@ def migrate(database):
     sources = [migration_dir / name for name in (
         "006_zoom_meetings.sql", "007_request_channels.sql",
         "008_workstreams.sql", "009_workstream_threads.sql",
+        "011_research_system_threads.sql",
     )]
     with tempfile.TemporaryDirectory() as directory:
         for source in sources:
@@ -352,6 +353,10 @@ def test_simple_recurring_reminder_delivers_without_agent(database):
     assert result["status"] == "scheduled" and result["run_at"] > reminder["run_at"]
     job = database.fetch_one("SELECT * FROM jobs")
     assert job["status"] == "completed" and job["metadata"]["final_response"] == "Drink water"
+    assert database.fetch_one(
+        """SELECT source_thread_id, content FROM workstream_task_notifications
+           WHERE source_job_id = %s AND notification_type = 'completed'""", (job["id"],),
+    ) == {"source_thread_id": "reminder:%s" % reminder["id"], "content": "Drink water"}
 
 
 def test_concurrent_request_and_agent_events_have_unique_sequences(database):

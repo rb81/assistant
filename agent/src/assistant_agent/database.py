@@ -279,6 +279,7 @@ class Database:
                       SELECT id
                       FROM jobs
                       WHERE status = 'queued'
+                        AND COALESCE(metadata->>'worker', '') <> 'deep-research-agent'
                         AND run_at <= now()
                         AND EXISTS (SELECT 1 FROM workstreams w WHERE w.id = jobs.workstream_id AND w.status = 'active')
                       ORDER BY priority DESC, created_at ASC

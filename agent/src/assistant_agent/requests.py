@@ -100,28 +100,30 @@ class RequestService:
         resume_research: Optional[Callable[[str], Optional[dict[str, Any]]]] = None,
         review_override: Optional[Callable[..., None]] = None,
     ) -> None:
-        resumed_research = resume_research(thread_id) if resume_research else None
+        resumed_research = (
+            resume_research(thread_id) if resume_research
+            else self.resume_waiting_research(thread_id)
+        )
+        if resumed_research:
+            self.db.execute(
+                """UPDATE jobs SET trigger_email_id = COALESCE(trigger_email_id, %s),
+                   has_new_context = true, updated_at = now() WHERE id = %s""",
+                (trigger_email_id, resumed_research["original_job_id"]),
+            )
+            self.db.log_event(
+                resumed_research["original_job_id"], "status_change",
+                output_data={"has_new_context": True,
+                             "reason": "new %s arrived; resumed waiting deep research" % channel,
+                             "deep_research_run_id": resumed_research["id"]},
+            )
+            return
         open_job = self.db.fetch_one(
             "SELECT id, status, metadata, last_error FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
             (thread_id,),
         )
         if open_job:
-            if resumed_research and open_job["id"] == resumed_research["original_job_id"]:
-                self.db.execute(
-                    """
-                    UPDATE jobs
-                    SET trigger_email_id = COALESCE(trigger_email_id, %s),
-                        has_new_context = true,
-                        updated_at = now()
-                    WHERE id = %s
-                    """,
-                    (trigger_email_id, open_job["id"]),
-                )
-                self.db.log_event(
-                    open_job["id"], "status_change",
-                    output_data={"has_new_context": True, "reason": "new %s arrived; resumed waiting deep research" % channel,
-                                 "deep_research_run_id": resumed_research["id"]},
-                )
+            if (open_job.get("metadata") or {}).get("worker") == "deep-research-agent":
+                self.db.execute("UPDATE jobs SET has_new_context = true WHERE id = %s", (open_job["id"],))
                 return
             if open_job["status"] == "needs_review":
                 if admin_authenticated and review_override:
@@ -161,9 +163,27 @@ class RequestService:
                 "has_new_context": True, "reason": "new %s arrived" % channel,
             })
             return
-        if resumed_research:
-            return
         self.db.execute(
             "INSERT INTO jobs(thread_id, task_summary, trigger_email_id) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (thread_id, summary, trigger_email_id),
+        )
+
+    def resume_waiting_research(self, thread_id: str) -> Optional[dict[str, Any]]:
+        return self.db.fetch_one(
+            """WITH candidates AS (
+                 SELECT r.id, count(*) OVER () AS matches
+                 FROM deep_research_runs r
+                 LEFT JOIN jobs j ON j.id = r.execution_job_id
+                 JOIN jobs source ON source.id = r.original_job_id
+                 WHERE r.status = 'waiting_for_input'
+                   AND source.status IN ('waiting', 'queued', 'running')
+                   AND (j.id IS NULL OR j.status = 'waiting')
+                   AND (r.original_thread_id = %s OR j.thread_id = %s)
+               )
+               UPDATE deep_research_runs SET status = 'queued', run_at = now(),
+                 waiting_since = NULL, last_error = NULL, locked_at = NULL, locked_by = NULL
+               WHERE id = (SELECT id FROM candidates WHERE matches = 1)
+                 AND status = 'waiting_for_input'
+               RETURNING id, original_job_id, execution_job_id""",
+            (thread_id, thread_id),
         )

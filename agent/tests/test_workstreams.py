@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +26,7 @@ def test_connected_scope_is_recursive_and_includes_descendants():
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, request):
     url = os.environ.get("ASSISTANT_TEST_DATABASE_URL")
     if not url:
         pytest.skip("requires disposable assistant_test database")
@@ -39,7 +40,15 @@ def store(tmp_path):
     try:
         db.execute(Path(__file__).resolve().parents[2].joinpath("database/schema.sql").read_text())
         db.ensure_feature_schema()
-        db.run_migrations()
+        if hasattr(request, "param"):
+            migrations = tmp_path / "migrations"
+            migrations.mkdir()
+            for source in Path(__file__).resolve().parents[1].joinpath("src/assistant_agent/migrations").glob("*.sql"):
+                if source.name <= request.param:
+                    shutil.copy2(source, migrations)
+            db.run_migrations(migrations)
+        else:
+            db.run_migrations()
         share, raw = tmp_path / "share", tmp_path / "raw"
         share.mkdir()
         raw.mkdir()
@@ -81,6 +90,9 @@ def legacy_attach(store, workstream_id, kind, key):
             """SELECT j.object_id FROM deep_research_runs r JOIN jobs j ON j.id = r.original_job_id
                WHERE r.object_id = %s
                UNION
+               SELECT j.object_id FROM deep_research_runs r JOIN jobs j ON j.id = r.execution_job_id
+               WHERE r.object_id = %s
+               UNION
                SELECT f.object_id FROM dropbox_transfers d JOIN workstream_files f
                  ON f.path IN (d.local_path, d.markdown_path)
                  WHERE d.object_id = %s AND d.direction = 'import'
@@ -94,7 +106,7 @@ def legacy_attach(store, workstream_id, kind, key):
                SELECT z.object_id FROM calendar_managed_events c JOIN zoom_managed_meetings z
                  ON z.id::text = c.metadata->>'zoom_meeting_id' OR z.calendar_event_id = c.assistant_id
                  WHERE c.object_id = %s""",
-            (object_id, object_id, object_id, object_id, object_id),
+            (object_id, object_id, object_id, object_id, object_id, object_id),
         )
         pending.extend(item["object_id"] for item in related)
         artifact = store.db.fetch_one("SELECT markdown_path FROM processed_artifacts WHERE object_id = %s", (object_id,))
@@ -546,6 +558,284 @@ def test_system_task_admin_input_is_available_from_main_workstream(store):
         "content": "Approve the proposed source?",
         "source_thread_id": system_thread,
     }
+
+
+@pytest.mark.parametrize("channel", ["email", "telegram"])
+@pytest.mark.parametrize("system_reply", [False, True])
+def test_research_system_thread_routes_guidance_and_returns_only_outcomes(store, channel, system_reply):
+    from assistant_agent.deep_research import DeepResearchAgent, ResearchToolRuntime
+    from assistant_agent.task_agent import TaskAgent
+    from assistant_agent.telegram_ingest import TelegramReceiver
+    from assistant_agent.tools import ToolRuntime
+    from psycopg.types.json import Jsonb
+
+    source = job(store, "Research request")
+    store.config.values["agent"]["filesystem"]["require_mount"] = False
+    route = ({"channel": "telegram", "chat_id": "123", "message_id": 1}
+             if channel == "telegram" else {"channel": "email", "to": "user@example.com"})
+    store.config.values["agent"]["memory"] = {"steward": {"enabled": False}}
+    store.db.execute(
+        "UPDATE jobs SET status = 'waiting', metadata = %s WHERE id = %s",
+        (Jsonb({"reply_route": route, "source_channel": channel, "auto_reply": True}), source["id"]),
+    )
+    source = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (source["id"],))
+    with patch("assistant_agent.tools.search_configured", return_value=True):
+        run = ToolRuntime(store.db, store.config, source).deep_research_request(
+            research_question="Find suitable dates", title="Date research",
+        )["deep_research_run"]
+    agent = DeepResearchAgent(store.db, store.config)
+    claimed = agent.claim_run()
+    assert claimed["id"] == run["id"]
+    execution = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["execution_job_id"],))
+    assert execution["workstream_id"] == source["workstream_id"]
+    assert execution["thread_id"] != source["thread_id"]
+    assert execution["status"] == "running"
+    runtime = ResearchToolRuntime(store.db, store.config, claimed, execution, agent)
+    runtime.run("file_write", {"path": "research.txt", "content": "Initial findings"})
+    audit = store.db.fetch_one(
+        """SELECT actor_job_id FROM workstream_object_events
+           WHERE object_kind = 'file' ORDER BY id DESC LIMIT 1""",
+    )
+    assert audit["actor_job_id"] == execution["id"]
+
+    with patch("assistant_agent.deep_research.ReplyRouter.send", return_value={"status": "sent"}) as send:
+        assert agent.handle_tool_call(claimed, execution, [], {
+            "id": "question-1", "function": {"name": "research_request_human_input",
+                                            "arguments": '{"question":"Which month?"}'},
+        })
+    send.assert_called_once_with("Which month?", purpose="clarification")
+    waiting = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (execution["id"],))
+    assert waiting["status"] == "waiting"
+    assert waiting["metadata"]["waiting_for_input"]
+    if channel == "telegram":
+        receiver = TelegramReceiver.__new__(TelegramReceiver)
+        receiver.db, receiver.bot_id, receiver.config = store.db, "bot", store.config
+        receiver.set_selection("123", source["workstream_id"])
+        assert receiver.task_thread(
+            {"message_id": 2, "chat": {"id": 123}, "text": "November"}, "bot:123", "123",
+        ) == (execution["thread_id"], [])
+    reply_thread = execution["thread_id"] if system_reply else source["thread_id"]
+    if channel == "email":
+        store.db.execute(
+            """INSERT INTO emails(message_id, thread_id, from_address, body_text, received_at)
+               VALUES ('guidance:1', %s, 'user@example.com', 'November', now())""", (reply_thread,),
+        )
+    request = IncomingRequest(channel, "guidance:1", "conversation", "user", reply_thread, "November",
+                              reply_route=route)
+    RequestService(store.db).receive_request(request)
+    RequestService(store.db).receive_request(request)
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (source["id"],))["status"] == "waiting"
+    assert store.db.claim_job("task-worker") is None
+    resumed = agent.claim_run()
+    assert resumed["id"] == run["id"]
+    assert resumed["execution_job_id"] == execution["id"]
+    assert "November" in agent.build_messages(resumed, execution)[1]["content"]
+    agent.log_event(run["id"], "search_result", output_data={"content": "Internal search transcript"})
+    agent.complete_run(resumed, "November is suitable.", {"output_files": ["research.txt"]})
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (execution["id"],))["status"] == "completed"
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (source["id"],))["status"] == "queued"
+    main = store.read(source["workstream_id"], include_system_threads=True)
+    assert {item["source_job_id"] for item in main["task_notifications"]} == {execution["id"]}
+    assert {item["notification_type"] for item in main["task_notifications"]} == {"input_requested", "completed"}
+    instructions = store.db.fetch_one(
+        "SELECT instruction FROM supervisor_instructions WHERE job_id = %s ORDER BY id DESC LIMIT 1",
+        (source["id"],),
+    )["instruction"]
+    assert "Internal search transcript" not in instructions
+    assert "research_context" not in TaskAgent(store.db, store.config).async_status_context(source)["deep_research_runs"][0]["result_data"]
+    details = store.read(source["workstream_id"], thread_id=execution["thread_id"], include_execution_details=True)
+    assert any(event["event_type"] == "search_result" for event in details["executions"][0]["research"]["events"])
+    store.db.update_job_status(source["id"], "completed")
+    remove(store, source["workstream_id"])
+    assert store.db.fetch_one("SELECT id FROM deep_research_runs WHERE id = %s", (run["id"],)) is None
+    assert store.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (execution["id"],)) is None
+
+
+@pytest.mark.parametrize("store", ["010_model_service.sql"], indirect=True)
+def test_research_upgrade_preserves_existing_run_history_and_retaining_links(store, tmp_path):
+    source, retainer = job(store, "Original research"), job(store, "Legacy retainer")
+    run = store.db.for_job(source["id"]).fetch_one(
+        """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question,
+                                          status, tool_call_count)
+           VALUES (%s, %s, 'Existing run', 'Existing question', 'waiting_for_input', 4) RETURNING *""",
+        (source["id"], source["thread_id"]),
+    )
+    store.db.execute(
+        """INSERT INTO deep_research_events(run_id, sequence, event_type, output_data)
+           VALUES (%s, 1, 'search_result', '{"content":"Existing evidence"}')""", (run["id"],),
+    )
+    store.db.execute(
+        "INSERT INTO workstream_attachments(workstream_id, object_id) VALUES (%s, %s)",
+        (retainer["workstream_id"], source["object_id"]),
+    )
+    store.db.execute(
+        "INSERT INTO workstream_attachments(workstream_id, object_id) VALUES (%s, %s)",
+        (retainer["workstream_id"], run["object_id"]),
+    )
+    migrations = tmp_path / "research-migration"
+    migrations.mkdir()
+    source_path = Path(__file__).resolve().parents[1] / "src/assistant_agent/migrations/011_research_system_threads.sql"
+    shutil.copy2(source_path, migrations)
+    assert store.db.run_migrations(migrations) == [source_path.name]
+    assert store.db.run_migrations(migrations) == []
+    upgraded = store.db.fetch_one("SELECT * FROM deep_research_runs WHERE id = %s", (run["id"],))
+    execution = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (upgraded["execution_job_id"],))
+    assert upgraded["tool_call_count"] == 4
+    assert upgraded["object_id"] == run["object_id"]
+    assert execution["metadata"]["waiting_for_input"]
+    assert execution["workstream_id"] == source["workstream_id"]
+    assert store.db.fetch_one(
+        "SELECT 1 FROM workstream_attachments WHERE object_id = %s AND workstream_id = %s",
+        (execution["object_id"], retainer["workstream_id"]),
+    )
+    assert store.db.fetch_one("SELECT count(*) AS n FROM deep_research_events WHERE run_id = %s", (run["id"],))["n"] == 1
+
+
+@pytest.mark.parametrize("interrupt", [None, "context", "cancel"])
+def test_research_worker_preserves_completed_effects_and_defers_stale_calls(store, interrupt):
+    from assistant_agent.deep_research import DeepResearchAgent, ResearchToolRuntime
+
+    source = job(store, "Research request")
+    contact = store.db.for_job(source["id"]).fetch_one(
+        "INSERT INTO contacts(first_name) VALUES ('Ada') RETURNING id",
+    )
+    store.config.values["agent"]["filesystem"]["require_mount"] = False
+    store.config.values["agent"]["memory"] = {"steward": {"enabled": False}}
+    store.db.update_job_status(source["id"], "waiting")
+    run = store.db.for_job(source["id"]).fetch_one(
+        """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question)
+           VALUES (%s, %s, 'Research', 'Find the answer') RETURNING *""",
+        (source["id"], source["thread_id"]),
+    )
+    original_run = ResearchToolRuntime.run
+
+    def run_tool(runtime, name, arguments):
+        result = original_run(runtime, name, arguments)
+        if interrupt == "context" and arguments.get("path") == "first.txt":
+            store.db.for_job(source["id"]).execute(
+                "UPDATE contacts SET notes = 'New requirements' WHERE id = %s", (contact["id"],),
+            )
+        return result
+
+    def response(messages, tools):
+        if model.chat.call_count == 1:
+            if interrupt == "cancel":
+                store.db.update_job_status(source["id"], "cancelled")
+            calls = [
+                {"id": path, "function": {"name": "file_write",
+                                         "arguments": json.dumps({"path": path, "content": "Evidence"})}}
+                for path in ("first.txt", "second.txt")
+            ]
+        else:
+            if interrupt == "context":
+                assert any("New workstream object changes" in str(item.get("content")) for item in messages)
+            calls = [{"id": "complete", "function": {"name": "research_complete",
+                                                    "arguments": '{"summary":"Research finished"}'}}]
+        return {"choices": [{"message": {"role": "assistant", "tool_calls": calls}}]}
+
+    with patch("assistant_agent.deep_research.search_configured", return_value=True), \
+         patch("assistant_agent.deep_research.LlmClient") as llm, \
+         patch.object(ResearchToolRuntime, "run", run_tool):
+        model = llm.return_value
+        model.chat.side_effect = response
+        assert DeepResearchAgent(store.db, store.config).run_once()
+    root = Path(store.config.get("agent.filesystem.shared_root"))
+    assert (root / "first.txt").exists() == (interrupt != "cancel")
+    assert (root / "second.txt").exists() == (interrupt is None)
+    result = store.db.fetch_one("SELECT * FROM deep_research_runs WHERE id = %s", (run["id"],))
+    assert result["status"] == ("cancelled" if interrupt == "cancel" else "completed")
+    assert result["tool_call_count"] == (0 if interrupt == "cancel" else 1 if interrupt == "context" else 2)
+
+
+def test_recall_prioritizes_owned_memories_before_global_candidate_limits(store):
+    from assistant_agent.memory_manager import MemorySteward
+
+    source, other = job(store, "Astronomy"), job(store, "Other astronomy")
+    own = memory(store, source, "Astronomy preference for dark skies")
+    irrelevant = memory(store, source, "Unrelated cooking instructions")
+    for index in range(6):
+        item = memory(store, other, "Astronomy external observation %s" % index)
+        store.db.execute("UPDATE agent_memories SET pinned = true, importance = 5 WHERE id = %s", (item["id"],))
+    store.config.values["agent"]["memory"] = {"steward": {"max_injected_memories": 2}}
+    steward = MemorySteward(store.db, store.config)
+    candidates = steward.retrieve_memory_candidates(source, [], None, [])
+    assert candidates[0]["id"] == own["id"]
+    assert candidates[0]["origin_workstream_id"] == source["workstream_id"]
+    assert len(candidates) == 2
+    assert candidates[1]["origin_workstream_id"] == other["workstream_id"]
+    assert irrelevant["id"] not in {item["id"] for item in candidates}
+
+
+@pytest.mark.parametrize("source_status", ["waiting", "needs_review"])
+def test_research_completion_and_main_thread_notification_commit_together(store, source_status):
+    from assistant_agent.deep_research import DeepResearchAgent
+
+    source = job(store, "Research request")
+    store.db.update_job_status(source["id"], source_status, last_error="Original review reason")
+    store.db.for_job(source["id"]).execute(
+        """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question)
+           VALUES (%s, %s, 'Research', 'Find the answer')""", (source["id"], source["thread_id"]),
+    )
+    agent = DeepResearchAgent(store.db, store.config)
+    run = agent.claim_run()
+    with patch.object(DeepResearchAgent, "notify_original_job", side_effect=RuntimeError("notification failed")):
+        with pytest.raises(RuntimeError, match="notification failed"):
+            agent.complete_run(run, "The answer", {})
+    assert agent.current_run(run["id"])["status"] == "running"
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (run["execution_job_id"],))["status"] == "running"
+    assert not store.db.fetch_all("SELECT id FROM workstream_task_notifications")
+    agent.complete_run(run, "The answer", {})
+    agent.complete_run(run, "The answer", {})
+    agent.handle_run_exception(run, "post-completion log failure")
+    assert agent.current_run(run["id"])["status"] == "completed"
+    original = store.db.fetch_one("SELECT status, last_error FROM jobs WHERE id = %s", (source["id"],))
+    assert original["status"] == ("queued" if source_status == "waiting" else "needs_review")
+    if source_status == "needs_review":
+        assert original["last_error"] == "Original review reason"
+    assert len(store.db.fetch_all("SELECT id FROM workstream_task_notifications")) == 1
+    assert len(store.db.fetch_all("SELECT id FROM supervisor_instructions WHERE job_id = %s", (source["id"],))) == 1
+
+
+def test_uncertain_research_guidance_stays_paused_until_explicit_admin_requeue(store):
+    from assistant_agent.deep_research import DeepResearchAgent
+    from assistant_agent.tools import ToolError
+    from psycopg.types.json import Jsonb
+
+    source = job(store, "Research request")
+    route = {"channel": "telegram", "chat_id": "123"}
+    store.db.execute("UPDATE jobs SET status = 'waiting', metadata = %s WHERE id = %s",
+                     (Jsonb({"reply_route": route, "auto_reply": True}), source["id"]))
+    store.db.for_job(source["id"]).execute(
+        """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question)
+           VALUES (%s, %s, 'Research', 'Find the answer')""", (source["id"], source["thread_id"]),
+    )
+    agent = DeepResearchAgent(store.db, store.config)
+    run = agent.claim_run()
+    execution = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["execution_job_id"],))
+    with patch("assistant_agent.deep_research.ReplyRouter.send", return_value={"status": "uncertain"}):
+        with pytest.raises(ToolError, match="requires attention") as error:
+            agent.handle_tool_call(run, execution, [], {
+                "id": "question", "function": {"name": "research_request_human_input",
+                                              "arguments": '{"question":"Which month?"}'},
+            })
+    agent.handle_run_exception(run, str(error.value))
+    assert agent.current_run(run["id"])["status"] == "waiting_for_input"
+    RequestService(store.db).receive_request(IncomingRequest(
+        "telegram", "guidance", "chat", "123", execution["thread_id"], "November", reply_route=route,
+    ))
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (execution["id"],))["status"] == "needs_review"
+    assert agent.claim_run() is None
+    assert store.db.requeue_job(execution["id"], "delivery reconciled by administrator")
+    assert store.db.claim_job("task-worker") is None
+    resumed = agent.claim_run()
+    assert resumed["id"] == run["id"]
+    store.db.update_job_status(execution["id"], "cancelled", last_error="Cancelled by administrator")
+    assert agent.current_run(run["id"])["status"] == "cancelled"
+    assert store.db.fetch_one("SELECT status FROM jobs WHERE id = %s", (source["id"],))["status"] == "queued"
+    assert store.db.fetch_one(
+        """SELECT content FROM workstream_task_notifications
+           WHERE source_job_id = %s AND notification_key = 'final'""", (execution["id"],),
+    )["content"] == "Cancelled by administrator"
 
 
 def test_workstreams_remain_bound_to_their_originating_channel(store):

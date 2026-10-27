@@ -9,6 +9,11 @@ read [the upgrade guide](docs/upgrading.md) before starting new workers.
 ### Added
 
 - Shared durable request intake/reply routing and automatic migration of historical task sources.
+- Channel-aware workstreams with persistent Telegram selection, runtime naming,
+  paginated discovery/history, explicit contact/file adoption and versioned
+  object-change notifications. Reminder and research execution use owned system
+  threads with linked guidance, bounded main-thread outcomes and preserved
+  execution history.
 - Optional private Telegram messaging, scanned attachments, proactive sends and routed reminders.
 - Isolated, hardened local whisper.cpp English/Arabic transcription with checksum-verified model provisioning.
 - Guided setup/reconfiguration with masked credentials, navigation, optional

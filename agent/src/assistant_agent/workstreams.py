@@ -224,10 +224,11 @@ class WorkstreamStore:
             ))
         if include_execution_details:
             jobs = self.db.fetch_all(
-                """SELECT id, thread_id, task_summary, status, created_at, completed_at, last_error
-                   FROM jobs WHERE workstream_id = %s
-                   AND (%s::text IS NULL OR thread_id = %s)
-                   ORDER BY id DESC LIMIT %s""",
+                """SELECT j.id, j.thread_id, j.task_summary, j.status, j.created_at, j.completed_at,
+                          j.last_error, r.id AS research_run_id
+                   FROM jobs j LEFT JOIN deep_research_runs r ON r.execution_job_id = j.id
+                   WHERE j.workstream_id = %s AND (%s::text IS NULL OR j.thread_id = %s)
+                   ORDER BY j.id DESC LIMIT %s""",
                 (workstream_id, thread_id, thread_id, limit),
             )
             for job in jobs:
@@ -237,6 +238,17 @@ class WorkstreamStore:
                     (job["id"],),
                 )
                 job["events"].reverse()
+                if job["research_run_id"] is not None:
+                    job["research"] = self.db.fetch_one(
+                        """SELECT id, status, research_question, result_summary, result_data, last_error
+                           FROM deep_research_runs WHERE id = %s""", (job["research_run_id"],),
+                    )
+                    job["research"]["events"] = self.db.fetch_all(
+                        """SELECT sequence, event_type, tool_name, input_data, output_data, created_at
+                           FROM deep_research_events WHERE run_id = %s
+                           ORDER BY sequence DESC LIMIT 10""", (job["research_run_id"],),
+                    )
+                    job["research"]["events"].reverse()
             result["executions"] = json_safe(jobs)
         return result
 

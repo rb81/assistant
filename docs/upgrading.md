@@ -116,6 +116,21 @@ optional profiles. The transcription model is initialized and checksum-verified 
 a persistent model volume; decoder/inference runs separately without internet access.
 Do not delete production volumes during an upgrade. See [Telegram and voice](telegram-and-voice.md).
 
+## Workstream Conversations
+
+Migrations 008, 009 and 011 add explicit main/system conversations, persistent
+Telegram selection, object-change context and dedicated research execution jobs.
+They run through the same serialized migration mechanism; no production data
+upgrade is needed to run tests against a disposable database.
+
+Back up and stop old writers before starting updated workers. Existing
+workstream IDs, retaining links and historical reminder child workstreams are
+preserved. New reminder occurrences execute in owned system threads. Existing
+research runs keep their IDs, statuses, tool counts and events; migration 011
+adds their system execution jobs without restarting or replaying the research.
+Review-required tasks remain paused when research results arrive. Workstream
+previews/deletion include the new execution records and stale routing cleanup.
+
 ## Rollback
 
 Stop the new stack. Restore the pre-upgrade database and filesystem/config snapshot
