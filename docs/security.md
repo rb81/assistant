@@ -261,6 +261,154 @@ third-party data, external logs or backups. Source documents may cause relearnin
 Read [deletion limits](email-administration.md#memory-and-deletion) and
 [upgrade/rollback requirements](upgrading.md) before deployment.
 
+## Email and action screening
+
+Configure these layers in the setup wizard's **Security screening** section. All
+are optional. Telegram is not screened: only allow-listed, owner-proven accounts
+can reach it.
+
+### Mail quarantine
+
+Fresh mail from a sender that is not accepted (not in `EMAIL_ACTIONABLE_SENDERS`
+and not replying on an open job's thread) is moved, unread and unstored, to the
+quarantine folder (`IMAP_QUARANTINE_FOLDER`, default `Quarantine`, created if
+missing). Rejected and held mail goes there too. The agent never sees
+quarantined mail. If a move fails, the error is logged and the message stays in
+the inbox; it is not processed again.
+
+### Admin sender authentication (SPF/DKIM)
+
+With `agent.security.email_authentication.enabled`, only email whose From
+includes `ADMIN_EMAIL`, including OTP approval replies, must pass sender
+authentication. The downloader checks it itself through DNS. It does not trust
+`Authentication-Results` headers. The email passes if either check below passes
+for a domain aligned with its single From address:
+
+- **DKIM:** a `DKIM-Signature` verifies against the public key published in the
+  signer's DNS, and the signing domain (`d=`) is aligned with From.
+- **SPF:** the `Return-Path` domain is aligned with From, and its SPF record
+  authorizes the IP that delivered the email to your mail server. That IP comes
+  from the topmost `Received` header with a public address. Sender-supplied
+  HELO values are ignored.
+
+Requiring both would reject legitimate mail. Forwarding breaks SPF, and some
+providers sign with their own domain. Missing, misaligned or unverifiable
+results, including DNS errors, fail. The containers need outbound DNS. At
+startup the downloader warns if the admin domain publishes no SPF or DMARC
+record. Before you enable this, make sure your admin mail provider signs with
+DKIM for your domain.
+
+A failure is quarantined before any OTP is issued, and the admin is notified.
+Notices are rate limited by `notify_max_per_hour` and never contain an OTP.
+Other senders are unaffected. Authentication proves a domain, not a person, and
+never replaces the OTP. Alignment uses a simple parent-domain match, not the
+public-suffix list.
+
+### Decision-model screening
+
+With `agent.security.decision_model.enabled`, a decision model rates content as
+**not malicious**, **possibly malicious** or **malicious**. It answers a verdict
+question plus two yes/no risk flags.
+
+| Target | Setting | What is screened |
+|---|---|---|
+| Inbound email | always on (cannot be disabled) | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all inbound mail; otherwise only listed senders and replies on open threads. Covers headers, text, HTML and attachment names and types. |
+| Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
+| Scripts | `screen.scripts` (off) | `command_execute` calls that run code (see below). |
+
+- **Not malicious:** processed normally.
+- **Possibly malicious:**
+  - Inbound email is quarantined, and the admin receives an OTP approval
+    (default expiry 24 hours, `approval_ttl_minutes`).
+  - Tool calls pause the job for admin review. Approval allows the identical
+    call once.
+- **Malicious:** quarantined or blocked, and the admin is notified.
+
+`malicious_threshold` applies to P(malicious), and `possibly_malicious_threshold`
+to P(malicious) + P(possibly malicious). Any flag at or above `flag_threshold`
+also holds. `on_error` (`review`, `reject` or `allow`) decides what happens when
+the model is unreachable, refuses or returns malformed output.
+
+#### Script analysis
+
+Before a script is screened, `script_analysis.py` statically builds a manifest.
+The decision model sees the manifest together with the source.
+
+- **Which commands:** Python (files, `-c`, `-m`), shell scripts and `-c`
+  strings, Node, and other interpreters. Package installs and direct
+  executables (shebang or binary) are included too. Plain commands such as `ls`
+  are not screened.
+- **Python:** parsed with `ast`. The manifest records:
+  - imports, split into stdlib, third-party and local; local modules in the
+    shared workspace are followed, up to `scripts.max_files` files;
+  - risky calls, alias-resolved (process, network, code execution, file
+    deletion, environment);
+  - code obfuscated with `exec`/`eval`.
+- **Shell:** commands, `curl | sh`-style remote execution, decode-and-run pipes,
+  destructive deletions and package installs.
+- **JavaScript:** a regex-based scan.
+- **All languages:** URLs, hosts, IP addresses and sensitive paths.
+
+Deterministic **hard signals** raise a not-malicious verdict to possibly
+malicious:
+
+- `code_not_inspectable`: missing file or stdin;
+- `unparseable_code`;
+- `obfuscated_code_execution`;
+- `remote_code_execution`;
+- `destructive_command`;
+- `binary_executable`;
+- `sensitive_path_access`;
+- `host_not_allowed`, only when `scripts.allowed_domains` is set.
+
+The approval fingerprint includes the hashes of every analysed file, so editing
+a script after approval requires a fresh approval. Static analysis is best
+effort; dynamically built code can evade it.
+
+#### YOLO mode
+
+`agent.security.allow_possibly_malicious` (off by default) lets possibly
+malicious email, outbound email and scripts proceed without approval. The admin
+is notified afterwards. Malicious items are still blocked. Setup shows a strong
+warning and requires typing `ALLOW POSSIBLY MALICIOUS`, and services log a
+warning at startup while YOLO mode is on.
+
+#### Providers
+
+By default (`provider: openrouter`), requests go to OpenRouter's Decisions API,
+`https://openrouter.ai/api/alpha/decisions`. OpenRouter normalizes every decision
+model to one request and response format, so `model` can be any decision model
+slug, as with the agent model. Examples are `perplexity/pplx-decider-v1.2`
+(default), `typesafe/jev-1.13`, `cloudflare/clef` and
+`openai/gpt-6-luna-decisions`. List the available models with
+`GET https://openrouter.ai/api/v1/models?output_modalities=decisions`. Pin a
+version rather than a `~...-latest` alias so thresholds stay calibrated. This
+route reuses `OPENROUTER_API_KEY`. Setup grants that key to the downloader only
+while screening uses OpenRouter, for both `.secrets` files and the credential
+volume.
+
+Direct provider APIs are optional and use the `SECURITY_DECISION_API_KEY`
+credential:
+
+| `provider` | Format | Default endpoint / model |
+|---|---|---|
+| `perplexity` | System One | `https://api.perplexity.ai/v1/decisions`, `pplx-decider-latest` |
+| `jev` | System One | `https://jevmodel.org/v1/systemone`, `jev-latest` |
+| `clef` | System One | `https://api.deepinfra.com/v1/decisions` (DeepInfra), `Cloudflare/clef` |
+| `openai` | OpenAI Decisions | `https://api.openai.com/v1/decisions`, `gpt-6-luna` |
+| `custom` | System One | set `url` and `model` |
+
+To add a direct format, register a translator in `security_screening.py`.
+Endpoints must use HTTPS. Screened content is sent to the provider, so review its data handling first.
+
+**Limits:**
+
+- A classifier is a risk filter, not a security boundary. Tool guardrails,
+  recipient policy and the sandbox still apply.
+- Attachment contents are not screened; they are malware-scanned separately.
+- Email from the configured admin uses OTP approval instead of screening.
+- Reviews approved through other channels re-screen the held call.
+
 ## Responsible disclosure
 
 Prefer private contact with the repository maintainer before public disclosure

@@ -175,8 +175,15 @@ class MemorySteward:
             seen[int(row["id"])] = row
         for row in self.store.keyword_search(query[:500], limit=max(limit, 4)):
             seen[int(row["id"])] = row
-        rows = list(seen.values())
-        rows.sort(key=lambda item: (float(item.get("score") or 1.0), bool(item.get("pinned")), int(item.get("importance") or 0)), reverse=True)
+        rows = self.store.add_workstream_provenance(
+            list(seen.values()), current_workstream_id=job.get("workstream_id"),
+        )
+        rows.sort(key=lambda item: (
+            bool(item.get("in_current_workstream")),
+            float(item.get("score") or 1.0),
+            bool(item.get("pinned")),
+            int(item.get("importance") or 0),
+        ), reverse=True)
         return rows[: max(limit, 0)]
 
     def retrieve_context_candidates(
@@ -472,6 +479,8 @@ def compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
         "confidence": memory.get("confidence"),
         "pinned": memory.get("pinned"),
         "linked_entities": memory.get("linked_entities") or [],
+        "origin_workstream_id": memory.get("origin_workstream_id"),
+        "retaining_workstream_ids": memory.get("retaining_workstream_ids") or [],
         "updated_at": memory.get("updated_at"),
     }
 

@@ -78,6 +78,16 @@ def run_role(role: str) -> None:
             LOGGER.error("configuration error: %s", error)
         raise SystemExit(78)
 
+    if role in ("downloader", "all") and config.get_bool("agent.security.email_authentication.enabled", False):
+        from .email_authentication import admin_domain_warning
+        warning = admin_domain_warning(config)
+        if warning:
+            LOGGER.warning("admin email authentication: %s", warning)
+    if role in ("downloader", "task-agent", "all") and config.get_bool("agent.security.allow_possibly_malicious", False):
+        LOGGER.warning(
+            "YOLO mode is ON: content the decision model rates possibly malicious is processed without admin approval"
+        )
+
     # Log warnings for degraded capabilities
     if role in ("task-agent", "all"):
         from .validation import admin_configured, smtp_configured

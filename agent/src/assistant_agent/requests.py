@@ -43,9 +43,20 @@ class RequestService:
             raise ValueError("request identity and task thread are required")
         with self.db.connect() as connection:
             database = TransactionDatabase(connection)
+            if request.channel in {"telegram", "email"}:
+                database.execute(
+                    "SELECT set_config('assistant.workstream_channel', %s, true)",
+                    (request.channel,),
+                )
             if request.parent_workstream_id is not None:
                 database.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)",
                                  (str(request.parent_workstream_id),))
+            if request.metadata.get("temporary_workstream") == "telegram":
+                database.execute("SELECT set_config('assistant.telegram_new_workstream', 'yes', true)")
+                database.execute(
+                    "SELECT set_config('assistant.telegram_workstream_title', %s, true)",
+                    (str(request.metadata.get("workstream_title") or "New workstream"),),
+                )
             database.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("request:" + request.thread_id,))
             row = database.fetch_one(
                 """INSERT INTO request_messages(channel, external_id, conversation_id, sender_id, thread_id,

@@ -44,6 +44,10 @@ CATEGORIES = {
         notes="Events and meetings stay in your calendar/Zoom; the assistant just stops treating them as its own."),
     "outbound": Category("Sent-message logs", tables=("channel_deliveries", "outbound_email_logs"), notes="Also resets the hourly sending limit."),
     "contacts": Category("Contacts", tables=("entity_object_links", "entities", "contacts")),
+    "model_service": Category(
+        "Model presets and model-tool spending history",
+        tables=("model_service_calls", "model_presets"),
+        notes="Also resets the model tool budget. Generated media stays in the workspace unless workspace files are selected."),
     "workspace_index": Category(
         "Workspace search index and converted-document archive",
         tables=("workspace_file_chunks", "workspace_files", "workspace_document_conversions"), paths=("source_archive",),
@@ -58,7 +62,9 @@ CATEGORIES = {
         notes="Provider access tokens are fetched again automatically."),
     "workstreams": Category(
         "All workstreams, ownership and deletion history",
-        tables=("workstream_deletions", "workstream_attachments", "workstream_threads",
+        tables=("provider_mutations", "deleted_thread_references", "telegram_workstream_selections", "workstream_task_notifications",
+                "workstream_context_events",
+                "workstream_object_events", "workstream_deletions", "workstream_attachments", "workstream_threads",
                 "workstream_files", "workstream_objects", "workstreams"),
         requires=("emails", "memories", "reminders", "calendar", "outbound", "contacts", "workspace_files", "runtime_state"),
         reason="workstreams own or retain all task data",

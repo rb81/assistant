@@ -203,22 +203,24 @@ class ReminderScheduler:
             if parent is None:
                 raise RuntimeError("reminder has no active workstream")
             cur.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)", (str(parent["id"]),))
+            cur.execute("SELECT set_config('assistant.thread_role', 'system', true)")
         policy = (reminder.get("metadata") or {}).get("delivery") or {}
         if policy.get("primary"):
             database = TransactionDatabase(cur.connection)
             identity = "reminder:%s:%s" % (reminder["id"], reminder["run_at"].isoformat())
+            system_thread = "reminder:%s" % reminder["id"]
             RequestService(database).receive_request(IncomingRequest(
                 "reminder", identity, "reminder:%s" % reminder["id"],
-                "reminder:%s" % reminder["id"], identity, reminder["task"],
+                "reminder:%s" % reminder["id"], system_thread, reminder["task"],
                 reply_route=policy["primary"], metadata={"reminder_id": reminder["id"]}),
                 summary="Reminder: %s" % reminder["title"])
-            database.execute("UPDATE jobs SET priority = %s, metadata = metadata || %s WHERE thread_id = %s",
+            database.execute("UPDATE jobs SET priority = %s, metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
                              (int(reminder.get("priority") or 0), Jsonb({"auto_reply": True,
                               "reply_fallback": policy.get("fallback") or {},
-                              "notification_only": bool((reminder.get("metadata") or {}).get("notification_only"))}), identity))
+                             "notification_only": bool((reminder.get("metadata") or {}).get("notification_only"))}), system_thread))
             if (reminder.get("metadata") or {}).get("notification_only"):
-                database.execute("UPDATE jobs SET status = 'waiting', last_error = 'Scheduled notification awaiting delivery' WHERE thread_id = %s AND status = 'queued'", (identity,))
-            return database.fetch_one("SELECT * FROM jobs WHERE thread_id = %s ORDER BY id DESC LIMIT 1", (identity,))
+                database.execute("UPDATE jobs SET status = 'waiting', last_error = 'Scheduled notification awaiting delivery' WHERE thread_id = %s AND status = 'queued'", (system_thread,))
+            return database.fetch_one("SELECT * FROM jobs WHERE thread_id = %s ORDER BY id DESC LIMIT 1", (system_thread,))
         now = datetime.now(timezone.utc)
         message_id = "<reminder-%s-%s@%s>" % (
             reminder["id"],
@@ -226,6 +228,7 @@ class ReminderScheduler:
             message_id_domain(self.config),
         )
         subject = "Reminder: %s" % reminder["title"]
+        system_thread = "reminder:%s" % reminder["id"]
         recurrence = ""
         if reminder.get("recurrence_unit"):
             recurrence = "Recurrence: every %s %s%s" % (
@@ -259,7 +262,7 @@ class ReminderScheduler:
             VALUES (%s, %s, %s, %s, %s, %s, %s, true)
             RETURNING *
             """,
-            (message_id, message_id, "reminder@local", [agent_email(self.config)], subject, body, now),
+            (message_id, system_thread, "reminder@local", [agent_email(self.config)], subject, body, now),
         )
         email_row = cur.fetchone()
         cur.execute(
@@ -269,7 +272,7 @@ class ReminderScheduler:
             RETURNING *
             """,
             (
-                message_id,
+                system_thread,
                 subject,
                 int(reminder.get("priority") or 0),
             ),

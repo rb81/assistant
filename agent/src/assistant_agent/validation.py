@@ -148,6 +148,14 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         if config.get("agent.transcription.language", "auto") not in {"auto", "en", "ar"}:
             errors.append("Transcription language must be auto, en or ar")
 
+    if role in ("downloader", "task-agent", "all"):
+        if config.get_bool("agent.security.decision_model.enabled", False):
+            from .security_screening import DecisionClient, DecisionError
+            try:
+                DecisionClient(config)
+            except DecisionError as exc:
+                errors.append("Security decision model: %s" % exc)
+
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
     model_required = role in ("task-agent", "all") or deep_research_role_enabled or heartbeat_role_enabled

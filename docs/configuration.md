@@ -10,9 +10,10 @@ Install Python 3.12+ and Docker Compose, then run from any directory:
 
 The launcher resolves its repository root and asks before creating an isolated
 `.venv-setup` or installing setup dependencies. Set `PYTHON` to a suitable Python
-executable if necessary. The wizard has seven sections: identity/timezone, models
+executable if necessary. The wizard's sections cover identity/timezone, models
 and spending, embeddings/search, email/administration, optional Calendar/Zoom/Dropbox,
-Advanced Settings, and assistant instructions.
+Telegram, voice transcription, security screening, Advanced Settings, and
+assistant instructions.
 Back/Edit/Cancel are available. The final review offers **Save and finish**,
 **Edit a section**, and **Cancel without saving**. If validation fails, the review
 shows the error and disables saving until it is fixed. Secret errors name the
@@ -111,6 +112,23 @@ The default transfer limit is 25 MiB. Connection and permission changes are
 staged until Save, with optional read-only authorization verification.
 See [Dropbox setup and privacy](dropbox.md) for registration, supported files,
 credentials, removal and activation.
+
+## Security screening
+
+Run `./scripts/setup.sh --section security` to configure the following:
+
+- **Admin sender authentication:** DNS-verified DKIM or SPF for mail that claims
+  your admin address.
+- **Decision model:** none, OpenRouter (the default; enter any decision model
+  slug and reuse your OpenRouter key), or a provider's own API (Perplexity, Jev,
+  Clef, OpenAI or a custom endpoint, with its own key). Then choose the error
+  policy and optionally send a test request.
+- **Screening scope:** inbound screening is always on once a model is set.
+  Screening outbound email and scripts are separate opt-ins, and scripts can
+  have a list of allowed domains.
+- **YOLO mode:** off by default. Turning it on requires typing a confirmation.
+
+See [Email and action screening](security.md#email-and-action-screening).
 
 ## Advanced Settings
 
@@ -250,8 +268,8 @@ STARTTLS on 587 and implicit TLS on 465. Admin requests require replying to a
 separate, ten-minute OTP/hash confirmation sent only to the configured admin;
 no client signing key or trusted receiving-provider authority IDs are required.
 
-`EMAIL_ACTIONABLE_SENDERS` restricts new jobs; replies to existing threads remain
-context inputs. `EMAIL_ALLOWED_RECIPIENT_DOMAINS` restricts outgoing delivery,
+`EMAIL_ACTIONABLE_SENDERS` restricts new jobs; replies on threads with an open job
+are also accepted. Other mail is moved unread to `IMAP_QUARANTINE_FOLDER`. `EMAIL_ALLOWED_RECIPIENT_DOMAINS` restricts outgoing delivery,
 with the admin address allowed. `ORG_INTERNAL_EMAIL_DOMAINS` controls disclosure
 footers, not delivery permission. Message-ID threading is preferred; normalized
 subject fallback is opt-in. `AGENT_EMAIL_SAVE_TO_SENT` controls IMAP Sent copies.

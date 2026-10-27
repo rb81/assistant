@@ -95,3 +95,22 @@ OpenRouter-dependent features generally require:
 - feature flags enabled (`agent.search.enabled`, `agent.fusion.enabled`, etc.).
 
 The dynamic `available_function_names(...)` and `available_tools(...)` paths ensure tools are exposed only when prerequisites are met.
+
+## Optional preset-based model tool
+
+`llm_service` uses `model_service.py`, independently of the primary `LlmClient`.
+It calls the fixed OpenRouter HTTPS base URL with `OPENROUTER_API_KEY`, does not
+refresh/inject assistant context, and never substitutes another model on error.
+Model discovery requests `GET /models?output_modalities=all` and caches successful
+catalog results for five minutes. Requests use `/chat/completions`; audio output
+is assembled from SSE `delta.audio` chunks with final usage accounting.
+
+Enable and budget it through setup's **Advanced Settings → Model preset tool**.
+Defaults: disabled, USD 5 per rolling 30 days. Provider-reported `usage.cost` is
+the source of truth, not token-price estimates (music can have per-song charges
+despite zero token pricing). This limit only covers this tool, not ordinary
+assistant calls, web search, or research. The final admitted request can exceed
+the threshold; provider-side spending limits remain recommended.
+
+See [Model Preset Tool](tools-reference.md#model-preset-tool) for schemas, file
+limits, supported modalities and uncertain-request reconciliation.

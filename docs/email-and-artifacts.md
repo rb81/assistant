@@ -66,6 +66,10 @@ An inbound email is actionable when either:
 
 If `actionable_senders` contains `*`, all senders can create new jobs.
 
+Other new mail is not stored: it is moved unread to the quarantine folder
+(`agent.email.imap_quarantine_folder`, default `Quarantine`). Accepted mail may
+also be screened first; see [Email and action screening](security.md#email-and-action-screening).
+
 ## Job update behavior for new email
 
 `queue_or_update_job` handles existing thread jobs carefully:

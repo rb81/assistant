@@ -13,6 +13,13 @@ This document lists every setting from `config/agent.yaml` that can be overridde
 
 ## Expert overrides file (`overrides.env`)
 
+The optional model preset tool is wizard-managed under `--section advanced`.
+Its `.env` settings are `AGENT_MODEL_SERVICE_ENABLED` (default `false`),
+`AGENT_MODEL_SERVICE_BUDGET_USD` (default `5.0`, minimum `0.01`) and
+`AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS` (default `30`, range `1-365`).
+Do not duplicate these in `overrides.env`. See the
+[tool reference](tools-reference.md#model-preset-tool) for spending semantics.
+
 This is an optional, expert-level mechanism. Most users never need it: the setup
 wizard (`./scripts/setup.sh`, including `--section advanced`) manages the common
 settings in `.env`. Use `overrides.env` for the rest of the list below.
@@ -102,7 +109,7 @@ AGENT_SANDBOX_ENABLED=false
 | Environment Variable | YAML Path | Type | Default |
 |---|---|---|---|
 | `AGENT_APP_NAME` | `agent.app.name` | string | `assistant` |
-| `AGENT_APP_REFERER_URL` | `agent.app.referer_url` | string | `https://assistant.local` |
+| `AGENT_APP_REFERER_URL` | `agent.app.referer_url` | string | `https://github.com/rb81/assistant` |
 | `AGENT_TIMEZONE` | `agent.app.timezone` | string | `UTC` |
 
 ---
@@ -210,6 +217,7 @@ email scanning settings.
 | `IMAP_PASSWORD` | `agent.email.imap_password` | string | _(empty)_ |
 | `IMAP_FOLDER` | `agent.email.imap_folder` | string | `INBOX` |
 | `IMAP_ARCHIVE_FOLDER` | `agent.email.imap_archive_folder` | string | `Archive` |
+| `IMAP_QUARANTINE_FOLDER` | `agent.email.imap_quarantine_folder` | string | `Quarantine` |
 | `IMAP_SENT_FOLDER` | `agent.email.imap_sent_folder` | string | `Sent` |
 | `AGENT_IMAP_POLL_INTERVAL` | `agent.email.imap_poll_interval_seconds` | int | `60` |
 | `SMTP_HOST` | `agent.email.smtp_host` | string | _(empty)_ |
@@ -471,6 +479,36 @@ For a second Google account add `CALENDAR_GOOGLE_2_CLIENT_ID` / `CALENDAR_GOOGLE
 | `AGENT_FUSION_TEMPERATURE` | `agent.fusion.temperature` | float | _(empty, uses AGENT_LLM_TEMPERATURE)_ |
 
 ---
+
+## Security Screening
+
+See [Email and action screening](security.md#email-and-action-screening). The
+setup wizard manages the provider, toggles, authentication and YOLO settings.
+The OpenRouter provider (default) uses `OPENROUTER_API_KEY`. Direct provider APIs
+use the `SECURITY_DECISION_API_KEY` credential.
+
+| Environment Variable | YAML Path | Type | Default |
+|---|---|---|---|
+| `AGENT_SECURITY_NOTIFY_MAX_PER_HOUR` | `agent.security.notify_max_per_hour` | int | `20` |
+| `AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS` | `agent.security.allow_possibly_malicious` | bool | `false` (YOLO mode) |
+| `AGENT_SECURITY_EMAIL_AUTH_ENABLED` | `agent.security.email_authentication.enabled` | bool | `false` |
+| `AGENT_SECURITY_DECISION_ENABLED` | `agent.security.decision_model.enabled` | bool | `false` |
+| `AGENT_SECURITY_DECISION_PROVIDER` | `agent.security.decision_model.provider` | string | `openrouter` |
+| `AGENT_SECURITY_DECISION_URL` | `agent.security.decision_model.url` | string | _(empty, provider default)_ |
+| `AGENT_SECURITY_DECISION_MODEL` | `agent.security.decision_model.model` | string | _(empty, provider default; OpenRouter: `perplexity/pplx-decider-v1.2`)_ |
+| `AGENT_SECURITY_DECISION_TIMEOUT_SECONDS` | `agent.security.decision_model.timeout_seconds` | int | `20` |
+| `AGENT_SECURITY_DECISION_ON_ERROR` | `agent.security.decision_model.on_error` | string | `review` |
+| `AGENT_SECURITY_DECISION_APPROVAL_TTL_MINUTES` | `agent.security.decision_model.approval_ttl_minutes` | int | `1440` |
+| `AGENT_SECURITY_DECISION_MALICIOUS_THRESHOLD` | `agent.security.decision_model.malicious_threshold` | float | `0.7` |
+| `AGENT_SECURITY_DECISION_POSSIBLY_MALICIOUS_THRESHOLD` | `agent.security.decision_model.possibly_malicious_threshold` | float | `0.3` |
+| `AGENT_SECURITY_DECISION_FLAG_THRESHOLD` | `agent.security.decision_model.flag_threshold` | float | `0.5` |
+| `AGENT_SECURITY_DECISION_MAX_FIELD_CHARS` | `agent.security.decision_model.max_field_chars` | int | `40000` |
+| `AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL` | `agent.security.decision_model.screen.outbound_email` | bool | `false` |
+| `AGENT_SECURITY_SCREEN_SCRIPTS` | `agent.security.decision_model.screen.scripts` | bool | `false` |
+| `AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS` | `agent.security.scripts.allowed_domains` | list | `[]` (no host restriction) |
+| `AGENT_SECURITY_SCRIPT_MAX_FILES` | `agent.security.scripts.max_files` | int | `20` |
+
+Inbound screening has no toggle: it is always on when a decision model is enabled.
 
 ---
 

@@ -837,6 +837,43 @@ class TestCalendarRouterUpdateEvent:
         mock_prov.update_event.assert_called_once()
         assert result["event"]["title"] == "New Title"
 
+    def test_update_event_recovers_when_provider_already_has_requested_state(self):
+        from assistant_agent.calendar.models import CalendarEvent
+
+        aid = str(uuid.uuid4())
+        starts_at = datetime(2026, 9, 15, 14, 0, tzinfo=timezone.utc)
+        ends_at = datetime(2026, 9, 15, 15, 0, tzinfo=timezone.utc)
+        managed_row = {
+            "assistant_id": aid,
+            "provider_name": "google",
+            "provider_event_id": "prov-evt-001",
+            "calendar_id": "primary",
+            "summary": "Old Title",
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+            "status": "active",
+            "metadata": {},
+        }
+        updated_row = dict(managed_row, summary="New Title")
+        provider_event = CalendarEvent(
+            provider_event_id="prov-evt-001",
+            provider_name="google",
+            calendar_id="primary",
+            title="New Title",
+            start=starts_at,
+            end=ends_at,
+        )
+        mock_prov = MagicMock()
+        mock_prov.get_event.return_value = provider_event
+        router, db, *_ = _make_router_with_mock_provider(mock_prov)
+        db.fetch_one.side_effect = [managed_row, updated_row]
+        db.fetch_all.return_value = []
+
+        result = router.update_event(event_id=aid, title="New Title")
+
+        mock_prov.update_event.assert_not_called()
+        assert result["event"]["title"] == "New Title"
+
 
 # ---------------------------------------------------------------------------
 # CalendarRouter.delete_event()
@@ -860,6 +897,8 @@ class TestCalendarRouterDeleteEvent:
             router.delete_event("nonexistent")
 
     def test_delete_event_calls_provider(self):
+        from assistant_agent.calendar.models import CalendarEvent
+
         aid = str(uuid.uuid4())
         managed_row = {
             "assistant_id": aid,
@@ -875,6 +914,14 @@ class TestCalendarRouterDeleteEvent:
         deleted_row = dict(managed_row, status="deleted")
 
         mock_prov = MagicMock()
+        mock_prov.get_event.return_value = CalendarEvent(
+            provider_event_id="prov-evt-001",
+            provider_name="google",
+            calendar_id="primary",
+            title="To Delete",
+            start=managed_row["starts_at"],
+            end=managed_row["ends_at"],
+        )
         router, db, *_ = _make_router_with_mock_provider(mock_prov)
         db.fetch_one.side_effect = [managed_row, deleted_row]
         db.fetch_all.return_value = []
@@ -885,6 +932,7 @@ class TestCalendarRouterDeleteEvent:
 
     def test_delete_event_already_gone_on_provider_marks_deleted(self):
         """ProviderEventNotFoundError should be swallowed; DB still updated."""
+        from assistant_agent.calendar.models import CalendarEvent
         from assistant_agent.calendar.provider import ProviderEventNotFoundError
 
         aid = str(uuid.uuid4())
@@ -902,6 +950,14 @@ class TestCalendarRouterDeleteEvent:
         deleted_row = dict(managed_row, status="deleted")
 
         mock_prov = MagicMock()
+        mock_prov.get_event.return_value = CalendarEvent(
+            provider_event_id="prov-evt-gone",
+            provider_name="google",
+            calendar_id="primary",
+            title="Gone Event",
+            start=managed_row["starts_at"],
+            end=managed_row["ends_at"],
+        )
         mock_prov.delete_event.side_effect = ProviderEventNotFoundError("already deleted")
         router, db, *_ = _make_router_with_mock_provider(mock_prov)
         db.fetch_one.side_effect = [managed_row, deleted_row]

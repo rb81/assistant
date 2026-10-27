@@ -3,6 +3,7 @@ import copy
 import fcntl
 import io
 import json
+import math
 import os
 import platform
 import re
@@ -45,7 +46,7 @@ RETIRED_MANAGEMENT_ENV_NAMES = frozenset({
 })
 RETIRED_MANAGEMENT_SECRET_NAMES = frozenset({"AGENT_API_AUTH_TOKEN", "ADMIN_COMMAND_SIGNING_KEY"})
 RETIRED_API_TLS_FILES = ("server.crt", "server.key")
-SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "advanced", "instructions")
+SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
 ADVANCED_SETTINGS = {
     "Calendar privacy": (
         ("AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS", "agent.calendar.policy.allow_read_event_details", "Allow reading existing event titles, descriptions, locations and attendees? (does not grant edit/delete access)", False, bool, None),
@@ -74,12 +75,30 @@ ADVANCED_SETTINGS = {
         ("AGENT_SEARCH_ALLOWED_DOMAINS", "agent.search.allowed_domains", "Allowed search domains (comma-separated; blank = unrestricted)", [], list, None),
         ("AGENT_SEARCH_EXCLUDED_DOMAINS", "agent.search.excluded_domains", "Excluded search domains (comma-separated; blank = none)", [], list, None),
     ),
+    "Model preset tool": (
+        ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
+        ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", "Shared model tool budget (USD; checked before each request, final request may exceed it)", 5.0, float, 0.01),
+        ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", "Rolling budget period (days, 1-365)", 30, int, 1),
+    ),
     "Research and notifications": (
         ("AGENT_DEEP_RESEARCH_ENABLED", "agent.deep_research.enabled", "Enable deep research? (requires supported model access)", True, bool, None),
         ("AGENT_DEEP_RESEARCH_MAX_TOOL_CALLS", "agent.deep_research.max_tool_calls", "Maximum tool calls per research run", 40, int, 1),
         ("AGENT_HEARTBEAT_ADMIN_DIGEST_INTERVAL_HOURS", "agent.heartbeat.admin_digest_interval_hours", "Admin digest interval (hours; 0 = disabled)", 0, int, 0),
     ),
 }
+SECURITY_SETTINGS = {
+    "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "agent.security.email_authentication.enabled",
+    "AGENT_SECURITY_DECISION_ENABLED": "agent.security.decision_model.enabled",
+    "AGENT_SECURITY_DECISION_PROVIDER": "agent.security.decision_model.provider",
+    "AGENT_SECURITY_DECISION_URL": "agent.security.decision_model.url",
+    "AGENT_SECURITY_DECISION_MODEL": "agent.security.decision_model.model",
+    "AGENT_SECURITY_DECISION_ON_ERROR": "agent.security.decision_model.on_error",
+    "AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL": "agent.security.decision_model.screen.outbound_email",
+    "AGENT_SECURITY_SCREEN_SCRIPTS": "agent.security.decision_model.screen.scripts",
+    "AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS": "agent.security.scripts.allowed_domains",
+    "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS": "agent.security.allow_possibly_malicious",
+}
+YOLO_CONFIRMATION = "ALLOW POSSIBLY MALICIOUS"
 ADVANCED_ENV_NAMES = frozenset(setting[0] for settings in ADVANCED_SETTINGS.values() for setting in settings)
 PROMPT_DEFAULTS = {
     "AGENT_NAME": "agent.identity.name", "AGENT_EMAIL": "agent.identity.email",
@@ -93,10 +112,11 @@ PROMPT_DEFAULTS = {
     "DROPBOX_MAX_FILE_BYTES": "agent.dropbox.max_file_bytes",
     "TELEGRAM_ENABLED": "agent.telegram.enabled", "TELEGRAM_ALLOWED_USER_IDS": "agent.telegram.allowed_user_ids",
     "TRANSCRIPTION_ENABLED": "agent.transcription.enabled", "TRANSCRIPTION_LANGUAGE": "agent.transcription.language",
+    **SECURITY_SETTINGS,
      **{"AGENT_EMBEDDINGS_" + field.upper(): "agent.embeddings." + field for field in
          ("enabled", "model", "base_url", "dimensions", "timeout_seconds")},
     **{name: "agent.email." + name.lower() for name in (
-        "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_FOLDER", "IMAP_ARCHIVE_FOLDER", "IMAP_SENT_FOLDER",
+        "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_FOLDER", "IMAP_ARCHIVE_FOLDER", "IMAP_QUARANTINE_FOLDER", "IMAP_SENT_FOLDER",
         "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_FROM",
     )},
 }
@@ -116,6 +136,7 @@ SECTION_KEYS = {
     "dropbox": ((), ("DROPBOX_",)),
     "telegram": ((), ("TELEGRAM_",)),
     "transcription": ((), ("TRANSCRIPTION_",)),
+    "security": ((*SECURITY_SETTINGS, "SECURITY_DECISION_API_KEY"), ()),
     "advanced": (tuple(sorted(ADVANCED_ENV_NAMES)), ()),
     "instructions": ((), ()),
 }
@@ -226,7 +247,10 @@ def secret_services(name):
         return ("postgres", *AGENT_SERVICES)
     if name == "DATABASE_URL":
         return AGENT_SERVICES
-    if name in {"OPENROUTER_API_KEY", "OPENAI_API_KEY"}:
+    if name == "OPENROUTER_API_KEY":
+        # The downloader receives it only while inbound screening uses OpenRouter (see Installation.grants_secret).
+        return (*MODEL_SERVICES, "downloader")
+    if name == "OPENAI_API_KEY":
         return MODEL_SERVICES
     if name == "IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
@@ -240,6 +264,8 @@ def secret_services(name):
         return ("sandbox-init", "sandbox", "task-agent")
     if name.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
         return TOOL_SERVICES
+    if name == "SECURITY_DECISION_API_KEY":
+        return ("downloader", *TOOL_SERVICES)
     raise SetupError("Unknown secret name")
 
 
@@ -463,6 +489,12 @@ class Installation:
             return value.encode("utf-8") if value is not None else None
         return read_regular(self.directory / name)
 
+    def grants_secret(self, name, service):
+        if name == "OPENROUTER_API_KEY" and service == "downloader":
+            return (security_value(self, "AGENT_SECURITY_DECISION_ENABLED", False) == "true"
+                    and (security_value(self, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter") == "openrouter")
+        return True
+
     def credential_grants(self):
         return {
             service: sorted(key.removesuffix("_FILE") for key, value in spec.get("environment", {}).items()
@@ -513,6 +545,8 @@ class Installation:
                 continue
             declarations[name] = {"file": str(self.directory / name)}
             for service in secret_services(name):
+                if not self.grants_secret(name, service):
+                    continue
                 if compose_services is not None and service not in compose_services:
                     continue
                 if service == "sandbox-init" and not staged_sandbox:
@@ -632,6 +666,14 @@ class Installation:
         deleted_secrets |= self.migrated - self.secret_values.keys()
         changed = {name for name, value in self.secret_values.items()
                    if self.snapshots.get(name) != value.encode("utf-8")}
+        # A secret granted to different services (e.g. OpenRouter screening toggled) must be re-applied.
+        previous_overlay = yaml.safe_load(read_regular(self.root / ".compose-secrets.yaml") or b"") or {}
+        if previous_overlay:
+            def granted(overlay, name):
+                return {service for service, spec in (overlay.get("services") or {}).items()
+                        if (spec.get("environment") or {}).get(name + "_FILE")}
+            current_overlay = self.overlay()
+            changed |= {name for name in self.secret_values if granted(previous_overlay, name) != granted(current_overlay, name)}
         self.state["pending"] = sorted(set(self.state.get("pending", [])) | changed | self.migrated | deleted_secrets)
         storage_changed = self.use_credential_volume != bool(self.credential_volume)
         if storage_changed:
@@ -1276,6 +1318,7 @@ def interactive(options):
                 ("SMTP_PORT", "SMTP TLS/STARTTLS port", "587"), ("SMTP_USERNAME", "SMTP login", instance.values.get("IMAP_USERNAME", "")),
                 ("SMTP_FROM", "Assistant sender address", instance.values.get("IMAP_USERNAME", "")),
                 ("IMAP_FOLDER", "Incoming folder", "INBOX"), ("IMAP_ARCHIVE_FOLDER", "Processed-mail folder", "Archive"),
+                ("IMAP_QUARANTINE_FOLDER", "Quarantine folder (rejected, held and unaccepted mail)", "Quarantine"),
                 ("IMAP_SENT_FOLDER", "Sent-mail folder", "Sent"),
             ):
                 text(name, label, default)
@@ -1285,7 +1328,8 @@ def interactive(options):
             domain = instance.values.get("ADMIN_EMAIL", "").partition("@")[2]
             text("EMAIL_ALLOWED_RECIPIENT_DOMAINS", "Allowed outgoing recipient domains", domain)
             text("AGENT_EMAIL", "Assistant email identity", instance.values.get("SMTP_FROM", ""))
-            console.print("Admin requests use a separate, ten-minute OTP/hash email confirmation. No signing key is needed.")
+            console.print("Admin requests use a separate, ten-minute OTP/hash email confirmation. No signing key is needed. "
+                          "Mail from senders that are not accepted is moved to the quarantine folder unread.")
         instance.values["AGENT_DEEP_RESEARCH_ENABLED"] = str(enabled and "openrouter.ai" in instance.values.get("AGENT_LLM_BASE_URL", "")).lower()
         instance.values.setdefault("AGENT_HEARTBEAT_ADMIN_DIGEST_INTERVAL_HOURS", str(
             instance.defaults.get("agent.heartbeat.admin_digest_interval_hours", 0)))
@@ -1381,6 +1425,9 @@ def interactive(options):
             instance.values["TRANSCRIPTION_LANGUAGE"] = "auto"
             console.print("The managed multilingual small model is downloaded with SHA-256 verification. Voice processing is isolated from Ollama.")
 
+    def security():
+        prompt_security(instance, answer, confirm, console)
+
     def instructions():
         prompt = instance.root / "config/AGENT.md"
         console.print("Edit your assistant's instructions later at:")
@@ -1411,6 +1458,7 @@ def interactive(options):
                 ("Dropbox", "Connect Dropbox and configure file exchange permissions.", dropbox),
                 ("Telegram", "Connect a private bot and explicitly link authorized identities.", telegram),
                 ("Local voice transcription", "Configure isolated whisper.cpp transcription for English and Arabic.", transcription),
+                ("Security screening", "Authenticate admin email and screen content with an optional decision model.", security),
                 ("Advanced Settings", "Optional behavior and limits. Current defaults are retained unless you edit a group.",
                  lambda: prompt_advanced_settings(instance, answer, console)),
                 ("Assistant instructions", "Choose whether to copy the example instructions. Existing files are never replaced without confirmation.", instructions)]
@@ -1733,8 +1781,16 @@ def advanced_value_error(setting, value):
         try:
             if int(value) < minimum:
                 raise ValueError
+            if name == "AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS" and int(value) > 365:
+                return "Advanced Settings: " + name + " must be an integer from 1 to 365"
         except (ValueError, TypeError, OverflowError):
             return "Advanced Settings: " + name + " must be an integer of at least " + str(minimum)
+    elif kind is float:
+        try:
+            if not math.isfinite(float(value)) or float(value) < minimum:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError):
+            return "Advanced Settings: " + name + " must be a finite number of at least " + str(minimum)
     return None
 
 
@@ -1828,6 +1884,132 @@ def configure_docker_boot(instance, confirm, console):
         console.print("Docker auto-start could not be configured. Run this yourself: sudo systemctl enable --now docker")
         console.print("Then verify with: systemctl is-enabled docker")
         return False
+
+
+def security_value(instance, name, default=None):
+    """Current wizard value for a security setting, falling back to config/agent.yaml."""
+    if name in instance.values:
+        return instance.values[name]
+    value = instance.defaults.get(SECURITY_SETTINGS[name], default)
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def security_config(instance):
+    """AppConfig reflecting the draft security settings, used for the setup connection test."""
+    values = copy.deepcopy(instance.defaults.values)
+    for name, path in SECURITY_SETTINGS.items():
+        current = values
+        *parents, leaf = path.split(".")
+        for part in parents:
+            current = current.setdefault(part, {})
+        current[leaf] = security_value(instance, name)
+    return AppConfig(values)
+
+
+def prompt_security(instance, answer, confirm, console):
+    import questionary
+    from .security_screening import (
+        DEFAULT_PROVIDER, OPENROUTER_SECRET_NAME, PROVIDERS, SECRET_NAME, DecisionError, test_connection,
+    )
+
+    def toggle(name, label):
+        enabled = confirm(label, security_value(instance, name, False) == "true")
+        instance.values[name] = str(enabled).lower()
+        return enabled
+
+    def ask(name, label, default=""):
+        instance.values[name] = answer(questionary.text(label, default=security_value(instance, name) or default)).strip()
+
+    console.print("Admin email authentication verifies, via DNS, the DKIM signature or SPF authorization of email "
+                  "that claims to come from your admin address. Either must pass for your admin domain. Failures are "
+                  "quarantined and you are notified. Other senders are unaffected.")
+    toggle("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Require DKIM or SPF on admin email?")
+
+    console.print("A decision model rates content as not malicious, possibly malicious or malicious. "
+                  "When configured, every accepted inbound email is screened; this cannot be turned off. "
+                  "Possibly malicious items wait for your OTP approval; malicious items are quarantined and reported.")
+    enabled = security_value(instance, "AGENT_SECURITY_DECISION_ENABLED") == "true"
+    current = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", DEFAULT_PROVIDER) or DEFAULT_PROVIDER
+    route = answer(questionary.select(
+        "Decision model endpoint", default=("openrouter" if current == "openrouter" else "direct") if enabled else "none",
+        choices=[questionary.Choice("None (no screening)", value="none"),
+                 questionary.Choice("OpenRouter Decisions API (recommended; any decision model, uses your OpenRouter key)", value="openrouter"),
+                 questionary.Choice("A provider's own decision API", value="direct")]))
+    if route == "none":
+        instance.values["AGENT_SECURITY_DECISION_ENABLED"] = "false"
+        for name in ("AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL", "AGENT_SECURITY_SCREEN_SCRIPTS", "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"):
+            instance.values[name] = "false"
+        instance.secret_values.pop(SECRET_NAME, None)
+        return
+    instance.values["AGENT_SECURITY_DECISION_ENABLED"] = "true"
+    if route == "openrouter":
+        provider = "openrouter"
+    else:
+        provider = answer(questionary.select(
+            "Decision model provider", default=current if current in PROVIDERS and current != "openrouter" else "perplexity",
+            choices=[questionary.Choice("Perplexity decision API", value="perplexity"),
+                     questionary.Choice("Jev System One", value="jev"),
+                     questionary.Choice("Clef (DeepInfra)", value="clef"),
+                     questionary.Choice("OpenAI decisions API", value="openai"),
+                     questionary.Choice("Custom System One-compatible endpoint", value="custom")]))
+    if provider != current:
+        instance.values["AGENT_SECURITY_DECISION_URL"] = ""
+        instance.values["AGENT_SECURITY_DECISION_MODEL"] = ""
+    instance.values["AGENT_SECURITY_DECISION_PROVIDER"] = provider
+    spec = PROVIDERS[provider]
+    if provider == "openrouter":
+        console.print("OpenRouter normalizes all decision models to one format. Enter any decision model slug, "
+                      "for example perplexity/pplx-decider-v1.2, typesafe/jev-1.13, cloudflare/clef or "
+                      "openai/gpt-6-luna-decisions. A pinned version keeps screening thresholds stable.")
+        instance.values["AGENT_SECURITY_DECISION_URL"] = ""
+        ask("AGENT_SECURITY_DECISION_MODEL", "Decision model slug", spec.model)
+        instance.secret_values.pop(SECRET_NAME, None)
+        key_name = OPENROUTER_SECRET_NAME
+        if not instance.secret_values.get(key_name):
+            console.print("No OpenRouter API key is configured yet; enter one to use OpenRouter for screening.")
+            instance.secret_values[key_name] = prompt_credential(answer, key_name, None)
+    else:
+        ask("AGENT_SECURITY_DECISION_URL", "Decision API URL" + ("" if spec.url else " (HTTPS)"), spec.url)
+        ask("AGENT_SECURITY_DECISION_MODEL", "Decision model identifier", spec.model)
+        if instance.values["AGENT_SECURITY_DECISION_URL"] == spec.url:
+            instance.values["AGENT_SECURITY_DECISION_URL"] = ""
+        key_name = SECRET_NAME
+        instance.secret_values[key_name] = prompt_credential(answer, key_name, instance.secret_values.get(key_name))
+    if instance.values["AGENT_SECURITY_DECISION_MODEL"] == spec.model:
+        instance.values["AGENT_SECURITY_DECISION_MODEL"] = ""
+    instance.values["AGENT_SECURITY_DECISION_ON_ERROR"] = answer(questionary.select(
+        "If the decision model is unavailable", default=security_value(instance, "AGENT_SECURITY_DECISION_ON_ERROR", "review") or "review",
+        choices=[questionary.Choice("Hold for my approval (recommended)", value="review"),
+                 questionary.Choice("Reject", value="reject"),
+                 questionary.Choice("Allow without screening", value="allow")]))
+    console.print("Inbound email screening: always on.")
+    toggle("AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL", "Also screen outgoing email to external recipients?")
+    if toggle("AGENT_SECURITY_SCREEN_SCRIPTS", "Also screen scripts before the assistant runs them? (imports, calls and network hosts are analysed)"):
+        ask("AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS", "Domains scripts may contact without extra scrutiny (comma-separated; blank = none)")
+    if confirm("Send a test request to the decision model now?", True):
+        try:
+            result = test_connection(security_config(instance), instance.secret_values[key_name])
+            console.print("Decision model responded: " + result.summary(), markup=False)
+        except (DecisionError, OSError, ValueError) as exc:
+            console.print("Test failed: %s" % exc, markup=False)
+    yolo = security_value(instance, "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", False) == "true"
+    if confirm("Enable YOLO mode (process possibly malicious content without approval)?", yolo):
+        if not yolo:
+            console.print("[bold red]WARNING:[/bold red] YOLO mode lets email, outgoing messages and scripts the decision model "
+                          "flags as possibly malicious run without your approval. Prompt injection, phishing and data "
+                          "exfiltration attempts in that category will reach the assistant. You will only be notified afterwards. "
+                          "Malicious items are still blocked.")
+            typed = answer(questionary.text("Type %s to enable YOLO mode" % YOLO_CONFIRMATION))
+            yolo = typed.strip() == YOLO_CONFIRMATION
+            if not yolo:
+                console.print("Confirmation did not match; YOLO mode stays off.")
+    else:
+        yolo = False
+    instance.values["AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"] = str(yolo).lower()
 
 
 def prompt_credential(answer, name, existing):
@@ -1952,6 +2134,9 @@ def draft_problems(instance):
                 error = advanced_value_error(setting, values[setting[0]])
                 if error:
                     problem("advanced", error)
+    model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
+    if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
+        problem("advanced", "Model preset tool requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
     def embedding_value(field, default):
         return values.get("AGENT_EMBEDDINGS_" + field.upper(), instance.defaults.get("agent.embeddings." + field, default))
 
@@ -2020,6 +2205,23 @@ def draft_problems(instance):
                 raise ValueError
         except ValueError:
             problem("dropbox", "DROPBOX_MAX_FILE_BYTES must be between 1 byte and 150 MiB")
+    from .security_screening import PROVIDER_CHOICES
+    if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", False) not in {"true", "false"}:
+        problem("security", "AGENT_SECURITY_EMAIL_AUTH_ENABLED must be true or false")
+    if security_value(instance, "AGENT_SECURITY_DECISION_ENABLED", False) == "true":
+        provider = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter"
+        url = security_value(instance, "AGENT_SECURITY_DECISION_URL")
+        if provider not in PROVIDER_CHOICES:
+            problem("security", "Decision model provider must be one of " + ", ".join(PROVIDER_CHOICES))
+        if (provider == "custom" and not url) or (url and (not url.startswith("https://") or urlsplit(url).username or urlsplit(url).password)):
+            problem("security", "Decision model URL must be an HTTPS URL without credentials")
+        if provider == "custom" and not security_value(instance, "AGENT_SECURITY_DECISION_MODEL"):
+            problem("security", "A custom decision model requires a model identifier")
+        if security_value(instance, "AGENT_SECURITY_DECISION_ON_ERROR", "review") not in {"review", "reject", "allow"}:
+            problem("security", "Decision model error handling must be review, reject or allow")
+        required.setdefault("OPENROUTER_API_KEY" if provider == "openrouter" else "SECURITY_DECISION_API_KEY", "security")
+    elif security_value(instance, "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", False) == "true":
+        problem("security", "YOLO mode requires a configured decision model")
     for name in sorted(required):
         try:
             validate_secret(name, instance.secret_values.get(name, ""))

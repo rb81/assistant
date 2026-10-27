@@ -7,6 +7,9 @@ from urllib.parse import quote
 import httpx
 from psycopg.types.json import Jsonb
 
+from .provider_mutations import complete as complete_provider_mutation
+from .provider_mutations import fail as fail_provider_mutation
+from .provider_mutations import mutation_key, prepare as prepare_provider_mutation
 from .time_utils import default_timezone, local_datetime_iso, parse_datetime
 
 
@@ -58,7 +61,7 @@ class ZoomMeetings:
                 cur.execute("INSERT INTO runtime_state(key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()", (self.state_key, Jsonb(state)))
                 return state["access_token"]
 
-    def request(self, method, path, payload=None):
+    def request(self, method, path, payload=None, allow_not_found=False):
         backoff = self.db.get_state(self.state_key + ":backoff", {}) or {}
         if backoff.get("until", 0) > time.time():
             raise ZoomError("Zoom rate limit 429: retry after %s seconds" % int(backoff["until"] - time.time() + 1))
@@ -77,8 +80,8 @@ class ZoomMeetings:
                     delay = 60
                 self.db.set_state(self.state_key + ":backoff", {"until": time.time() + delay})
                 raise ZoomError("Zoom rate limit 429: retry after %s seconds" % delay)
-            if response.status_code == 404 and method == "DELETE":
-                return {}
+            if response.status_code == 404 and (method == "DELETE" or allow_not_found):
+                return {"not_found": True}
             if response.status_code >= 400:
                 raise ZoomError("Zoom request failed (HTTP %s)" % response.status_code, uncertain=response.status_code >= 500)
             if response.status_code == 204:
@@ -91,6 +94,14 @@ class ZoomMeetings:
 
     def public(self, row):
         result = {key: row.get(key) for key in ("id", "provider_meeting_id", "title", "duration_minutes", "join_url", "status", "calendar_event_id", "last_error")}
+        if row.get("object_version") is not None:
+            result["object_version"] = row["object_version"]
+        elif row.get("object_id") is not None:
+            version = self.db.fetch_one(
+                "SELECT version FROM workstream_objects WHERE id = %s",
+                (row["object_id"],),
+            )
+            result["object_version"] = version["version"] if version and version.get("version") is not None else None
         start = row.get("starts_at")
         result["start"] = local_datetime_iso(parse_datetime(start, self.config) if isinstance(start, str) else start, self.config) if start else None
         result["timezone"] = default_timezone(self.config)[1]
@@ -101,6 +112,36 @@ class ZoomMeetings:
         if not row:
             raise ZoomError("Zoom meeting is not managed by this assistant")
         return row
+
+    def _object_version(self, row):
+        version = self.db.fetch_one(
+            "SELECT version FROM workstream_objects WHERE kind = 'zoom_meeting' AND object_key = %s",
+            (str(row["id"]),),
+        )
+        value = version.get("version") if isinstance(version, dict) else None
+        return value if type(value) is int else 1
+
+    def _meeting_state(self, row):
+        start = row["starts_at"]
+        if isinstance(start, str):
+            start = parse_datetime(start, self.config)
+        return {
+            "title": str(row["title"]),
+            "start": start.astimezone(timezone.utc).isoformat(),
+            "duration_minutes": int(row["duration_minutes"]),
+        }
+
+    def _provider_state(self, meeting):
+        if meeting.get("not_found"):
+            return {"status": "deleted"}
+        try:
+            return {
+                "title": str(meeting["topic"]),
+                "start": parse_datetime(meeting["start_time"], self.config).astimezone(timezone.utc).isoformat(),
+                "duration_minutes": int(meeting["duration"]),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ZoomError("Zoom returned incomplete meeting state; reconcile before retrying", uncertain=True) from exc
 
     def create(self, title, start, duration_minutes, idempotency_key):
         title = str(title).strip()
@@ -157,8 +198,66 @@ class ZoomMeetings:
             payload["duration"] = int(duration_minutes)
         if not payload:
             raise ZoomError("provide at least one meeting field to update")
-        self.request("PATCH", "meetings/" + quote(row["provider_meeting_id"], safe=""), payload)
-        row = self.db.fetch_one("UPDATE zoom_managed_meetings SET title = COALESCE(%s, title), starts_at = COALESCE(%s, starts_at), duration_minutes = COALESCE(%s, duration_minutes) WHERE id = %s RETURNING *", (payload.get("topic"), parse_datetime(start, self.config) if start is not None else None, payload.get("duration"), row["id"]))
+        before_state = self._meeting_state(row)
+        desired_state = dict(before_state)
+        desired_state.update({
+            "title": payload.get("topic", before_state["title"]),
+            "start": (
+                parse_datetime(start, self.config).astimezone(timezone.utc).isoformat()
+                if start is not None else before_state["start"]
+            ),
+            "duration_minutes": payload.get("duration", before_state["duration_minutes"]),
+        })
+        key = mutation_key("zoom", "zoom_meeting", str(row["id"]), "UPDATE",
+                           self._object_version(row), desired_state)
+        mutation = prepare_provider_mutation(
+            self.db, "zoom", "zoom_meeting", str(row["id"]), "UPDATE", key,
+            before_state, desired_state,
+        )
+        if mutation["status"] == "completed":
+            return self.public(row)
+
+        path = "meetings/" + quote(row["provider_meeting_id"], safe="")
+        try:
+            current = self._provider_state(self.request("GET", path))
+        except ZoomError as exc:
+            fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=True)
+            raise
+        if current == desired_state:
+            updated_state = current
+        elif current != mutation["before_state"]:
+            fail_provider_mutation(
+                self.db, mutation.get("id"),
+                "Zoom meeting differs from both its recorded before-state and requested state",
+                uncertain=True,
+            )
+            raise ZoomError("Zoom update outcome is uncertain; reconcile the provider meeting before retrying", uncertain=True)
+        else:
+            try:
+                self.request("PATCH", path, payload)
+                updated_state = desired_state
+            except ZoomError as exc:
+                try:
+                    reconciled = self._provider_state(self.request("GET", path))
+                except ZoomError:
+                    fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=True)
+                    raise ZoomError("Zoom update outcome is uncertain; provider state could not be read", uncertain=True) from exc
+                if reconciled == desired_state:
+                    updated_state = reconciled
+                elif reconciled == mutation["before_state"]:
+                    fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=False)
+                    raise
+                else:
+                    fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=True)
+                    raise ZoomError("Zoom update outcome is uncertain; reconcile the provider meeting before retrying", uncertain=True) from exc
+
+        starts_at = parse_datetime(updated_state["start"], self.config)
+        row = self.db.fetch_one(
+            """UPDATE zoom_managed_meetings SET title = %s, starts_at = %s, duration_minutes = %s
+               WHERE id = %s RETURNING *""",
+            (updated_state["title"], starts_at, updated_state["duration_minutes"], row["id"]),
+        )
+        complete_provider_mutation(self.db, mutation.get("id"), updated_state)
         if row.get("calendar_event_id") and sync_calendar:
             self.sync_calendar(row)
         return self.public(row)
@@ -179,7 +278,42 @@ class ZoomMeetings:
             return self.public(row)
         if not row.get("provider_meeting_id"):
             raise ZoomError("uncertain creation must be reconciled before deletion")
-        self.request("DELETE", "meetings/" + quote(row["provider_meeting_id"], safe=""))
+        before_state = self._meeting_state(row)
+        desired_state = {"status": "deleted"}
+        key = mutation_key("zoom", "zoom_meeting", str(row["id"]), "DELETE",
+                           self._object_version(row), desired_state)
+        mutation = prepare_provider_mutation(
+            self.db, "zoom", "zoom_meeting", str(row["id"]), "DELETE", key,
+            before_state, desired_state,
+        )
+        if mutation["status"] == "completed":
+            return self.public(row)
+
+        path = "meetings/" + quote(row["provider_meeting_id"], safe="")
+        try:
+            current = self._provider_state(self.request("GET", path, allow_not_found=True))
+        except ZoomError as exc:
+            fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=True)
+            raise
+        if current != {"status": "deleted"} and current != mutation["before_state"]:
+            fail_provider_mutation(
+                self.db, mutation.get("id"),
+                "Zoom meeting differs from its recorded before-state",
+                uncertain=True,
+            )
+            raise ZoomError("Zoom delete outcome is uncertain; reconcile the provider meeting before retrying", uncertain=True)
+        if current != {"status": "deleted"}:
+            try:
+                self.request("DELETE", path)
+            except ZoomError as exc:
+                try:
+                    current = self._provider_state(self.request("GET", path, allow_not_found=True))
+                except ZoomError:
+                    fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=True)
+                    raise ZoomError("Zoom delete outcome is uncertain; provider state could not be read", uncertain=True) from exc
+                if current != {"status": "deleted"}:
+                    fail_provider_mutation(self.db, mutation.get("id"), str(exc), uncertain=False)
+                    raise
         if row.get("calendar_event_id"):
             from .calendar.router import CalendarRouter
             try:
@@ -188,6 +322,7 @@ class ZoomMeetings:
                 self.db.execute("UPDATE zoom_managed_meetings SET last_error = 'calendar_delete_pending' WHERE id = %s", (row["id"],))
                 raise ZoomError("Zoom was deleted; retry deletion to reconcile the linked calendar") from exc
         row = self.db.fetch_one("UPDATE zoom_managed_meetings SET status = 'deleted', last_error = NULL WHERE id = %s RETURNING *", (row["id"],))
+        complete_provider_mutation(self.db, mutation.get("id"), desired_state)
         return self.public(row)
 
     def reconcile(self, meeting_id, provider_meeting_id):
@@ -212,8 +347,8 @@ for name, description, properties, required in (
     ("zoom_read_meeting", "Read an assistant-managed Zoom meeting. Returns participant link, never host credentials.", {"meeting_id": {"type": "integer"}}, ["meeting_id"]),
     ("zoom_list_meetings", "List assistant-managed Zoom meetings, including requests needing reconciliation.", {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}, []),
     ("zoom_update_meeting", "Edit an assistant-managed Zoom meeting and synchronize its linked calendar event. A partial failure must be reconciled by retrying the same update, not by creating a new meeting.",
-     {"meeting_id": {"type": "integer"}, "title": {"type": "string"}, "start": {"type": "string"}, "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}}, ["meeting_id"]),
-    ("zoom_delete_meeting", "Delete an assistant-managed Zoom meeting and its linked calendar event. Repeating deletion is safe.", {"meeting_id": {"type": "integer"}}, ["meeting_id"]),
+     {"meeting_id": {"type": "integer"}, "expected_version": {"type": "integer", "description": "object_version from the latest zoom_read_meeting or zoom_list_meetings result."}, "title": {"type": "string"}, "start": {"type": "string"}, "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}}, ["meeting_id", "expected_version"]),
+    ("zoom_delete_meeting", "Delete an assistant-managed Zoom meeting and its linked calendar event. Repeating deletion is safe.", {"meeting_id": {"type": "integer"}, "expected_version": {"type": "integer", "description": "object_version from the latest zoom_read_meeting or zoom_list_meetings result."}}, ["meeting_id", "expected_version"]),
     ("zoom_reconcile_meeting", "Authenticated-admin recovery for an uncertain creation: associate a verified Zoom provider ID with the existing local meeting ID. Host, title, start and duration must match.", {"meeting_id": {"type": "integer"}, "provider_meeting_id": {"type": "string"}}, ["meeting_id", "provider_meeting_id"]),
 ):
     ZOOM_FUNCTION_TOOLS.append({"type": "function", "function": {"name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": required, "additionalProperties": False}}})

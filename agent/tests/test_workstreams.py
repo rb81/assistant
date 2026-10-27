@@ -60,10 +60,80 @@ def memory(store, source, text="Remember this"):
     )
 
 
+def legacy_attach(store, workstream_id, kind, key):
+    obj = store.db.fetch_one(
+        "SELECT id FROM workstream_objects WHERE kind = %s AND object_key = %s",
+        (kind, str(key)),
+    )
+    assert obj
+    pending = [obj["id"]]
+    attached = set()
+    while pending:
+        object_id = pending.pop()
+        if object_id in attached:
+            continue
+        attached.add(object_id)
+        store.db.execute(
+            "INSERT INTO workstream_attachments(workstream_id, object_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (workstream_id, object_id),
+        )
+        related = store.db.fetch_all(
+            """SELECT j.object_id FROM deep_research_runs r JOIN jobs j ON j.id = r.original_job_id
+               WHERE r.object_id = %s
+               UNION
+               SELECT f.object_id FROM dropbox_transfers d JOIN workstream_files f
+                 ON f.path IN (d.local_path, d.markdown_path)
+                 WHERE d.object_id = %s AND d.direction = 'import'
+               UNION
+               SELECT f.object_id FROM workstream_files f
+                 WHERE f.path IN (
+                   SELECT raw_path FROM processed_artifacts WHERE object_id = %s
+                   UNION SELECT markdown_path FROM processed_artifacts WHERE object_id = %s
+                 )
+               UNION
+               SELECT z.object_id FROM calendar_managed_events c JOIN zoom_managed_meetings z
+                 ON z.id::text = c.metadata->>'zoom_meeting_id' OR z.calendar_event_id = c.assistant_id
+                 WHERE c.object_id = %s""",
+            (object_id, object_id, object_id, object_id, object_id),
+        )
+        pending.extend(item["object_id"] for item in related)
+        artifact = store.db.fetch_one("SELECT markdown_path FROM processed_artifacts WHERE object_id = %s", (object_id,))
+        if artifact and artifact.get("markdown_path") and not Path(artifact["markdown_path"]).is_absolute():
+            resolved = Path(store.config.get("agent.filesystem.shared_root")) / artifact["markdown_path"]
+            file_obj = store.db.fetch_one("SELECT object_id FROM workstream_files WHERE path = %s", (str(resolved),))
+            if file_obj:
+                pending.append(file_obj["object_id"])
+
+
 def remove(store, identifier, mode="preserve_shared"):
     preview = store.preview(identifier, mode)
     deletion = store.begin_delete(identifier, mode, preview["preview_digest"])
     return store.execute_delete(deletion)
+
+
+def test_read_returns_stable_message_cursor():
+    class FakeDatabase:
+        def fetch_one(self, query, params):
+            if "FROM workstreams" in query:
+                return {"id": 1, "main_thread_id": "thread-1"}
+            return {"thread_id": "thread-1", "role": "main"}
+
+        def latest_thread_messages(self, thread_id, *, limit, through):
+            assert through is None
+            return [
+                {"id": 5, "thread_item_id": "email:5", "received_at": "2026-06-06T10:00:00Z"},
+                {"id": 6, "thread_item_id": "request:6", "received_at": "2026-06-06T10:01:00Z"},
+            ]
+
+    store = WorkstreamStore.__new__(WorkstreamStore)
+    store.db = FakeDatabase()
+    result = store.read(1, limit=2)
+
+    assert json.loads(result["next_before"]) == {
+        "timestamp": "2026-06-06T10:00:00Z",
+        "id": 5,
+        "thread_item_id": "email:5",
+    }
 
 
 def test_channels_share_logical_owner_but_not_sender_or_chat(store):
@@ -77,9 +147,9 @@ def test_channels_share_logical_owner_but_not_sender_or_chat(store):
     assert other["workstream_id"] != email["workstream_id"]
     assert service.receive_request(IncomingRequest(
         "telegram", "update:1", "same-chat", "user", email["thread_id"], "Retry"))["id"] == followup["id"]
-    with pytest.raises(WorkstreamError, match="messages cannot"):
+    with pytest.raises(WorkstreamError, match="only contacts and files"):
         store.attach(other["workstream_id"], "request", followup["id"])
-    with pytest.raises(WorkstreamError, match="messages cannot"):
+    with pytest.raises(WorkstreamError, match="only contacts and files"):
         store.attach(other["workstream_id"], "outbound_email", "1")
     spawned = RequestService(store.db.for_job(email["id"])).receive_request(IncomingRequest(
         "future-channel", "spawned:1", "spawned-conversation", "system", "spawned-thread", "Subtask"))
@@ -94,8 +164,8 @@ def test_deletion_policies_preserve_or_remove_shared_data_and_children(store, mo
     grandchild = job(store, "Grandchild", child["workstream_id"])
     shared = memory(store, a)
     bridge = memory(store, b, "Bridge from B to C")
-    store.attach(b["workstream_id"], "memory", shared["id"])
-    store.attach(c["workstream_id"], "memory", bridge["id"])
+    legacy_attach(store, b["workstream_id"], "memory", shared["id"])
+    legacy_attach(store, c["workstream_id"], "memory", bridge["id"])
     private = memory(store, child, "Exclusive child memory")
     store.db.log_event(child["id"], "tool_result", output_data={"private": "erase me"})
     store.db.execute("INSERT INTO memory_events(memory_id, job_id, event_type) VALUES (%s, %s, 'create')",
@@ -128,7 +198,7 @@ def test_preview_is_read_only_and_invalidated_by_new_relationship(store):
     before = store.db.fetch_all("SELECT * FROM workstreams ORDER BY id")
     preview = store.preview(a["workstream_id"])
     assert store.db.fetch_all("SELECT * FROM workstreams ORDER BY id") == before
-    store.attach(b["workstream_id"], "memory", owned["id"])
+    legacy_attach(store, b["workstream_id"], "memory", owned["id"])
     with pytest.raises(WorkstreamError, match="scope changed"):
         store.begin_delete(a["workstream_id"], "preserve_shared", preview["preview_digest"])
     assert store.db.fetch_all("SELECT * FROM workstream_deletions") == []
@@ -169,15 +239,18 @@ def test_shared_research_retains_its_job_and_reminder_spawns_under_surviving_own
         """INSERT INTO reminders(title, task, run_at, created_by_job_id) VALUES ('Reminder', 'Task', now(), %s)
            RETURNING *""", (a["id"],),
     )
-    store.attach(b["workstream_id"], "research", run["id"])
-    store.attach(b["workstream_id"], "reminder", reminder["id"])
+    legacy_attach(store, b["workstream_id"], "research", run["id"])
+    legacy_attach(store, b["workstream_id"], "reminder", reminder["id"])
     remove(store, a["workstream_id"])
     assert store.db.fetch_one("SELECT workstream_id FROM jobs WHERE id = %s", (a["id"],))["workstream_id"] == b["workstream_id"]
     current = store.db.fetch_one("SELECT * FROM reminders WHERE id = %s", (reminder["id"],))
     with store.db.connect() as connection, connection.cursor() as cur:
         spawned = ReminderScheduler(store.db, store.config).create_job_for_reminder(cur, current)
     stream = store.db.fetch_one("SELECT * FROM workstreams WHERE id = %s", (spawned["workstream_id"],))
-    assert stream["parent_id"] == b["workstream_id"]
+    assert stream["id"] == b["workstream_id"]
+    assert store.db.fetch_one(
+        "SELECT role FROM workstream_threads WHERE thread_id = %s", (spawned["thread_id"],),
+    )["role"] == "system"
 
 
 def test_file_cleanup_checks_digests_and_keeps_recovery_records(store):
@@ -213,7 +286,7 @@ def test_shared_files_and_artifacts_survive_source_message_deletion(store):
            VALUES (%s, %s, 'attachment', 'received', %s, %s) RETURNING *""",
         (a["trigger_email_id"], a["thread_id"], str(path), hashlib.sha256(path.read_bytes()).hexdigest()),
     )
-    store.attach(b["workstream_id"], "artifact", artifact["id"])
+    legacy_attach(store, b["workstream_id"], "artifact", artifact["id"])
     remove(store, a["workstream_id"])
     assert path.is_file()
     current = store.db.fetch_one("SELECT * FROM processed_artifacts WHERE id = %s", (artifact["id"],))
@@ -242,7 +315,7 @@ def test_generated_artifact_markdown_previews_and_deletes_with_last_owner(store,
     tracked.track_file(path)
     if shared:
         other = job(store)
-        store.attach(other["workstream_id"], "artifact", artifact["id"])
+        legacy_attach(store, other["workstream_id"], "artifact", artifact["id"])
         file_object = store.db.fetch_one("SELECT object_id FROM workstream_files WHERE path = %s", (str(path),))
         assert file_object["object_id"] in {o["id"] for o in store.objects(other["workstream_id"])}
     preview = store.preview(source["workstream_id"], "connected" if not shared else "preserve_shared")
@@ -338,6 +411,394 @@ def test_object_provenance_and_ancestry_cannot_be_rewritten(store):
     assert store.db.run_migrations() == []
 
 
+def test_contact_adoption_is_explicit_and_updates_notify_retainers(store):
+    source, editor, unrelated = job(store, "Source"), job(store, "Editor"), job(store, "Unrelated")
+    contact = store.db.for_job(source["id"]).fetch_one(
+        "INSERT INTO contacts(first_name) VALUES ('Ada') RETURNING *",
+    )
+    with pytest.raises(WorkstreamError, match="only contacts and files"):
+        store.attach(editor["workstream_id"], "memory", "1")
+    adopted = store.attach(editor["workstream_id"], "contact", str(contact["id"]))
+    assert adopted["origin_workstream_id"] == source["workstream_id"]
+    store.db.execute("UPDATE jobs SET status = 'running' WHERE id = %s", (source["id"],))
+    store.db.for_job(editor["id"]).execute(
+        "UPDATE contacts SET notes = 'Updated by editor' WHERE id = %s", (contact["id"],),
+    )
+    assert store.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (source["id"],))["has_new_context"]
+    assert store.db.fetch_one(
+        "SELECT object_id FROM workstream_attachments WHERE workstream_id = %s AND object_id = %s",
+        (unrelated["workstream_id"], contact["object_id"]),
+    ) is None
+    change = store.db.fetch_one(
+        """SELECT e.* FROM workstream_context_events c
+           JOIN workstream_object_events e ON e.id = c.object_event_id
+           WHERE c.workstream_id = %s AND e.object_id = %s AND e.event_type = 'UPDATE'
+           ORDER BY e.id DESC LIMIT 1""", (source["workstream_id"], contact["object_id"]),
+    )
+    assert change["actor_workstream_id"] == editor["workstream_id"]
+    assert change["changes"]["notes"] == {"before": "", "after": "Updated by editor"}
+
+
+def test_contact_updates_require_current_object_version(store):
+    source = job(store, "Versioned contact")
+    contact = store.db.for_job(source["id"]).fetch_one(
+        "INSERT INTO contacts(first_name) VALUES ('Ada') RETURNING id",
+    )
+    from assistant_agent.tools import ToolError, ToolRuntime
+    runtime = ToolRuntime(store.db, store.config, source)
+    initial = runtime.contact_read(contact["id"])["contact"]
+
+    updated = runtime.run("contact_update", {
+        "contact_id": contact["id"],
+        "expected_version": initial["object_version"],
+        "notes": "updated",
+    })
+    assert updated["contact"]["object_version"] > initial["object_version"]
+    with pytest.raises(ToolError, match="object changed since it was read"):
+        runtime.run("contact_update", {
+            "contact_id": contact["id"],
+            "expected_version": initial["object_version"],
+            "notes": "stale overwrite",
+        })
+    assert runtime.contact_read(contact["id"])["contact"]["notes"] == "updated"
+
+
+def test_workstream_read_exposes_main_and_system_threads_with_provenance(store):
+    source = job(store, "Main conversation")
+    RequestService(store.db).receive_request(IncomingRequest(
+        "telegram", "update:main", "chat", "sender", source["thread_id"], "Main message",
+    ), queue=False)
+    with store.db.connect() as connection:
+        connection.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)",
+                           (str(source["workstream_id"]),))
+        connection.execute("SELECT set_config('assistant.thread_role', 'system', true)")
+        system = connection.execute(
+            "INSERT INTO jobs(thread_id, task_summary) VALUES ('system:test', 'System task') RETURNING *",
+        ).fetchone()
+    result = store.read(
+        source["workstream_id"], include_system_threads=True, include_execution_details=True,
+    )
+    assert result["thread"]["thread_id"] == source["thread_id"]
+    assert result["thread"]["is_main"]
+    assert [item["thread_id"] for item in result["system_threads"]] == ["system:test"]
+    assert system["workstream_id"] == source["workstream_id"]
+    assert result["executions"][0]["thread_id"] == source["thread_id"]
+
+
+def test_system_task_results_and_input_requests_are_available_from_main_workstream(store):
+    source = job(store, "Research workstream")
+    system_thread = "research:test:%s" % uuid.uuid4().hex
+    with store.db.connect() as connection:
+        connection.execute(
+            "SELECT set_config('assistant.parent_workstream_id', %s, true)",
+            (str(source["workstream_id"]),),
+        )
+        connection.execute("SELECT set_config('assistant.thread_role', 'system', true)")
+        system_job = connection.execute(
+            """INSERT INTO jobs(thread_id, task_summary, status)
+               VALUES (%s, 'Research the request', 'completed') RETURNING *""",
+            (system_thread,),
+        ).fetchone()
+    from assistant_agent.task_agent import TaskAgent
+    agent = TaskAgent(store.db, store.config)
+    agent.record_system_task_notification(
+        system_job, "input_requested", "input:call-1", "Input requested", "Which date range?",
+    )
+    agent.record_final_response(system_job["id"], "The research result.", "Research completed")
+
+    result = store.read(source["workstream_id"], include_system_threads=True)
+    notifications = result["task_notifications"]
+    assert [item["notification_type"] for item in notifications] == ["completed", "input_requested"]
+    assert notifications[0]["content"] == "The research result."
+    assert notifications[0]["source_thread_id"] == system_thread
+
+
+def test_system_task_admin_input_is_available_from_main_workstream(store):
+    source = job(store, "Research workstream")
+    system_thread = "research:admin:%s" % uuid.uuid4().hex
+    with store.db.connect() as connection:
+        connection.execute(
+            "SELECT set_config('assistant.parent_workstream_id', %s, true)",
+            (str(source["workstream_id"]),),
+        )
+        connection.execute("SELECT set_config('assistant.thread_role', 'system', true)")
+        system_job = connection.execute(
+            """INSERT INTO jobs(thread_id, task_summary, status)
+               VALUES (%s, 'Research the request', 'running') RETURNING *""",
+            (system_thread,),
+        ).fetchone()
+
+    from assistant_agent.task_agent import TaskAgent
+    agent = TaskAgent(store.db, store.config)
+    with patch.object(agent, "email_admin_for_input"), patch.object(agent.memory_steward, "consolidate"):
+        agent.handle_request_input(
+            system_job, [], None, "request_admin_input",
+            {"question": "Approve the proposed source?"}, "call-admin",
+        )
+
+    notification = store.db.fetch_one(
+        """SELECT summary, content, source_thread_id FROM workstream_task_notifications
+           WHERE source_job_id = %s AND notification_key = 'input:call-admin'""",
+        (system_job["id"],),
+    )
+    assert notification == {
+        "summary": "Admin input requested for Research the request",
+        "content": "Approve the proposed source?",
+        "source_thread_id": system_thread,
+    }
+
+
+def test_workstreams_remain_bound_to_their_originating_channel(store):
+    from assistant_agent.email_ingest import EmailDownloader
+    from assistant_agent.telegram_ingest import TelegramReceiver
+
+    telegram_request = RequestService(store.db).receive_request(IncomingRequest(
+        "telegram", "tg:1", "tg:chat", "sender", "telegram:main", "Telegram request",
+    ), queue=False)
+    email_request = RequestService(store.db).receive_request(IncomingRequest(
+        "email", "<email-1@example.com>", "email:thread", "sender@example.com",
+        "email:thread", "Email request",
+    ), queue=False)
+    assert telegram_request["workstream_id"] != email_request["workstream_id"]
+    assert store.db.fetch_one(
+        "SELECT origin_channel FROM workstreams WHERE id = %s",
+        (telegram_request["workstream_id"],),
+    )["origin_channel"] == "telegram"
+    assert store.db.fetch_one(
+        "SELECT origin_channel FROM workstreams WHERE id = %s",
+        (email_request["workstream_id"],),
+    )["origin_channel"] == "email"
+
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.bot_id = store.db, "bot"
+    receiver.config = AppConfig({"agent": {"telegram": {"recipients": {
+        "sender@example.com": "sender",
+    }}}})
+    visible = receiver.visible_workstreams("sender")
+    assert {row["id"] for row in visible} == {
+        telegram_request["workstream_id"], email_request["workstream_id"],
+    }
+    receiver.set_selection("sender", email_request["workstream_id"])
+    assert receiver.task_thread(
+        {"message_id": 25, "chat": {"id": "sender"}, "text": "Continue this workstream"},
+        "bot:sender", "sender",
+    )[0] == email_request["thread_id"]
+
+    store.db.execute(
+        """INSERT INTO emails(message_id, thread_id, from_address, to_addresses, subject, body_text, received_at)
+           VALUES ('<telegram-sent@example.com>', 'telegram:main', 'agent@example.com',
+                   ARRAY['sender@example.com'], 'Telegram workstream message', 'sent', now())""",
+    )
+    ingestor = EmailDownloader.__new__(EmailDownloader)
+    ingestor.db, ingestor.config = store.db, AppConfig({"agent": {"email": {}}})
+    assert ingestor.resolve_thread_id(
+        "<email-reply@example.com>", "<telegram-sent@example.com>", [],
+        "Re: Telegram workstream message", ["sender@example.com"],
+    ) == "<email-reply@example.com>"
+
+    outbound_job = store.db.fetch_one(
+        "INSERT INTO jobs(thread_id, task_summary) VALUES ('telegram:main', 'Send the requested email') RETURNING id",
+    )
+    store.db.execute(
+        """INSERT INTO outbound_email_logs(
+             job_id, to_addresses, subject, body_text, provider_message_id, status, sent_at
+           ) VALUES (%s, ARRAY['sender@example.com'], 'Requested details', 'Details', '<agent-email@example.com>',
+             'sent', now())""",
+        (outbound_job["id"],),
+    )
+    reply_thread = ingestor.resolve_thread_id(
+        "<email-response@example.com>", "<agent-email@example.com>", [],
+        "Re: Requested details", ["sender@example.com"],
+    )
+    assert reply_thread == "telegram:main"
+    email_reply = RequestService(store.db).receive_request(IncomingRequest(
+        "email", "<email-response@example.com>", reply_thread, "sender@example.com",
+        reply_thread, "Here is my response",
+    ), queue=False)
+    assert email_reply["workstream_id"] == telegram_request["workstream_id"]
+    assert store.db.fetch_one(
+        "SELECT origin_channel FROM workstreams WHERE id = %s",
+        (email_reply["workstream_id"],),
+    )["origin_channel"] == "telegram"
+    store.db.execute(
+        """INSERT INTO emails(message_id, in_reply_to, thread_id, from_address, to_addresses, subject, body_text, received_at)
+           VALUES ('<email-follow-up@example.com>', '<email-response@example.com>', 'telegram:main',
+                   'sender@example.com', ARRAY['agent@example.com'], 'Re: Requested details', 'Follow-up', now())""",
+    )
+    assert ingestor.resolve_thread_id(
+        "<email-follow-up-reply@example.com>", "<email-follow-up@example.com>", [],
+        "Re: Requested details", ["sender@example.com"],
+    ) == "telegram:main"
+
+
+def test_calendar_create_reconciles_provider_success_after_lost_response(store):
+    from types import SimpleNamespace
+
+    from assistant_agent.calendar.models import CalendarEvent
+    from assistant_agent.calendar.provider import CalendarError
+    from assistant_agent.calendar.router import CalendarRouter
+
+    source = job(store, "Calendar recovery")
+
+    class Provider:
+        def __init__(self):
+            self.event = None
+            self.create_calls = 0
+
+        def create_event(self, request):
+            self.create_calls += 1
+            self.event = CalendarEvent(
+                provider_event_id="provider-event-1",
+                provider_name="google",
+                calendar_id=request.calendar_id,
+                title=request.title,
+                start=request.start,
+                end=request.end,
+                all_day=request.all_day,
+                description=request.description,
+                location=request.location,
+                transparency=request.transparency,
+            )
+            raise CalendarError("response lost after provider accepted create")
+
+        def list_events(self, calendar_id, start, end):
+            return [self.event] if self.event and self.event.start < end and self.event.end > start else []
+
+    provider = Provider()
+    router = CalendarRouter.__new__(CalendarRouter)
+    router._db = store.db.for_job(source["id"])
+    router._job = source
+    router._config = store.config
+    router._providers = {"google": provider}
+    router._provider_configs = {"google": SimpleNamespace(calendar_id="primary")}
+    router._default_provider_name = "google"
+    router._default_alert_minutes = 30
+
+    request = {
+        "title": "Project review",
+        "start": "2026-10-28T14:00:00+00:00",
+        "end": "2026-10-28T15:00:00+00:00",
+    }
+    with pytest.raises(CalendarError, match="outcome is uncertain"):
+        router.create_event(**request)
+    result = router.create_event(**request)
+    assert provider.create_calls == 1
+    assert result["event"]["title"] == "Project review"
+    mutation = store.db.fetch_one(
+        "SELECT status FROM provider_mutations WHERE resource_type = 'calendar_event' AND operation = 'CREATE'",
+    )
+    assert mutation["status"] == "completed"
+
+
+def test_zoom_update_reconciles_after_provider_response_and_state_read_are_lost(store):
+    from assistant_agent.zoom_meetings import ZoomError, ZoomMeetings
+
+    source = job(store, "Zoom recovery")
+    row = store.db.fetch_one(
+        """INSERT INTO zoom_managed_meetings(request_key, request_payload, title, starts_at, duration_minutes,
+           provider_meeting_id, created_by_job_id, status)
+           VALUES ('zoom-recovery', '{}', 'Initial title', '2026-10-28T14:00:00Z', 30, 'zoom-1', %s, 'active')
+           RETURNING *""",
+        (source["id"],),
+    )
+    service = ZoomMeetings.__new__(ZoomMeetings)
+    service.db, service.config, service.job = store.db.for_job(source["id"]), store.config, source
+    remote = {"topic": "Initial title", "start_time": "2026-10-28T14:00:00Z", "duration": 30}
+    get_calls = 0
+
+    def request(method, path, payload=None, allow_not_found=False):
+        nonlocal remote, get_calls
+        if method == "GET":
+            get_calls += 1
+            if get_calls == 2:
+                raise ZoomError("provider state temporarily unavailable", uncertain=True)
+            return dict(remote)
+        if method == "PATCH":
+            remote = {
+                "topic": payload.get("topic", remote["topic"]),
+                "start_time": payload.get("start_time", remote["start_time"]),
+                "duration": payload.get("duration", remote["duration"]),
+            }
+            raise ZoomError("update response lost", uncertain=True)
+        raise AssertionError("unexpected provider request")
+
+    service.request = request
+    update = {"title": "Updated title", "duration_minutes": 45}
+    with pytest.raises(ZoomError, match="state could not be read"):
+        service.update(row["id"], **update)
+    result = service.update(row["id"], **update)
+    assert get_calls == 3
+    assert result["title"] == "Updated title"
+    assert result["duration_minutes"] == 45
+    mutation = store.db.fetch_one(
+        "SELECT status FROM provider_mutations WHERE resource_type = 'zoom_meeting' AND operation = 'UPDATE'",
+    )
+    assert mutation["status"] == "completed"
+
+
+def test_zoom_delete_reconciles_lost_provider_response(store):
+    from assistant_agent.zoom_meetings import ZoomError, ZoomMeetings
+
+    source = job(store, "Zoom deletion")
+    row = store.db.fetch_one(
+        """INSERT INTO zoom_managed_meetings(request_key, request_payload, title, starts_at, duration_minutes,
+           provider_meeting_id, created_by_job_id, status)
+           VALUES ('zoom-delete', '{}', 'Meeting', '2026-10-28T14:00:00Z', 30, 'zoom-2', %s, 'active')
+           RETURNING *""",
+        (source["id"],),
+    )
+    service = ZoomMeetings.__new__(ZoomMeetings)
+    service.db, service.config, service.job = store.db.for_job(source["id"]), store.config, source
+    remote = {"topic": "Meeting", "start_time": "2026-10-28T14:00:00Z", "duration": 30}
+
+    def request(method, path, payload=None, allow_not_found=False):
+        nonlocal remote
+        if method == "GET":
+            return dict(remote) if remote else {"not_found": True}
+        if method == "DELETE":
+            remote = None
+            raise ZoomError("delete response lost", uncertain=True)
+        raise AssertionError("unexpected provider request")
+
+    service.request = request
+    result = service.delete(row["id"])
+    assert result["status"] == "deleted"
+    mutation = store.db.fetch_one(
+        "SELECT status FROM provider_mutations WHERE resource_type = 'zoom_meeting' AND operation = 'DELETE'",
+    )
+    assert mutation["status"] == "completed"
+
+
+def test_deletion_leaves_only_hashed_reply_tombstones_and_invalidates_selection(store):
+    source = job(store, "Deleted conversation")
+    email = store.db.fetch_one("SELECT message_id FROM emails WHERE id = %s", (source["trigger_email_id"],))
+    RequestService(store.db).receive_request(IncomingRequest(
+        "telegram", "bot:chat:42", "bot:chat", "sender", source["thread_id"], "Telegram reply target",
+    ), queue=False)
+    store.db.execute(
+        """INSERT INTO telegram_workstream_selections(bot_id, sender_id, workstream_id)
+           VALUES ('bot', 'sender', %s)""", (source["workstream_id"],),
+    )
+    remove(store, source["workstream_id"])
+    selection = store.db.fetch_one(
+        "SELECT workstream_id, unavailable_workstream_id FROM telegram_workstream_selections",
+    )
+    assert selection == {"workstream_id": None, "unavailable_workstream_id": source["workstream_id"]}
+    from assistant_agent.email_ingest import EmailDownloader
+    ingestor = EmailDownloader.__new__(EmailDownloader)
+    ingestor.db = store.db
+    assert ingestor.deleted_reply_workstream_id(email["message_id"], []) == source["workstream_id"]
+    assert store.db.fetch_one(
+        "SELECT reference_hash FROM deleted_thread_references",
+    )["reference_hash"] != email["message_id"]
+    from assistant_agent.telegram_ingest import TelegramReceiver
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.bot_id = store.db, "bot"
+    assert receiver.deleted_reply_workstream_id({
+        "chat": {"id": "chat"}, "reply_to_message": {"message_id": 42},
+    }) == source["workstream_id"]
+
+
 def test_real_file_tools_preserve_object_identity_on_move_and_track_trash(store):
     from assistant_agent.tools import ToolRuntime
     a, b = job(store), job(store)
@@ -388,7 +849,7 @@ def test_import_attachment_retains_files_and_deletes_them_with_last_owner(store)
         """INSERT INTO dropbox_transfers(request_key, job_id, direction, remote_path, local_path, local_sha256, status)
            VALUES ('import', %s, 'import', '/Inbox/original.txt', %s, %s, 'ready')""", (a["id"], str(path), checksum),
     )
-    store.attach(b["workstream_id"], "dropbox_transfer", "import")
+    legacy_attach(store, b["workstream_id"], "dropbox_transfer", "import")
     assert file["object_id"] in {o["id"] for o in store.objects(b["workstream_id"])}
     remove(store, a["workstream_id"])
     assert path.exists()
@@ -405,7 +866,7 @@ def test_queued_shared_reminder_blocks_deletion_that_would_strand_its_work(store
         """INSERT INTO reminders(title, task, run_at, created_by_job_id, job_id, status)
            VALUES ('Queued reminder', 'Task', now(), %s, %s, 'queued') RETURNING *""", (a["id"], a["id"]),
     )
-    store.attach(b["workstream_id"], "reminder", reminder["id"])
+    legacy_attach(store, b["workstream_id"], "reminder", reminder["id"])
     preview = store.preview(a["workstream_id"])
     assert preview["blocked_reminders"] == [reminder["id"]]
     with pytest.raises(WorkstreamError, match="shared reminders"):
@@ -424,7 +885,7 @@ def test_sharing_calendar_retains_linked_zoom_and_cleanup_has_no_extra_provider_
            provider_meeting_id, calendar_event_id, created_by_job_id, status)
            VALUES ('zoom', '{}', 'Meeting', now(), 30, '12345', 'event', %s, 'active') RETURNING *""", (a["id"],),
     )
-    store.attach(b["workstream_id"], "calendar_event", calendar["assistant_id"])
+    legacy_attach(store, b["workstream_id"], "calendar_event", calendar["assistant_id"])
     assert meeting["object_id"] in {o["id"] for o in store.objects(b["workstream_id"])}
     with patch("assistant_agent.calendar.router.CalendarRouter") as cal, patch("assistant_agent.zoom_meetings.ZoomMeetings") as zoom:
         remove(store, a["workstream_id"])

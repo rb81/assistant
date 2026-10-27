@@ -5,8 +5,10 @@ Browser administration and shared editing are removed. `/admin` subjects are han
 ## Authentication
 
 Run `./scripts/setup.sh` to configure the dedicated assistant mailbox and
-`ADMIN_EMAIL`. Signing keys and trusted Authentication-Results settings are no
-longer used.
+`ADMIN_EMAIL`. Signing keys are no longer used, and Authentication-Results never
+authorize an action. The optional [admin sender authentication](security.md#admin-sender-authentication-spfdkim)
+check quarantines mail that claims your address but fails both DKIM and SPF. It can
+only reject mail; it never replaces the OTP.
 
 An `/admin` request or actionable task email from the configured admin is held
 pending approval. The assistant sends a **new, independent email** only to
@@ -88,3 +90,16 @@ Already-sent emails/model requests, remote provider retention, backups, and exte
 Stop old workers/project scheduling, back up PostgreSQL, and export project history before upgrading. Do not mix old binaries with the new schema. Migration 005 preserves note content/audit/lifecycle metadata as memories and useful entity labels as tags. Project/task history is retained on parent jobs; waiting parents receive explicit retirement instructions, while admin-review states remain paused. Existing child jobs remain ordinary jobs; unstarted project tasks are not queued. Retired tables are removed and feature bootstrap does not recreate them.
 
 The historical base schema retains compatibility definitions consumed and retired by ordered migrations before workers operate. Backup restore is the rollback procedure. Migrations apply at startup; this change does not migrate an existing running deployment automatically.
+
+## Security screening approvals
+
+When [decision-model screening](security.md#email-and-action-screening) holds an
+inbound email, the message is moved to the quarantine folder, and the admin
+receives the usual OTP confirmation. That confirmation expires after 24 hours by
+default (`approval_ttl_minutes`). Approving processes the original email once,
+with any reply text added as an admin note. It does not mark the job as
+admin-authenticated. A held tool call (outbound email or script) pauses the job
+as `needs_review`. Approving that review allows exactly the same call once; for
+scripts, only while the file contents are unchanged. With YOLO mode on, these
+items proceed and you are notified instead.
+

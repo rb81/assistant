@@ -96,6 +96,9 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("TRANSCRIPTION_API_TOKEN", "agent.transcription.api_token", str),
         ("TRANSCRIPTION_BASE_URL", "agent.transcription.base_url", str),
         ("TRANSCRIPTION_LANGUAGE", "agent.transcription.language", str),
+        ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", bool),
+        ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", float),
+        ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", int),
         
         # Organization
         ("ORG_NAME", "agent.org.name", str),
@@ -139,6 +142,7 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("IMAP_PASSWORD", "agent.email.imap_password", str),
         ("IMAP_FOLDER", "agent.email.imap_folder", str),
         ("IMAP_ARCHIVE_FOLDER", "agent.email.imap_archive_folder", str),
+        ("IMAP_QUARANTINE_FOLDER", "agent.email.imap_quarantine_folder", str),
         ("IMAP_SENT_FOLDER", "agent.email.imap_sent_folder", str),
         ("AGENT_IMAP_POLL_INTERVAL", "agent.email.imap_poll_interval_seconds", int),
         ("SMTP_HOST", "agent.email.smtp_host", str),
@@ -287,7 +291,26 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_FUSION_MAX_TOOL_CALLS", "agent.fusion.max_tool_calls", int),
         ("AGENT_FUSION_MAX_COMPLETION_TOKENS", "agent.fusion.max_completion_tokens", int),
         ("AGENT_FUSION_TEMPERATURE", "agent.fusion.temperature", float),
-        
+
+        # Security screening
+        ("AGENT_SECURITY_NOTIFY_MAX_PER_HOUR", "agent.security.notify_max_per_hour", int),
+        ("AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", "agent.security.allow_possibly_malicious", bool),
+        ("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "agent.security.email_authentication.enabled", bool),
+        ("AGENT_SECURITY_DECISION_ENABLED", "agent.security.decision_model.enabled", bool),
+        ("AGENT_SECURITY_DECISION_PROVIDER", "agent.security.decision_model.provider", str),
+        ("AGENT_SECURITY_DECISION_URL", "agent.security.decision_model.url", str),
+        ("AGENT_SECURITY_DECISION_MODEL", "agent.security.decision_model.model", str),
+        ("AGENT_SECURITY_DECISION_TIMEOUT_SECONDS", "agent.security.decision_model.timeout_seconds", int),
+        ("AGENT_SECURITY_DECISION_ON_ERROR", "agent.security.decision_model.on_error", str),
+        ("AGENT_SECURITY_DECISION_APPROVAL_TTL_MINUTES", "agent.security.decision_model.approval_ttl_minutes", int),
+        ("AGENT_SECURITY_DECISION_MALICIOUS_THRESHOLD", "agent.security.decision_model.malicious_threshold", float),
+        ("AGENT_SECURITY_DECISION_POSSIBLY_MALICIOUS_THRESHOLD", "agent.security.decision_model.possibly_malicious_threshold", float),
+        ("AGENT_SECURITY_DECISION_FLAG_THRESHOLD", "agent.security.decision_model.flag_threshold", float),
+        ("AGENT_SECURITY_DECISION_MAX_FIELD_CHARS", "agent.security.decision_model.max_field_chars", int),
+        ("AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL", "agent.security.decision_model.screen.outbound_email", bool),
+        ("AGENT_SECURITY_SCREEN_SCRIPTS", "agent.security.decision_model.screen.scripts", bool),
+        ("AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS", "agent.security.scripts.allowed_domains", list),
+        ("AGENT_SECURITY_SCRIPT_MAX_FILES", "agent.security.scripts.max_files", int),
 ]
 
 
@@ -347,7 +370,7 @@ def app_display_name(config: AppConfig) -> str:
 
 
 def app_referer_url(config: AppConfig) -> str:
-    return _clean_config_text(config, "agent.app.referer_url", "https://%s.local" % app_name(config))
+    return _clean_config_text(config, "agent.app.referer_url", "https://github.com/rb81/assistant")
 
 
 def agent_name(config: AppConfig) -> str:

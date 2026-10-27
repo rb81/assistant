@@ -30,6 +30,7 @@ Additional values for email-driven jobs:
 - `IMAP_PASSWORD`
 - `IMAP_FOLDER`
 - `IMAP_ARCHIVE_FOLDER`
+- `IMAP_QUARANTINE_FOLDER`
 - `IMAP_SENT_FOLDER`
 - `SMTP_USERNAME`
 - `SMTP_PASSWORD`

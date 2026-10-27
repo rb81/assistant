@@ -37,13 +37,13 @@ def test_email_to_telegram_identity_and_tool_gate():
         telegram_destination(config(), job, "stranger@example.com")
 
 
-def test_reminder_prefers_linked_telegram_and_honors_explicit_email():
+def test_reminder_defaults_to_initiating_channel_and_honors_explicit_channel():
     values = config()
     values.values["agent"]["email"] = {"smtp_host": "smtp.example.net", "smtp_from": "agent@example.net"}
     job = {"metadata": {"reply_route": {"channel": "email", "to": "user@example.com"}}}
     policy = reminder_delivery(values, job)
-    assert policy["primary"]["channel"] == "telegram"
-    assert policy["fallback"]["to"] == "user@example.com"
+    assert policy["primary"]["channel"] == "email"
+    assert policy["primary"]["to"] == "user@example.com"
     assert reminder_delivery(values, job, "email")["primary"]["channel"] == "email"
     assert reminder_delivery(values, job, "telegram")["fallback"] == {}
 
@@ -175,14 +175,22 @@ def database():
         connection.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
         schema = Path(__file__).resolve().parents[2] / "database/schema.sql"
         connection.execute(schema.read_text())
-    yield Database(url)
+    database = Database(url)
+    database.ensure_feature_schema()
+    yield database
 
 
 def migrate(database):
-    source = Path(__file__).resolve().parents[1] / "src/assistant_agent/migrations/007_request_channels.sql"
+    migration_dir = Path(__file__).resolve().parents[1] / "src/assistant_agent/migrations"
+    sources = [migration_dir / name for name in (
+        "006_zoom_meetings.sql", "007_request_channels.sql",
+        "008_workstreams.sql", "009_workstream_threads.sql",
+    )]
     with tempfile.TemporaryDirectory() as directory:
-        shutil.copy2(source, directory)
-        assert database.run_migrations(Path(directory)) == [source.name]
+        for source in sources:
+            shutil.copy2(source, directory)
+        expected = [source.name for source in sources]
+        assert database.run_migrations(Path(directory)) == expected
         assert database.run_migrations(Path(directory)) == []
 
 
@@ -409,6 +417,75 @@ def test_task_thread_handles_optional_media_group(database, media_group):
     database.execute("UPDATE request_messages SET created_at = now() - interval '1 minute'")
     expected = "existing-task" if media_group is not None else "telegram:9:123:2"
     assert receiver.task_thread(message, "9:123", "123") == (expected, [])
+
+
+def test_telegram_selection_persists_and_explicit_replies_do_not_switch_it(database):
+    migrate(database)
+    service = RequestService(database)
+    route = {"channel": "telegram", "chat_id": "123"}
+    first = service.receive_request(IncomingRequest(
+        "telegram", "9:123:10", "9:123", "123", "stream-one", "First",
+        reply_route=route,
+    ), queue=False)
+    second = service.receive_request(IncomingRequest(
+        "telegram", "9:123:20", "9:123", "123", "stream-two", "Second",
+        reply_route=route,
+    ), queue=False)
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id = database, config(), "9"
+    receiver.set_selection("123", second["workstream_id"])
+
+    restarted_receiver = TelegramReceiver.__new__(TelegramReceiver)
+    restarted_receiver.db, restarted_receiver.config, restarted_receiver.bot_id = database, config(), "9"
+    assert restarted_receiver.task_thread(
+        {"chat": {"id": 123}, "message_id": 21}, "9:123", "123",
+    ) == ("stream-two", [])
+    assert restarted_receiver.task_thread({
+        "chat": {"id": 123}, "message_id": 22,
+        "reply_to_message": {"message_id": 10},
+    }, "9:123", "123") == ("stream-one", [])
+    assert restarted_receiver.selected_workstream("123")["workstream_id"] == second["workstream_id"]
+
+    receiver.client = MagicMock()
+    receiver.select_task({
+        "id": "callback", "from": {"id": 123}, "data": "ws:%s" % first["workstream_id"],
+        "message": {"chat": {"type": "private", "id": 123}},
+    })
+    assert receiver.selected_workstream("123")["workstream_id"] == first["workstream_id"]
+    receiver.client.call.assert_called_once_with(
+        "answerCallbackQuery", {"callback_query_id": "callback", "text": "Workstream selected."},
+    )
+
+
+def test_new_telegram_workstream_uses_temporary_title_and_persists_selection(database):
+    migrate(database)
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, config(), "9", MagicMock()
+    receiver.ingest({
+        "update_id": 1,
+        "message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+                    "message_id": 30, "date": 1_700_000_000, "text": "/new Plan dinner"},
+    })
+    request = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '9:123:30'")
+    stream = database.fetch_one("SELECT * FROM workstreams WHERE id = %s", (request["workstream_id"],))
+    selection = receiver.selected_workstream("123")
+    assert stream["title"] == "New workstream" and stream["name_status"] == "temporary"
+    assert selection["workstream_id"] == stream["id"]
+    for index in (31, 32):
+        RequestService(database).receive_request(IncomingRequest(
+            "telegram", "9:123:%s" % index, "9:123", "123", request["thread_id"], "Follow-up",
+        ), queue=False)
+    assert database.fetch_one("SELECT telegram_message_count, name_status FROM workstreams WHERE id = %s",
+                              (stream["id"],)) == {"telegram_message_count": 3, "name_status": "pending"}
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config = database, config()
+    llm = MagicMock()
+    llm.chat.return_value = {"choices": [{"message": {"content": "Dinner Plans"}}]}
+    agent.name_pending_workstream({"id": 900, "workstream_id": stream["id"]}, llm)
+    agent.name_pending_workstream({"id": 901, "workstream_id": stream["id"]}, llm)
+    named = database.fetch_one("SELECT title, name_status FROM workstreams WHERE id = %s", (stream["id"],))
+    assert named == {"title": "Dinner Plans", "name_status": "named"}
+    llm.chat.assert_called_once()
 
 
 def test_clarification_resumes_the_matching_task(database):

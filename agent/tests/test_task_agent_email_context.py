@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import types
@@ -45,6 +46,43 @@ from assistant_agent.task_agent import TaskAgent
 
 
 class TaskAgentEmailContextTest(unittest.TestCase):
+    def test_nested_model_tokens_stop_the_tool_batch_and_checkpoint_parent(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.get_state.return_value = None
+        job = {"id": 123, "metadata": {}}
+        calls = [{"id": "a", "function": {"name": "llm_service", "arguments": "{}"}},
+                 {"id": "b", "function": {"name": "file_write", "arguments": "{}"}}]
+        response = {"choices": [{"message": {"role": "assistant", "tool_calls": calls}}],
+                    "usage": {"total_tokens": 1}}
+        agent.update_channel_status = MagicMock()
+        agent.name_pending_workstream = MagicMock()
+        agent.build_base_context = MagicMock(return_value={})
+        agent.messages_from_base_context = MagicMock(return_value=[{"role": "system", "content": "test"}])
+        agent.admin_review_resume_messages = MagicMock(return_value=[])
+        agent.initial_tool_names = MagicMock(return_value=set())
+        agent.task_limits = MagicMock(return_value=(5, 20))
+        agent.still_owns_job = MagicMock(return_value=True)
+        agent.inject_new_context_if_needed = MagicMock()
+        agent.messages_for_call = MagicMock(return_value=[])
+        agent.tools_for_call = MagicMock(return_value=[])
+        agent.defer_stale_tool_calls = MagicMock(return_value=False)
+        agent.parse_tool_call = MagicMock(return_value=("llm_service", {}))
+        agent.prune_tool_results = MagicMock()
+        agent.create_checkpoint = MagicMock()
+
+        def handle(job, history, runtime, call_id, name, arguments, enabled):
+            runtime.model_service_tokens += 30
+            return False
+
+        agent.handle_tool_call = MagicMock(side_effect=handle)
+        with patch("assistant_agent.task_agent.LlmClient") as llm, patch("assistant_agent.task_agent.notify_admin_job_failure"):
+            llm.return_value.chat.return_value = response
+            agent.process_job(job)
+        self.assertEqual(agent.handle_tool_call.call_count, 1)
+        self.assertEqual(agent.create_checkpoint.call_args.args[3], 31)
+        agent.db.update_job_status.assert_called_once_with(123, "needs_review", last_error="token budget exceeded")
+
     def agent(self) -> TaskAgent:
         temp_dir = TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -549,6 +587,42 @@ class DatabaseThreadMessagesTest(unittest.TestCase):
         self.assertEqual([message["thread_item_id"] for message in messages], ["email:1", "outbound:99", "email:2"])
         self.assertEqual(messages[1]["message_id"], "<agent-99@example.com>")
         self.assertEqual(messages[1]["direction"], "outbound")
+
+    def test_latest_thread_messages_applies_composite_cursor_to_received_order(self) -> None:
+        db = Database.__new__(Database)
+        queries: list[tuple[str, tuple[Any, ...]]] = []
+        cursor = {
+            "timestamp": "2026-06-06T10:00:00Z",
+            "id": 5,
+            "thread_item_id": "request:5",
+        }
+
+        def fetch_all(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+            queries.append((sql, params))
+            return []
+
+        db.fetch_all = fetch_all  # type: ignore[method-assign]
+        db.latest_thread_messages("thread-1", limit=2, through=json.dumps(cursor))
+
+        self.assertEqual(len(queries), 4)
+        for query, params in queries:
+            self.assertIn(" < (%s::timestamptz, %s::bigint, %s::text)", query)
+            self.assertIn(cursor["timestamp"], params)
+            self.assertIn(cursor["id"], params)
+            self.assertIn(cursor["thread_item_id"], params)
+        self.assertIn("COALESCE(received_at, created_at)", queries[0][0])
+        self.assertIn("COALESCE(r.received_at, r.created_at)", queries[2][0])
+
+    def test_thread_message_order_has_stable_item_tiebreaker(self) -> None:
+        db = Database.__new__(Database)
+        messages = [
+            {"received_at": "2026-06-06T10:00:00Z", "id": 5, "thread_item_id": "request:5"},
+            {"received_at": "2026-06-06T10:00:00Z", "id": 5, "thread_item_id": "email:5"},
+        ]
+        self.assertEqual(
+            [row["thread_item_id"] for row in sorted(messages, key=db.thread_message_sort_key)],
+            ["email:5", "request:5"],
+        )
 
 
 if __name__ == "__main__":

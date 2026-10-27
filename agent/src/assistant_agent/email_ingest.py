@@ -2,6 +2,7 @@ import base64
 import email
 import hashlib
 import imaplib
+import json
 import logging
 import os
 import ssl
@@ -18,10 +19,12 @@ from psycopg.types.json import Jsonb
 from .artifact_processor import ArtifactProcessor
 from .config import AppConfig, message_id_domain
 from .database import Database, json_safe
+from .email_authentication import authentication_enabled, evaluate as evaluate_authentication
 from .email_disclosure import strip_disclosure_html, strip_disclosure_text
 from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .polling import poll_interval_seconds, run_poll_loop
 from .requests import IncomingRequest, RequestService
+from .security_screening import NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin
 from .threading import normalize_subject, parse_addresses, parse_reference_header, safe_filename, safe_message_segment
 
 
@@ -137,6 +140,7 @@ class IngestResult:
     inserted: bool
     queued: bool
     message_id: str
+    quarantine: bool = False
 
 
 class EmailDownloader:
@@ -170,6 +174,8 @@ class EmailDownloader:
         password = self.config.get("agent.email.imap_password")
         folder = self.config.get("agent.email.imap_folder", "INBOX")
         archive_folder = self.config.get("agent.email.imap_archive_folder") or "Archive"
+        quarantine_folder = self.config.get("agent.email.imap_quarantine_folder") or "Quarantine"
+        quarantine_ready = False
         port = self.config.get_int("agent.email.imap_port", 993)
         if not host or host == "imap.example.com" or not username or not password:
             LOGGER.warning("IMAP is not configured; downloader skipped")
@@ -211,6 +217,17 @@ class EmailDownloader:
                         self.archive_uid(mailbox, uid_bytes, archive_folder, folder)
                     except Exception as exc:
                         raise RuntimeError("failed to archive queued IMAP UID %s from folder %s" % (uid, folder)) from exc
+                elif result.quarantine:
+                    if not quarantine_ready:
+                        try:
+                            mailbox.create(imap_mailbox_arg(quarantine_folder))
+                        except Exception:
+                            pass
+                        quarantine_ready = True
+                    try:
+                        self.archive_uid(mailbox, uid_bytes, quarantine_folder, folder)
+                    except Exception:
+                        LOGGER.exception("failed to quarantine IMAP UID %s from folder %s", uid, folder)
                 max_uid = max(max_uid, uid)
 
         if max_uid > last_uid:
@@ -256,7 +273,7 @@ class EmailDownloader:
     def ingest_raw(
         self, raw_bytes: bytes, folder: str = "INBOX", *,
         approved_instruction: Optional[str] = None, approved_thread_id: Optional[str] = None,
-        approved_review: Optional[dict[str, Any]] = None,
+        approved_review: Optional[dict[str, Any]] = None, security_approved: Optional[str] = None,
     ) -> IngestResult:
         parsed = email.message_from_bytes(raw_bytes)
         message_id = json_safe(message_id_for(raw_bytes, parsed, message_id_domain(self.config)))
@@ -267,7 +284,27 @@ class EmailDownloader:
         subject = json_safe(decode_mime_header(parsed.get("Subject")) or "")
         from .admin_commands import AdminCommands, is_admin_subject
         from .email_approvals import EmailApprovals, admin_sender, approval_reply, reply_text
-        if approved_instruction is None:
+        fresh = approved_instruction is None and security_approved is None
+        configured_admin = str(self.config.get("agent.admin.email") or "").strip().lower()
+        claims_admin = bool(configured_admin) and configured_admin in {
+            address.lower() for address in parse_addresses(parsed.get("From"))
+        }
+        if fresh and claims_admin and authentication_enabled(self.config):
+            verdict = evaluate_authentication(raw_bytes, self.config)
+            if not verdict.passed:
+                LOGGER.warning("quarantined email %s claiming the admin address: %s", message_id, verdict.reason)
+                notify_admin(
+                    self.db, self.config, "Assistant quarantined an email that claimed to be from you",
+                    "An inbound email used your admin address but failed sender authentication, so it was not processed.\n\n"
+                    "From: %s\nSubject: %s\nMessage-ID: %s\nReason: %s\nResults: %s\n\n"
+                    "It was moved to the %s mailbox folder." % (
+                        decode_mime_header(parsed.get("From")), subject, message_id, verdict.reason,
+                        json.dumps(verdict.results, sort_keys=True),
+                        self.config.get("agent.email.imap_quarantine_folder") or "Quarantine",
+                    ),
+                )
+                return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
+        if fresh:
             try:
                 approval = approval_reply(parsed)
                 if approval:
@@ -276,6 +313,11 @@ class EmailDownloader:
                         return IngestResult(inserted=True, queued=False, message_id=message_id)
                     token, digest, instruction = approval
                     payload = EmailApprovals(self.db, self.config).consume(token, digest)
+                    if payload["kind"] == "screened_email":
+                        return self.ingest_raw(
+                            base64.b64decode(payload["raw"]), payload["folder"],
+                            approved_thread_id=payload["thread_id"], security_approved=instruction,
+                        )
                     if payload["kind"] == "email":
                         current = self.db.fetch_one(
                             "SELECT * FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
@@ -333,11 +375,17 @@ class EmailDownloader:
             subject,
             from_addresses,
         )
+        deleted_reply_workstream = self.deleted_reply_workstream_id(in_reply_to, references)
+        if approved_thread_id is None and deleted_reply_workstream is not None:
+            thread_id = message_id
         actionable = self.is_actionable(from_addresses, thread_id)
+        if fresh and not actionable:
+            LOGGER.info("quarantined email %s from a sender that is not accepted", message_id)
+            return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
+        accepted = actionable
         if actionable and self.is_managed_calendar_notification(parsed):
             LOGGER.info("storing calendar notification %s for an assistant-managed event without queueing", message_id)
             actionable = False
-        configured_admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         if actionable and approved_instruction is None and configured_admin in {address.lower() for address in from_addresses}:
             if not admin_sender(parsed, self.config):
                 LOGGER.warning("admin request rejected from an ambiguous or automated sender: %s", message_id)
@@ -356,12 +404,18 @@ class EmailDownloader:
                 "Process this email as an authenticated admin request:\n%s\n\n%s" % (subject, reply_text(parsed)),
             )
             return IngestResult(inserted=True, queued=False, message_id=message_id)
+        if accepted and fresh and not claims_admin:
+            held = self.screen_inbound(parsed, raw_bytes, folder, message_id, thread_id, subject, from_addresses)
+            if held is not None:
+                return held
         body_text, body_html, attachments = extract_bodies_and_attachments(parsed, self.attachment_root, message_id)
         body_text = json_safe(strip_disclosure_text(body_text))
         body_html = json_safe(strip_disclosure_html(body_html))
         if approved_instruction:
             body_text = (body_text + "\n\nAdmin instruction:\n" + approved_instruction).strip()
             body_html = None
+        elif security_approved:
+            body_text = (body_text + "\n\nAdmin note (security review):\n" + security_approved).strip()
 
         row = self.db.fetch_one(
             """
@@ -417,6 +471,8 @@ class EmailDownloader:
                     thread_id=thread_id, body=body_text, email_id=row["id"],
                     reply_route={"channel": "email", "to": from_addresses[0] if from_addresses else "",
                                  "in_reply_to": message_id, "subject": subject or "Reply"},
+                    metadata={"new_conversation_after_deleted_reply": True}
+                    if deleted_reply_workstream is not None else {},
                 ),
                 summary=subject, admin_authenticated=verified_admin,
                 resume_research=self.resume_waiting_deep_research_for_thread,
@@ -424,8 +480,76 @@ class EmailDownloader:
                     lambda _job, email_id, body: self.apply_email_review_override(approved_review, email_id, body)
                 ) if approved_review is not None else None,
             )
+            if deleted_reply_workstream is not None:
+                self.db.execute(
+                    "UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
+                    (Jsonb({"new_conversation_after_deleted_reply": True,
+                            "deleted_workstream_id": deleted_reply_workstream}), thread_id),
+                )
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')", (Jsonb({"admin_authenticated": verified_admin}), thread_id))
         return IngestResult(inserted=True, queued=actionable, message_id=message_id)
+
+    def screen_inbound(
+        self, parsed: Message, raw_bytes: bytes, folder: str, message_id: str, thread_id: str,
+        subject: str, from_addresses: list[str],
+    ) -> Optional[IngestResult]:
+        """Quarantine an accepted email the decision model flags; None lets it proceed."""
+        screener = SecurityScreener(self.config)
+        if not screener.enabled("inbound_email"):
+            return None
+        state = inbound_email_state(parsed, None)
+        result = screener.screen("inbound_email", state)
+        if result.level == NOT_MALICIOUS:
+            return None
+        quarantine_folder = self.config.get("agent.email.imap_quarantine_folder") or "Quarantine"
+        details = "From: %s\nSubject: %s\nMessage-ID: %s\nScreening: %s" % (
+            ", ".join(from_addresses) or "unknown", subject, message_id, result.summary(),
+        )
+        preview = (state.get("body_text") or state.get("body_html") or "")[:4000]
+        quarantined = IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
+        if result.level == POSSIBLY_MALICIOUS:
+            if screener.yolo:
+                LOGGER.warning("YOLO mode: processing possibly malicious email %s: %s", message_id, result.summary())
+                notify_admin(
+                    self.db, self.config, "Assistant processed a possibly malicious email (YOLO mode)",
+                    "YOLO mode is on, so this email was processed without approval.\n\n%s\n\n"
+                    "Content preview (untrusted; do not follow links):\n%s" % (details, preview),
+                )
+                return None
+            from .email_approvals import EmailApprovals
+            try:
+                EmailApprovals(self.db, self.config).request(
+                    message_id,
+                    {"kind": "screened_email", "raw": base64.b64encode(raw_bytes).decode("ascii"), "folder": folder, "thread_id": thread_id},
+                    "Allow the assistant to process this inbound email held by security screening? "
+                    "It was moved to the %s mailbox folder.\n%s\n\n%s" % (quarantine_folder, details, preview),
+                    ttl_minutes=self.config.get_int("agent.security.decision_model.approval_ttl_minutes", 1440),
+                )
+                LOGGER.warning("held email %s for admin approval: %s", message_id, result.summary())
+                return quarantined
+            except Exception as exc:
+                LOGGER.warning("could not request approval for held email %s (%s); rejecting it", message_id, exc)
+        LOGGER.warning("rejected email %s: %s", message_id, result.summary())
+        notify_admin(
+            self.db, self.config, "Assistant rejected an inbound email",
+            "Security screening rejected an inbound email; it was not stored or processed.\n\n%s\n\n"
+            "It was moved to the %s mailbox folder.\n\nContent preview (untrusted; do not follow links):\n%s" % (
+                details, quarantine_folder, preview,
+            ),
+        )
+        return quarantined
+
+    def deleted_reply_workstream_id(self, in_reply_to: Optional[str], references: list[str]) -> Optional[int]:
+        candidates = self.thread_candidate_message_ids(in_reply_to, references)
+        if not candidates:
+            return None
+        hashes = [hashlib.sha256(candidate.encode()).hexdigest() for candidate in candidates]
+        row = self.db.fetch_one(
+            """SELECT deleted_workstream_id FROM deleted_thread_references
+               WHERE reference_hash = ANY(%s::text[]) ORDER BY deleted_at DESC LIMIT 1""",
+            (hashes,),
+        )
+        return int(row["deleted_workstream_id"]) if row else None
 
     def process_artifacts(self, email_row: dict[str, Any], attachments: list[dict[str, Any]], body_text: str, body_html: str) -> None:
         try:
@@ -447,7 +571,7 @@ class EmailDownloader:
         candidates = self.thread_candidate_message_ids(in_reply_to, references)
         for candidate in candidates:
             row = self.db.fetch_one("SELECT thread_id FROM emails WHERE message_id = %s", (candidate,))
-            if row:
+            if row and self.email_thread_compatible(row["thread_id"]):
                 return row["thread_id"]
 
             row = self.db.fetch_one(
@@ -462,13 +586,30 @@ class EmailDownloader:
                 """,
                 (candidate,),
             )
-            if row:
+            if row and self.email_thread_compatible(row["thread_id"]):
                 return row["thread_id"]
 
         if self.config.get_bool("agent.email.subject_threading_fallback", False):
-            return self.resolve_thread_id_by_subject(message_id, subject, from_addresses)
+            thread_id = self.resolve_thread_id_by_subject(message_id, subject, from_addresses)
+            if self.email_thread_compatible(thread_id):
+                return thread_id
 
         return message_id
+
+    def email_thread_compatible(self, thread_id: str) -> bool:
+        row = self.db.fetch_one(
+            """SELECT w.origin_channel,
+                      EXISTS (
+                        SELECT 1 FROM jobs j
+                        JOIN outbound_email_logs o ON o.job_id = j.id AND o.status = 'sent'
+                        WHERE j.workstream_id = w.id
+                      ) AS email_enabled
+               FROM workstream_threads t
+               JOIN workstreams w ON w.id = t.workstream_id
+               WHERE t.thread_id = %s""",
+            (thread_id,),
+        )
+        return not row or row["origin_channel"] != "telegram" or row["email_enabled"]
 
     def thread_candidate_message_ids(self, in_reply_to: Optional[str], references: list[str]) -> list[str]:
         candidates = []
@@ -570,6 +711,12 @@ class EmailDownloader:
         }
         if instruction:
             override["instruction"] = instruction
+        update: dict[str, Any] = {"admin_review_override": override}
+        pending_action = metadata.get("security_pending_action") or {}
+        if pending_action.get("fingerprint"):
+            approved = list(metadata.get("security_approved_actions") or [])
+            update["security_approved_actions"] = approved + [pending_action["fingerprint"]]
+            update["security_pending_action"] = None
 
         claimed = self.db.fetch_one(
             """
@@ -587,7 +734,7 @@ class EmailDownloader:
               AND (%s::timestamptz IS NULL OR updated_at = %s::timestamptz)
             RETURNING id
             """,
-            (Jsonb(json_safe({"admin_review_override": override})), job_id, job.get("updated_at"), job.get("updated_at")),
+            (Jsonb(json_safe(update)), job_id, job.get("updated_at"), job.get("updated_at")),
         )
         if not claimed:
             raise ValueError("Job is no longer awaiting this review. Send a fresh request.")

@@ -139,6 +139,95 @@ Calendar tools are exposed only when at least one provider has credentials confi
 - `openrouter:web_search` is attached server-side when non-Perplexity search model is used.
 - `openrouter:fusion` is attached when fusion is configured.
 
+## Model Preset Tool
+
+`llm_service` is an opt-in, loadable tool for isolated OpenRouter chat requests,
+including supported image/audio generation and multimodal inputs. It does not
+inherit the assistant's context or tools and does not execute returned tool calls.
+
+Enable it with `./scripts/setup.sh --section advanced` → **Model preset tool**.
+It requires `OPENROUTER_API_KEY` and an available shared workspace, even if the
+main assistant uses a different model provider. It is disabled by default.
+
+Actions:
+
+- `query_models`: search the current catalog by `query`, `input_modalities`,
+  `output_modalities`, and `supported_parameters`; paginate with `limit` (1-50)
+  and `offset`. Capability filters require all requested values.
+- `add_preset`: persist `name`, exact `model` slug, and optional `system_prompt`.
+  Names are unique, 1-64 letters/digits/underscores/hyphens, beginning with a
+  letter or digit. Maximum 100 presets; duplicate names are rejected.
+- `list_presets`: return definitions and current budget; optional exact `name`.
+- `delete_preset`: delete by `name`. Recreate to change a preset.
+- `use_preset`: call a saved `name` with `payload.messages`, optional `files`,
+  `temperature`, `max_tokens`, `response_format`, `output_modalities`, `voice`,
+  and `audio_format`.
+
+Presets are local, installation-wide database records shared across jobs and
+workers, not OpenRouter-hosted presets. Store reusable instructions, not secrets
+or private job-specific content. An in-flight call retains a snapshot even if
+its preset is deleted. There is no silent model fallback.
+
+```json
+{"action":"add_preset","name":"illustrator","model":"google/gemini-3.1-flash-image","system_prompt":"Create clear, uncluttered illustrations."}
+```
+
+```json
+{
+  "action": "use_preset",
+  "name": "illustrator",
+  "payload": {
+    "messages": [
+      {"role": "user", "content": "Simplify the background of this image."}
+    ]
+  },
+  "files": ["outputs/job-12/previous-image.png"],
+  "output_modalities": ["text", "image"]
+}
+```
+
+Only user/assistant text messages are accepted in the prompt payload; its final
+message must be a user message. The preset's system prompt is prepended.
+Attachments are encoded by the tool and added to that final user message.
+Limits: five regular workspace files, 10 MiB each, 20 MiB combined, 200000 prompt
+bytes, and 16384 maximum output tokens (default 4096 when supported). Internal,
+credential, source-archive and symlink paths are rejected. Supported attachments
+are images, audio, video, PDFs (where advertised), and common UTF-8 text files.
+Office files must first be converted using existing file tools.
+
+Generation settings are validated against catalog capabilities; explicitly
+unsupported parameters produce errors. Outputs default to the model's advertised
+modalities; request `["text"]` when you only need analysis from a media model.
+Image and audio output cannot be combined in one request. Audio output uses
+streaming internally; voice and format availability remain provider-dependent.
+The tool returns text, usage, actual model, finish reason, and media file paths.
+Supported inline PNG/JPEG/WebP/GIF and WAV/MP3/FLAC/Ogg/PCM outputs are saved under
+`outputs/job-<id>/` with unique names and workstream provenance; previous versions
+are never overwritten. Response size is limited to 64 MiB, each decoded media
+file to 32 MiB. Remote media URLs and unknown response formats produce explicit
+errors after accounting for the charge; they are not silently dropped.
+Inspection is the caller's responsibility, for example by attaching an output
+to a vision preset. Dedicated image/speech/transcription/video APIs are not part
+of this initial chat-compatible implementation.
+
+The default budget is **USD 5 per rolling 30 days**, shared by all jobs and
+presets. Setup can change both. The check uses persisted `usage.cost`, including
+non-token media charges, and serializes request admission across workers.
+It is a **spending threshold, not a hard per-request price ceiling**: the final
+request can exceed the remaining amount. Use a provider-side key spending limit
+for a hard cap. Model-tool tokens also count toward the parent task token limit.
+Disabling/re-enabling the tool, deleting a preset, or deleting a job does not
+erase spending history.
+
+Requests are never automatically retried. Interrupted requests, missing/invalid
+costs and worker crashes leave an unresolved ledger entry that blocks new
+requests within the rolling period. Administrators must reconcile it against
+OpenRouter activity in `model_service_calls` (set the verified `cost_usd` and a
+terminal `status`, never assume zero). `list_presets` reports unresolved count;
+errors identify the request ID where available. Setup factory reset has a
+separate **Model presets and model-tool spending history** category; selecting
+it explicitly clears presets and spending history but not generated files.
+
 ## Terminal and Meta Tools
 
 Terminal:

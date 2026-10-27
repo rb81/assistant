@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -13,6 +14,9 @@ from psycopg.types.json import Jsonb
 
 
 LOGGER = logging.getLogger("assistant.database")
+_active_connection: ContextVar[Optional[tuple[str, psycopg.Connection]]] = ContextVar(
+    "assistant_active_database_connection", default=None
+)
 
 # The v2 migration permanently drops tables from v1, so an existing installation must opt in.
 V2_GATED_MIGRATION = "005_unified_memory_retire_projects.sql"
@@ -73,7 +77,34 @@ class Database:
         return database
 
     @contextmanager
+    def object_version_transaction(self, kind: str, key: str, version: int) -> Iterator[None]:
+        with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
+            if getattr(self, "job_id", None) is not None:
+                conn.execute("SELECT set_config('assistant.job_id', %s, true)", (str(self.job_id),))
+            if getattr(self, "workstream_id", None) is not None:
+                conn.execute("SELECT set_config('assistant.workstream_id', %s, true)", (str(self.workstream_id),))
+            object_row = conn.execute(
+                "SELECT version FROM workstream_objects WHERE kind = %s AND object_key = %s FOR UPDATE",
+                (kind, key),
+            ).fetchone()
+            if object_row is None or object_row["version"] != version:
+                raise ValueError("object changed since it was read; refresh it before updating")
+            conn.execute("SELECT set_config('assistant.expected_object_version', %s, true)", (str(version),))
+            conn.execute("SELECT set_config('assistant.expected_object_kind', %s, true)", (kind,))
+            conn.execute("SELECT set_config('assistant.expected_object_key', %s, true)", (key,))
+            conn.execute("SELECT set_config('assistant.expected_object_checked', 'yes', true)")
+            token = _active_connection.set((self.database_url, conn))
+            try:
+                yield
+            finally:
+                _active_connection.reset(token)
+
+    @contextmanager
     def connect(self) -> Iterator[psycopg.Connection]:
+        active = _active_connection.get()
+        if active and active[0] == self.database_url:
+            yield active[1]
+            return
         with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
             if getattr(self, "job_id", None) is not None:
                 conn.execute("SELECT set_config('assistant.job_id', %s, true)", (str(self.job_id),))
@@ -371,78 +402,125 @@ class Database:
                 )
                 return job_row
 
+    @staticmethod
+    def _thread_message_cursor(before: Any) -> Optional[dict[str, Any]]:
+        if before is None:
+            return None
+        cursor = before
+        if isinstance(before, str):
+            try:
+                cursor = json.loads(before)
+            except json.JSONDecodeError:
+                cursor = None
+        if isinstance(cursor, dict):
+            try:
+                return {
+                    "timestamp": cursor["timestamp"],
+                    "id": int(cursor["id"]),
+                    "thread_item_id": str(cursor["thread_item_id"]),
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("invalid workstream message cursor") from exc
+        return {"timestamp": before, "id": None, "thread_item_id": None}
+
+    @staticmethod
+    def _thread_cursor_filter(
+        cursor: Optional[dict[str, Any]], timestamp_sql: str, id_sql: str, item_prefix: str,
+    ) -> tuple[str, tuple[Any, ...]]:
+        if cursor is None:
+            return "", ()
+        if cursor["id"] is None:
+            return f"{timestamp_sql} <= %s", (cursor["timestamp"],)
+        clause = (
+            f"({timestamp_sql}, {id_sql}, %s || {id_sql}::text) "
+            "< (%s::timestamptz, %s::bigint, %s::text)"
+        )
+        return clause, (item_prefix, cursor["timestamp"], cursor["id"], cursor["thread_item_id"])
+
     def latest_thread_emails(self, thread_id: str, limit: int = 10, through: Any = None) -> list[dict[str, Any]]:
-        if through is None:
-            rows = self.fetch_all(
-                """
-                SELECT *
-                FROM emails
-                WHERE thread_id = %s
-                ORDER BY received_at DESC, id DESC
-                LIMIT %s
-                """,
-                (thread_id, limit),
-            )
-        else:
-            rows = self.fetch_all(
-                """
-                SELECT *
-                FROM emails
-                WHERE thread_id = %s
-                  AND created_at <= %s
-                ORDER BY received_at DESC, id DESC
-                LIMIT %s
-                """,
-                (thread_id, through, limit),
-            )
+        cursor = self._thread_message_cursor(through)
+        cursor_filter, cursor_params = self._thread_cursor_filter(
+            cursor, "COALESCE(received_at, created_at)", "id", "email:",
+        )
+        query = """
+            SELECT *
+            FROM emails
+            WHERE thread_id = %s
+        """
+        params: tuple[Any, ...] = (thread_id,)
+        if cursor_filter:
+            query += " AND " + cursor_filter
+            params += cursor_params
+        query += """
+            ORDER BY COALESCE(received_at, created_at) DESC, id DESC
+            LIMIT %s
+        """
+        rows = self.fetch_all(query, (*params, limit))
         return list(reversed(rows))
 
     def latest_thread_messages(self, thread_id: str, limit: int = 10, through: Any = None) -> list[dict[str, Any]]:
         clean_limit = min(max(int(limit or 10), 1), 100)
-        emails = [self.thread_email_context_item(row) for row in self.latest_thread_emails(thread_id, limit=clean_limit, through=through)]
-        if through is None:
-            outbound_rows = self.fetch_all(
-                """
-                SELECT o.*, j.thread_id
-                FROM outbound_email_logs o
-                JOIN jobs j ON j.id = o.job_id
-                WHERE j.thread_id = %s
-                  AND o.status = 'sent'
-                ORDER BY COALESCE(o.sent_at, o.created_at) DESC, o.id DESC
-                LIMIT %s
-                """,
-                (thread_id, clean_limit),
-            )
-        else:
-            outbound_rows = self.fetch_all(
-                """
-                SELECT o.*, j.thread_id
-                FROM outbound_email_logs o
-                JOIN jobs j ON j.id = o.job_id
-                WHERE j.thread_id = %s
-                  AND o.status = 'sent'
-                  AND COALESCE(o.sent_at, o.created_at) <= %s
-                ORDER BY COALESCE(o.sent_at, o.created_at) DESC, o.id DESC
-                LIMIT %s
-                """,
-                (thread_id, through, clean_limit),
-            )
-        messages = emails + [self.outbound_email_context_item(row) for row in reversed(outbound_rows)]
-        requests = self.fetch_all(
-            """SELECT * FROM request_messages WHERE thread_id = %s AND channel NOT IN ('email', 'local')
-               AND (%s::timestamptz IS NULL OR created_at <= %s)
-               ORDER BY received_at DESC, id DESC LIMIT %s""", (thread_id, through, through, clean_limit),
+        cursor = self._thread_message_cursor(through)
+        emails = [self.thread_email_context_item(row) for row in self.latest_thread_emails(
+            thread_id, limit=clean_limit, through=through,
+        )]
+        outbound_filter, outbound_cursor_params = self._thread_cursor_filter(
+            cursor, "COALESCE(o.sent_at, o.created_at)", "o.id", "outbound:",
         )
+        outbound_query = """
+            SELECT o.*, j.thread_id
+            FROM outbound_email_logs o
+            JOIN jobs j ON j.id = o.job_id
+            WHERE j.thread_id = %s AND o.status = 'sent'
+        """
+        outbound_params: tuple[Any, ...] = (thread_id,)
+        if outbound_filter:
+            outbound_query += " AND " + outbound_filter
+            outbound_params += outbound_cursor_params
+        outbound_query += """
+            ORDER BY COALESCE(o.sent_at, o.created_at) DESC, o.id DESC
+            LIMIT %s
+        """
+        outbound_rows = self.fetch_all(outbound_query, (*outbound_params, clean_limit))
+        messages = emails + [self.outbound_email_context_item(row) for row in reversed(outbound_rows)]
+
+        request_filter, request_cursor_params = self._thread_cursor_filter(
+            cursor, "COALESCE(r.received_at, r.created_at)", "r.id", "request:",
+        )
+        request_query = """
+            SELECT r.* FROM request_messages r
+            WHERE r.thread_id = %s AND r.channel NOT IN ('email', 'local')
+        """
+        request_params: tuple[Any, ...] = (thread_id,)
+        if request_filter:
+            request_query += " AND " + request_filter
+            request_params += request_cursor_params
+        request_query += """
+            ORDER BY COALESCE(r.received_at, r.created_at) DESC, r.id DESC
+            LIMIT %s
+        """
+        requests = self.fetch_all(request_query, (*request_params, clean_limit))
         for request in requests:
             if request.get("channel"):
                 messages.append({**request, "context_type": "request", "direction": "inbound",
                                  "thread_item_id": "request:%s" % request["id"]})
-        deliveries = self.fetch_all(
-            """SELECT d.* FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
-               WHERE j.thread_id = %s AND d.channel = 'telegram' AND d.status = 'sent'
-               AND (%s::timestamptz IS NULL OR d.sent_at <= %s)
-               ORDER BY d.sent_at DESC, d.id DESC LIMIT %s""", (thread_id, through, through, clean_limit),
+
+        delivery_filter, delivery_cursor_params = self._thread_cursor_filter(
+            cursor, "COALESCE(d.sent_at, d.created_at)", "d.id", "telegram-delivery:",
         )
+        delivery_query = """
+            SELECT d.* FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
+            WHERE j.thread_id = %s AND d.channel = 'telegram' AND d.status = 'sent'
+        """
+        delivery_params: tuple[Any, ...] = (thread_id,)
+        if delivery_filter:
+            delivery_query += " AND " + delivery_filter
+            delivery_params += delivery_cursor_params
+        delivery_query += """
+            ORDER BY COALESCE(d.sent_at, d.created_at) DESC, d.id DESC
+            LIMIT %s
+        """
+        deliveries = self.fetch_all(delivery_query, (*delivery_params, clean_limit))
         for delivery in deliveries:
             if delivery.get("channel") == "telegram":
                 messages.append({**delivery, "context_type": "outbound_telegram", "direction": "outbound",
@@ -483,8 +561,12 @@ class Database:
             "status": row.get("status"),
         }
 
-    def thread_message_sort_key(self, row: dict[str, Any]) -> tuple[Any, int]:
-        return (row.get("received_at") or row.get("sent_at") or row.get("created_at"), int(row.get("id") or 0))
+    def thread_message_sort_key(self, row: dict[str, Any]) -> tuple[Any, int, str]:
+        return (
+            row.get("received_at") or row.get("sent_at") or row.get("created_at"),
+            int(row.get("id") or 0),
+            str(row.get("thread_item_id") or ""),
+        )
 
     def processed_artifacts_for_thread(self, thread_id: str, limit: int = 100) -> list[dict[str, Any]]:
         return self.fetch_all(

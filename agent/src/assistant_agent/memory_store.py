@@ -129,6 +129,37 @@ class MemoryStore:
         for memory_id in memory_ids:
             self.db.execute("UPDATE agent_memories SET last_accessed_at = now() WHERE id = %s", (memory_id,))
 
+    def add_workstream_provenance(
+        self, rows: list[dict[str, Any]], current_workstream_id: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        identifiers = [int(row["id"]) for row in rows if row.get("id") is not None]
+        if not identifiers:
+            return rows
+        schema = self.db.fetch_one("SELECT to_regclass('workstream_objects') AS relation")
+        if not schema or not schema["relation"]:
+            return rows
+        provenance = self.db.fetch_all(
+            """SELECT m.id, o.version AS object_version, o.origin_workstream_id,
+                      array_remove(array_agg(DISTINCT a.workstream_id), NULL) AS retaining_workstream_ids
+               FROM agent_memories m
+               JOIN workstream_objects o ON o.id = m.object_id
+               LEFT JOIN workstream_attachments a ON a.object_id = o.id
+               WHERE m.id = ANY(%s) GROUP BY m.id, o.version, o.origin_workstream_id""",
+            (identifiers,),
+        )
+        by_id = {int(item["id"]): item for item in provenance}
+        for row in rows:
+            item = by_id.get(int(row["id"]))
+            if item:
+                row["object_version"] = item["object_version"]
+                row["origin_workstream_id"] = item["origin_workstream_id"]
+                row["retaining_workstream_ids"] = item["retaining_workstream_ids"] or []
+                row["in_current_workstream"] = (
+                    current_workstream_id is not None
+                    and current_workstream_id in row["retaining_workstream_ids"]
+                )
+        return rows
+
     def create(
         self,
         content: str,

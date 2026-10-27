@@ -23,6 +23,7 @@ OBJECT_TABLES = {
     "artifact": ("processed_artifacts", "id"),
     "file": ("workstream_files", "id"),
 }
+ATTACHABLE_KINDS = {"contact", "file"}
 MODES = ("preserve_shared", "delete_objects", "connected")
 OWNED_TABLES = ("emails", "request_messages", "outbound_email_logs", "channel_deliveries", "thread_summaries")
 DERIVED_TABLES = {
@@ -94,8 +95,8 @@ class WorkstreamStore:
         )
 
     def attach(self, workstream_id, kind, key):
-        if kind not in OBJECT_TABLES:
-            raise WorkstreamError("only reusable objects can be attached; messages cannot be shared")
+        if kind not in ATTACHABLE_KINDS:
+            raise WorkstreamError("only contacts and files can be adopted into another workstream")
         if kind == "file" and not str(key).isdigit():
             if self.config is None:
                 raise WorkstreamError("file paths require filesystem configuration")
@@ -158,6 +159,87 @@ class WorkstreamStore:
                     frontier.extend(row["object_id"] for row in cur.fetchall())
             return {"workstream_id": workstream_id, "object_ids": sorted(ids), "origin_workstream_id": obj["origin_workstream_id"]}
 
+    def read(self, workstream_id, *, thread_id=None, before=None, limit=25,
+             include_system_threads=False, include_objects=False, include_execution_details=False,
+             include_change_events=False):
+        limit = min(max(int(limit or 25), 1), 100)
+        workstream = self.db.fetch_one(
+            "SELECT id, title, status, parent_id, main_thread_id, created_at FROM workstreams WHERE id = %s",
+            (workstream_id,),
+        )
+        if workstream is None:
+            raise WorkstreamError("workstream not found")
+        if thread_id is None:
+            thread_id = workstream["main_thread_id"]
+        thread = self.db.fetch_one(
+            "SELECT thread_id, role FROM workstream_threads WHERE thread_id = %s AND workstream_id = %s",
+            (thread_id, workstream_id),
+        )
+        if thread is None:
+            raise WorkstreamError("thread does not belong to this workstream")
+        history = self.db.latest_thread_messages(thread_id, limit=limit, through=before)
+        next_before = None
+        if len(history) == limit:
+            oldest = history[0]
+            next_before = json.dumps({
+                "timestamp": json_safe(
+                    oldest.get("received_at") or oldest.get("sent_at") or oldest.get("created_at")
+                ),
+                "id": int(oldest.get("id") or 0),
+                "thread_item_id": str(oldest.get("thread_item_id") or ""),
+            }, separators=(",", ":"))
+        result = {
+            "workstream": json_safe(workstream),
+            "thread": {**thread, "is_main": thread_id == workstream["main_thread_id"]},
+            "messages": json_safe(history),
+            "next_before": next_before,
+        }
+        if include_system_threads:
+            threads = self.db.fetch_all(
+                """SELECT thread_id FROM workstream_threads
+                   WHERE workstream_id = %s AND role = 'system' ORDER BY thread_id""",
+                (workstream_id,),
+            )
+            result["system_threads"] = [
+                {"thread_id": item["thread_id"],
+                 "messages": json_safe(self.db.latest_thread_messages(item["thread_id"], limit=limit))}
+                for item in threads
+            ]
+            result["task_notifications"] = json_safe(self.db.fetch_all(
+                """SELECT source_job_id, source_thread_id, notification_type, summary, content, created_at
+                   FROM workstream_task_notifications
+                   WHERE workstream_id = %s ORDER BY id DESC LIMIT %s""",
+                (workstream_id, limit),
+            ))
+        if include_objects:
+            result["objects"] = json_safe(self.objects(workstream_id))
+        if include_change_events:
+            result["change_events"] = json_safe(self.db.fetch_all(
+                """SELECT e.id, e.object_id, e.object_kind, e.object_key, e.origin_workstream_id,
+                          e.actor_job_id, e.actor_workstream_id, e.event_type, e.changes, e.reason, e.created_at
+                   FROM workstream_context_events c
+                   JOIN workstream_object_events e ON e.id = c.object_event_id
+                   WHERE c.workstream_id = %s ORDER BY e.id DESC LIMIT %s""",
+                (workstream_id, limit),
+            ))
+        if include_execution_details:
+            jobs = self.db.fetch_all(
+                """SELECT id, thread_id, task_summary, status, created_at, completed_at, last_error
+                   FROM jobs WHERE workstream_id = %s
+                   AND (%s::text IS NULL OR thread_id = %s)
+                   ORDER BY id DESC LIMIT %s""",
+                (workstream_id, thread_id, thread_id, limit),
+            )
+            for job in jobs:
+                job["events"] = self.db.fetch_all(
+                    """SELECT sequence, event_type, input_data, output_data, created_at
+                       FROM task_logs WHERE job_id = %s ORDER BY sequence DESC LIMIT 10""",
+                    (job["id"],),
+                )
+                job["events"].reverse()
+            result["executions"] = json_safe(jobs)
+        return result
+
     @contextmanager
     def maintenance(self):
         # A session lock spans filesystem/provider operations and their separate DB transactions.
@@ -200,6 +282,15 @@ class WorkstreamStore:
                 sql.SQL("SELECT * FROM {} WHERE {}::text = ANY(%s) ORDER BY 1").format(
                     sql.Identifier(table), sql.Identifier(column)), (keys,),
             ))
+        records["workstream_object_events"] = list(connection.execute(
+            """SELECT * FROM workstream_object_events
+               WHERE object_id = ANY(%s) OR actor_workstream_id = ANY(%s) ORDER BY id""",
+            (sorted(removed), sorted(scope)),
+        ))
+        records["workstream_context_events"] = list(connection.execute(
+            "SELECT * FROM workstream_context_events WHERE workstream_id = ANY(%s) ORDER BY id",
+            (sorted(scope),),
+        ))
         jobs = {str(j["id"]) for j in records["jobs"]}
         records["manual_events"] = [
             row for row in connection.execute("SELECT * FROM manual_events ORDER BY id")
@@ -456,8 +547,40 @@ class WorkstreamStore:
 
     def _delete_records(self, connection, manifest):
         scope, removed = manifest["workstream_ids"], manifest["object_ids"]
+        connection.execute(
+            """UPDATE telegram_workstream_selections
+               SET unavailable_workstream_id = workstream_id, workstream_id = NULL, updated_at = now()
+               WHERE workstream_id = ANY(%s)""", (scope,),
+        )
         # Shared jobs retain their logs and can continue in a surviving workstream.
         jobs = list(connection.execute("SELECT * FROM jobs WHERE workstream_id = ANY(%s)", (scope,)))
+        job_workstreams = {job["id"]: job["workstream_id"] for job in jobs}
+        references = []
+        for item in manifest["records"]["emails"]:
+            value = item.get("message_id")
+            if value:
+                references.append((hashlib.sha256(str(value).encode()).hexdigest(), item["workstream_id"]))
+        for item in manifest["records"]["outbound_email_logs"]:
+            value = item.get("provider_message_id")
+            workstream_id = item.get("workstream_id") or job_workstreams.get(item.get("job_id"))
+            if value and workstream_id:
+                references.append((hashlib.sha256(str(value).encode()).hexdigest(), workstream_id))
+        for item in manifest["records"]["request_messages"]:
+            value = item.get("external_id")
+            if value:
+                references.append((hashlib.sha256(str(value).encode()).hexdigest(), item["workstream_id"]))
+        for item in manifest["records"]["channel_deliveries"]:
+            workstream_id = item.get("workstream_id") or job_workstreams.get(item.get("job_id"))
+            if item.get("channel") == "telegram" and workstream_id:
+                for message_id in item.get("provider_message_ids") or []:
+                    value = "telegram:%s:%s" % (item.get("destination"), message_id)
+                    references.append((hashlib.sha256(value.encode()).hexdigest(), workstream_id))
+        for reference_hash, workstream_id in references:
+            connection.execute(
+                """INSERT INTO deleted_thread_references(reference_hash, deleted_workstream_id)
+                   VALUES (%s, %s) ON CONFLICT (reference_hash) DO NOTHING""",
+                (reference_hash, workstream_id),
+            )
         for job in jobs:
             if job["object_id"] in removed:
                 continue
@@ -478,6 +601,11 @@ class WorkstreamStore:
             ids = [r["id"] for r in manifest["records"][table]]
             connection.execute(sql.SQL("DELETE FROM {} WHERE id = ANY(%s)").format(sql.Identifier(table)), (ids,))
         connection.execute("DELETE FROM workstream_objects WHERE id = ANY(%s)", (removed,))
+        connection.execute("DELETE FROM workstream_object_events WHERE object_id = ANY(%s)", (removed,))
+        connection.execute(
+            """UPDATE workstream_object_events SET actor_job_id = NULL, reason = NULL
+               WHERE actor_workstream_id = ANY(%s)""", (scope,),
+        )
         connection.execute("DELETE FROM workstreams WHERE id = ANY(%s)", (scope,))
         if manifest["records"]["agent_memories"]:
             connection.execute(

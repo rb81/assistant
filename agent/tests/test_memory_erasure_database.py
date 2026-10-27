@@ -191,7 +191,13 @@ class MemoryErasureDatabaseTest(unittest.TestCase):
         config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}, "zoom": {"enabled": True, "client_id": "test-client", "client_secret": "test-secret", "account_id": "test-account"}}})
         job = self.db.fetch_one("INSERT INTO jobs(thread_id) VALUES ('zoom-integration') RETURNING id")
         service = ZoomMeetings(self.db, config, job)
-        with patch.object(service, "request", side_effect=[{"id": 123456, "join_url": "https://zoom.us/j/123456", "start_url": "NEVER-STORE-HOST-URL"}, {}, {}]) as request:
+        with patch.object(service, "request", side_effect=[
+            {"id": 123456, "join_url": "https://zoom.us/j/123456", "start_url": "NEVER-STORE-HOST-URL"},
+            {"topic": "Integration meeting", "start_time": "2026-10-08T10:00:00Z", "duration": 30},
+            {},
+            {"topic": "Integration meeting", "start_time": "2026-10-08T11:00:00Z", "duration": 30},
+            {},
+        ]) as request:
             created = service.create("Integration meeting", "2026-10-08T14:00:00", 30, "integration-key")
             reused = service.create("Integration meeting", "2026-10-08T14:00:00", 30, "integration-key")
             self.assertEqual(created["id"], reused["id"])
@@ -200,7 +206,7 @@ class MemoryErasureDatabaseTest(unittest.TestCase):
             self.assertEqual(updated["start"], "2026-10-08T15:00:00+04:00")
             self.assertEqual(service.delete(created["id"])["status"], "deleted")
             self.assertEqual(service.delete(created["id"])["status"], "deleted")
-            self.assertEqual(request.call_count, 3)
+            self.assertEqual(request.call_count, 5)
         self.assertNotIn("NEVER-STORE-HOST-URL", json.dumps(self.db.fetch_all("SELECT * FROM zoom_managed_meetings"), default=str))
 
     def test_zz_concurrent_workers_apply_new_migration_only_once(self):

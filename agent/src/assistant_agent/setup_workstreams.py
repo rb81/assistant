@@ -90,9 +90,7 @@ class WorkstreamTools(Tools):
                                    markup=False, highlight=False)
 
     def attach(self, stream):
-        kind = self.select("Object type (messages cannot be attached)",
-                           ["job", "memory", "contact", "reminder", "research", "calendar_event",
-                            "zoom_meeting", "dropbox_transfer", "artifact", "file"])
+        kind = self.select("Reusable object type", ["contact", "file"])
         if kind == "Back":
             return
         key = self.text("Existing object key (shown by Browse; not the registry ID)")

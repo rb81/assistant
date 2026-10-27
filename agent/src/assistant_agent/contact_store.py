@@ -65,7 +65,7 @@ class ContactStore:
 
     def get(self, contact_id: int) -> Optional[dict[str, Any]]:
         return self.db.fetch_one(
-            f"SELECT {CONTACT_COLUMNS} FROM contacts WHERE id = %s",
+            f"SELECT {CONTACT_COLUMNS}, (SELECT version FROM workstream_objects WHERE id = contacts.object_id) AS object_version FROM contacts WHERE id = %s",
             (contact_id,),
         )
 
@@ -74,7 +74,7 @@ class ContactStore:
         if not clean_email:
             return None
         return self.db.fetch_one(
-            f"SELECT {CONTACT_COLUMNS} FROM contacts WHERE lower(email_address) = lower(%s)",
+            f"SELECT {CONTACT_COLUMNS}, (SELECT version FROM workstream_objects WHERE id = contacts.object_id) AS object_version FROM contacts WHERE lower(email_address) = lower(%s)",
             (clean_email,),
         )
 
@@ -88,7 +88,7 @@ class ContactStore:
         if not clean_query:
             return self.db.fetch_all(
                 f"""
-                SELECT {CONTACT_COLUMNS}
+                SELECT {CONTACT_COLUMNS}, (SELECT version FROM workstream_objects WHERE id = contacts.object_id) AS object_version
                 FROM contacts
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
@@ -98,7 +98,7 @@ class ContactStore:
         pattern = "%%%s%%" % clean_query
         return self.db.fetch_all(
             f"""
-            SELECT {CONTACT_COLUMNS}
+            SELECT {CONTACT_COLUMNS}, (SELECT version FROM workstream_objects WHERE id = contacts.object_id) AS object_version
             FROM contacts
             WHERE first_name ILIKE %s
                OR last_name ILIKE %s
@@ -137,7 +137,7 @@ class ContactStore:
         )
         if row is None:
             raise ValueError("contact was not created")
-        return row
+        return self.get(int(row["id"])) or row
 
     def update(self, contact_id: int, fields: dict[str, Any]) -> dict[str, Any]:
         existing = self.get(contact_id)
@@ -174,7 +174,7 @@ class ContactStore:
         )
         if row is None:
             raise ValueError("contact not found")
-        return row
+        return self.get(contact_id) or row
 
     def delete(self, contact_id: int) -> dict[str, Any]:
         row = self.db.fetch_one(

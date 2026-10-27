@@ -11,6 +11,9 @@ def reminder_delivery(config: Any, job: dict[str, Any], channel: str = "auto") -
     if channel not in {"auto", "email", "telegram"}:
         raise ValueError("reminder notification_channel must be auto, email or telegram")
     route = (job.get("metadata") or {}).get("reply_route") or {}
+    source_channel = route.get("channel") or (job.get("metadata") or {}).get("source_channel")
+    if channel == "auto" and source_channel in {"email", "telegram"}:
+        channel = source_channel
     address = str(route.get("to") or "") if route.get("channel") == "email" else ""
     if route.get("channel") == "telegram":
         address = next((email for email, identifier in telegram_identities(config).items()

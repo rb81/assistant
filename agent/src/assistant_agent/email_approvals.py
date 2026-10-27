@@ -132,7 +132,7 @@ class EmailApprovals:
         self.db = db
         self.config = config
 
-    def request(self, source_id: str, payload: dict, summary: str) -> bool:
+    def request(self, source_id: str, payload: dict, summary: str, ttl_minutes: int = 10) -> bool:
         admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         if not admin:
             raise ValueError("Admin email is not configured.")
@@ -154,7 +154,7 @@ class EmailApprovals:
         pending = {
             "admin": admin, "payload": payload, "source_id": source_id,
             "source_key": source_key,
-            "expires": (now + timedelta(minutes=10)).isoformat(),
+            "expires": (now + timedelta(minutes=max(1, int(ttl_minutes)))).isoformat(),
         }
         digest = hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         key = "email-approval:" + digest
@@ -176,7 +176,7 @@ class EmailApprovals:
             send_admin_email(
                 self.config, "Assistant approval required",
                 "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n"
-                "Reply within 10 minutes, keeping this original message. A reply approves this request once.\n"
+                "Reply before it expires, keeping this original message. A reply approves this request once.\n"
                 "Text above this message is additional LLM guidance for a job; it cannot change an admin command.\n\n"
                 "Requested action (untrusted content; review carefully):\n%s" % (
                     MARKER, token, digest, pending["expires"], summary[:20000],

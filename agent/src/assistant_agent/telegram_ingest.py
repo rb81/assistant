@@ -44,43 +44,118 @@ class TelegramReceiver:
         self.bot_id = str(self.client.call("getMe", {})["id"])
 
     def owned_jobs(self, sender: str, conversation: str, *, waiting: bool = False) -> list[dict[str, Any]]:
-        linked = [address for address, identifier in telegram_identities(self.config).items() if str(identifier) == sender]
         return self.db.fetch_all(
-            """SELECT DISTINCT j.* FROM jobs j JOIN request_messages r ON r.thread_id = j.thread_id
-               WHERE ((r.channel = 'telegram' AND r.sender_id = %s AND r.conversation_id = %s)
-                   OR (j.metadata->'reply_route'->>'channel' = 'telegram' AND j.metadata->'reply_route'->>'chat_id' = %s)
-                   OR (r.channel = 'email' AND r.sender_id = ANY(%s::text[])))
+            """SELECT DISTINCT j.* FROM jobs j
+               JOIN workstreams w ON w.id = j.workstream_id AND w.status = 'active'
+               WHERE (EXISTS (SELECT 1 FROM request_messages r WHERE r.thread_id = j.thread_id
+                              AND r.channel = 'telegram' AND r.sender_id = %s AND r.conversation_id = %s)
+                   OR (j.metadata->'reply_route'->>'channel' = 'telegram'
+                       AND j.metadata->'reply_route'->>'chat_id' = %s))
                AND j.status IN ('queued', 'running', 'waiting', 'needs_review')
                AND (%s = false OR (j.status = 'waiting' AND j.metadata->>'waiting_for_input' = 'true'))
-               ORDER BY j.id DESC LIMIT 20""", (sender, conversation, sender, linked, waiting),
+               ORDER BY j.id DESC LIMIT 20""", (sender, conversation, sender, waiting),
         )
+
+    def linked_addresses(self, sender: str) -> list[str]:
+        return [address for address, identifier in telegram_identities(self.config).items() if str(identifier) == sender]
+
+    def selected_workstream(self, sender: str) -> dict[str, Any] | None:
+        return self.db.fetch_one(
+            """SELECT s.workstream_id, s.unavailable_workstream_id, w.main_thread_id, w.status,
+                      w.origin_channel
+               FROM telegram_workstream_selections s
+               LEFT JOIN workstreams w ON w.id = s.workstream_id
+               WHERE s.bot_id = %s AND s.sender_id = %s""", (self.bot_id, sender),
+        )
+
+    def visible_workstreams(self, sender: str) -> list[dict[str, Any]]:
+        return self.db.fetch_all(
+            """SELECT w.id, w.title, w.main_thread_id, w.parent_id, w.created_at,
+                      count(DISTINCT a.object_id) AS object_count
+               FROM workstreams w
+               LEFT JOIN workstream_attachments a ON a.workstream_id = w.id
+               WHERE w.status = 'active' AND w.main_thread_id <> 'system:unattributed'
+               GROUP BY w.id ORDER BY w.id DESC LIMIT 100""",
+            (),
+        )
+
+    def set_selection(self, sender: str, workstream_id: int) -> None:
+        self.db.execute(
+            """INSERT INTO telegram_workstream_selections(bot_id, sender_id, workstream_id, unavailable_workstream_id)
+               VALUES (%s, %s, %s, NULL)
+               ON CONFLICT (bot_id, sender_id) DO UPDATE
+               SET workstream_id = EXCLUDED.workstream_id, unavailable_workstream_id = NULL, updated_at = now()""",
+            (self.bot_id, sender, workstream_id),
+        )
+
+    def deleted_reply_workstream_id(self, message: dict[str, Any]) -> int | None:
+        reply_id = (message.get("reply_to_message") or {}).get("message_id")
+        if not reply_id:
+            return None
+        references = [
+            "%s:%s:%s" % (self.bot_id, message["chat"]["id"], reply_id),
+            "telegram:%s:%s" % (message["chat"]["id"], reply_id),
+        ]
+        hashes = [hashlib.sha256(value.encode()).hexdigest() for value in references]
+        row = self.db.fetch_one(
+            """SELECT deleted_workstream_id FROM deleted_thread_references
+               WHERE reference_hash = ANY(%s::text[]) ORDER BY deleted_at DESC LIMIT 1""",
+            (hashes,),
+        )
+        return int(row["deleted_workstream_id"]) if row else None
 
     def task_thread(self, message: dict[str, Any], conversation: str, sender: str) -> tuple[str, list[dict[str, Any]]]:
         reply = message.get("reply_to_message") or {}
         if reply.get("message_id"):
             reference = "%s:%s:%s" % (self.bot_id, message["chat"]["id"], reply["message_id"])
             row = self.db.fetch_one(
-                """SELECT thread_id FROM request_messages WHERE channel = 'telegram' AND external_id = %s
-                   AND sender_id = %s AND conversation_id = %s""", (reference, sender, conversation),
+                """SELECT r.thread_id FROM request_messages r
+                   JOIN workstreams w ON w.id = r.workstream_id AND w.status = 'active'
+                   WHERE r.channel = 'telegram' AND r.external_id = %s
+                     AND r.sender_id = %s AND r.conversation_id = %s""",
+                (reference, sender, conversation),
             )
             if not row:
-                linked = [address for address, identifier in telegram_identities(self.config).items() if str(identifier) == sender]
                 row = self.db.fetch_one(
                     """SELECT j.thread_id FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
+                       JOIN workstreams w ON w.id = j.workstream_id AND w.status = 'active'
                        WHERE d.channel = 'telegram' AND d.destination = %s AND d.provider_message_ids @> %s
                        AND (EXISTS (SELECT 1 FROM request_messages r WHERE r.thread_id = j.thread_id
                            AND r.sender_id = %s AND r.conversation_id = %s)
                            OR (j.metadata->'reply_route'->>'channel' = 'telegram' AND j.metadata->'reply_route'->>'chat_id' = %s)
-                           OR (j.metadata->'reply_route'->>'channel' = 'email' AND j.metadata->'reply_route'->>'to' = ANY(%s::text[]))) LIMIT 1""",
-                    (str(message["chat"]["id"]), Jsonb([reply["message_id"]]), sender, conversation, sender, linked),
+                           ) LIMIT 1""",
+                    (str(message["chat"]["id"]), Jsonb([reply["message_id"]]), sender, conversation, sender),
                 )
             if row:
                 return row["thread_id"], []
+            return "telegram:%s:%s" % (conversation, message["message_id"]), []
+
+        selection = self.selected_workstream(sender)
+        if selection and selection["workstream_id"] is not None and selection["status"] == "active":
+            waiting = self.db.fetch_all(
+                """SELECT DISTINCT j.* FROM jobs j
+                   JOIN workstreams w ON w.id = j.workstream_id AND w.status = 'active'
+                   WHERE j.workstream_id = %s AND j.status = 'waiting'
+                     AND j.metadata->>'waiting_for_input' = 'true'
+                   ORDER BY j.id DESC LIMIT 20""", (selection["workstream_id"],),
+            )
+            if len(waiting) == 1:
+                return waiting[0]["thread_id"], []
+            if len(waiting) > 1:
+                return selection["main_thread_id"], waiting
+            return selection["main_thread_id"], []
+
         waiting = self.owned_jobs(sender, conversation, waiting=True)
         if len(waiting) == 1:
             return waiting[0]["thread_id"], []
         if len(waiting) > 1:
-            return "telegram:%s:%s" % (conversation, message["message_id"]), waiting
+            stream = self.db.fetch_one(
+                "SELECT main_thread_id FROM workstreams WHERE id = %s AND status = 'active'",
+                (waiting[0]["workstream_id"],),
+            )
+            if stream:
+                return stream["main_thread_id"], waiting
+
         group = message.get("media_group_id")
         recent = self.db.fetch_one(
             """SELECT thread_id FROM request_messages WHERE channel = 'telegram'
@@ -90,6 +165,20 @@ class TelegramReceiver:
                ORDER BY id DESC LIMIT 1""", (sender, conversation, group, group),
         )
         return (recent["thread_id"] if recent else "telegram:%s:%s" % (conversation, message["message_id"])), []
+
+    def send_workstream_list(self, sender: str, external: str) -> None:
+        rows = self.visible_workstreams(sender)
+        if not rows:
+            text = "No workstreams are available yet. Send a message to start one."
+            TelegramDelivery(self.db, self.config).send({"id": None}, text, destination=sender,
+                                                        purpose="command:" + external)
+            return
+        self.client.call("sendMessage", {
+            "chat_id": sender, "text": "Choose a workstream:",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "#%s %s" % (row["id"], str(row["title"])[:45]), "callback_data": "ws:%s" % row["id"]}
+            ] for row in rows]},
+        }, sending=True)
 
     def ingest(self, update: dict[str, Any]) -> None:
         callback = update.get("callback_query")
@@ -108,10 +197,44 @@ class TelegramReceiver:
         if self.db.fetch_one("SELECT id FROM request_messages WHERE channel = 'telegram' AND external_id = %s", (external,)):
             return
         body = str(message.get("text") or message.get("caption") or "")
-        thread, selection = self.task_thread(message, conversation, sender)
-        if body.startswith("/new"):
-            thread, selection = "telegram:%s" % external, []
-            body = body[4:].strip()
+        command, _, command_body = body.strip().partition(" ")
+        if command == "/list":
+            self.send_workstream_list(sender, external)
+            self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
+            return
+        is_new_workstream = command == "/new"
+        if is_new_workstream:
+            body = command_body.strip()
+            thread = "telegram:%s" % external
+            selection = []
+        else:
+            selected = self.selected_workstream(sender)
+            if not message.get("reply_to_message") and selected and selected["workstream_id"] is not None and (
+                selected["status"] != "active" or not selected["main_thread_id"]
+            ):
+                unavailable_id = selected["workstream_id"]
+                self.db.execute(
+                    """UPDATE telegram_workstream_selections
+                       SET workstream_id = NULL, unavailable_workstream_id = %s, updated_at = now()
+                       WHERE bot_id = %s AND sender_id = %s""", (unavailable_id, self.bot_id, sender),
+                )
+                TelegramDelivery(self.db, self.config).send(
+                    {"id": None},
+                    "Your selected workstream is no longer available. This message was not routed; use /list or /new.",
+                    destination=sender, purpose="command:" + external,
+                )
+                return
+            if not message.get("reply_to_message") and selected and selected["unavailable_workstream_id"] is not None:
+                TelegramDelivery(self.db, self.config).send(
+                    {"id": None},
+                    "Your previous workstream is no longer available. This message was not routed; use /list or /new.",
+                    destination=sender, purpose="command:" + external,
+                )
+                return
+            thread, selection = self.task_thread(message, conversation, sender)
+        creating_new_thread = is_new_workstream or not self.db.fetch_one(
+            "SELECT thread_id FROM workstream_threads WHERE thread_id = %s", (thread,),
+        )
         if body.startswith(("/tasks", "/status", "/cancel", "/start")):
             jobs = self.owned_jobs(sender, conversation)
             if body.startswith("/cancel"):
@@ -130,14 +253,40 @@ class TelegramReceiver:
             self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
             return
         metadata = {"media_group_id": message.get("media_group_id")}
+        if creating_new_thread:
+            metadata["temporary_workstream"] = "telegram"
+            metadata["workstream_title"] = "New workstream"
+        reply_starts_new_conversation = bool(
+            message.get("reply_to_message")
+            and thread == "telegram:%s:%s" % (conversation, message["message_id"])
+        )
+        if reply_starts_new_conversation:
+            metadata["new_conversation_after_deleted_reply"] = True
+            deleted_workstream_id = self.deleted_reply_workstream_id(message)
+            if deleted_workstream_id is not None:
+                metadata["deleted_workstream_id"] = deleted_workstream_id
         if selection:
             metadata["selection"] = [job["id"] for job in selection]
+        if is_new_workstream and not body and not message_files(message):
+            with self.db.connect() as connection:
+                connection.execute("SELECT set_config('assistant.telegram_new_workstream', 'yes', true)")
+                connection.execute("SELECT set_config('assistant.workstream_channel', 'telegram', true)")
+                stream = connection.execute(
+                    "SELECT ensure_workstream(%s, 'New workstream') AS id", (thread,),
+                ).fetchone()
+            self.set_selection(sender, stream["id"])
+            TelegramDelivery(self.db, self.config).send(
+                {"id": None}, "Started a new workstream.", destination=sender, purpose="command:" + external,
+            )
+            return
         request = RequestService(self.db).receive_request(
             IncomingRequest("telegram", external, conversation, sender, thread, body,
                             reply_route={"channel": "telegram", "chat_id": sender, "message_id": message["message_id"]},
                             attachments=message_files(message), metadata=metadata,
                             received_at=datetime.fromtimestamp(message["date"], timezone.utc)), queue=False,
         )
+        if is_new_workstream or reply_starts_new_conversation or not self.selected_workstream(sender):
+                            self.set_selection(sender, request["workstream_id"])
         self.db.execute("UPDATE request_messages SET available_at = now() + interval '2 seconds' WHERE thread_id = %s AND status = 'pending'", (thread,))
         if selection:
             self.client.call("sendMessage", {"chat_id": sender, "text": "Which task is this for?",
@@ -152,6 +301,18 @@ class TelegramReceiver:
         if chat.get("type") != "private" or str(chat.get("id")) != sender:
             return
         pieces = str(callback.get("data") or "").split(":")
+        if len(pieces) == 2 and pieces[0] == "ws" and pieces[1].isdigit():
+            workstream_id = int(pieces[1])
+            if not any(row["id"] == workstream_id for row in self.visible_workstreams(sender)):
+                self.client.call("answerCallbackQuery", {
+                    "callback_query_id": callback["id"], "text": "That workstream is no longer available.",
+                })
+                return
+            self.set_selection(sender, workstream_id)
+            self.client.call("answerCallbackQuery", {
+                "callback_query_id": callback["id"], "text": "Workstream selected.",
+            })
+            return
         if len(pieces) != 3 or pieces[0] != "task" or not all(piece.isdigit() for piece in pieces[1:]):
             return
         request = self.db.fetch_one("SELECT * FROM request_messages WHERE id = %s AND sender_id = %s AND status = 'pending' AND created_at > now() - interval '15 minutes'", (int(pieces[1]), sender))

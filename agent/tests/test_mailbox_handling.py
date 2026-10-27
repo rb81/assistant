@@ -414,9 +414,9 @@ class MailboxHandlingTest(unittest.TestCase):
 
         self.assertEqual(thread_id, "thread-1")
 
-    def test_sync_archives_only_queued_messages(self) -> None:
-        FakeIMAP.uids = [b"10", b"11"]
-        FakeIMAP.raw_by_uid = {b"10": b"queued", b"11": b"stored-only"}
+    def test_sync_archives_queued_and_quarantines_flagged_messages(self) -> None:
+        FakeIMAP.uids = [b"10", b"11", b"12"]
+        FakeIMAP.raw_by_uid = {b"10": b"queued", b"11": b"stored-only", b"12": b"unaccepted"}
         db = FakeStateDatabase()
         downloader = FakeDownloader(
             db,
@@ -433,6 +433,7 @@ class MailboxHandlingTest(unittest.TestCase):
             [
                 IngestResult(inserted=True, queued=True, message_id="<queued@example.com>"),
                 IngestResult(inserted=True, queued=False, message_id="<stored@example.com>"),
+                IngestResult(inserted=False, queued=False, message_id="<unaccepted@example.com>", quarantine=True),
             ],
         )
 
@@ -443,8 +444,8 @@ class MailboxHandlingTest(unittest.TestCase):
         move_calls = [call for call in mailbox.uid_calls if call[0] == "MOVE"]
         self.assertEqual(inserted, 2)
         self.assertEqual(mailbox.selected, "INBOX")
-        self.assertEqual(move_calls, [("MOVE", (b"10", '"Processed Mail"'))])
-        self.assertEqual(db.state["imap:imap.local:INBOX:last_uid"], 11)
+        self.assertEqual(move_calls, [("MOVE", (b"10", '"Processed Mail"')), ("MOVE", (b"12", "Quarantine"))])
+        self.assertEqual(db.state["imap:imap.local:INBOX:last_uid"], 12)
 
     def test_sync_archives_duplicate_actionable_messages_without_counting_insert(self) -> None:
         FakeIMAP.uids = [b"12"]
@@ -793,7 +794,8 @@ class MailboxHandlingTest(unittest.TestCase):
         db = FakeIngestDatabase()
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.db = db  # type: ignore[assignment]
-        downloader.config = AppConfig({"agent": {"email": {}, "identity": {"email": "agent@acme.example"}}})
+        db.execute = lambda *_args: None  # type: ignore[attr-defined]
+        downloader.config = AppConfig({"agent": {"email": {"actionable_senders": ["client@example.com"]}, "identity": {"email": "agent@acme.example"}}})
         downloader.attachment_root = Path("/tmp/assistant-test-artifacts/attachments")
         downloader.artifact_processor = FakeArtifactProcessor()
         message = EmailMessage()
@@ -808,7 +810,8 @@ class MailboxHandlingTest(unittest.TestCase):
             "If you have any concerns or questions, please email security@acme.example.\n"
         )
 
-        result = downloader.ingest_raw(message.as_bytes())
+        with patch("assistant_agent.email_ingest.RequestService"):
+            result = downloader.ingest_raw(message.as_bytes())
 
         self.assertTrue(result.inserted)
         self.assertEqual(db.inserted[0][8], "Thanks, got it.")

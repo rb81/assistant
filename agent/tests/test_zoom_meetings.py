@@ -29,8 +29,13 @@ class ZoomMeetingTest(unittest.TestCase):
             request.assert_not_called()
 
     def test_update_preserves_explicit_offset_and_managed_only_access(self):
-        self.db.fetch_one.side_effect = [self.row, self.row]
-        with patch.object(self.service, "request") as request:
+        self.db.fetch_one.side_effect = [self.row, {"version": 1}, self.row]
+        provider_state = {
+            "topic": "Meeting",
+            "start_time": "2026-10-08T10:00:00Z",
+            "duration": 30,
+        }
+        with patch.object(self.service, "request", side_effect=[provider_state, {}]) as request:
             self.service.update(1, start="2026-10-08T14:00:00-04:00")
             self.assertEqual(request.call_args.args[2]["start_time"], "2026-10-08T18:00:00Z")
         self.db.fetch_one.side_effect = None

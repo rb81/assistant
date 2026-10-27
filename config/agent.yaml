@@ -18,7 +18,7 @@
 agent:
   app:
     name: assistant
-    referer_url: https://assistant.local
+    referer_url: https://github.com/rb81/assistant
     timezone: UTC
 
   # Agent identity — override via AGENT_NAME / AGENT_EMAIL env vars.
@@ -53,6 +53,11 @@ agent:
     temperature: 0.2
     max_tokens_per_call: 4096
 
+  model_service:
+    enabled: false
+    budget_usd: 5.0
+    budget_period_days: 30
+
   limits:
     max_iterations_per_task: 50
     max_tokens_per_task: 1000000
@@ -79,6 +84,8 @@ agent:
     imap_password:
     imap_folder: INBOX
     imap_archive_folder: Archive
+    # Rejected, held and unaccepted inbound email is moved here and not stored.
+    imap_quarantine_folder: Quarantine
     imap_sent_folder: Sent
     imap_poll_interval_seconds: 60
     smtp_host:
@@ -290,3 +297,39 @@ agent:
     max_tool_calls: 8
     max_completion_tokens:
     temperature:
+
+  # Optional admin sender authentication and decision-model screening; configure with ./scripts/setup.sh.
+  # See docs/security.md#email-and-action-screening.
+  security:
+    notify_max_per_hour: 20
+    # YOLO mode: let "possibly malicious" items proceed without admin approval (malicious is always blocked).
+    allow_possibly_malicious: false
+    email_authentication:
+      # Applies only to email whose From is the admin address (tasks, /admin commands, OTP replies).
+      # Verified via DNS: an aligned DKIM signature or an aligned SPF pass is required.
+      enabled: false
+    decision_model:
+      # When enabled, all accepted non-admin inbound email is always screened.
+      enabled: false
+      # openrouter (default): OpenRouter's normalized Decisions API with OPENROUTER_API_KEY; model is any
+      # decision model slug (default perplexity/pplx-decider-v1.2).
+      # Optional direct provider APIs (SECURITY_DECISION_API_KEY): perplexity, jev, clef, openai, or custom
+      # (System One-compatible endpoint; set url and model).
+      provider: openrouter
+      url:
+      model:
+      timeout_seconds: 20
+      # review (hold for admin), reject, or allow when the decision model is unavailable
+      on_error: review
+      approval_ttl_minutes: 1440
+      malicious_threshold: 0.7
+      possibly_malicious_threshold: 0.3
+      flag_threshold: 0.5
+      max_field_chars: 40000
+      screen:
+        outbound_email: false
+        scripts: false
+    scripts:
+      # Hosts scripts may contact without review (blank = no allowlist); subdomains match.
+      allowed_domains: []
+      max_files: 20

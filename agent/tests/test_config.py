@@ -19,6 +19,7 @@ from assistant_agent.config import (
     agent_email,
     agent_name,
     app_display_name,
+    app_referer_url,
     load_config,
     message_id_domain,
     database_url,
@@ -151,6 +152,7 @@ class ConfigTest(unittest.TestCase):
         )
 
         self.assertEqual(app_display_name(config), "Assistant")
+        self.assertEqual(app_referer_url(config), "https://github.com/rb81/assistant")
         self.assertEqual(agent_name(config), "Agent")
         self.assertEqual(agent_email(config), "agent@acme.example")
         self.assertEqual(agent_display(config), "Agent <agent@acme.example>")

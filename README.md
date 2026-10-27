@@ -142,6 +142,9 @@ Separate services handle email ingestion, job execution, native reminders, deep 
 - **Calendar** (Google, Outlook, Zoho) with strict managed-event rules. Opt-in.
 - **Zoom** managed meetings. Opt-in.
 - **Dropbox** private file exchange. Opt-in.
+- **Model presets** for isolated OpenRouter text, image and audio requests with
+  optional workspace attachments. Opt-in through setup's Advanced Settings;
+  default shared budget USD 5 per rolling 30 days. See [model tool](docs/tools-reference.md#model-preset-tool).
 
 ## Configuration
 

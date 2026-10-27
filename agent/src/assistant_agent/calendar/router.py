@@ -14,15 +14,19 @@ The tools layer never imports individual provider classes.
 """
 
 import logging
+import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from psycopg.types.json import Jsonb
 
 from ..config import AppConfig
-from ..database import json_safe
+from ..database import Database, json_safe
+from ..provider_mutations import complete as complete_provider_mutation
+from ..provider_mutations import fail as fail_provider_mutation
+from ..provider_mutations import mutation_key, operation_lock, prepare as prepare_provider_mutation
 from ..time_utils import local_datetime_iso, parse_datetime
 from ..secret_store import read_secret
 from .models import (
@@ -309,6 +313,7 @@ class CalendarRouter:
                 visible = allow_details or is_managed
                 item: dict[str, Any] = {
                     "event_id": assistant_id,
+                    "object_version": getattr(self, "_managed_versions", {}).get(lookup_key),
                     "provider": ev.provider_name,
                     "calendar_id": ev.calendar_id,
                     "provider_event_id": ev.provider_event_id,
@@ -355,17 +360,49 @@ class CalendarRouter:
         metadata: Optional[dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
+        lock_identity = idempotency_key or json_safe({
+            "job_id": self._job.get("id"),
+            "provider": provider or self._default_provider_name,
+            "title": title,
+            "start": start,
+            "end": end,
+            "description": description,
+            "location": location,
+            "all_day": all_day,
+            "transparency": transparency,
+            "attendees": attendees or [],
+            "alert_minutes": alert_minutes,
+        })
+        lock_key = uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(lock_identity, sort_keys=True, default=str)).hex
+        with operation_lock(self._db, lock_key):
+            return self._create_event(
+                title=title, start=start, end=end, provider=provider, description=description,
+                location=location, all_day=all_day, transparency=transparency, attendees=attendees,
+                alert_minutes=alert_minutes, metadata=metadata, idempotency_key=idempotency_key,
+            )
+
+    def _create_event(
+        self,
+        title: str,
+        start: str,
+        end: str,
+        provider: Optional[str] = None,
+        description: str = "",
+        location: str = "",
+        all_day: bool = False,
+        transparency: str = "opaque",
+        attendees: Optional[list[str]] = None,
+        alert_minutes: Optional[int] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
         clean_title = str(title or "").strip()
         if not clean_title:
             raise CalendarError("event title is required")
 
         clean_meta = metadata if isinstance(metadata, dict) else {}
         clean_ikey = str(idempotency_key or clean_meta.get("idempotency_key") or "").strip()
-        if clean_ikey:
-            existing = self._managed_by_idempotency_key(clean_ikey)
-            if existing is not None:
-                return {"event": existing, "idempotent_reuse": True, "idempotency_key": clean_ikey}
-
+        explicit_idempotency = bool(clean_ikey)
         target_provider = provider or self._default_provider_name
         prov = self._get_provider(target_provider)
         pc = self._provider_config(target_provider)
@@ -388,12 +425,85 @@ class CalendarRouter:
             attendees=clean_attendees,
             alert_minutes=alert_mins,
         )
-        created_event = prov.create_event(request)
+        desired_state = {
+            "title": clean_title,
+            "start": self._datetime_state(event_start),
+            "end": self._datetime_state(event_end),
+            "all_day": bool(all_day),
+            "description": description,
+            "location": location,
+            "transparency": transparency,
+            "attendees": sorted(value.lower() for value in clean_attendees),
+        }
+        if not clean_ikey:
+            identity = {
+                "job_id": self._job.get("id"),
+                "provider": target_provider,
+                "calendar_id": pc.calendar_id,
+                "desired_state": desired_state,
+            }
+            clean_ikey = "auto:" + uuid.uuid5(
+                uuid.NAMESPACE_URL, json.dumps(identity, sort_keys=True),
+            ).hex
+        assistant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, target_provider + ":" + clean_ikey))
+        operation_key = mutation_key(
+            target_provider, "calendar_event", assistant_id, "CREATE", 0, desired_state,
+        )
+        mutation = prepare_provider_mutation(
+            self._db, target_provider, "calendar_event", assistant_id, "CREATE",
+            operation_key, {}, desired_state,
+        )
+        existing = (
+            self._managed_by_idempotency_key(clean_ikey)
+            if explicit_idempotency or isinstance(self._db, Database) else None
+        )
+        if existing is not None:
+            if isinstance(self._db, Database):
+                provider_event = prov.get_event(pc.calendar_id, str(existing["provider_event_id"]))
+                if not self._event_matches(provider_event, desired_state):
+                    raise CalendarError("idempotency key belongs to a different or subsequently changed calendar event")
+                complete_provider_mutation(self._db, mutation.get("id"), self._event_state(provider_event))
+            return {"event": existing, "idempotent_reuse": True, "idempotency_key": clean_ikey}
 
-        assistant_id = str(uuid.uuid4())
+        if mutation["status"] == "completed":
+            existing = self._managed_row(assistant_id)
+            if existing:
+                return {"event": self._public_row(existing), "idempotent_reuse": True,
+                        "idempotency_key": clean_ikey}
+        if mutation["is_new"]:
+            try:
+                created_event = prov.create_event(request)
+            except ProviderAuthError as exc:
+                fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=False)
+                raise
+            except CalendarError as exc:
+                fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=True)
+                raise CalendarError(
+                    "calendar creation outcome is uncertain; reconcile the provider before retrying",
+                ) from exc
+        else:
+            try:
+                candidates = prov.list_events(
+                    calendar_id=pc.calendar_id,
+                    start=event_start - timedelta(days=1),
+                    end=event_end + timedelta(days=1),
+                )
+            except CalendarError as exc:
+                fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=True)
+                raise CalendarError("calendar creation is pending; provider state could not be reconciled") from exc
+            matches = [event for event in candidates if self._event_matches(event, desired_state)]
+            if len(matches) != 1:
+                fail_provider_mutation(
+                    self._db, mutation.get("id"),
+                    "provider search found %s exact matches" % len(matches), uncertain=True,
+                )
+                raise CalendarError(
+                    "calendar creation outcome is uncertain; do not retry creation until the provider event is identified",
+                )
+            created_event = matches[0]
+
         db_meta = dict(clean_meta)
-        if clean_ikey:
-            db_meta["idempotency_key"] = clean_ikey
+        db_meta["idempotency_key"] = clean_ikey
         row = self._insert_managed_event(
             assistant_id=assistant_id,
             provider_name=target_provider,
@@ -405,6 +515,7 @@ class CalendarRouter:
             metadata=db_meta,
         )
         self._audit(assistant_id, "created", {"event": self._public_row(row)})
+        complete_provider_mutation(self._db, mutation.get("id"), self._event_state(created_event))
         return {"event": self._public_row(row)}
 
     def update_event(
@@ -463,12 +574,53 @@ class CalendarRouter:
             attendees=self._clean_attendees(attendees) if attendees is not None else None,
             alert_minutes=alert_minutes,
         )
-        updated_event = prov.update_event(
-            calendar_id=calendar_id,
-            provider_event_id=provider_event_id,
-            request=request,
-            existing=existing,
+        desired_state = self._desired_event_state(existing, request)
+        version = self._object_version(row)
+        operation_key = mutation_key(
+            provider_name, "calendar_event", clean_id, "UPDATE", version, desired_state,
         )
+        mutation = prepare_provider_mutation(
+            self._db, provider_name, "calendar_event", clean_id, "UPDATE",
+            operation_key, self._event_state(existing), desired_state,
+        )
+        if (not self._managed_event_matches(row, existing)
+                and not self._event_matches(existing, desired_state)):
+            error = "provider event differs from the last recorded state; reconcile it before updating"
+            fail_provider_mutation(self._db, mutation.get("id"), error, uncertain=False)
+            raise CalendarError(error)
+        if mutation["status"] == "completed":
+            return {"event": self._public_row(row), "idempotent_reuse": True}
+        if self._event_matches(existing, desired_state):
+            updated_event = existing
+        elif not self._event_matches(existing, mutation["before_state"]):
+            fail_provider_mutation(
+                self._db, mutation.get("id"),
+                "provider event differs from both the recorded before-state and requested state",
+                uncertain=True,
+            )
+            raise CalendarError("calendar update outcome is uncertain; reconcile the provider event before retrying")
+        else:
+            try:
+                updated_event = prov.update_event(
+                    calendar_id=calendar_id,
+                    provider_event_id=provider_event_id,
+                    request=request,
+                    existing=existing,
+                )
+            except CalendarError as exc:
+                try:
+                    reconciled = prov.get_event(calendar_id, provider_event_id)
+                except CalendarError:
+                    fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=True)
+                    raise CalendarError("calendar update outcome is uncertain; provider state could not be read") from exc
+                if self._event_matches(reconciled, desired_state):
+                    updated_event = reconciled
+                elif self._event_matches(reconciled, mutation["before_state"]):
+                    fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=False)
+                    raise
+                else:
+                    fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=True)
+                    raise CalendarError("calendar update outcome is uncertain; reconcile the provider event before retrying") from exc
 
         next_meta = metadata if isinstance(metadata, dict) else (row.get("metadata") or {})
         next_summary = request.title if request.title is not None else str(row.get("summary", ""))
@@ -480,6 +632,7 @@ class CalendarRouter:
             metadata=next_meta,
         )
         self._audit(clean_id, "updated", {"event": self._public_row(updated_row)})
+        complete_provider_mutation(self._db, mutation.get("id"), self._event_state(updated_event))
         return {"event": self._public_row(updated_row)}
 
     def delete_event(self, event_id: str) -> dict[str, Any]:
@@ -494,18 +647,114 @@ class CalendarRouter:
 
         prov = self._get_provider(provider_name)
         try:
-            prov.delete_event(calendar_id, provider_event_id)
+            current = prov.get_event(calendar_id, provider_event_id)
         except ProviderEventNotFoundError:
-            # Already gone on the provider — mark deleted in our DB anyway.
-            log.warning(
-                "delete_event: event %r not found on provider %r; marking deleted locally",
-                provider_event_id,
-                provider_name,
+            current = None
+        if current is not None and not self._managed_event_matches(row, current):
+            raise CalendarError("provider event differs from the last recorded state; reconcile it before deleting")
+        version = self._object_version(row)
+        desired_state = {"status": "deleted"}
+        operation_key = mutation_key(
+            provider_name, "calendar_event", clean_id, "DELETE", version, desired_state,
+        )
+        mutation = prepare_provider_mutation(
+            self._db, provider_name, "calendar_event", clean_id, "DELETE",
+            operation_key, self._event_state(current), desired_state,
+        )
+        if mutation["status"] == "completed":
+            return {"event": self._public_row(row), "idempotent_reuse": True}
+        if current is not None and not self._event_matches(current, mutation["before_state"]):
+            fail_provider_mutation(
+                self._db, mutation.get("id"), "provider event differs from its recorded before-state",
+                uncertain=True,
             )
+            raise CalendarError("calendar delete outcome is uncertain; reconcile the provider event before retrying")
+        if current is not None:
+            try:
+                prov.delete_event(calendar_id, provider_event_id)
+            except ProviderEventNotFoundError:
+                pass
+            except CalendarError as exc:
+                try:
+                    prov.get_event(calendar_id, provider_event_id)
+                except ProviderEventNotFoundError:
+                    pass
+                except CalendarError:
+                    fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=True)
+                    raise CalendarError("calendar delete outcome is uncertain; provider state could not be read") from exc
+                else:
+                    fail_provider_mutation(self._db, mutation.get("id"), str(exc), uncertain=False)
+                    raise
 
         updated_row = self._mark_deleted(clean_id)
         self._audit(clean_id, "deleted", {"provider_event_id": provider_event_id})
+        complete_provider_mutation(self._db, mutation.get("id"), desired_state)
         return {"event": self._public_row(updated_row)}
+
+    @staticmethod
+    def _event_state(event: Optional[CalendarEvent]) -> dict[str, Any]:
+        if event is None:
+            return {"status": "deleted"}
+        return {
+            "title": event.title,
+            "start": CalendarRouter._datetime_state(event.start),
+            "end": CalendarRouter._datetime_state(event.end),
+            "all_day": event.all_day,
+            "description": event.description,
+            "location": event.location,
+            "transparency": event.transparency,
+            "attendees": sorted(attendee.email.lower() for attendee in event.attendees),
+            "status": event.status,
+        }
+
+    @classmethod
+    def _desired_event_state(cls, existing: CalendarEvent, request: UpdateEventRequest) -> dict[str, Any]:
+        state = cls._event_state(existing)
+        for field in ("title", "all_day", "description", "location", "transparency"):
+            value = getattr(request, field)
+            if value is not None:
+                state[field] = value
+        if request.start is not None:
+            state["start"] = cls._datetime_state(request.start)
+        if request.end is not None:
+            state["end"] = cls._datetime_state(request.end)
+        if request.attendees is not None:
+            state["attendees"] = sorted(value.lower() for value in request.attendees)
+        if request.alert_minutes is not None:
+            state["alert_minutes"] = request.alert_minutes
+        return state
+
+    @staticmethod
+    def _datetime_state(value: datetime) -> str:
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.isoformat()
+
+    @classmethod
+    def _event_matches(cls, event: CalendarEvent, state: dict[str, Any]) -> bool:
+        actual = cls._event_state(event)
+        return all(key in actual and actual[key] == value for key, value in state.items())
+
+    def _object_version(self, row: dict[str, Any]) -> int:
+        if row.get("object_id") is None:
+            if not isinstance(self._db, Database):
+                return 1
+            raise CalendarError("managed event has no workstream version; refresh before updating")
+        version = self._db.fetch_one(
+            "SELECT version FROM workstream_objects WHERE id = %s",
+            (row["object_id"],),
+        )
+        if not version or version.get("version") is None:
+            raise CalendarError("managed event version is unavailable; refresh before updating")
+        return int(version["version"])
+
+    @classmethod
+    def _managed_event_matches(cls, row: dict[str, Any], event: CalendarEvent) -> bool:
+        return (
+            row.get("summary") == event.title
+            and cls._datetime_state(row["starts_at"]) == cls._datetime_state(event.start)
+            and cls._datetime_state(row["ends_at"]) == cls._datetime_state(event.end)
+        )
 
     def list_provider_calendars(self) -> dict[str, Any]:
         """Return all calendar collections from all providers (diagnostic/admin)."""
@@ -608,8 +857,15 @@ class CalendarRouter:
     def _managed_by_provider_id(self) -> dict[str, str]:
         """Return {provider_name:provider_event_id -> assistant_id} for active events."""
         rows = self._db.fetch_all(
-            "SELECT assistant_id, provider_name, provider_event_id FROM calendar_managed_events WHERE status = 'active'"
+            """SELECT assistant_id, provider_name, provider_event_id,
+                      (SELECT version FROM workstream_objects WHERE id = calendar_managed_events.object_id) AS object_version
+               FROM calendar_managed_events WHERE status = 'active'"""
         )
+        self._managed_versions = {}
+        for row in rows:
+            if row.get("provider_name") is not None and row.get("provider_event_id") is not None:
+                key = "%s:%s" % (row["provider_name"], row["provider_event_id"])
+                self._managed_versions[key] = row.get("object_version")
         return {
             "%s:%s" % (r["provider_name"], r["provider_event_id"]): str(r["assistant_id"])
             for r in rows
@@ -744,8 +1000,16 @@ class CalendarRouter:
             return None
         starts_at = row.get("starts_at")
         ends_at = row.get("ends_at")
+        object_version = row.get("object_version")
+        if object_version is None and row.get("object_id") is not None:
+            version = self._db.fetch_one(
+                "SELECT version FROM workstream_objects WHERE id = %s",
+                (row["object_id"],),
+            )
+            object_version = version["version"] if version and version.get("version") is not None else None
         return {
             "event_id": row.get("assistant_id"),
+            "object_version": object_version,
             "provider": row.get("provider_name"),
             "provider_event_id": row.get("provider_event_id"),
             "calendar_id": row.get("calendar_id"),

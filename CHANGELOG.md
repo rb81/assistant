@@ -29,6 +29,19 @@ read [the upgrade guide](docs/upgrading.md) before starting new workers.
 - `setup tools` troubleshooting menus and `setup reset` selective factory reset
   with dependency-closed selection, backups and preserved settings.
 - `/admin requeue`, `/admin instruct` and `/admin jobs --recent`; local admin CLI `--yes`.
+- Security screening, configured in a new setup wizard section:
+  - optional DNS-verified DKIM or SPF authentication for mail claiming the admin address;
+  - decision-model screening through OpenRouter's normalized Decisions API by default (any decision model slug,
+    existing OpenRouter key), with optional direct Perplexity, Jev, Clef, OpenAI or custom endpoints.
+    Inbound screening is always on once configured; outbound email and scripts
+    are opt-in, and scripts get a static import, call and network analysis.
+  - OTP approval for possibly malicious items;
+  - YOLO mode, off by default and guarded by a typed confirmation.
+
+### Changed
+
+- Fresh mail from senders that are not accepted is no longer stored. It is moved
+  unread to `IMAP_QUARANTINE_FOLDER` (default `Quarantine`).
 
 ### Removed
 
