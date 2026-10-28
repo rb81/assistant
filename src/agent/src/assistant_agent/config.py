@@ -102,6 +102,8 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", int),
         ("AGENT_TTS_ENABLED", "agent.tts.enabled", bool),
         ("AGENT_TTS_ZDR_ONLY", "agent.tts.zdr_only", bool),
+        ("AGENT_TTS_MODEL", "agent.tts.model", str),
+        ("AGENT_TTS_VOICE", "agent.tts.voice", str),
         ("AGENT_APPROVAL_CHANNEL", "agent.approvals.channel", str),
         ("AGENT_NAMING_MODEL", "agent.naming.model", str),
         

@@ -63,6 +63,8 @@ agent:
   tts:
     enabled: false
     zdr_only: false
+    model: mistralai/voxtral-mini-tts-3-0
+    voice: gb_jane_confident
 
   approvals:
     channel: email

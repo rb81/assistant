@@ -38,7 +38,7 @@ tracking and the transition path for older databases.
   file retention, and local workstream administration.
 - `model_service.py` — configured secondary-model calls through `llm_service`,
   including usage and cost accounting.
-- `tts.py` — dedicated speech discovery, synthesis and charge reconciliation.
+- `tts.py` — admin-configured speech synthesis, charge reconciliation and the `voices`/`test` admin CLI.
   `model_resources.py` shares spending admission and tracked output persistence
   between speech and model presets; channel delivery remains in `telegram.py`.
 - `memory_store.py`, `memory_manager.py`, `context_store.py` — memory and context search.

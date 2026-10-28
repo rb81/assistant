@@ -111,6 +111,8 @@ def build_prompt_context(config: AppConfig) -> str:
     lines.append("- Admin email: %s" % (admin_email_value or "not configured"))
     if org_name:
         lines.append("- Organization: %s" % org_name)
+    from .tts import configured as tts_configured, describe as tts_describe
+
     lines.extend(
         [
             "- Current UTC time: %s" % time_context["utc"],
@@ -120,8 +122,8 @@ def build_prompt_context(config: AppConfig) -> str:
             "- Model preset tool catalog policy: %s. This policy applies only to llm_service, not other model calls or web search." % (
                 "ZDR-only models and provider routing" if config.get_bool("agent.model_service.zdr_only", False) else "all models"
             ),
-            "- Text-to-speech catalog policy: %s. Speech and model preset calls share the model tool spending limit." % (
-                "ZDR-only models and provider routing" if config.get_bool("agent.tts.zdr_only", False) else "all speech models"
+            "- Text-to-speech (admin-configured): %s. Speech and model preset calls share the model tool spending limit." % (
+                tts_describe(config) if tts_configured(config) else "disabled"
             ),
         ]
     )

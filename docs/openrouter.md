@@ -147,10 +147,12 @@ limits, supported modalities and uncertain-request reconciliation.
 Enable **Advanced Settings → Text-to-speech** independently of model presets.
 `AGENT_TTS_ENABLED` / `agent.tts.enabled` defaults to false;
 `AGENT_TTS_ZDR_ONLY` / `agent.tts.zdr_only` defaults to false (all models).
+`AGENT_TTS_MODEL` / `AGENT_TTS_VOICE` select the admin-chosen speech model and
+voice (default `mistralai/voxtral-mini-tts-3-0` with `gb_jane_confident`).
 The latter selects the filtered catalog and enforces `provider.zdr=true` on
 every speech request; it does not inherit the model-preset ZDR flag.
 
-The `text_to_speech` tool selects dedicated `speech` models, calls
+The `text_to_speech` tool uses the configured dedicated `speech` model, calls
 `POST /audio/speech`, and saves binary audio in the workspace. Authentication
 uses the internal OpenRouter secret. It shares the model-preset budget settings
 and ledger even when presets are disabled. Both model tools retry eligible

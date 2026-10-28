@@ -21,8 +21,8 @@ application networks, or service administration.
 
 Do not search environment variables or secret files for API keys. Use dedicated
 tools for authenticated integrations: `llm_service` handles model presets and
-chat-compatible audio/image generation; `text_to_speech` discovers dedicated
-speech models and saves synthesized audio without exposing credentials.
+chat-compatible audio/image generation; `text_to_speech` synthesizes audio
+with the admin-configured speech model and voice without exposing credentials.
 Delivery remains in channel tools such as `telegram_send`. If a capability
 is missing or fails, report the limitation rather than recreating it in scripts.
 

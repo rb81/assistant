@@ -72,6 +72,8 @@ ADVANCED_SETTINGS = {
     "Text-to-speech": (
         ("AGENT_TTS_ENABLED", "agent.tts.enabled", "Enable dedicated text-to-speech? (requires OPENROUTER_API_KEY; shares spending limits with the model preset tool)", False, bool, None),
         ("AGENT_TTS_ZDR_ONLY", "agent.tts.zdr_only", "Restrict text-to-speech to ZDR models and routing? (No = all speech models)", False, bool, None),
+        ("AGENT_TTS_MODEL", "agent.tts.model", "Speech model slug (list options with: python -m assistant_agent.tts voices)", "mistralai/voxtral-mini-tts-3-0", str, None),
+        ("AGENT_TTS_VOICE", "agent.tts.voice", "Voice identifier for the speech model", "gb_jane_confident", str, None),
     ),
     "Approvals and names": (
         ("AGENT_APPROVAL_CHANNEL", "agent.approvals.channel", "Approval delivery: email, telegram, or both (Telegram recommended when configured)", "email", str, None),
@@ -1761,6 +1763,8 @@ def advanced_value_error(setting, value):
         return "Approval delivery must be email, telegram or both"
     if name == "AGENT_NAMING_MODEL" and not str(value).strip():
         return "Naming model must not be blank"
+    if name in {"AGENT_TTS_MODEL", "AGENT_TTS_VOICE"} and not str(value).strip():
+        return "Speech model and voice must not be blank"
     if kind is bool:
         if str(value).lower() not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
             return "Advanced Settings: " + name + " must be a boolean"

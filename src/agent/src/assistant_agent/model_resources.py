@@ -76,7 +76,7 @@ class ModelToolResources:
             if budget["unresolved_requests"]:
                 raise ModelServiceError(
                     "Model service has a pending or unknown-cost request. "
-                    "Use text_to_speech action=reconcile with no other arguments to retry eligible speech accounting. "
+                    "Eligible speech charges are retried automatically on the next request. "
                     "Pending requests, non-speech charges or missing generation IDs require administrator reconciliation; "
                     "changing models cannot bypass this block."
                 )

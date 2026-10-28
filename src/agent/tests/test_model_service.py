@@ -103,7 +103,7 @@ def test_tts_shares_persisted_spending_and_unknown_cost_blocks_with_presets(serv
     service.add_preset("text", "test/text")
     with patch.object(service.client, "complete", return_value=reply(cost=4.9)):
         service.use_preset("text", PROMPT)
-    service.config.values["agent"]["tts"] = {"enabled": True}
+    service.config.values["agent"]["tts"] = {"enabled": True, "model": "test/tts", "voice": "voice"}
     tts = TextToSpeech(service.runtime)
     model = {"id": "test/tts", "architecture": {"output_modalities": ["speech"]}, "supported_voices": ["voice"]}
 
@@ -114,10 +114,10 @@ def test_tts_shares_persisted_spending_and_unknown_cost_blocks_with_presets(serv
     with patch.object(tts.client, "models", return_value=[model]), patch.object(
         tts.client, "synthesize", side_effect=synthesize
     ) as send, patch.object(tts.client, "generation", return_value={"total_cost": 0.2}):
-        tts.generate("test/tts", "Hello", "voice")
+        tts.generate("Hello")
         assert service.budget()["spent_usd"] == 5.1
         with pytest.raises(ModelServiceError, match="budget exhausted"):
-            tts.generate("test/tts", "Hello", "voice")
+            tts.generate("Hello")
         with pytest.raises(ModelServiceError, match="budget exhausted"):
             service.use_preset("text", PROMPT)
     assert send.call_count == 1

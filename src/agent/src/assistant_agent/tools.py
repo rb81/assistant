@@ -75,16 +75,15 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
     "Text-to-speech": {
         "tools": {"text_to_speech"},
         "text": (
-            "Use list_models to discover dedicated speech models and exact voice identifiers. "
-            "Supply literal text and separate delivery instructions only for models advertising support. "
-            "No inherited context or presets. Authentication is internal: never search for API keys or use sandbox API calls. "
+            "The administrator configures the speech model and voice (see your context); you supply the text and, "
+            "only when the configured model supports them, separate delivery instructions. You may research the "
+            "configured model's documented capabilities or text markup, but never choose another model or voice. "
+            "No inherited context or presets. Authentication is internal: never search for API keys, install "
+            "speech packages or call other speech services from the sandbox. "
             "Speech files are saved in the job workspace; this tool does not deliver them. "
             "Spending and unresolved-charge blocks are shared with llm_service. Never automatically repeat synthesis "
-            "after an interruption or unknown charge. Use action=reconcile with no other arguments to retry "
-            "eligible unresolved speech accounting across jobs, or pass only request_id for one charge. "
-            "New generations automatically attempt this accounting recovery before budget admission. "
-            "Do not infer which model caused a block from earlier failed calls; use persisted accounting results. "
-            "An admin approval does not settle a charge."
+            "after an interruption or unknown charge; charges are reconciled automatically. If the tool fails, "
+            "report the error to the admin instead of improvising an alternative."
         ),
     },
     "Telegram": {
@@ -3773,7 +3772,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "file_semantic_search": "Search indexed workspace file contents by meaning.",
         "web_search": "Search the live web for current/source-backed information.",
         "llm_service": "Discover models; manage presets; generate text, JSON, images or audio with optional workspace files.",
-        "text_to_speech": "Discover dedicated speech models and voices; synthesize text into an audio file; reconcile charges.",
+        "text_to_speech": "Synthesize text into an audio file with the admin-configured speech model and voice.",
         "email_search": "Search stored email records.",
         "telegram_send": "Send text, documents or native voice-note attachments to a linked Telegram identity.",
         "email_read": "Read a stored email by ID, with optional body paging.",

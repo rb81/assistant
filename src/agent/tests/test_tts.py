@@ -12,7 +12,7 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.model_resources import ModelServiceError, ModelToolResources, ProviderRejected
 from assistant_agent.tools import ToolError, ToolRuntime, available_function_names, available_tools, tool_catalog
-from assistant_agent.tts import MAX_AUDIO_BYTES, OpenRouterSpeech, TextToSpeech, playable_audio
+from assistant_agent.tts import MAX_AUDIO_BYTES, OpenRouterSpeech, TextToSpeech, describe, playable_audio
 
 
 MODEL = {
@@ -26,7 +26,7 @@ CHAT_AUDIO = {**MODEL, "id": "test/chat-audio", "architecture": {"output_modalit
 MP3 = b"ID3" + b"\x00" * 24
 GENERATION = {"id": "gen-tts-test", "api_type": "tts", "model": MODEL["id"],
               "total_cost": 0.02, "tokens_prompt": 4, "tokens_completion": 6}
-ARGUMENTS = {"model": MODEL["id"], "text": "Hello!", "voice": "alloy"}
+ARGUMENTS = {"text": "Hello!"}
 
 
 class AudioResponse(io.BytesIO):
@@ -41,7 +41,8 @@ class AudioResponse(io.BytesIO):
 @pytest.fixture
 def speech(tmp_path, monkeypatch):
     config = AppConfig({"agent": {
-        "tts": {"enabled": True, "zdr_only": True}, "model_service": {"enabled": False},
+        "tts": {"enabled": True, "zdr_only": True, "model": MODEL["id"], "voice": "alloy"},
+        "model_service": {"enabled": False},
         "filesystem": {"shared_root": str(tmp_path), "require_mount": False},
         "workspace": {"index": {"enabled": False}}, "embeddings": {"enabled": False},
     }})
@@ -65,23 +66,30 @@ def synthesize(data=MP3, content_type="audio/mpeg", generation_id="gen-tts-test"
     return send
 
 
-def test_speech_discovery_excludes_chat_audio_and_exposes_voices_policy_and_controls(speech):
-    result = speech.run("list_models", limit=1)
-    assert result["total"] == 3 and result["next_offset"] == 1
-    assert result["zdr_only"] is True
-    assert result["models"][0]["supported_voices"] == ["alloy", "nova"]
-    assert result["models"][0]["supports_instructions"] is True
-    assert speech.list_models(query="other")["models"][0]["supports_instructions"] is False
-    assert speech.list_models(query="gemini")["models"][0]["audio_formats"] == ["wav"]
-    speech.client.models.assert_called_with(zdr_only=True)
+@pytest.mark.parametrize("arguments", [{"model": OTHER["id"]}, {"voice": "nova"}, {"action": "list_models"}])
+def test_agent_cannot_choose_model_or_voice(speech, arguments):
+    with patch.object(speech.client, "synthesize") as send:
+        with pytest.raises(ModelServiceError, match="administrator configures the model and voice"):
+            speech.run(**ARGUMENTS, **arguments)
+    send.assert_not_called()
+    speech.reserve.assert_not_called()
+
+
+def test_context_describes_configured_model_voice_and_capabilities(speech):
+    summary = describe(speech.config)
+    assert MODEL["id"] in summary and "voice alloy" in summary and "MP3" in summary
+    assert "instructions supported" in summary and "ZDR routing enforced" in summary
+    speech.config.values["agent"]["tts"].update({"model": OTHER["id"], "zdr_only": False})
+    assert "not supported" in describe(speech.config) and "any provider" in describe(speech.config)
 
 
 @pytest.mark.parametrize("zdr_only", [True, False])
 def test_generate_saves_tracked_audio_accounts_actual_charge_and_never_delivers(speech, zdr_only):
     speech.config.values["agent"]["tts"]["zdr_only"] = zdr_only
     with patch.object(speech.client, "synthesize", side_effect=synthesize()) as send:
-        result = speech.run("generate", **ARGUMENTS, instructions="Speak warmly, with a laugh.")
+        result = speech.run(**ARGUMENTS, instructions="Speak warmly, with a laugh.")
     payload = send.call_args.args[0]
+    assert payload["model"] == MODEL["id"] and payload["voice"] == "alloy"
     assert payload["input"] == "Hello!" and payload["instructions"] == "Speak warmly, with a laugh."
     assert payload["response_format"] == "mp3"
     assert payload.get("provider") == ({"zdr": True} if zdr_only else None)
@@ -101,10 +109,11 @@ def test_generate_saves_tracked_audio_accounts_actual_charge_and_never_delivers(
 
 
 def test_pcm_only_models_produce_playable_wav_using_provider_rate_metadata(speech):
+    speech.config.values["agent"]["tts"].update({"model": GOOGLE["id"], "voice": "Kore"})
     with patch.object(speech.client, "synthesize", side_effect=synthesize(
         data=b"\x00\x01" * 100, content_type="audio/pcm;rate=24000;channels=1",
     )) as send:
-        result = speech.generate(model=GOOGLE["id"], text="Hello", voice="Kore")
+        result = speech.generate(text="Hello")
     assert send.call_args.args[0]["response_format"] == "pcm"
     output = speech.runtime.shared_root / result["files"][0]["path"]
     with wave.open(str(output), "rb") as audio:
@@ -112,19 +121,17 @@ def test_pcm_only_models_produce_playable_wav_using_provider_rate_metadata(speec
         assert audio.getnframes() == 100
 
 
-@pytest.mark.parametrize("changes, error", [
-    ({"model": CHAT_AUDIO["id"]}, "unavailable"),
-    ({"model": "missing/model"}, "unavailable"),
-    ({"text": ""}, "Speech text"),
-    ({"text": "a" * 10001}, "Speech text"),
-    ({"voice": ""}, "voice must"),
-    ({"voice": "invented"}, "voice is not supported"),
-    ({"audio_format": "ogg"}, "audio_format"),
-    ({"instructions": ""}, "instructions must"),
-    ({"model": OTHER["id"], "instructions": "Happy"}, "not documented"),
-    ({"model": GOOGLE["id"], "voice": "Kore", "audio_format": "mp3"}, "audio_format"),
+@pytest.mark.parametrize("settings, changes, error", [
+    ({"model": CHAT_AUDIO["id"]}, {}, "AGENT_TTS_MODEL"),
+    ({"model": "missing/model"}, {}, "AGENT_TTS_MODEL"),
+    ({"voice": "invented"}, {}, "AGENT_TTS_VOICE"),
+    ({}, {"text": ""}, "Speech text"),
+    ({}, {"text": "a" * 10001}, "Speech text"),
+    ({}, {"instructions": ""}, "instructions must"),
+    ({"model": OTHER["id"]}, {"instructions": "Happy"}, "does not accept separate instructions"),
 ])
-def test_invalid_or_unsupported_options_are_rejected_before_spending(speech, changes, error):
+def test_invalid_or_unsupported_options_are_rejected_before_spending(speech, settings, changes, error):
+    speech.config.values["agent"]["tts"].update(settings)
     with patch.object(speech.client, "synthesize") as send:
         with pytest.raises(ModelServiceError, match=error):
             speech.generate(**{**ARGUMENTS, **changes})
@@ -134,7 +141,7 @@ def test_invalid_or_unsupported_options_are_rejected_before_spending(speech, cha
 
 def test_explicit_rejection_releases_reservation_and_never_retries(speech):
     with patch.object(speech.client, "synthesize", side_effect=ProviderRejected("rejected")) as send:
-        with pytest.raises(ProviderRejected):
+        with pytest.raises(ProviderRejected, match="Configured model .* voice alloy.*administrator"):
             speech.generate(**ARGUMENTS)
     assert send.call_count == 1
     speech.settle.assert_called_once_with(speech.reserve.return_value, "failed", {"cost": 0}, None)
@@ -217,24 +224,13 @@ def test_reconcile_without_arguments_discovers_only_eligible_speech_charges(spee
         "status": "unknown", "generation_id": "gen-tts-test", "job_id": 11,
     }
     with patch.object(speech.client, "synthesize") as send:
-        result = speech.run("reconcile")
+        result = speech.reconcile()
     assert result["requests"][0]["request_id"] == identifier
     query = speech.db.fetch_all.call_args.args[0]
     assert "status = 'unknown'" in query and "generation_id IS NOT NULL" in query
     assert "preset->>'tool' = 'text_to_speech'" in query and "LIMIT 20" in query
     send.assert_not_called()
     speech.reserve.assert_not_called()
-
-
-@pytest.mark.parametrize("arguments, expected", [
-    ({"action": "generate", "model": MODEL["id"], "text": "Hi"}, "model, text and voice"),
-    ({"action": "reconcile", "model": MODEL["id"]}, "optional request_id"),
-])
-def test_action_argument_errors_are_actionable_before_spending(speech, arguments, expected):
-    with pytest.raises(ModelServiceError, match=expected):
-        speech.run(**arguments)
-    speech.reserve.assert_not_called()
-    speech.db.fetch_all.assert_not_called()
 
 
 @pytest.mark.parametrize("ready", [True, False])
@@ -387,7 +383,7 @@ def test_shared_budget_blocks_speech_before_provider_call(speech, unresolved, sp
 
 def test_tool_gating_is_independent_of_presets_and_dispatches_without_telegram(tmp_path, monkeypatch):
     config = AppConfig({"agent": {
-        "tts": {"enabled": True}, "model_service": {"enabled": False},
+        "tts": {"enabled": True, "model": MODEL["id"], "voice": "alloy"}, "model_service": {"enabled": False},
         "filesystem": {"shared_root": str(tmp_path), "require_mount": False},
     }})
     monkeypatch.setattr("assistant_agent.tts.read_secret", lambda name: "test-key")
@@ -398,11 +394,28 @@ def test_tool_gating_is_independent_of_presets_and_dispatches_without_telegram(t
     assert any(tool["function"]["name"] == "text_to_speech"
                for tool in available_tools(config, enabled_names={"text_to_speech"}))
     runtime = ToolRuntime(MagicMock(), config, {"id": 7})
-    with patch.object(OpenRouterSpeech, "models", return_value=[MODEL]):
-        assert runtime.run("text_to_speech", {"action": "list_models"})["total"] == 1
+    with patch.object(TextToSpeech, "generate", return_value={"files": []}) as generate:
+        assert runtime.run("text_to_speech", {"text": "Hi"}) == {"files": []}
+    generate.assert_called_once_with("Hi", None)
     config.values["agent"]["tts"]["enabled"] = False
     with pytest.raises(ToolError, match="not available"):
-        runtime.run("text_to_speech", {"action": "list_models"})
+        runtime.run("text_to_speech", {"text": "Hi"})
     config.values["agent"]["tts"]["enabled"] = True
     monkeypatch.setattr("assistant_agent.tts.read_secret", lambda name: None)
     assert "text_to_speech" not in available_function_names(config)
+
+
+def test_admin_cli_tests_configured_voice_with_overrides(tmp_path, monkeypatch, capsys):
+    from assistant_agent.tts import main
+    config = AppConfig({"agent": {"tts": {"enabled": True, "zdr_only": True, "model": MODEL["id"], "voice": "alloy"}}})
+    monkeypatch.setattr("assistant_agent.tts.read_secret", lambda name: "test-key")
+    monkeypatch.setattr("assistant_agent.config.load_config", lambda: config)
+    with patch.object(OpenRouterSpeech, "models", return_value=[MODEL, OTHER]), patch.object(
+        OpenRouterSpeech, "synthesize", return_value=(MP3, "audio/mpeg", "gen-tts-test")
+    ) as send, patch.object(OpenRouterSpeech, "generation", return_value=GENERATION):
+        assert main(["test", "Hi", "--voice", "nova", "--output", str(tmp_path / "sample")]) == 0
+        assert main(["test", "--voice", "invented"]) == 1
+    payload = send.call_args.args[0]
+    assert payload["model"] == MODEL["id"] and payload["voice"] == "nova" and payload["provider"] == {"zdr": True}
+    assert (tmp_path / "sample.mp3").read_bytes() == MP3
+    assert '"cost_usd": 0.02' in capsys.readouterr().out

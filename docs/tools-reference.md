@@ -303,41 +303,45 @@ and writable shared workspace, but not model presets, Telegram or transcription.
 Both enablement and the ZDR-only/all-model choice are independent of
 `llm_service`; defaults are disabled and all models.
 
-- `list_models`: filter by `query` and paginate with `limit` (1-50) and `offset`.
-  Results include exact slugs, advertised voices/pricing, supported output
-  formats and whether separate expression instructions are supported.
-- `generate`: supply an exact `model`, literal `text` (1-10000 characters),
-  explicit `voice`, optional `audio_format` (`mp3` or `wav`), and optional
-  `instructions` (1-2000 characters). Provider limits may be lower.
-- `reconcile`: pass only an optional local `request_id` from an unknown-cost
-  speech request. Omit it to retry up to 20 eligible unresolved speech charges
-  within the budget window across jobs. This reads existing provider charges;
-  it never synthesizes again or exposes another job's prompts/audio.
+The administrator chooses the model and voice; the agent cannot change them:
 
-Discover first; this illustrative slug/voice is not an availability guarantee:
+| Setting | Env override | Default |
+|---|---|---|
+| `agent.tts.model` | `AGENT_TTS_MODEL` | `mistralai/voxtral-mini-tts-3-0` |
+| `agent.tts.voice` | `AGENT_TTS_VOICE` | `gb_jane_confident` |
+
+The agent's context names the configured model, voice, output format and
+whether separate instructions are supported, so it can research the model's
+documented capabilities or text markup. The tool accepts only:
+
+- `text`: 1-10000 characters (provider limits may be lower).
+- `instructions`: optional, 1-2000 characters, only when the configured model
+  supports separate delivery instructions (documented OpenAI mini-TTS, Gemini
+  TTS and Fish Audio families). Other models reject them before spending.
 
 ```json
-{"action":"list_models","query":"tts"}
+{"text":"Hello! Here is your update.","instructions":"Speak warmly and conversationally."}
 ```
 
-```json
-{"action":"generate","model":"openai/gpt-4o-mini-tts","text":"Hello! Here is your update.","voice":"alloy","audio_format":"mp3","instructions":"Speak warmly and conversationally."}
+Configuration problems (model missing from the catalog policy, unadvertised
+voice, provider rejection) return errors naming the configured model and voice
+and telling the agent to ask the administrator rather than work around the tool.
+
+Administrators can list options and test a voice inside the running stack
+(the test is charged by OpenRouter but not recorded in the agent budget):
+
+```bash
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts voices elevenlabs
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts test "Hello" --model elevenlabs/eleven-v3 --voice <voice-id>
+sudo docker compose --env-file data/.env cp task-agent:/tmp/tts-test.mp3 .
 ```
 
-Expression instructions are offered conservatively for documented OpenAI
-mini-TTS, Gemini TTS and Fish Audio model families. Other models reject them
-before spending rather than silently ignoring them. Emotion, laughter and
-other effects remain model-dependent; put directions in `instructions`, not
-in literal speech text. Discovery exposes advertised voices; when no voice
-list is available, the provider validates the explicit identifier.
-
-MP3 is the default except for Google/HeyGen PCM-only models, which default
-to WAV. MiniMax is restricted to MP3. WAV wraps provider PCM using its declared
-sample rate/channels; it does not guess metadata or re-encode audio.
-Generation returns `files`, actual `usage`, request/generation IDs and the
-shared budget. Files are limited to 32 MiB and tracked under
-`outputs/job-<id>/`. There is no inherited assistant context, voice cloning,
-reference upload, multi-speaker synthesis or channel delivery.
+MP3 is the default except for Google/HeyGen PCM-only models, which use WAV.
+WAV wraps provider PCM using its declared sample rate/channels; it does not
+guess metadata or re-encode audio. Generation returns `files`, actual `usage`,
+request/generation IDs and the shared budget. Files are limited to 32 MiB and
+tracked under `outputs/job-<id>/`. There is no inherited assistant context,
+voice cloning, reference upload, multi-speaker synthesis or channel delivery.
 
 Speech shares the model-preset spending settings and admission lock even if
 presets are disabled. Charges use OpenRouter's actual generation cost, not
@@ -352,9 +356,8 @@ OpenRouter to publish the charge. If audio was received but accounting is still
 delayed, `generate` succeeds with `accounting: "pending"` and the saved file:
 use that file; **do not repeat synthesis**. The charge is reconciled
 automatically before the next paid request.
-If accounting is still delayed, retry `{"action":"reconcile"}` later without
-model, text or voice arguments. Pending requests, missing generation IDs and
-requests whose owning job was deleted require administrator reconciliation.
+Pending requests, missing generation IDs and requests whose owning job was
+deleted require administrator reconciliation.
 Completed reconciliation is idempotent and never recounts usage.
 
 To deliver the saved file, call a separate channel tool. Native Telegram voice

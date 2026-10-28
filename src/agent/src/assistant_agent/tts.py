@@ -1,6 +1,13 @@
-"""Dedicated OpenRouter speech synthesis; delivery belongs to channel tools."""
+"""Dedicated OpenRouter speech synthesis; delivery belongs to channel tools.
+
+The administrator configures the model and voice; the agent supplies only text
+and optional delivery instructions. Run ``python -m assistant_agent.tts --help``
+inside the task-agent container to list voices or test a configuration.
+"""
+import argparse
 import io
-import inspect
+import json
+import sys
 import re
 import time
 import urllib.error
@@ -20,10 +27,30 @@ from .transport_security import open_https_request
 MAX_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_TEXT_CHARS = 10000
 ACCOUNTING_DELAYS = (1, 2, 3, 4, 5)
+DEFAULT_MODEL = "mistralai/voxtral-mini-tts-3-0"
+DEFAULT_VOICE = "gb_jane_confident"
+
+
+def settings(config):
+    model = str(config.get("agent.tts.model") or DEFAULT_MODEL).strip()
+    voice = str(config.get("agent.tts.voice") or DEFAULT_VOICE).strip()
+    return model, voice
 
 
 def configured(config):
-    return config.get_bool("agent.tts.enabled", False) and bool(read_secret("OPENROUTER_API_KEY"))
+    model, voice = settings(config)
+    return (config.get_bool("agent.tts.enabled", False) and bool(model) and bool(voice)
+            and bool(read_secret("OPENROUTER_API_KEY")))
+
+
+def describe(config):
+    """One-line summary of the admin-configured speech settings for the agent's context."""
+    model, voice = settings(config)
+    return "model %s, voice %s, %s; separate delivery instructions %s; %s" % (
+        model, voice, audio_formats(model)[0].upper(),
+        "supported" if supports_instructions(model) else "not supported (omit instructions)",
+        "ZDR routing enforced" if config.get_bool("agent.tts.zdr_only", False) else "any provider routing",
+    )
 
 
 def supports_instructions(model):
@@ -117,66 +144,43 @@ class TextToSpeech(ModelToolResources):
         super().__init__(runtime)
         self.client = OpenRouterSpeech(self.config)
 
-    def run(self, action, **arguments):
+    def run(self, text=None, instructions=None, **unexpected):
         if not configured(self.config):
             raise ModelServiceError("Text-to-speech is disabled or OPENROUTER_API_KEY is missing")
-        methods = {"list_models": self.list_models, "generate": self.generate, "reconcile": self.reconcile}
-        if action not in methods:
-            raise ModelServiceError("Unknown text-to-speech action")
-        try:
-            inspect.signature(methods[action]).bind(**arguments)
-        except TypeError as exc:
-            required = {"generate": "model, text and voice", "list_models": "no required arguments",
-                        "reconcile": "no required arguments; optional request_id"}
-            raise ModelServiceError("Invalid %s arguments: %s. Expected %s." % (action, exc, required[action])) from None
-        return methods[action](**arguments)
+        if unexpected:
+            raise ModelServiceError(
+                "Unsupported text_to_speech arguments: %s. The administrator configures the model and voice; "
+                "pass only text and optional instructions." % ", ".join(sorted(unexpected)))
+        return self.generate(text, instructions)
 
     def models(self):
         return [model for model in self.client.models(zdr_only=self.config.get_bool("agent.tts.zdr_only", False))
                 if "speech" in (model.get("architecture") or {}).get("output_modalities", [])]
 
-    def list_models(self, query="", limit=20, offset=0):
-        if not isinstance(query, str) or type(limit) is not int or not 1 <= limit <= 50 or type(offset) is not int or offset < 0:
-            raise ModelServiceError("query must be text; limit must be 1-50 and offset nonnegative")
-        models = []
-        for model in self.models():
-            if query.lower() not in (model["id"] + " " + str(model.get("name") or "")).lower():
-                continue
-            models.append({
-                **{key: model.get(key) for key in ("id", "name", "pricing", "supported_voices")},
-                "description": str(model.get("description") or "")[:1000],
-                "supports_instructions": supports_instructions(model["id"]),
-                "audio_formats": audio_formats(model["id"]),
-            })
-        return {"models": models[offset:offset + limit], "total": len(models),
-                "next_offset": offset + limit if offset + limit < len(models) else None,
-                "zdr_only": self.config.get_bool("agent.tts.zdr_only", False)}
-
-    def generate(self, model, text, voice, audio_format=None, instructions=None):
-        if not isinstance(model, str) or not model:
-            raise ModelServiceError("model must be an exact speech model slug")
+    def generate(self, text, instructions=None):
+        model, voice = settings(self.config)
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
             raise ModelServiceError("Speech text must contain 1-10000 characters; provider limits may be lower")
-        if not isinstance(voice, str) or not voice.strip() or len(voice) > 200:
-            raise ModelServiceError("voice must be an explicit nonempty identifier of at most 200 characters")
-        metadata = next((item for item in self.models() if item["id"] == model), None)
-        if metadata is None:
-            raise ModelServiceError("Speech model is unavailable under the configured catalog policy; use list_models")
-        voices = metadata.get("supported_voices")
-        if isinstance(voices, list) and voices and voice not in voices:
-            raise ModelServiceError("Selected voice is not supported; use list_models")
-        formats = audio_formats(model)
-        if audio_format is None:
-            audio_format = formats[0]
-        if audio_format not in formats:
-            raise ModelServiceError("Requested speech audio_format is unsupported; use list_models")
-        payload = {"model": model, "input": text, "voice": voice,
-                   "response_format": "pcm" if audio_format == "wav" else "mp3"}
         if instructions is not None:
             if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 2000:
                 raise ModelServiceError("instructions must contain 1-2000 characters")
             if not supports_instructions(model):
-                raise ModelServiceError("Delivery instructions are not documented for this model; choose a supported model")
+                raise ModelServiceError("The configured speech model %s does not accept separate instructions; "
+                                        "omit them and keep the text literal" % model)
+        metadata = next((item for item in self.models() if item["id"] == model), None)
+        if metadata is None:
+            raise ModelServiceError(
+                "The configured speech model %s is unavailable under the current catalog policy. "
+                "Ask the administrator to change AGENT_TTS_MODEL; do not work around this tool." % model)
+        voices = metadata.get("supported_voices")
+        if isinstance(voices, list) and voices and voice not in voices:
+            raise ModelServiceError(
+                "The configured voice %s is not supported by %s. Ask the administrator to change "
+                "AGENT_TTS_VOICE; do not work around this tool." % (voice, model))
+        audio_format = audio_formats(model)[0]
+        payload = {"model": model, "input": text, "voice": voice,
+                   "response_format": "pcm" if audio_format == "wav" else "mp3"}
+        if instructions is not None:
             payload["instructions"] = instructions
         if self.config.get_bool("agent.tts.zdr_only", False):
             payload["provider"] = {"zdr": True}
@@ -190,12 +194,14 @@ class TextToSpeech(ModelToolResources):
 
         try:
             data, content_type, generation_id = self.client.synthesize(payload, record_generation)
-        except ProviderRejected:
+        except ProviderRejected as exc:
             self.settle(call_id, "failed", {"cost": 0}, generation_id)
-            raise
+            raise ProviderRejected(
+                "%s. Configured model %s, voice %s. Ask the administrator to check the text-to-speech "
+                "settings; do not work around this tool." % (exc, model, voice)) from exc
         except (ModelServiceError, OSError) as exc:
             self.settle(call_id, "unknown", generation_id=generation_id)
-            recovery = ("Use reconcile with this request_id." if generation_id else
+            recovery = ("It is reconciled automatically before the next paid request." if generation_id else
                         "Ask the administrator to reconcile the charge; no generation ID was received.")
             raise ModelServiceError("Speech request %s has uncertain cost: %s. Do not repeat synthesis. %s" % (call_id, exc, recovery)) from exc
         self.settle(call_id, "unknown", generation_id=generation_id)
@@ -296,26 +302,89 @@ TEXT_TO_SPEECH_TOOL = {
     "function": {
         "name": "text_to_speech",
         "description": (
-            "Discover dedicated speech models and voices, synthesize text into a workspace audio file, "
-            "or reconcile unresolved speech charges across jobs without generating again. No inherited context, "
-            "presets, voice cloning or delivery. Authentication is internal."
+            "Synthesize literal text into a workspace audio file using the administrator-configured speech "
+            "model and voice (listed in your context). No inherited context, voice selection, cloning or delivery. "
+            "Authentication and charge reconciliation are internal."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list_models", "generate", "reconcile"]},
-                "query": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                "offset": {"type": "integer", "minimum": 0},
-                "model": {"type": "string", "description": "Exact speech model slug from list_models."},
-                "text": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_CHARS, "description": "Literal text to speak. Do not insert delivery directions into it."},
-                "voice": {"type": "string", "description": "Explicit voice identifier; use the model's supported_voices."},
-                "audio_format": {"type": "string", "enum": ["mp3", "wav"], "description": "Defaults to MP3, or WAV for PCM-only models. WAV wraps provider PCM using its rate/channel metadata."},
-                "instructions": {"type": "string", "maxLength": 2000, "description": "Optional tone, pacing or emotion instructions, only for models advertising supports_instructions."},
-                "request_id": {"type": "string", "description": "Optional local request UUID for reconcile. Omit to retry up to 20 eligible unresolved speech charges across jobs. Never supply model/text/voice for reconcile."},
+                "text": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_CHARS,
+                         "description": "Text to speak. Use only markup the configured model documents; put delivery directions in instructions when supported."},
+                "instructions": {"type": "string", "maxLength": 2000,
+                                 "description": "Optional tone, pacing or emotion instructions, only when your context says the configured model supports them."},
             },
-            "required": ["action"],
+            "required": ["text"],
             "additionalProperties": False,
         },
     },
 }
+
+
+def main(argv=None):
+    from .config import load_config
+
+    parser = argparse.ArgumentParser(prog="python -m assistant_agent.tts",
+                                     description="Administrator checks for the text-to-speech configuration.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    voices = commands.add_parser("voices", help="List speech models and voices under the configured catalog policy")
+    voices.add_argument("query", nargs="?", default="", help="Optional model filter, e.g. elevenlabs")
+    test = commands.add_parser("test", help="Synthesize one sample (charged by OpenRouter; not recorded in the agent budget)")
+    test.add_argument("text", nargs="?", default="Hello! This is a test of my configured voice.")
+    test.add_argument("--model", help="Override the configured model for this test")
+    test.add_argument("--voice", help="Override the configured voice for this test")
+    test.add_argument("--instructions")
+    test.add_argument("--output", default="/tmp/tts-test", help="Output path without extension")
+    args = parser.parse_args(argv)
+    config = load_config()
+    if not read_secret("OPENROUTER_API_KEY"):
+        parser.error("OPENROUTER_API_KEY is missing")
+    zdr_only = config.get_bool("agent.tts.zdr_only", False)
+    client = OpenRouterSpeech(config)
+    catalog = [model for model in client.models(zdr_only=zdr_only)
+               if "speech" in (model.get("architecture") or {}).get("output_modalities", [])]
+    if args.command == "voices":
+        for model in catalog:
+            if args.query.lower() in model["id"].lower():
+                print("%s  instructions=%s  formats=%s" % (
+                    model["id"], "yes" if supports_instructions(model["id"]) else "no", ",".join(audio_formats(model["id"]))))
+                print("  voices: %s" % (", ".join(model.get("supported_voices") or []) or "not advertised"))
+        print("Configured: %s (zdr_only=%s)" % (describe(config), zdr_only))
+        return 0
+    model, voice = settings(config)
+    model, voice = args.model or model, args.voice or voice
+    metadata = next((item for item in catalog if item["id"] == model), None)
+    if metadata is None:
+        print("Model %s is not in the %s speech catalog" % (model, "ZDR" if zdr_only else "OpenRouter"), file=sys.stderr)
+        return 1
+    if metadata.get("supported_voices") and voice not in metadata["supported_voices"]:
+        print("Voice %s is not advertised for %s; run the voices command" % (voice, model), file=sys.stderr)
+        return 1
+    audio_format = audio_formats(model)[0]
+    payload = {"model": model, "input": args.text, "voice": voice,
+               "response_format": "pcm" if audio_format == "wav" else "mp3"}
+    if args.instructions:
+        payload["instructions"] = args.instructions
+    if zdr_only:
+        payload["provider"] = {"zdr": True}
+    try:
+        data, content_type, generation_id = client.synthesize(payload, lambda value: None)
+        data, _ = playable_audio(data, content_type, audio_format)
+    except ModelServiceError as exc:
+        print("Failed: %s" % exc, file=sys.stderr)
+        return 1
+    path = "%s.%s" % (args.output, audio_format)
+    with open(path, "wb") as handle:
+        handle.write(data)
+    cost = None
+    if generation_id:
+        try:
+            cost = client.generation(generation_id).get("total_cost")
+        except ModelServiceError:
+            pass
+    print(json.dumps({"saved": path, "model": model, "voice": voice, "generation_id": generation_id, "cost_usd": cost}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
