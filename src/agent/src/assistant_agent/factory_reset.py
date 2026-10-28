@@ -52,6 +52,9 @@ CATEGORIES = {
         "Workspace search index and converted-document archive",
         tables=("workspace_file_chunks", "workspace_files", "workspace_document_conversions"), paths=("source_archive",),
         notes="Rebuilt automatically from the remaining workspace files."),
+    "network_rules": Category(
+        "Sandbox network approvals and blocks", tables=("sandbox_network_rules",),
+        notes="Package registries in agent.yaml stay allowed."),
     "caches": Category("Tool-result cache and workspace trash", paths=("tool_cache", "trash")),
     "workspace_files": Category(
         "ALL workspace files in data/share (keeps .assistant/docs)",

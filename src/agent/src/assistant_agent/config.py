@@ -280,6 +280,7 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_SANDBOX_BASE_URL", "agent.sandbox.base_url", str),
         ("AGENT_SANDBOX_MAX_ATTEMPTS", "agent.sandbox.max_attempts", int),
         ("AGENT_SANDBOX_RETRY_BACKOFF_SECONDS", "agent.sandbox.retry_backoff_seconds", int),
+        ("AGENT_SANDBOX_ALLOWED_HOSTS", "agent.sandbox.network.allowed_hosts", list),
         
         # Search
         ("AGENT_SEARCH_ENABLED", "agent.search.enabled", bool),
@@ -338,7 +339,7 @@ def load_config() -> AppConfig:
         if not raw_value.strip():
             if env_name == "AGENT_EMBEDDINGS_DIMENSIONS":
                 _set_nested(values, path_name, None)
-            elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS"}:
+            elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS", "AGENT_SANDBOX_ALLOWED_HOSTS"}:
                 _set_nested(values, path_name, [])
             continue
         if caster is int:

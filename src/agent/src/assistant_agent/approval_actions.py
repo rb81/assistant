@@ -32,6 +32,12 @@ def apply_approval(db, config, payload, instruction=""):
     from .admin_commands import AdminCommands
     from .email_ingest import EmailDownloader
     kind = payload["kind"]
+    if kind == "network":
+        from .network_access import apply_decision, parse_email_decision
+        decision, feedback = parse_email_decision(instruction)
+        if decision is None:
+            raise ValueError("Start the reply with APPROVE ONCE, APPROVE ALWAYS, BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB.")
+        return apply_decision(db, payload, decision, feedback, "admin")
     if kind == "input":
         return answer_admin_input(db, payload, instruction)
     downloader = EmailDownloader(db, config)

@@ -134,6 +134,26 @@ def send_admin_email(config, subject: str, body: str) -> None:
         client.send_message(message)
 
 
+NETWORK_EMAIL_INSTRUCTIONS = (
+    "Reply with this original message quoted. Put your decision on the first line:\n"
+    "  APPROVE ONCE | APPROVE ALWAYS | BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB\n"
+    "Optional feedback for the agent can follow on the next lines."
+)
+
+
+def network_keyboard(callback: str, payload: dict) -> list:
+    return [
+        [{"text": "Approve once", "callback_data": "ap:%s:once" % callback},
+         {"text": "Approve always", "callback_data": "ap:%s:always" % callback}],
+        [{"text": "Block once", "callback_data": "ap:%s:block" % callback},
+         {"text": "Block always", "callback_data": "ap:%s:blockall" % callback}],
+        [{"text": "Cancel job", "callback_data": "ap:%s:cancel" % callback},
+         {"text": "Add feedback first", "callback_data": "ui:guidance:%s" % payload["job_id"]}],
+        [{"text": "Details", "callback_data": "ap:%s:details" % callback},
+         {"text": "Not now", "callback_data": "ap:%s:later" % callback}],
+    ]
+
+
 class ApprovalDeliveryError(RuntimeError):
     """A stored approval may be available; delivery must not be blindly repeated."""
 
@@ -203,10 +223,11 @@ class EmailApprovals:
                     client = TelegramClient(self.config)
                     callback = pending["callback_id"]
                     title = summary.split("\n\nDetails:", 1)[0][:1800]
+                    keyboard = network_keyboard(callback, payload) if payload.get("kind") == "network" else None
                     for identifier in admins:
                         client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
-                            "reply_markup": {"inline_keyboard": [
+                            "reply_markup": {"inline_keyboard": keyboard or [
                                 [{"text": "Review reply" if payload.get("kind") == "input" else "Review & approve",
                                   "callback_data": "ap:%s:review" % callback},
                                  {"text": "Not now", "callback_data": "ap:%s:later" % callback}],
@@ -220,10 +241,12 @@ class EmailApprovals:
                 try:
                     send_admin_email(
                         self.config, email_subject,
-                        "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n"
-                        "Reply with this original message to confirm once. Add guidance above it if needed.\n"
-                        "Review the requested action below before confirming.\n\n%s" % (
-                            MARKER, token, digest, pending["expires"], summary[:20000],
+                        "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n%s\n\n%s" % (
+                            MARKER, token, digest, pending["expires"],
+                            NETWORK_EMAIL_INSTRUCTIONS if payload.get("kind") == "network" else
+                            "Reply with this original message to confirm once. Add guidance above it if needed.\n"
+                            "Review the requested action below before confirming.",
+                            summary[:20000],
                         ),
                     )
                 except Exception as exc:

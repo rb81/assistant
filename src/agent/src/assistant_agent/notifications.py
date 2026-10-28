@@ -55,6 +55,16 @@ def notify_admin_job_failure(
                 LOGGER.info("job %s is no longer awaiting review; not sending an approval", job_id)
                 return
             metadata = current.get("metadata") or job.get("metadata") or {}
+            if metadata.get("network_request"):
+                from .network_access import send_approval
+                sent = send_approval(db, config, {**job, "metadata": metadata})
+                result = {"status": "sent" if sent else "already_requested"}
+                db.log_event(job_id, "supervisor_note", output_data={
+                    "notification": "admin_failure_email", "sent": sent, "fingerprint": fingerprint,
+                    "status": clean_status, "reason": clean_reason, "source": clean_source,
+                    "email_status": result["status"],
+                })
+                return
             kind = "input" if metadata.get("awaiting_admin_input") and not metadata.get("security_pending_action") else "review"
             review_job = {**job, "metadata": metadata}
             sent = EmailApprovals(db, config).request(

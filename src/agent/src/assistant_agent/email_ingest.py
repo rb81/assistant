@@ -331,6 +331,25 @@ class EmailDownloader:
                             approved_thread_id=payload["thread_id"],
                             approved_review=current if current and current["status"] == "needs_review" else None,
                         )
+                    if payload["kind"] == "network":
+                        from . import network_access
+                        decision, feedback = network_access.parse_email_decision(instruction)
+                        if decision is None:
+                            job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'", (payload["job_id"],))
+                            response = ("No decision found. Reply to the new approval email with the first line set to "
+                                        "APPROVE ONCE, APPROVE ALWAYS, BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB; "
+                                        "optional feedback for the agent can follow on the next lines.")
+                            if job and network_access.approval_payload(job) == payload:
+                                network_access.send_approval(self.db, self.config, job, ":retry:" + message_id)
+                            else:
+                                response = "This network request was already handled or the task changed."
+                        else:
+                            try:
+                                response = network_access.apply_decision(self.db, payload, decision, feedback, "admin-email")
+                            except ValueError as exc:
+                                response = str(exc)
+                        AdminCommands(self.db, self.config).reply(parsed, response)
+                        return IngestResult(inserted=True, queued=False, message_id=message_id)
                     if payload["kind"] == "input":
                         from .approval_actions import answer_admin_input
                         answer_admin_input(self.db, payload, instruction)

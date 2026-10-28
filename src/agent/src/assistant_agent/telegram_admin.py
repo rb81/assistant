@@ -287,14 +287,40 @@ class TelegramAdmin:
             self.send(sender, "This approval expired; the task is still paused.",
                       [[("Request fresh approval", "ap:%s:renew" % callback_id)]])
             return
+        network = value["payload"].get("kind") == "network"
         if action == "renew":
             payload = value["payload"]
+            if network:
+                from .network_access import approval_payload, send_approval
+                job = self.job(sender, payload["job_id"])
+                if job["status"] != "needs_review" or approval_payload(job) != payload:
+                    raise ValueError("This network request was already handled or the task changed.")
+                send_approval(self.db, self.config, job, ":renew:" + secrets.token_hex(12))
+                self.send(sender, "Fresh approval sent.")
+                return
             if payload["kind"] in {"review", "input"}:
                 job = self.job(sender, payload["job_id"])
                 if job["status"] != "needs_review" or str(job["updated_at"]) != payload["version"]:
                     raise ValueError("Task changed. Open its status to request a current approval.")
             service.request("renew:" + secrets.token_hex(12), payload, value["summary"])
             self.send(sender, "Fresh approval sent.")
+        elif action == "review" and network:
+            from .email_approvals import network_keyboard
+            text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
+            self.send(sender, text, [[(button["text"], button["callback_data"]) for button in row]
+                                     for row in network_keyboard(callback_id, value["payload"])])
+        elif network and action in {"once", "always", "block", "blockall", "cancel"}:
+            from .network_access import apply_decision
+            payload = service.consume_telegram(callback_id, sender)
+            try:
+                result = apply_decision(self.db, payload, action, "", "telegram-admin")
+            except Exception:
+                from .network_access import approval_payload, send_approval
+                job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'", (payload["job_id"],))
+                if job and approval_payload(job) == payload:
+                    send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
+                raise
+            self.send(sender, result[:3500], [[("Back", "ui:home:0")]])
         elif action == "review":
             text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
             self.send(sender, text + "\n\nConfirm this exact request?",
@@ -304,7 +330,7 @@ class TelegramAdmin:
                        [("Details", "ap:%s:details" % callback_id)]] +
                       ([[("Add reply", "ui:guidance:%s" % value["payload"]["job_id"])]]
                        if value["payload"]["kind"] == "input" else []))
-        elif action == "ok":
+        elif action == "ok" and not network:
             payload = service.consume_telegram(callback_id, sender)
             result = apply_approval(self.db, self.config, payload)
             from .admin_commands import redact_secrets
@@ -367,13 +393,17 @@ class TelegramAdmin:
                         if job["status"] != "needs_review":
                             raise ValueError("Task is not awaiting approval")
                         metadata = job.get("metadata") or {}
-                        EmailApprovals(self.db, self.config).request(
-                            "menu-review:" + secrets.token_hex(12),
-                            {"kind": "input" if metadata.get("awaiting_admin_input")
-                             and not metadata.get("security_pending_action") else "review",
-                             "job_id": identifier, "version": str(job["updated_at"])},
-                            review_summary(job, job.get("last_error") or "Task paused"),
-                        )
+                        if metadata.get("network_request"):
+                            from .network_access import send_approval
+                            send_approval(self.db, self.config, job, ":menu:" + secrets.token_hex(12))
+                        else:
+                            EmailApprovals(self.db, self.config).request(
+                                "menu-review:" + secrets.token_hex(12),
+                                {"kind": "input" if metadata.get("awaiting_admin_input")
+                                 and not metadata.get("security_pending_action") else "review",
+                                 "job_id": identifier, "version": str(job["updated_at"])},
+                                review_summary(job, job.get("last_error") or "Task paused"),
+                            )
                         self.send(sender, "A fresh confirmation has been sent through your configured approval channels.",
                                   [[("Add guidance", "ui:guidance:%s" % identifier), ("Back", "ui:home:0")]])
                     elif action in {"cancel", "rerun", "archive"}:

@@ -42,6 +42,20 @@ DOCS_ROOT_HOST = os.getenv("SANDBOX_DOCS_ROOT_HOST", "").strip()
 SHARED_VOLUME_NAME = os.getenv("SANDBOX_SHARED_VOLUME_NAME", "").strip()
 RUN_CONTAINER_PREFIX = os.getenv("SANDBOX_RUN_CONTAINER_PREFIX", "assistant-sandbox-run").strip()
 RUN_NETWORK_PREFIX = os.getenv("SANDBOX_RUN_NETWORK_PREFIX", "assistant-sandbox-net").strip()
+# "proxy": per-run networks are internal and the only route out is a per-run
+# egress proxy sidecar enforcing the policy the agent sends with each command.
+# "open": legacy behaviour, per-run networks have unrestricted internet access.
+EGRESS_MODE = os.getenv("SANDBOX_EGRESS_MODE", "proxy").strip().lower()
+PROXY_PORT = 3128
+PROXY_MEMORY_BYTES = int(os.getenv("SANDBOX_PROXY_MEMORY_BYTES", str(256 * 1024 * 1024)))
+PROXY_READY_SECONDS = 10.0
+# Unroutable TEST-NET address: run containers on internal networks must not
+# resolve names through Docker's embedded DNS forwarding (a DNS exfiltration channel).
+DNS_SINK = ["192.0.2.1"]
+RUN_LABEL = "assistant.sandbox.run"
+RUN_CREATED_LABEL = "assistant.sandbox.created"
+ORPHAN_SWEEP_SECONDS = 600
+_last_orphan_sweep = 0.0
 
 
 def parse_umask(value: str) -> int:
@@ -68,6 +82,7 @@ class CommandRequest(BaseModel):
     command: list[str] = Field(..., min_length=1)
     timeout_seconds: Optional[int] = Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS)
     workdir: str = "/data/share"
+    network_policy: Optional[dict[str, list[str]]] = None
 
 
 class CommandResponse(BaseModel):
@@ -80,6 +95,8 @@ class CommandResponse(BaseModel):
     isolation_mode: str = ISOLATION_MODE
     runtime: Optional[str] = None
     image: Optional[str] = None
+    egress: Optional[str] = None
+    network_events: list[dict[str, str]] = Field(default_factory=list)
 
 
 def resolve_workdir(workdir: str) -> Path:
@@ -177,6 +194,28 @@ def run_mounts() -> tuple[list[str], list[dict[str, Any]]]:
     return ["%s:%s:rw" % (SHARED_ROOT_HOST, RUN_SHARED_ROOT)], [docs]
 
 
+def proxy_enabled() -> bool:
+    return RUN_NETWORK_MODE == "per_run_bridge" and EGRESS_MODE != "open"
+
+
+def run_labels(run_id: str) -> dict[str, str]:
+    return {RUN_LABEL: run_id, RUN_CREATED_LABEL: str(int(time.time()))}
+
+
+def clean_policy(policy: Optional[dict[str, Any]]) -> Optional[dict[str, list[str]]]:
+    if policy is None:
+        return None
+    if not isinstance(policy, dict):
+        raise HTTPException(status_code=400, detail="network_policy must be an object")
+    cleaned: dict[str, list[str]] = {}
+    for key in ("allow", "block"):
+        items = policy.get(key) or []
+        if not isinstance(items, list) or len(items) > 2000 or not all(isinstance(item, str) and 0 < len(item) <= 260 for item in items):
+            raise HTTPException(status_code=400, detail="network_policy.%s must be a list of host patterns" % key)
+        cleaned[key] = items
+    return cleaned
+
+
 def create_run_network(client: DockerClient, run_id: str) -> tuple[str, Optional[str]]:
     if RUN_NETWORK_MODE == "none":
         return "none", None
@@ -197,9 +236,12 @@ def create_run_network(client: DockerClient, run_id: str) -> tuple[str, Optional
             "Name": name,
             "Driver": "bridge",
             "CheckDuplicate": False,
-            "Internal": False,
+            # Proxied runs: internal network shared only with this run's proxy,
+            # so inter-container traffic must be allowed for the proxy hop.
+            "Internal": proxy_enabled(),
+            "Labels": run_labels(run_id),
             "Options": {
-                "com.docker.network.bridge.enable_icc": "false",
+                "com.docker.network.bridge.enable_icc": "true" if proxy_enabled() else "false",
             },
         },
         expected=(201,),
@@ -207,7 +249,121 @@ def create_run_network(client: DockerClient, run_id: str) -> tuple[str, Optional
     return name, name
 
 
-def create_run_container(client: DockerClient, run_id: str, request: CommandRequest, workdir: Path, network_mode: str) -> str:
+def create_egress_network(client: DockerClient, run_id: str) -> str:
+    name = "%s-egress-%s" % (RUN_NETWORK_PREFIX, run_id)
+    client.json_request(
+        "POST",
+        "/networks/create",
+        {
+            "Name": name,
+            "Driver": "bridge",
+            "CheckDuplicate": False,
+            "Internal": False,
+            "Labels": run_labels(run_id),
+            "Options": {"com.docker.network.bridge.enable_icc": "false"},
+        },
+        expected=(201,),
+    )
+    return name
+
+
+def start_egress_proxy(client: DockerClient, run_id: str, run_network: str, egress_network: str,
+                       policy: dict[str, list[str]]) -> tuple[str, str]:
+    """Start the per-run proxy and return (container id, its address on the run network)."""
+    response = client.json_request(
+        "POST",
+        "/containers/create?name=%s" % quote("%s-proxy-%s" % (RUN_CONTAINER_PREFIX, run_id), safe=""),
+        {
+            "Image": RUN_IMAGE,
+            "Cmd": ["python", "/app/egress_proxy.py"],
+            "Env": ["EGRESS_POLICY=%s" % json.dumps(policy, separators=(",", ":"))],
+            "User": "65534:65534",
+            "Labels": run_labels(run_id),
+            "HostConfig": {
+                "NetworkMode": egress_network,
+                "ReadonlyRootfs": True,
+                "CapDrop": ["ALL"],
+                "SecurityOpt": ["no-new-privileges:true"],
+                "Memory": PROXY_MEMORY_BYTES,
+                "NanoCpus": 1_000_000_000,
+                "PidsLimit": 64,
+            },
+        },
+        expected=(201,),
+    )
+    container_id = str(response["Id"])
+    client.request("POST", "/networks/%s/connect" % quote(run_network, safe=""), {"Container": container_id}, expected=(200,))
+    client.request("POST", "/containers/%s/start" % container_id, expected=(204, 304))
+    deadline = time.monotonic() + PROXY_READY_SECONDS
+    while True:
+        stdout, _ = docker_logs(client, container_id)
+        if '"event": "ready"' in stdout:
+            break
+        running, _ = container_running(client, container_id)
+        if not running or time.monotonic() >= deadline:
+            raise RuntimeError("sandbox egress proxy did not start")
+        time.sleep(0.1)
+    details = client.json_request("GET", "/containers/%s/json" % container_id)
+    address = (((details.get("NetworkSettings") or {}).get("Networks") or {}).get(run_network) or {}).get("IPAddress")
+    if not address:
+        raise RuntimeError("sandbox egress proxy has no address on the run network")
+    return container_id, str(address)
+
+
+def proxy_environment(address: Optional[str]) -> list[str]:
+    if not address:
+        return []
+    url = "http://%s:%s" % (address, PROXY_PORT)
+    return [
+        "HTTP_PROXY=" + url, "HTTPS_PROXY=" + url, "http_proxy=" + url, "https_proxy=" + url,
+        "ALL_PROXY=" + url, "all_proxy=" + url,
+        "NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1",
+        "NODE_USE_ENV_PROXY=1",
+    ]
+
+
+def egress_events(client: DockerClient, container_id: Optional[str]) -> list[dict[str, str]]:
+    if not container_id:
+        return []
+    try:
+        stdout, _ = docker_logs(client, container_id)
+    except Exception:
+        return []
+    events = []
+    for line in stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get("event") == "egress":
+            events.append({key: str(item.get(key) or "") for key in ("host", "decision", "reason")})
+    return events
+
+
+def sweep_orphans(client: DockerClient) -> None:
+    """Remove run containers and networks left behind by a crashed or restarted broker."""
+    global _last_orphan_sweep
+    now = time.time()
+    if now - _last_orphan_sweep < ORPHAN_SWEEP_SECONDS:
+        return
+    _last_orphan_sweep = now
+    cutoff = now - MAX_TIMEOUT_SECONDS - 300
+    filters = quote(json.dumps({"label": [RUN_LABEL]}), safe="")
+    try:
+        _, body = client.request("GET", "/containers/json?all=1&filters=%s" % filters)
+        for item in json.loads(body or b"[]"):
+            if int((item.get("Labels") or {}).get(RUN_CREATED_LABEL) or now) < cutoff:
+                remove_container(client, item.get("Id"))
+        _, body = client.request("GET", "/networks?filters=%s" % filters)
+        for item in json.loads(body or b"[]"):
+            if int((item.get("Labels") or {}).get(RUN_CREATED_LABEL) or now) < cutoff:
+                remove_network(client, item.get("Name"))
+    except Exception:
+        pass
+
+
+def create_run_container(client: DockerClient, run_id: str, request: CommandRequest, workdir: Path, network_mode: str,
+                         proxy_address: Optional[str] = None) -> str:
     binds, mounts = run_mounts()
     host_config: dict[str, Any] = {
         "AutoRemove": False,
@@ -226,7 +382,9 @@ def create_run_container(client: DockerClient, run_id: str, request: CommandRequ
     }
     if RUN_RUNTIME:
         host_config["Runtime"] = RUN_RUNTIME
-    if RUN_DNS_SERVERS:
+    if proxy_enabled():
+        host_config["Dns"] = DNS_SINK
+    elif RUN_DNS_SERVERS:
         host_config["Dns"] = RUN_DNS_SERVERS
 
     container_config: dict[str, Any] = {
@@ -237,7 +395,9 @@ def create_run_container(client: DockerClient, run_id: str, request: CommandRequ
             "PIP_CACHE_DIR=/tmp/pip-cache",
             "NPM_CONFIG_CACHE=/tmp/npm-cache",
             "SHARED_FILE_UMASK=%s" % os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK),
+            *proxy_environment(proxy_address),
         ],
+        "Labels": run_labels(run_id),
         "Tty": False,
         "OpenStdin": False,
         "HostConfig": host_config,
@@ -323,6 +483,7 @@ def health(authorization: str = Header(default="")) -> dict[str, str]:
         "isolation_mode": ISOLATION_MODE,
         "runtime": RUN_RUNTIME or "default",
         "run_network_mode": RUN_NETWORK_MODE,
+        "egress": "proxy" if proxy_enabled() else "open",
     }
 
 
@@ -410,13 +571,24 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
     run_id = uuid.uuid4().hex[:12]
     client = DockerClient(DOCKER_SOCKET, timeout=max(timeout + 30, 60))
     container_id: Optional[str] = None
+    proxy_id: Optional[str] = None
+    proxy_address: Optional[str] = None
     cleanup_network: Optional[str] = None
+    egress_network: Optional[str] = None
     timed_out = False
     exit_code: Optional[int] = None
+    policy = clean_policy(getattr(request, "network_policy", None))
+    egress = "none" if RUN_NETWORK_MODE == "none" else "open"
+    if proxy_enabled():
+        egress = "proxy" if policy is not None else "none"
 
     try:
+        sweep_orphans(client)
         network_mode, cleanup_network = create_run_network(client, run_id)
-        container_id = create_run_container(client, run_id, request, workdir, network_mode)
+        if egress == "proxy":
+            egress_network = create_egress_network(client, run_id)
+            proxy_id, proxy_address = start_egress_proxy(client, run_id, network_mode, egress_network, policy)
+        container_id = create_run_container(client, run_id, request, workdir, network_mode, proxy_address)
         client.request("POST", "/containers/%s/start" % container_id, expected=(204, 304))
 
         deadline = started + timeout
@@ -446,9 +618,13 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
             isolation_mode="container",
             runtime=RUN_RUNTIME or None,
             image=RUN_IMAGE,
+            egress=egress,
+            network_events=egress_events(client, proxy_id),
         )
     except (DockerApiError, OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         remove_container(client, container_id)
+        remove_container(client, proxy_id)
         remove_network(client, cleanup_network)
+        remove_network(client, egress_network)

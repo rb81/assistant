@@ -63,6 +63,9 @@ ADVANCED_SETTINGS = {
         ("AGENT_SEARCH_ALLOWED_DOMAINS", "agent.search.allowed_domains", "Allowed search domains (comma-separated; blank = unrestricted)", [], list, None),
         ("AGENT_SEARCH_EXCLUDED_DOMAINS", "agent.search.excluded_domains", "Excluded search domains (comma-separated; blank = none)", [], list, None),
     ),
+    "Sandbox network": (
+        ("AGENT_SANDBOX_ALLOWED_HOSTS", "agent.sandbox.network.allowed_hosts", "Hosts sandbox commands may reach without approval (comma-separated; *.example.com = subdomains)", ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"], list, None),
+    ),
     "Model preset tool": (
         ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
         ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", "Restrict the model preset tool to Zero Data Retention (ZDR) models and routing? (No = all models)", False, bool, None),

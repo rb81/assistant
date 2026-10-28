@@ -293,6 +293,13 @@ agent:
     base_url: https://sandbox:8080
     max_attempts: 3
     retry_backoff_seconds: 1
+    network:
+      # Hosts sandbox commands may reach without approval (HTTPS only; "*.example.com" = subdomains).
+      # Everything else needs an admin decision via network_access_request.
+      allowed_hosts:
+        - pypi.org
+        - files.pythonhosted.org
+        - registry.npmjs.org
 
   search:
     enabled: true

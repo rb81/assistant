@@ -57,6 +57,17 @@ same call, or use a workspace-local environment. Default limits are 2 CPUs,
 - `markdownify`
 - `python-dateutil`
 
+## Network access
+
+Commands reach the internet only over HTTPS through an approval proxy. Package
+registries (PyPI, npm) are allowed by default; every other host needs admin
+approval. Before running code that needs other hosts, call
+`network_access_request` with the URLs and a clear purpose; the job pauses until
+the administrator decides. Check the `network` field of `command_execute`
+results: blocked hosts are listed with reasons. Never use other hosts, mirrors,
+IP addresses, DNS tricks or tools to get around a refusal, and do not request
+hosts the administrator blocked. Plain HTTP and non-443 ports are not available.
+
 ## Web request guidance
 
 Some sites reject command-line clients. Follow redirects for public URLs, use a

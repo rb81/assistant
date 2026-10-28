@@ -233,6 +233,12 @@ class RunContainerConfigTest(unittest.TestCase):
         self.docs.start()
         self.addCleanup(self.docs.stop)
 
+    def open_egress(self):
+        from unittest.mock import patch
+        egress = patch.object(server, "EGRESS_MODE", "open")
+        egress.start()
+        self.addCleanup(egress.stop)
+
     def test_docs_mount_is_read_only_for_bind_and_volume_workspaces(self):
         from unittest.mock import patch
         for volume in ("", "assistant-test-share"):
@@ -304,6 +310,7 @@ class RunContainerConfigTest(unittest.TestCase):
     def test_run_container_defaults_to_docker_runtime_and_default_dns(self) -> None:
         original_volume = server.SHARED_VOLUME_NAME
         try:
+            self.open_egress()
             server.SHARED_VOLUME_NAME = "assistant-test-share"
             client = FakeDockerClient()
             request = server.CommandRequest(command=["python", "--version"], timeout_seconds=5, workdir=str(server.SHARED_ROOT))
@@ -321,6 +328,7 @@ class RunContainerConfigTest(unittest.TestCase):
         original_runtime = server.RUN_RUNTIME
         original_dns = server.RUN_DNS_SERVERS
         try:
+            self.open_egress()
             server.SHARED_VOLUME_NAME = "assistant-test-share"
             server.RUN_RUNTIME = "runsc"
             server.RUN_DNS_SERVERS = ["1.1.1.1", "8.8.8.8"]
@@ -336,6 +344,170 @@ class RunContainerConfigTest(unittest.TestCase):
         create_body = client.requests[0]["body"]
         self.assertEqual(create_body["HostConfig"]["Runtime"], "runsc")
         self.assertEqual(create_body["HostConfig"]["Dns"], ["1.1.1.1", "8.8.8.8"])
+
+
+class ProxyDockerClient:
+    """Fake Docker API that records calls and simulates a ready egress proxy."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+        self.created: list[dict[str, Any]] = []
+        self.inspections = 0
+
+    def json_request(self, method, path, body=None, expected=(200,)):
+        self.calls.append((method, path, body))
+        if path.startswith("/containers/create"):
+            self.created.append(body)
+            return {"Id": "proxy-1" if "-proxy-" in path else "run-1"}
+        if path.endswith("/json") and path.startswith("/containers/"):
+            if "proxy-1" in path:
+                return {"State": {"Running": True}, "NetworkSettings": {"Networks": {
+                    "assistant-sandbox-net-abc": {"IPAddress": "172.30.0.2"}}}}
+            self.inspections += 1
+            return {"State": {"Running": False, "ExitCode": 0}}
+        return {}
+
+    def request(self, method, path, body=None, expected=(200,)):
+        self.calls.append((method, path, body))
+        if path.startswith("/containers/proxy-1/logs"):
+            lines = b'{"event": "ready", "port": 3128}\n{"event": "egress", "host": "example.com", "decision": "blocked", "reason": "not_approved"}\n'
+            return 200, b"\x01\x00\x00\x00" + len(lines).to_bytes(4, "big") + lines
+        if path.endswith("/logs?stdout=1&stderr=1"):
+            return 200, b""
+        if path.startswith("/containers/json") or path.startswith("/networks?"):
+            return 200, b"[]"
+        return 204, b""
+
+
+class EgressProxyBrokerTest(unittest.TestCase):
+    def run_command(self, policy):
+        from unittest.mock import patch
+        client = ProxyDockerClient()
+        request = server.CommandRequest(command=["curl", "https://example.com"], timeout_seconds=5,
+                                        workdir=str(server.SHARED_ROOT), network_policy=policy)
+        with patch.object(server, "DOCS_ROOT_HOST", "/installation/docs"), \
+                patch.object(server, "SHARED_VOLUME_NAME", "assistant-test-share"), \
+                patch.object(server, "RUN_NETWORK_MODE", "per_run_bridge"), \
+                patch.object(server, "EGRESS_MODE", "proxy"), \
+                patch.object(server, "DockerClient", lambda *args, **kwargs: client), \
+                patch.object(server.uuid, "uuid4", lambda: type("U", (), {"hex": "abc"})()):
+            response = server.execute_container(request, Path(server.SHARED_ROOT), 5, 0.0)
+        return client, response
+
+    def test_proxied_run_is_internal_and_only_reaches_the_proxy(self):
+        client, response = self.run_command({"allow": ["pypi.org"], "block": []})
+        networks = [body for method, path, body in client.calls if path == "/networks/create"]
+        run_network = next(body for body in networks if body["Name"] == "assistant-sandbox-net-abc")
+        egress_network = next(body for body in networks if "-egress-" in body["Name"])
+        self.assertTrue(run_network["Internal"])
+        self.assertEqual(run_network["Options"]["com.docker.network.bridge.enable_icc"], "true")
+        self.assertFalse(egress_network["Internal"])
+        proxy, run = client.created
+        self.assertEqual(proxy["HostConfig"]["NetworkMode"], egress_network["Name"])
+        self.assertIn('EGRESS_POLICY={"allow":["pypi.org"],"block":[]}', proxy["Env"])
+        self.assertEqual(run["HostConfig"]["NetworkMode"], "assistant-sandbox-net-abc")
+        self.assertEqual(run["HostConfig"]["Dns"], server.DNS_SINK)
+        self.assertIn("HTTPS_PROXY=http://172.30.0.2:3128", run["Env"])
+        self.assertEqual(response.egress, "proxy")
+        self.assertEqual(response.network_events, [{"host": "example.com", "decision": "blocked", "reason": "not_approved"}])
+        removed = [path for method, path, body in client.calls if method == "DELETE"]
+        self.assertEqual(removed[:2], ["/containers/run-1?force=1&v=1", "/containers/proxy-1?force=1&v=1"])
+        self.assertEqual(len(removed), 4)
+
+    def test_run_without_policy_has_no_route_out(self):
+        client, response = self.run_command(None)
+        self.assertEqual(len(client.created), 1)
+        run = client.created[0]
+        self.assertFalse(any(item.startswith("HTTPS_PROXY=") for item in run["Env"]))
+        self.assertEqual(run["HostConfig"]["Dns"], server.DNS_SINK)
+        self.assertEqual(response.egress, "none")
+
+
+class EgressProxyTest(unittest.TestCase):
+    def client_hello(self, name):
+        import egress_proxy
+        server_name = name.encode()
+        sni = (len(server_name) + 3).to_bytes(2, "big") + b"\x00" + len(server_name).to_bytes(2, "big") + server_name
+        extensions = b"\x00\x00" + len(sni).to_bytes(2, "big") + sni
+        body = b"\x03\x03" + b"\x00" * 32 + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00" + len(extensions).to_bytes(2, "big") + extensions
+        return b"\x01" + len(body).to_bytes(3, "big") + body
+
+    def test_server_name_is_extracted_from_client_hello(self):
+        import egress_proxy
+        self.assertEqual(egress_proxy.server_name_from_client_hello(self.client_hello("API.Example.com")), "api.example.com")
+        self.assertIsNone(egress_proxy.server_name_from_client_hello(b"\x01\x00"))
+
+    def test_blocks_win_and_wildcards_match_subdomains_only(self):
+        import egress_proxy
+        policy = egress_proxy.Policy(["*.example.com", "pypi.org"], ["bad.example.com"])
+        self.assertIsNone(policy.decide("api.example.com"))
+        self.assertEqual(policy.decide("example.com"), "not_approved")
+        self.assertEqual(policy.decide("bad.example.com"), "blocked_by_admin")
+        self.assertIsNone(policy.decide("pypi.org"))
+
+    def test_proxy_rejects_unapproved_hosts_plain_http_and_ip_literals(self):
+        import asyncio
+        import egress_proxy
+
+        async def scenario():
+            proxy = egress_proxy.Proxy(egress_proxy.Policy(["pypi.org"], []))
+            server_ = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+            port = server_.sockets[0].getsockname()[1]
+            replies = []
+            for request in (b"CONNECT evil.example:443 HTTP/1.1\r\n\r\n", b"GET http://pypi.org/ HTTP/1.1\r\n\r\n",
+                            b"CONNECT 1.2.3.4:443 HTTP/1.1\r\n\r\n", b"CONNECT pypi.org:22 HTTP/1.1\r\n\r\n"):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(request)
+                await writer.drain()
+                replies.append(await reader.read())
+                writer.close()
+            server_.close()
+            return replies
+
+        replies = asyncio.run(scenario())
+        self.assertTrue(all(reply.startswith(b"HTTP/1.1 403") for reply in replies))
+        self.assertIn(b"network_access_request", replies[0])
+        self.assertIn(b"X-Sandbox-Egress: plain_http", replies[1])
+        self.assertIn(b"X-Sandbox-Egress: ip_literal", replies[2])
+        self.assertIn(b"X-Sandbox-Egress: port_not_allowed", replies[3])
+
+    def test_tunnel_requires_tls_server_name_to_match_the_approved_host(self):
+        import asyncio
+        from unittest.mock import patch
+        import egress_proxy
+
+        async def fake_resolve(host):
+            return ["127.0.0.1"]
+
+        async def scenario(server_name):
+            proxy = egress_proxy.Proxy(egress_proxy.Policy(["pypi.org"], []))
+            recorded = []
+            proxy.events.record = lambda host, decision, reason="": recorded.append((host, decision, reason))
+            server_ = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+            reader, writer = await asyncio.open_connection("127.0.0.1", server_.sockets[0].getsockname()[1])
+            writer.write(b"CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            established = await reader.readuntil(b"\r\n\r\n")
+            hello = self.client_hello(server_name)
+            writer.write(b"\x16\x03\x01" + len(hello).to_bytes(2, "big") + hello)
+            await writer.drain()
+            await reader.read()
+            writer.close()
+            server_.close()
+            return established, recorded
+
+        with patch.object(egress_proxy, "resolve_public", fake_resolve), patch.object(egress_proxy, "CONNECT_TIMEOUT", 1):
+            established, recorded = asyncio.run(scenario("evil.example"))
+            self.assertTrue(established.startswith(b"HTTP/1.1 200"))
+            self.assertEqual(recorded, [("pypi.org", "blocked", "sni_mismatch")])
+            _, recorded = asyncio.run(scenario("pypi.org"))
+            self.assertNotIn(("pypi.org", "blocked", "sni_mismatch"), recorded)
+
+    def test_private_addresses_are_refused(self):
+        import asyncio
+        import egress_proxy
+        with self.assertRaisesRegex(ValueError, "private_address"):
+            asyncio.run(egress_proxy.resolve_public("localhost"))
 
 
 if __name__ == "__main__":

@@ -421,7 +421,8 @@ services:
   # Production defaults for command execution:
   # - broker stays on sandbox_net only
   # - each command runs in a fresh container on its own bridge network
-  # - run containers get internet, the workspace, and read-only harness docs
+  # - run containers get the workspace, read-only harness docs, and HTTPS egress only via a
+  #   per-run proxy sidecar that allows admin-approved hosts (SANDBOX_EGRESS_MODE=open restores direct internet)
   # Use a Compose override file to opt into gVisor/runsc after validating networking.
   sandbox-init:
     image: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
@@ -468,6 +469,7 @@ services:
       SANDBOX_ISOLATION_MODE: ${SANDBOX_ISOLATION_MODE:-container}
       SANDBOX_RUN_IMAGE: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
       SANDBOX_RUN_NETWORK_MODE: ${SANDBOX_RUN_NETWORK_MODE:-per_run_bridge}
+      SANDBOX_EGRESS_MODE: ${SANDBOX_EGRESS_MODE:-proxy}
       SANDBOX_RUN_CAP_DROP: ${SANDBOX_RUN_CAP_DROP:-NET_RAW}
       SANDBOX_RUN_CPUS: ${SANDBOX_RUN_CPUS:-2}
       SANDBOX_RUN_MEMORY_BYTES: ${SANDBOX_RUN_MEMORY_BYTES:-2147483648}

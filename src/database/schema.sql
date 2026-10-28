@@ -2083,6 +2083,18 @@ ALTER TABLE ONLY zoom_managed_meetings
 ALTER TABLE ONLY zoom_managed_meetings
     ADD CONSTRAINT zoom_managed_meetings_object_id_fkey FOREIGN KEY (object_id) REFERENCES workstream_objects(id) ON DELETE CASCADE;
 
+CREATE TABLE sandbox_network_rules (
+  id bigserial PRIMARY KEY,
+  host text NOT NULL CHECK (host = lower(host) AND length(host) BETWEEN 1 AND 260),
+  decision text NOT NULL CHECK (decision IN ('allow', 'block')),
+  job_id bigint REFERENCES jobs(id) ON DELETE CASCADE,
+  note text,
+  created_by text NOT NULL DEFAULT 'admin',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX sandbox_network_rules_global_host_idx ON sandbox_network_rules(host) WHERE job_id IS NULL;
+CREATE UNIQUE INDEX sandbox_network_rules_job_host_idx ON sandbox_network_rules(job_id, host) WHERE job_id IS NOT NULL;
+
 INSERT INTO schema_migrations(filename) VALUES
   ('000_current_baseline'),
   ('006_zoom_meetings.sql'),
@@ -2091,6 +2103,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('009_workstream_threads.sql'),
   ('010_model_service.sql'),
   ('011_research_system_threads.sql'),
-  ('012_workstream_archive.sql');
+  ('012_workstream_archive.sql'),
+  ('013_sandbox_network_rules.sql');
 
 SET check_function_bodies = true;

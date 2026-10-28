@@ -6,6 +6,11 @@
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.
 - Root `./setup.sh` remains the single setup and administration entry point.
+- Sandbox egress is deny-by-default: each command gets a per-run HTTPS proxy
+  sidecar (SNI-checked, no private addresses, DNS sink). Agents request hosts
+  with `network_access_request`; admins choose Approve once/always, Block
+  once/always or Cancel job via Telegram or email, with optional feedback.
+  `SANDBOX_EGRESS_MODE=open` restores the previous behaviour.
 - Refreshed the README and task-oriented documentation for the current product.
 - Canonical `docs/` is mounted read-only for agent tools and sandbox commands.
 - Fresh databases initialize directly from the current schema baseline.
