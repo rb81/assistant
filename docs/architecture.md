@@ -51,6 +51,9 @@ broker starts a disposable container with the shared workspace mount. It does
 not give the command container application credentials, the Docker socket, or
 access to the host repository. The broker itself has Docker daemon access; see
 [security](security.md) for the residual risk and host requirements.
+Command containers have no direct internet: a per-run proxy sidecar allows
+HTTPS only to approved hosts, and the agent requests new hosts through an admin
+approval. See [sandbox network isolation](sandbox.md#network-isolation).
 
 The canonical host documentation directory is mounted read-only at
 `/data/share/.assistant/docs` in agent services, the sandbox broker, and

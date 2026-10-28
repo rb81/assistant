@@ -75,6 +75,8 @@ erasing owned records and eligible derived files.
 - `provider_mutations` — durable mutation attempts and reconciliation state.
 - `model_presets` and `model_service_calls` — secondary-model configuration,
   calls, token usage, and cost accounting.
+- `sandbox_network_rules` — admin allow/block rules for sandbox egress hosts,
+  global (`job_id` NULL) or scoped to one job.
 - `runtime_state` and `manual_events` — runtime metadata and monitor actions.
 
 ## Queue and execution

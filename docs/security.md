@@ -256,6 +256,13 @@ to support package installation; their writable layer is ephemeral, but workspac
 changes and outbound data transfer persist. Container escape remains a residual
 risk.
 
+Outbound traffic is deny-by-default: each command reaches the internet only
+through a per-run HTTPS proxy that allows configured and admin-approved hosts,
+checks TLS SNI, refuses private addresses and sinks DNS. Approvals are per host,
+so an approved host can receive any data the command sends it, and hosts on
+shared CDNs may relay to others. The Docker host's bridge gateway may remain
+reachable. See [sandbox network isolation](sandbox.md#network-isolation).
+
 To eliminate the mount exposure, disable `agent.sandbox.enabled` and do not start
 the `sandbox` service; disabling the tool alone does not remove a running broker's
 socket mount. Use a dedicated Docker host/daemon for stronger isolation. Validate

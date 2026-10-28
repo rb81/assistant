@@ -100,7 +100,8 @@ sudo docker compose --env-file data/.env exec task-agent python -m assistant_age
 sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.network_access remove api.example.com
 ```
 
-Use `--job N` to scope `allow`, `block` and `remove` to one job.
+Use `--job N` to scope `allow`, `block` and `remove` to one job. Setup factory
+reset has a separate **Sandbox network approvals and blocks** category.
 
 ## Isolation Modes
 

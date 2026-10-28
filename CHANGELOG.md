@@ -6,6 +6,12 @@
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.
 - Root `./setup.sh` remains the single setup and administration entry point.
+- Text-to-speech uses an admin-configured model and voice (`AGENT_TTS_MODEL`,
+  `AGENT_TTS_VOICE`); the agent supplies only text and optional instructions.
+  Admin CLI: `python -m assistant_agent.tts voices|test`. Audio is returned even
+  when OpenRouter cost reporting lags, with later reconciliation.
+- Telegram offers only `/list` and `/new`; workstream selection from `/list`
+  now opens the workstream. Legacy commands reply with a hint.
 - Sandbox egress is deny-by-default: each command gets a per-run HTTPS proxy
   sidecar (SNI-checked, no private addresses, DNS sink). Agents request hosts
   with `network_access_request`; admins choose Approve once/always, Block

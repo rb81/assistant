@@ -21,6 +21,14 @@ invalidates the other. There is no silent fallback to an unselected channel.
 Both selected channels are attempted; partial or uncertain delivery is reported
 and the original record is preserved rather than blindly resent.
 
+Sandbox network access requests use the same channels with five choices:
+**Approve once** (this job), **Approve always**, **Block once**, **Block always**
+and **Cancel job**. On Telegram, use **Add feedback first** to send the agent a
+note before deciding. By email, reply to the request with the decision on the
+first line (`APPROVE ONCE`, `APPROVE ALWAYS`, `BLOCK ONCE`, `BLOCK ALWAYS` or
+`CANCEL JOB`) and optional feedback below. See
+[network access approvals](sandbox.md#network-access-approvals).
+
 Use `/list` → **Needs attention** for paused tasks and its **Approval inbox** for
 pending confirmations, including held inbound emails. Expired buttons offer a fresh
 confirmation. Expiry never deletes the job: its status card can request a current

@@ -42,7 +42,10 @@ Compose separates database, model, malware-scanning, transcription, and sandbox
 control traffic into scoped networks. Services needing external providers also
 use egress. PostgreSQL is not attached to egress. The sandbox broker uses
 authenticated HTTPS on its internal control network; command containers are
-created per request on separate bridge networks.
+created per request on separate internal networks and reach the internet only
+through a per-run HTTPS egress proxy restricted to approved hosts
+(`SANDBOX_EGRESS_MODE=open` in `data/.env` restores direct access). See
+[sandbox network isolation](sandbox.md#network-isolation).
 
 Each command container receives the shared workspace, not application
 credentials or the Docker socket. The broker itself requires the Docker socket

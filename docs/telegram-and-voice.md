@@ -172,7 +172,9 @@ or `both`. Administrator identity reuses the verified email-to-Telegram mapping
 for `ADMIN_EMAIL`; no separate administrator list is required. The mapped numeric
 ID must be allowlisted. Other recipient mappings and the general allowlist do not
 grant administrator permission. Existing installations remain email-only until changed.
-See [approval channels](email-administration.md#approval-channels).
+See [approval channels](email-administration.md#approval-channels). Sandbox
+network requests offer Approve once/always, Block once/always, Cancel job and
+**Add feedback first**.
 
 Administrators see **Needs attention** and **Archived** in `/list`. Job cards offer
 status, error details, results when available, rename, guidance, and state-specific
