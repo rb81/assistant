@@ -7,6 +7,7 @@ inside the task-agent container to list voices or test a configuration.
 import argparse
 import io
 import json
+import os
 import sys
 import re
 import time
@@ -334,7 +335,7 @@ def main(argv=None):
     test.add_argument("--model", help="Override the configured model for this test")
     test.add_argument("--voice", help="Override the configured voice for this test")
     test.add_argument("--instructions")
-    test.add_argument("--output", default="/tmp/tts-test", help="Output path without extension")
+    test.add_argument("--output", help="Output path without extension (default: <shared root>/tts-tests/<model>-<voice>)")
     args = parser.parse_args(argv)
     config = load_config()
     if not read_secret("OPENROUTER_API_KEY"):
@@ -373,7 +374,11 @@ def main(argv=None):
     except ModelServiceError as exc:
         print("Failed: %s" % exc, file=sys.stderr)
         return 1
-    path = "%s.%s" % (args.output, audio_format)
+    output = args.output or "%s/tts-tests/%s-%s" % (
+        str(config.get("agent.filesystem.shared_root") or "/tmp").rstrip("/"),
+        re.sub(r"[^A-Za-z0-9._-]+", "_", model), re.sub(r"[^A-Za-z0-9._-]+", "_", voice))
+    path = "%s.%s" % (output, audio_format)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "wb") as handle:
         handle.write(data)
     cost = None
