@@ -1212,6 +1212,46 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             self.assertEqual(run.call_args.args[0], ["docker", "info", "--format", "{{.ServerVersion}}"])
             self.assertEqual(run.call_args.kwargs["timeout"], 15)
 
+    def test_module_entrypoint_tools_offers_sudo_and_returns_to_configuration(self):
+        script = """
+import runpy
+import subprocess
+import sys
+from unittest.mock import patch
+import questionary
+from assistant_agent.setup import Installation
+
+root = sys.argv[1]
+instance = Installation(root)
+instance.state['setup_complete'] = True
+instance.save()
+sys.argv = ['assistant_agent.setup', '--root', root]
+responses = ['tools', True, 'Back', 'cancel']
+results = [
+    subprocess.CompletedProcess([], 1, 'secret-canary', 'permission denied secret-canary'),
+    subprocess.CompletedProcess([], 0, '29.0.0', ''),
+]
+with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True), \\
+     patch('assistant_agent.setup.platform.system', return_value='Linux'), \\
+     patch('assistant_agent.setup.os.geteuid', return_value=1000), \\
+     patch('assistant_agent.setup.shutil.which', return_value='/usr/bin/docker'), \\
+     patch.object(questionary.Question, 'unsafe_ask', side_effect=responses) as ask, \\
+     patch('subprocess.run', side_effect=results) as run:
+    runpy.run_module('assistant_agent.setup', run_name='__main__')
+    assert ask.call_count == 4, ask.call_count
+    assert run.call_count == 2, run.call_count
+    assert run.call_args.args[0] == ['sudo', '-n', 'docker', 'info', '--format', '{{.ServerVersion}}']
+"""
+        with tempfile.TemporaryDirectory() as root:
+            result = subprocess.run(
+                [sys.executable, "-c", script, root],
+                capture_output=True, text=True, timeout=15,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Cancelled. No changes saved.", result.stdout)
+        self.assertNotIn("secret-canary", result.stdout + result.stderr)
+        self.assertNotIn("Docker command failed", result.stdout)
+
     def test_sudo_authorization_failure_precedes_container_changes(self):
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)

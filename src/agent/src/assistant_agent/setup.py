@@ -2212,4 +2212,7 @@ def draft_problems(instance):
 
 
 if __name__ == "__main__":
-    main()
+    # Share exception classes with maintenance modules that import .setup.
+    from .setup import main as setup_main
+
+    setup_main()
