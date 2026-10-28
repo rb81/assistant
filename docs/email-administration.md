@@ -24,6 +24,8 @@ admin consumes the approval once; the stored action and original content are
 used, never a changed subject or reply thread. Changed review targets, expired,
 mismatched, automated and duplicate approvals fail closed and are logged.
 Send a fresh request after expiry; `/admin review JOB_ID` requests another review.
+Approving a job review resumes the job and records the transition without a
+separate acknowledgment email. Explicit `/admin` commands still email their results.
 
 Text above the quoted confirmation is additional LLM guidance for a task,
 `review`, or `instruct` command. Signatures, quoted history and approval

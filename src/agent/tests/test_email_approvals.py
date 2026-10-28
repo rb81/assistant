@@ -100,6 +100,59 @@ class ApprovalReplyTest(unittest.TestCase):
         self.assertFalse(result.queued)
         receive.assert_not_called()
 
+    def test_job_review_approval_resumes_and_logs_without_acknowledgment_email(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config = self.config
+        downloader.db = MagicMock()
+        job = {"id": 12, "updated_at": "2026-10-28T17:00:00+00:00",
+               "last_error": "Tool failed three times", "metadata": {}}
+        downloader.db.fetch_one.side_effect = [None, job, {"id": 12}]
+        payload = {"kind": "review", "job_id": 12, "version": job["updated_at"]}
+        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
+            "assistant_agent.admin_commands.send_admin_email"
+        ) as send, patch("assistant_agent.email_ingest.RequestService.receive_request") as receive:
+            result = downloader.ingest_raw(reply("Try a different approach.\n\n" + self.confirmation).as_bytes())
+        self.assertTrue(result.inserted)
+        self.assertFalse(result.queued)
+        update = downloader.db.fetch_one.call_args
+        self.assertIn("status = 'queued'", update.args[0])
+        self.assertEqual(update.args[1][1], 12)
+        self.assertEqual(update.args[1][0].obj["admin_review_override"]["instruction"], "Try a different approach.")
+        self.assertEqual(downloader.db.log_event.call_args.args, (12, "status_change"))
+        send.assert_not_called()
+        receive.assert_not_called()
+
+    def test_stale_job_review_approval_does_not_resume_or_acknowledge(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config = self.config
+        downloader.db = MagicMock()
+        downloader.db.fetch_one.return_value = None
+        payload = {"kind": "review", "job_id": 12, "version": "2026-10-28T17:00:00+00:00"}
+        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
+            "assistant_agent.admin_commands.send_admin_email"
+        ) as send, patch.object(downloader, "apply_email_review_override") as resume:
+            result = downloader.ingest_raw(reply(self.confirmation).as_bytes())
+        self.assertFalse(result.queued)
+        resume.assert_not_called()
+        send.assert_not_called()
+
+    def test_explicit_admin_command_still_sends_its_result(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config = self.config
+        downloader.db = MagicMock()
+        downloader.db.fetch_one.return_value = None
+        payload = {"kind": "command", "subject": "/admin status", "body": ""}
+        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
+            "assistant_agent.admin_commands.AdminCommands.execute", return_value="Status report"
+        ) as execute, patch("assistant_agent.admin_commands.send_admin_email") as send:
+            result = downloader.ingest_raw(reply(self.confirmation).as_bytes())
+        self.assertFalse(result.queued)
+        execute.assert_called_once_with("/admin status", "", confirmed=True)
+        send.assert_called_once_with(self.config, "Assistant admin response", "Status report")
+
 
 @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DATABASE_URL"), "requires disposable assistant_test database")
 class ApprovalDatabaseTest(unittest.TestCase):

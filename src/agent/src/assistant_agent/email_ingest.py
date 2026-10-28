@@ -339,7 +339,7 @@ class EmailDownloader:
                         if not job:
                             raise ValueError("The job has changed since this approval was requested. Send /admin review JOB_ID again.")
                         self.apply_email_review_override(job, 0, instruction)
-                        response = "Job %s approved." % payload["job_id"]
+                        return IngestResult(inserted=True, queued=False, message_id=message_id)
                     else:
                         body = payload["body"]
                         guidance_unused = False
