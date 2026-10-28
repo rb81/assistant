@@ -293,3 +293,54 @@ def test_permanent_deletion_stays_in_safe_local_preview_flow(ui):
     ui.callback({"id": "c", "from": {"id": 123}, "data": "ui:delete:12"})
     assert "stopped writer services" in ui.client.call.call_args.args[1]["text"]
     ui.db.execute.assert_not_called()
+
+
+def private_message(text, message_id=50):
+    return {"update_id": message_id, "message": {
+        "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+        "message_id": message_id, "date": 1_700_000_000, "text": text,
+    }}
+
+
+@pytest.mark.parametrize("text", ["/status", "/tasks", "/cancel 12", "/status@assistant_bot"])
+def test_legacy_commands_are_not_routed_or_executed(ui, text):
+    receiver = ui.receiver
+    receiver.db.fetch_one.return_value = None
+    with patch("assistant_agent.telegram_ingest.RequestService") as requests:
+        receiver.ingest(private_message(text))
+    requests.assert_not_called()
+    receiver.db.update_job_status.assert_not_called()
+    texts = [call.args[1]["text"] for call in receiver.client.call.call_args_list if call.args[0] == "sendMessage"]
+    assert texts[0] == "Unknown command. Use /list or /new."
+    assert texts[-1] == "Choose what to manage:"
+
+
+def test_paths_that_look_like_commands_still_reach_the_assistant(ui):
+    receiver = ui.receiver
+    receiver.db.fetch_one.return_value = None
+    receiver.selected_workstream = MagicMock(return_value=None)
+    receiver.task_thread = MagicMock(return_value=("thread", []))
+    with patch("assistant_agent.telegram_ingest.RequestService") as requests:
+        receiver.ingest(private_message("/Users/me/notes.txt summarize this"))
+    requests.return_value.receive_request.assert_called_once()
+
+
+def test_selecting_a_workstream_confirms_in_the_chat(ui):
+    receiver = ui.receiver
+    receiver.db.fetch_one.return_value = {"id": 7, "title": "Trip planning"}
+    receiver.select_task({"id": "cb", "from": {"id": 123}, "data": "ws:7",
+                          "message": {"chat": {"type": "private", "id": 123}}})
+    receiver.db.execute.assert_called_once()
+    method, payload = receiver.client.call.call_args.args
+    assert method == "sendMessage" and payload["chat_id"] == "123"
+    assert "Trip planning" in payload["text"]
+
+
+def test_receiver_registers_only_current_commands():
+    with patch("assistant_agent.telegram_ingest.TelegramClient") as client:
+        client.return_value.call.return_value = {"id": 9}
+        TelegramReceiver(MagicMock(), config())
+    client.return_value.call.assert_any_call("setMyCommands", {"commands": [
+        {"command": "list", "description": "Browse workstreams and jobs"},
+        {"command": "new", "description": "Start a new workstream"},
+    ]})

@@ -44,7 +44,7 @@ read the initialization container's original secret mount.
   workstream. Brief text/file bursts and albums are grouped.
 - `/list` opens **Workstreams | Jobs**, with paginated lists and status cards.
   Viewing a card does not change the selected conversation; **Continue here**
-  selects a workstream. Ordinary messages continue
+  selects a workstream and confirms the switch in the chat. Ordinary messages continue
   its main conversation until you switch or use `/new`; selection survives
   receiver restarts. Email-created workstreams are selectable too.
 - Reply to a task message or its status message to continue that task, including after
@@ -58,10 +58,12 @@ read the initialization container's original secret mount.
   request. Its temporary title is **New workstream**. After three user messages
   the runtime requests a concise name; naming retries up to three times on failure,
   and shorter conversations keep the temporary title.
-  `/tasks` and `/status` show active execution jobs.
-  `/cancel 123` cancels your active task 123; it cannot undo already completed actions.
+- `/list` and `/new` are the only commands; the receiver registers them as the
+  bot's command menu at startup. Other commands such as the retired `/tasks`,
+  `/status` and `/cancel` are answered with a hint and open `/list`. Job cards
+  show task status; administrators can cancel tasks from them.
 - Normal replies contain just the answer, without automatic task-number or completion
-  notifications. `/tasks` and `/status` still expose task IDs when needed. Set
+  notifications. Job cards in `/list` show task IDs when needed. Set
   `agent.telegram.show_task_status: true` in the YAML configuration to restore one
   editable progress message per task. There is no token stream or disclosure of
   internal reasoning.

@@ -533,9 +533,10 @@ def test_telegram_selection_persists_and_explicit_replies_do_not_switch_it(datab
         "message": {"chat": {"type": "private", "id": 123}},
     })
     assert receiver.selected_workstream("123")["workstream_id"] == first["workstream_id"]
-    receiver.client.call.assert_called_once_with(
+    receiver.client.call.assert_any_call(
         "answerCallbackQuery", {"callback_query_id": "callback", "text": "Workstream selected."},
     )
+    assert receiver.client.call.call_args.args[0] == "sendMessage"
 
 
 def test_new_telegram_workstream_uses_temporary_title_and_persists_selection(database):

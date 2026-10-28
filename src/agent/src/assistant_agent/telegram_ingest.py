@@ -17,6 +17,10 @@ from .transcription import transcribe_audio
 
 
 LOGGER = logging.getLogger("assistant.telegram")
+BOT_COMMANDS = [
+    {"command": "list", "description": "Browse workstreams and jobs"},
+    {"command": "new", "description": "Start a new workstream"},
+]
 
 
 def message_files(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -42,6 +46,10 @@ class TelegramReceiver:
         self.config = config
         self.client = TelegramClient(config)
         self.bot_id = str(self.client.call("getMe", {})["id"])
+        try:
+            self.client.call("setMyCommands", {"commands": BOT_COMMANDS})
+        except Exception:
+            LOGGER.warning("could not register Telegram bot commands")
 
     def owned_jobs(self, sender: str, conversation: str, *, waiting: bool = False) -> list[dict[str, Any]]:
         return self.db.fetch_all(
@@ -166,20 +174,6 @@ class TelegramReceiver:
         )
         return (recent["thread_id"] if recent else "telegram:%s:%s" % (conversation, message["message_id"])), []
 
-    def send_workstream_list(self, sender: str, external: str) -> None:
-        rows = self.visible_workstreams(sender)
-        if not rows:
-            text = "No workstreams are available yet. Send a message to start one."
-            TelegramDelivery(self.db, self.config).send({"id": None}, text, destination=sender,
-                                                        purpose="command:" + external)
-            return
-        self.client.call("sendMessage", {
-            "chat_id": sender, "text": "Choose a workstream:",
-            "reply_markup": {"inline_keyboard": [[
-                {"text": "#%s %s" % (row["id"], str(row["title"])[:45]), "callback_data": "ws:%s" % row["id"]}
-            ] for row in rows]},
-        }, sending=True)
-
     def ingest(self, update: dict[str, Any]) -> None:
         callback = update.get("callback_query")
         if callback:
@@ -206,7 +200,12 @@ class TelegramReceiver:
             return
         body = str(message.get("text") or message.get("caption") or "")
         command, _, command_body = body.strip().partition(" ")
-        if command == "/list":
+        command = command.split("@", 1)[0]
+        if command in {"/list", "/start"} or (command.startswith("/") and command != "/new"
+                                              and command[1:].replace("_", "").isalnum()):
+            if command != "/list":
+                admin_ui.send(sender, "Connected. Use /list to browse workstreams and jobs, or /new to start a new workstream."
+                              if command == "/start" else "Unknown command. Use /list or /new.")
             admin_ui.home(sender)
             self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
             return
@@ -243,23 +242,6 @@ class TelegramReceiver:
         creating_new_thread = is_new_workstream or not self.db.fetch_one(
             "SELECT thread_id FROM workstream_threads WHERE thread_id = %s", (thread,),
         )
-        if body.startswith(("/tasks", "/status", "/cancel", "/start")):
-            jobs = self.owned_jobs(sender, conversation)
-            if body.startswith("/cancel"):
-                identifier = body.split()[1] if len(body.split()) == 2 else ""
-                owned = next((job for job in jobs if str(job["id"]) == identifier), None)
-                if owned:
-                    self.db.update_job_status(owned["id"], "cancelled", last_error="Cancelled by requester via Telegram")
-                    text = "Task #%s cancelled. Already completed actions are not undone." % identifier
-                else:
-                    text = "No matching active task."
-            elif body.startswith("/start"):
-                text = "Connected."
-            else:
-                text = "\n".join("#%s %s: %s" % (job["id"], job["status"], job.get("task_summary") or "Task") for job in jobs) or "No active tasks."
-            TelegramDelivery(self.db, self.config).send({"id": None}, text, destination=sender, purpose="command:" + external)
-            self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
-            return
         metadata = {"media_group_id": message.get("media_group_id")}
         if creating_new_thread:
             metadata["temporary_workstream"] = "telegram"
@@ -314,7 +296,11 @@ class TelegramReceiver:
         pieces = str(callback.get("data") or "").split(":")
         if len(pieces) == 2 and pieces[0] == "ws" and pieces[1].isdigit():
             workstream_id = int(pieces[1])
-            if not any(row["id"] == workstream_id for row in self.visible_workstreams(sender)):
+            stream = self.db.fetch_one(
+                """SELECT id, title FROM workstreams WHERE id = %s AND status = 'active'
+                   AND main_thread_id <> 'system:unattributed'""", (workstream_id,),
+            )
+            if not stream:
                 self.client.call("answerCallbackQuery", {
                     "callback_query_id": callback["id"], "text": "That workstream is no longer available.",
                 })
@@ -323,6 +309,10 @@ class TelegramReceiver:
             self.client.call("answerCallbackQuery", {
                 "callback_query_id": callback["id"], "text": "Workstream selected.",
             })
+            self.client.call("sendMessage", {
+                "chat_id": sender,
+                "text": "Now in workstream: %s\nSend a message to continue here, or use /list to switch." % stream["title"],
+            }, sending=True)
             return
         if len(pieces) != 3 or pieces[0] != "task" or not all(piece.isdigit() for piece in pieces[1:]):
             return
