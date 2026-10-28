@@ -25,11 +25,12 @@ receive the docs mounted in the shared workspace, not the source tree.
 
 ## Conversations and work ownership
 
-`workstreams` own conversations and durable user-facing data. A workstream can
-have a main conversation and system threads for work such as reminders and
+`workstreams` own conversations and durable user-facing data. A workstream has
+a main conversation and can have system threads for work such as reminders and
 research. `workstream_threads` maps thread identities to their owner.
 
-Objects have explicit ownership and retaining relationships. Contacts and files
+`workstream_objects` records object identity and origin ownership;
+`workstream_attachments` records retaining relationships. Contacts and files
 can be attached to another workstream; reading or editing an object does not
 change its owner. `workstream_object_events` and
 `workstream_context_events` record successful changes and notify related
@@ -39,26 +40,39 @@ erasing owned records and eligible derived files.
 ## Core records
 
 - `emails` and `outbound_email_logs` — inbound and outbound message records.
+- `request_messages` and `channel_deliveries` — channel-neutral requests,
+  preprocessing state, reply routing, and delivery attempts.
+- `telegram_workstream_selections` — each Telegram sender's selected workstream.
 - `jobs`, `task_logs`, and `agent_checkpoints` — queued work, execution history,
   and resumable context.
+- `supervisor_instructions` and `workstream_task_notifications` — pending job
+  instructions and system-task outcomes surfaced to the main conversation.
 - `processed_artifacts` — attachment/URL scan and conversion state.
 - `agent_memories` and `memory_events` — unified durable and expiring memory.
 - `contacts` — contact details separate from memory.
 - `reminders` — scheduled and recurring tasks.
 - `deep_research_runs` and `deep_research_events` — asynchronous research state.
+- `workstream_files` — tracked file paths, digests, and object ownership,
+  including derived files.
 - `workspace_files`, `workspace_file_chunks`, and
-  `workspace_document_conversions` — file ownership and search index.
+  `workspace_document_conversions` — indexed file metadata, chunks, and
+  conversion lineage.
 - `calendar_managed_events` and `zoom_managed_meetings` — provider records
   created and managed by Assistant.
 - `dropbox_transfers` — transfer state and retry/reconciliation metadata.
+- `provider_mutations` — durable mutation attempts and reconciliation state.
+- `model_presets` and `model_service_calls` — secondary-model configuration,
+  calls, token usage, and cost accounting.
 - `runtime_state` and `manual_events` — runtime metadata and monitor actions.
 
 ## Queue and execution
 
 Jobs move through `queued`, `running`, `waiting`, `completed`, `failed`,
 `needs_review`, and `cancelled`. Task-agent workers claim work using PostgreSQL
-row locking (`FOR UPDATE SKIP LOCKED`). A partial unique index prevents more
-than one open job for the same thread.
+row locking (`FOR UPDATE SKIP LOCKED`), selecting due jobs in active workstreams.
+A partial unique index prevents more than one open job for the same thread;
+open means `queued`, `running`, `waiting`, or `needs_review`. Separate threads in
+one workstream can still run concurrently.
 
 Research and reminder work has dedicated execution records and system threads,
 with outcomes routed back to the owning conversation. These workers do not

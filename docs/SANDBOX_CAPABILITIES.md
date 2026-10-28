@@ -1,8 +1,17 @@
-# SANDBOX_CAPABILITIES
+# Sandbox capabilities
 
-This file describes common tools and Python libraries available in the sandbox command environment.
+This page describes the default image built from `src/sandbox/Dockerfile` and
+`src/sandbox/requirements.txt`. Custom run images may differ.
 
-Use `command_execute` for scripts and shell commands that should run in the sandbox. The sandbox shared workspace is the only supported working area for file reads/writes.
+Use `command_execute` for scripts and commands. Keep task files in the shared
+workspace (`/data/share` by default); only workspace changes persist between
+commands. Pass an argument array, not a shell command string:
+
+```json
+{"command":["python","-c","print('hello')"],"workdir":".","timeout_seconds":30}
+```
+
+For shell syntax such as pipes, explicitly invoke `["sh","-c","..."]`.
 
 The canonical harness documentation is mounted read-only at
 `/data/share/.assistant/docs` in the agent, broker, and each command container.
@@ -10,9 +19,11 @@ Start with `.assistant/docs/README.md` and read relevant pages on demand.
 The mount does not grant access to host source code, settings, credentials,
 application networks, or service administration.
 
-Each command uses a new container. Workspace changes persist, but installed
-packages and files outside the workspace do not. Default limits are 2 CPUs,
-2 GiB memory, and 512 processes; the operator can override them.
+In default container mode, each command uses a new container. Packages installed
+into its writable layer do not survive the command; install and use them in the
+same call, or use a workspace-local environment. Default limits are 2 CPUs,
+2 GiB memory, 512 processes and a 300-second timeout. See
+[sandbox execution](sandbox.md) for configuration and isolation limits.
 
 ## Installed command-line tools
 
@@ -24,7 +35,8 @@ packages and files outside the workspace do not. Default limits are 2 CPUs,
 - `file`
 - `unzip`
 - `dig` / `nslookup` from `dnsutils`
-- `ping`
+- `ping` (availability depends on container/kernel ICMP permissions; `NET_RAW`
+  is dropped by default)
 
 ## Installed Python web/research libraries
 
@@ -40,15 +52,15 @@ packages and files outside the workspace do not. Default limits are 2 CPUs,
 
 ## Web request guidance
 
-Many websites reject bare command-line clients or bare Python requests. When checking a website, prefer browser-like request headers and follow redirects.
+Some sites reject command-line clients. Follow redirects for public URLs, use a
+descriptive User-Agent, and inspect HTTP status codes. Browser-like headers do
+not bypass authentication, JavaScript requirements or anti-bot controls.
 
 Example with `curl`:
 
 ```sh
-curl -L --compressed \
-  -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36" \
-  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-  -H "Accept-Language: en-US,en;q=0.9" \
+curl --fail-with-body --location --compressed --max-time 20 \
+  --user-agent "Assistant URL check/1.0" \
   https://example.com/
 ```
 
@@ -58,11 +70,7 @@ Example with Python `requests` and BeautifulSoup:
 import requests
 from bs4 import BeautifulSoup
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+headers = {"User-Agent": "Assistant URL check/1.0"}
 
 response = requests.get("https://example.com/", headers=headers, timeout=20)
 response.raise_for_status()
@@ -76,16 +84,21 @@ Example main-content extraction with `trafilatura`:
 import requests
 import trafilatura
 
-headers = {"User-Agent": "Mozilla/5.0"}
-html = requests.get("https://example.com/", headers=headers, timeout=20).text
-text = trafilatura.extract(html, url="https://example.com/")
+response = requests.get(
+    "https://example.com/",
+    headers={"User-Agent": "Assistant URL check/1.0"},
+    timeout=20,
+)
+response.raise_for_status()
+text = trafilatura.extract(response.text, url=response.url)
 print(text or "No main content extracted")
 ```
 
 ## Troubleshooting
 
 - If `curl`, `wget`, or Python HTTP requests fail, inspect both stdout and stderr from `command_execute`.
-- HTTP 403/406 can mean the site is blocking non-browser clients; retry with browser-like headers.
+- HTTP 403/406 can indicate access restrictions or client blocking; do not assume
+  changing headers will resolve it.
 - DNS issues can be checked with `dig example.com` or `nslookup example.com`.
 - TLS/certificate issues may indicate a site-specific certificate problem or missing CA support.
 - Some websites require JavaScript rendering. The default sandbox does not include a browser automation stack such as Playwright or Selenium.

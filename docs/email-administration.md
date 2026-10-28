@@ -67,7 +67,17 @@ action; inspect state using the CLI before sending a fresh request.
 /admin reminder-cancel 9
 ```
 
-Put memory text, review instructions or `instruct` instructions in the plain-text body. `requeue` retries a failed, cancelled, waiting, needs-review or completed job; `instruct` adds a supervisor instruction and requeues a finished job so it is processed. Approval accepts a suggested new fact; use explicit update for a correction to an existing fact. Destructive actions require one-use, admin/action/object-bound confirmations valid for ten minutes. Logs use stable sequence cursors and return the next command. Structured secrets and configured secret values are redacted. Memory embeddings are refreshed by ordinary workers, never inline in commands.
+Put memory text, review instructions or `instruct` instructions in the message
+body (plain text preferred). `requeue` retries a failed, cancelled, waiting,
+needs-review or completed job; `instruct` adds a supervisor instruction and
+requeues a finished job. Memory `approve` accepts a suggested new fact; use
+`update` to correct an existing fact.
+
+Every emailed command requires the OTP approval described above, including
+read-only commands. In the local CLI, state-changing commands that request
+confirmation require `--yes`. Logs use stable sequence cursors and return the
+next command. Structured secrets and configured secret values are redacted.
+Memory embeddings are refreshed by ordinary workers, never inline in commands.
 
 ## Recovery CLI
 
@@ -77,7 +87,11 @@ docker compose --env-file data/.env exec task-agent python -m assistant_agent.ad
 docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
 ```
 
-The CLI uses local OS/container authorization and the same service without models or mailbox dependencies. `--yes` confirms destructive commands locally. `./setup.sh tools` wraps these commands in menus.
+Run these examples from the repository root after saving setup. The generated
+`data/.env` supplies `COMPOSE_FILE`, including the protected-secret overlay.
+The CLI uses local OS/container authorization and the same service without
+models or mailbox dependencies. `--yes` confirms commands locally.
+`./setup.sh tools` wraps these commands in menus.
 
 ## Memory And Deletion
 

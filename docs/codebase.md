@@ -18,13 +18,10 @@ configuration is in `src/docker-compose.yml`; setup writes an absolute
 `COMPOSE_FILE` value to `data/.env`. These paths describe the host checkout;
 the runtime receives documentation, not the repository source tree.
 
-`src/database/schema.sql` is the generated current schema baseline. Its
-`schema_migrations` table records `000_current_baseline` and migrations
-`006`–`011` as applied. The runtime keeps those migration files and processes
-unrecorded files in filename order. It does not replay the retired `001`–`005`
-conversion path. A database without the current baseline marker is refused
-before migrations are written; use the [external transition package](https://github.com/rb81/assistant/releases/tag/layout-transition)
-for older databases.
+`src/database/schema.sql` is the generated current schema baseline. Startup
+requires its baseline marker and applies unrecorded migrations in filename order.
+See [data model](data-model.md#schema-baseline-and-migrations) for migration
+tracking and the transition path for older databases.
 
 ## Application modules
 
@@ -32,8 +29,14 @@ for older databases.
 - `task_agent.py`, `tools.py` — task loop, tool schemas, and execution.
 - `database.py` — PostgreSQL access, current-baseline guard, and ordered
   migration runner.
-- `email_ingest.py`, `telegram.py`, `requests.py` — request intake and routing.
+- `email_ingest.py`, `telegram_ingest.py`, `requests.py` — intake and preprocessing.
+- `replies.py`, `telegram.py` — channel-aware replies and Telegram delivery.
+- `workstreams.py`, `workstream_files.py`, `workstream_operator.py` — ownership,
+  file retention, and local workstream administration.
+- `model_service.py` — configured secondary-model calls through `llm_service`,
+  including usage and cost accounting.
 - `memory_store.py`, `memory_manager.py`, `context_store.py` — memory and context search.
+- `embedding_client.py`, `embedding_maintenance.py` — embeddings and resumable rebuilds.
 - `workspace_index.py`, `artifact_processor.py` — file indexing and artifact processing.
 - `deep_research.py`, `reminders.py` — asynchronous research and reminder work.
 - `calendar/`, `zoom_meetings.py`, `dropbox_files.py` — provider integrations.
@@ -41,8 +44,15 @@ for older databases.
 
 ## Tests
 
-Run Python tests from `src/agent` with pytest in an environment containing the
-agent test dependencies. Tests are grouped by module in `src/agent/tests/`.
+Tests are grouped by module in `src/agent/tests/`. With the dependencies in
+`src/agent/requirements.txt` and pytest installed, run a focused test from the
+repository root:
+
+```bash
+PYTHONPATH=src/agent/src python -m pytest -q src/agent/tests/test_memory_manager.py
+```
+
+Sandbox and transcription tests live alongside their respective services.
 
 For code changes, update the focused tests and relevant guide. Start at
 [the documentation index](README.md), then consult [architecture](architecture.md)

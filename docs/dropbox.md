@@ -141,7 +141,8 @@ policies. Malware scanning is not protection against prompt injection or all
 data leakage. Grant standing output permission only to an account and Assistant
 deployment you trust, with appropriate email sender restrictions.
 
-This integration has no public links, arbitrary URL downloads, remote deletions,
-renames, background watchers, synchronization, automatic tasks, or access to
-unrelated folders through its tools. See [security](security.md) and
+This integration has no public links, arbitrary URL downloads, renames, background
+watchers, synchronization, automatic tasks, or access to unrelated folders through
+its tools. Remote deletion is available only through the revision-checked
+`dropbox_delete` tool described above. See [security](security.md) and
 [configuration](configuration.md) for host, credential and model boundaries.

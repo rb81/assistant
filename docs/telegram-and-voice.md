@@ -18,9 +18,11 @@ their original completion requirements.
    an untrusted forwarded message. The mapped IDs must also be allowlisted.
 5. Optionally run `./setup.sh --section transcription`. This generates a
    protected internal token and enables the managed multilingual English/Arabic service.
-6. Review and save, then start or recreate the selected services with
+6. Review and save, then, from the repository root, start or recreate services with
    `docker compose --env-file data/.env up -d --build`. Setup selects the
-   `telegram` and `voice` profiles.
+   `telegram` and `voice` profiles when those features are enabled. The generated
+   `data/.env` supplies `COMPOSE_FILE` with the base file and secret overlay;
+   do not omit that overlay by substituting only `-f src/docker-compose.yml`.
 
 No public Telegram webhook or transcription port is necessary. The receiver uses long
 polling with a durable cursor and a single-receiver database lock. Preprocessors and
@@ -71,8 +73,8 @@ read the initialization container's original secret mount.
   an email task. `me` means the requester's configured identity. Named recipients must
   be configured email-to-Telegram mappings, never arbitrary chat IDs.
 - Outbound attachments accept `path` inside the shared workspace, inline `content`
-  with a filename, or a clean `artifact_id` belonging to the current task. Exact outbound
-  bytes are scanned. The batch is capped at 50 MB and ten attachments.
+  with a filename, or a clean `artifact_id` from the current conversation thread.
+  Exact outbound bytes are scanned. The batch is capped at 50 MiB and ten attachments.
 
 Hosted Bot API downloads are limited to 20 MB; larger incoming files need another
 channel such as Dropbox. New document uploads are limited to 50 MB. Sending an image
@@ -97,7 +99,7 @@ Failed voice processing asks for text or a new recording; other text requests co
 Voice text never authenticates an administrator. Names, dates, accents, background
 noise, and mixed-language speech can be misrecognized; review consequential details.
 
-The API accepts only bounded audio bytes, with a 20 MB limit, a 30-second upload deadline,
+The API accepts only bounded audio bytes, with a 20 MiB limit, a 30-second upload deadline,
 a ten-minute audio limit, and bounded decoder/inference timeouts. It normalizes audio
 to mono PCM16 WAV, rejects silence, and permits only `auto`, `en`, or `ar` language
 selection. It exposes neither model loading nor arbitrary command/URL inputs.

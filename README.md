@@ -73,13 +73,13 @@ cd assistant
 
 The wizard walks through identity, models, channels, credentials, and optional integrations. It validates your choices and asks you to review before saving. It can then build and start the services.
 
-If you choose to start them later:
+Accept the example instructions or create a nonempty `data/config/AGENT.md` before starting. If you choose to start the services later, run from the repository root:
 
 ```sh
 docker compose --env-file data/.env up -d --build
 ```
 
-Send a task through your configured channel. For email administration, send `/admin` as the subject to get help without invoking a model.
+Send a task through your configured channel. For email administration, send `/admin` as the subject and follow the confirmation email to get help without invoking a model.
 
 > [!IMPORTANT]
 > **Use an assistant-owned mailbox, not your personal inbox.** Restrict actionable senders and recipient domains during setup. Models and enabled external providers receive the information needed for their requests; self-hosting does not make those calls local.
@@ -93,7 +93,7 @@ Send a task through your configured channel. For email administration, send `/ad
 | `./setup.sh secrets status` | Check credential configuration |
 | `./setup.sh secrets update OPENROUTER_API_KEY` | Replace a credential |
 | `./setup.sh tools` | Inspect services, logs, jobs, memories, reminders, and workstreams |
-| `./setup.sh reset` | Selectively reset data, with backup and confirmation |
+| `./setup.sh reset` | Selectively reset data, with an optional backup and confirmation |
 | `docker compose --env-file data/.env down` | Stop the stack without deleting persistent volumes |
 
 ## A clean home for everything
@@ -106,7 +106,7 @@ docs/          Canonical human- and agent-readable documentation
 setup.sh       One entry point for setup and local administration
 ```
 
-**`data/` is entirely gitignored.** Settings live in `data/.env`, expert overrides in `data/overrides.env`, and local configuration in `data/config/`. Credentials use protected `data/.secrets/` files or an optional dedicated Docker volume with service-specific mounts. Docker-managed volumes remain outside the repository.
+**`data/` is entirely gitignored.** Deployment settings live in `data/.env`, expert overrides in `data/overrides.env`, and runtime configuration in `data/config/agent.yaml` (initialized from tracked defaults). Credentials use protected `data/.secrets/` files or an optional dedicated Docker volume with service-specific mounts. Docker-managed volumes remain outside the repository; back up the credential volume separately if enabled.
 
 ## Built for deliberate autonomy
 

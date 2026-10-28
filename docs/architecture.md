@@ -8,11 +8,13 @@ scheduling, and monitoring.
 
 - `postgres` — jobs, messages, logs, memories, reminders, integrations, and indexes.
 - `downloader` — optional email intake (the `email` profile).
-- `telegram-receiver` and `request-preprocessor` — optional private Telegram intake.
+- `telegram-receiver` and `request-preprocessor` — optional private Telegram intake
+  and attachment/voice preprocessing (the `telegram` profile).
 - `task-agent` — LLM-driven execution of queued tasks.
 - `deep-research-agent` — asynchronous research execution.
 - `workspace-indexer` — workspace document indexing.
-- `reminder-scheduler` — queues due reminders.
+- `reminder-scheduler` — queues due tasks, delivers notification-only reminders,
+  and reschedules recurring reminders.
 - `supervisor` and `heartbeat` — job review and queue-health monitoring.
 - `ollama` and `ollama-model-puller` — local embedding service and model setup.
 - `clamav` — artifact scanning.
@@ -25,13 +27,18 @@ Most application roles use the Python agent image and select behavior through
 ## Request and job flow
 
 Email or Telegram intake validates and records a request, processes permitted
-attachments, and queues work. A task-agent claims a job through PostgreSQL,
-builds context, calls the configured model, and executes available tools. Side
-effects and progress are recorded in PostgreSQL. Research and reminders run
-through their own workers and return results to the associated conversation.
+attachments, and queues work in an owning workstream. A task-agent claims a job
+through PostgreSQL, builds context, calls the configured model, and executes
+available tools. Automatically routed jobs deliver final answers and clarification
+through the request's reply route; legacy email jobs require explicit email tools.
+Side effects and progress are recorded in PostgreSQL. Research has a dedicated
+worker; the reminder scheduler queues task-agent jobs or delivers notification-only
+reminders without a model call. System-thread outcomes are available to the
+owning workstream's main conversation.
 
-Task-agent workers claim jobs with database locking, so deployments can scale
-them without intentionally assigning the same queued job twice.
+Task-agent workers claim jobs with database locking, preventing simultaneous
+claims of the same queued job. This is not an exactly-once guarantee for external
+side effects after retries; see [concurrent job processing](concurrent-job-processing.md).
 
 ## Runtime boundaries
 
@@ -46,7 +53,7 @@ access to the host repository. The broker itself has Docker daemon access; see
 [security](security.md) for the residual risk and host requirements.
 
 The canonical host documentation directory is mounted read-only at
-`/data/share/.assistant/docs` for task-agent, the sandbox broker, and
+`/data/share/.assistant/docs` in agent services, the sandbox broker, and
 per-command containers. An agent can read these files through normal workspace
 tools when diagnosing task or command failures. This is diagnostic information,
 not access to host secrets, host source files, or controls for restarting

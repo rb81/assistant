@@ -15,10 +15,15 @@ the wizard does not manage; see [configuration](configuration.md) and
 
 ## Models and limits
 
-The default model endpoint and model choices are in `src/config/agent.yaml`.
+Runtime model defaults are in `data/config/agent.yaml`, initialized from
+`src/config/agent.yaml`.
 Setup allows primary/fallback model selection and supported provider
-configuration. Per-task iteration and token limits constrain agent work; model
-provider spending limits are separate and must be configured with the provider.
+configuration through `--section models`. Use `--section advanced` for per-task
+iteration/token limits, per-call output limits, and maximum task duration.
+These are not a spending cap; configure account spending limits with the model
+provider. The optional model preset tool has its own shared rolling USD
+threshold, checked before each request; the final request can exceed it and it
+does not cover ordinary task-agent model calls.
 
 ## Email and integrations
 
@@ -36,12 +41,19 @@ Configuration guides for optional services:
 
 ## Scaling and runtime
 
-`TASK_AGENT_WORKERS` configures the task-agent replica count in Compose.
+Set `TASK_AGENT_WORKERS` in `data/.env` (not `data/overrides.env`) to configure
+the task-agent replica count, then apply it from the repository root:
+
+```bash
+docker compose --env-file data/.env up -d task-agent
+docker compose --env-file data/.env ps task-agent
+```
+
 Workers claim queued jobs through PostgreSQL. Increasing replicas also increases
 model-provider usage and database load. See [concurrent job processing](concurrent-job-processing.md).
 
 Compose service, network, mount, and sandbox settings are in
-`src/docker-compose.yml`; application defaults are in `src/config/agent.yaml`.
+`src/docker-compose.yml`; runtime application defaults are in `data/config/agent.yaml`.
 Keep local modifications in ignored data files or an external Compose override,
 not in tracked defaults. See [Docker setup](docker-setup.md) and
 [security](security.md).

@@ -11,13 +11,18 @@ High-level flow for each fetched message:
 1. Parse raw MIME bytes.
 2. Resolve `message_id` (header value or deterministic fallback).
 3. Skip duplicates if `emails.message_id` already exists.
-4. Extract addresses, subject, threading headers, text/html bodies, and attachments.
-5. Strip assistant disclosure footer from inbound text/html.
-6. Resolve `thread_id`.
-7. Determine whether message is actionable.
-8. Insert `emails` row.
-9. Process artifacts (attachments + supported URLs).
-10. Queue/requeue/update the linked job when actionable.
+4. Apply configured admin sender checks and handle approval replies or `/admin` subjects.
+5. Resolve addresses and `thread_id`, then check actionability.
+6. Quarantine unaccepted mail; hold actionable admin requests for OTP approval
+   and apply configured security screening to other accepted mail.
+7. For accepted mail, extract bodies and attachments, strip the disclosure
+   footer, and insert the `emails` row.
+8. Process artifacts (attachments and YouTube URLs).
+9. Route actionable mail through `RequestService.receive_request` to queue or
+   update the linked job.
+
+Approval and admin-command handling returns before attachment extraction or
+ordinary job creation. See [email administration](email-administration.md).
 
 When a message causes a job to be queued, downloader archives it from the polling mailbox to the configured archive folder.
 
@@ -52,12 +57,15 @@ See [workstream ownership](data-model.md#conversations-and-work-ownership).
 Thread assignment order:
 
 1. Parse candidate IDs from `In-Reply-To`, then `References`.
-2. Match candidates against stored inbound emails (`emails.message_id`).
-3. Match candidates against outbound sent logs (`outbound_email_logs.provider_message_id`) and reuse that job's `thread_id`.
-4. Optionally (only if enabled) use subject fallback with overlapping participants.
-5. Otherwise, start a new thread using current message `Message-ID`.
+2. For each candidate, check stored inbound emails (`emails.message_id`), then
+   sent logs (`outbound_email_logs.provider_message_id`), reusing the matching
+   conversation's `thread_id`.
+3. Optionally (only if enabled) use subject fallback with overlapping participants.
+4. Otherwise, start a new thread using current message `Message-ID`.
 
 Subject fallback is disabled by default and controlled by `agent.email.subject_threading_fallback`.
+Telegram-origin workstreams can be reused by email only after they have sent
+email. A reply associated with a deleted workstream starts a new conversation.
 
 ## Actionability rules
 
@@ -67,8 +75,10 @@ An inbound email is actionable when either:
 - sender matches `agent.email.actionable_senders`.
 
 If `actionable_senders` contains `*`, all senders can create new jobs.
+Notifications for assistant-managed calendar events are stored as context
+without queueing a job.
 
-Other new mail is not stored: it is moved unread to the quarantine folder
+Other new mail is not stored: it is moved to the quarantine folder
 (`agent.email.imap_quarantine_folder`, default `Quarantine`). Accepted mail may
 also be screened first; see [Email and action screening](security.md#email-and-action-screening).
 
@@ -79,7 +89,8 @@ also be screened first; see [Email and action screening](security.md#email-and-a
 - running/queued job: set `has_new_context=true`
 - waiting job: requeue immediately and clear lock/error fields
 - needs_review job: remain paused unless explicitly approved
-- admin reply on `needs_review`: apply review override (increase limits, optional instruction)
+- OTP-approved admin reply on `needs_review`: apply review override (increase
+  limits, optional instruction); a From address alone cannot resume the job
 - waiting deep-research run: guidance to its linked system thread (or an
   unambiguous original conversation) resumes that same research run first;
   its original task remains waiting until research returns its result
@@ -100,7 +111,10 @@ For each attachment:
 5. Save Markdown to shared workspace processed path.
 6. Update DB row with final scan/conversion status and metadata.
 
-Artifacts are always tracked, including failures.
+When artifact processing is enabled (the default), failures are tracked too.
+Set `agent.artifacts.enabled=false` to skip this pipeline.
+The default attachment size limit is 25 MiB
+(`agent.artifacts.max_attachment_bytes`).
 
 ## Dropbox documents
 
@@ -130,6 +144,9 @@ If ClamAV is unreachable:
 - with `agent.artifacts.clamav.required=true` (default), conversion is blocked
 - with `required=false`, conversion can proceed with recorded scan error
 
+Disabling ClamAV records `scan_status=skipped` and permits ordinary document
+conversion. Voice transcription and Dropbox transfers still require a clean scan.
+
 ## Conversion and output paths
 
 Successful conversion writes Markdown under:
@@ -142,7 +159,8 @@ Duplicate filenames are handled by numeric suffixes.
 
 ## YouTube URL artifacts
 
-Email text/html is scanned for URLs. Recognized YouTube links are canonicalized and converted via MarkItDown.
+Email text/html is searched for URLs. Recognized YouTube links are canonicalized
+and converted via MarkItDown; arbitrary web pages are not imported by this pipeline.
 
 These are stored as `source_type=youtube_url` artifacts with `scan_status=not_applicable`.
 
@@ -157,7 +175,9 @@ Footer text is generated from organization and contact info (`agent.org.name`, `
 
 ## Operational guardrails
 
-- Outbound delivery is constrained by allowlisted recipient domains.
+- `agent.email.allowed_recipient_domains` restricts outbound domains when
+  nonempty, except for the configured admin address. An empty list or `*`
+  allows any domain; configure a restrictive list for a private deployment.
 - Outbound attachments are bounded by configured count/size and workspace path validation.
 - Optional IMAP sent-folder append happens after SMTP acceptance.
 - Every important state transition (ingest, queue, scan, conversion, requeue/review) is persisted to PostgreSQL.

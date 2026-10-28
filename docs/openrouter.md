@@ -4,7 +4,7 @@ This document explains how Assistant uses OpenRouter for LLM calls and hosted to
 
 ## LLM Client
 
-`assistant_agent/llm_client.py` provides `LlmClient`.
+`src/agent/src/assistant_agent/llm_client.py` provides `LlmClient`.
 
 By default:
 
@@ -12,7 +12,9 @@ By default:
 - endpoint: `POST /chat/completions`
 - auth: `OPENROUTER_API_KEY`
 
-If `agent.llm.base_url` points elsewhere, key fallback supports `OPENROUTER_API_KEY` or `OPENAI_API_KEY`.
+For another HTTPS `agent.llm.base_url`, `OPENAI_API_KEY` takes precedence,
+with `OPENROUTER_API_KEY` as fallback. Configure keys through setup's protected
+secret store; `_FILE` references are supported. Plain HTTP endpoints are rejected.
 
 ## Request Shape
 
@@ -20,10 +22,11 @@ Each chat request includes:
 
 - `model`
 - `messages`
-- `tools`
-- `tool_choice: "auto"`
 - `temperature`
 - `max_tokens`
+
+`tools` and `tool_choice: "auto"` are included only when tools are supplied.
+Request-time context is refreshed before sending.
 
 Headers include:
 
@@ -36,7 +39,9 @@ Headers include:
 Configured models are used in different loops:
 
 - `agent.llm.model` — primary task-agent model.
-- `agent.llm.fallback_model` — fallback model config value.
+- `agent.llm.fallback_model` — one retry after HTTP 429, 503 or 529, if
+  configured and different from the requested model. Other HTTP errors and
+  network failures do not trigger fallback.
 - `agent.limits.summarization_model` — prompt history compaction summarizer.
 - `agent.memory.steward.model` — Memory Steward consolidation/recall model.
 - `agent.search.model` — model used by `web_search` function tool.
@@ -77,6 +82,10 @@ These are produced by:
 
 1. **Perplexity-native mode** (if search model contains `perplexity/`): sends normal chat without attaching `openrouter:web_search` tool.
 2. **OpenRouter tool mode**: attaches `openrouter:web_search` to obtain source-backed results.
+
+The search model falls back to `agent.llm.model` when unset. In Perplexity-native
+mode, the hosted tool's engine, result-count and domain-filter parameters are
+not sent to the provider.
 
 Results are normalized into:
 

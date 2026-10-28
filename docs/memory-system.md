@@ -11,13 +11,16 @@ are two kinds of content:
   rules and project context. They carry evidence and provenance.
 - **Working context** (`working_context`): short-lived context such as meeting
   details or follow-ups. It expires after `agent.memory.working_context_days`
-  (default 14 days). Pinned memories never expire.
+  (default 14 days) when written by the steward without an explicit expiry.
+  Pinning protects against stale-memory reaping; it does not clear an existing
+  expiry or prevent explicit expiration/deletion.
 
-Similar facts become reviewable **suggestions** rather than silently overwriting
-an existing memory. Administrators review, correct, pin, expire and delete
-memories with email `/admin memory` commands, including controlled erasure of
-logged copies. Sources
-may be learned again afterwards. See [Email Administration](email-administration.md)
+When semantic conflict detection finds a similar active memory of the same kind,
+the steward stores the new fact as a reviewable **suggestion**, rather than
+overwriting the existing memory. Exact duplicates are skipped. Administrators
+review, correct, pin, expire and delete memories with email `/admin memory`
+commands, including controlled erasure of logged copies. Sources may be learned
+again afterwards. See [Email Administration](email-administration.md)
 for the commands and [security](security.md) for deletion limits.
 
 Memory supports keyword search and, when embeddings are available, semantic
@@ -28,16 +31,22 @@ so mutable records do not contaminate durable behavior.
 
 `MemorySteward` (`memory_manager.py`) runs synchronously in the task-agent flow.
 
-**Recall.** Before the prompt is built it selects relevant memories (up to
-`max_injected_memories`, default 8) using keyword and semantic search.
+**Recall.** Before the prompt is built it retrieves memory candidates using
+keyword and semantic search, prioritizing the current workstream and retaining
+cross-workstream provenance. `max_injected_memories` (default 8) bounds the
+selected memory candidates; the synthesis currently includes at most eight.
+It also searches other context sources and uses the configured steward model
+to synthesize a concise recall summary.
 
-**Consolidation.** After a job reaches a terminal or review outcome, the steward
-asks the configured model to propose durable memories, subject to
+**Consolidation.** At completion, failure, review, and asynchronous-wait paths,
+the steward asks the configured model to propose memories, subject to
 `min_importance`, `min_confidence` and `max_writes_per_job`. Inferred memories
-must include evidence and why they are relevant to the future; transient or
-low-signal details are rejected. Failures are best-effort and never fail the job.
+must include evidence and why they are relevant to the future; routine action
+logs and low-signal details are rejected. Failures are ignored in the default
+`best_effort` mode; `mode: required` propagates recall/consolidation errors to
+the task-agent's exception handling.
 
-Configuration (`agent.memory.steward.*`): `enabled`, `model`, `timeout_seconds`,
+Configuration (`agent.memory.steward.*`): `enabled`, `mode`, `model`, `timeout_seconds`,
 `max_tokens_per_call`, `max_injected_memories`, `max_writes_per_job`,
 `min_importance`, `min_confidence`, `conflict_detection_enabled` and
 `conflict_similarity_threshold` (default 0.85). The wizard's Advanced Settings
@@ -47,10 +56,10 @@ cover automatic stewardship and the injected-memory limit.
 
 Reaping runs periodically (default every 24 hours) and expires stale,
 low-importance memories (importance at most 2, not accessed in 90 days). Pinned
-memories are never reaped. Reaping sets `expires_at` rather than deleting, and is
-logged to `memory_events`. A small recency boost (up to +0.1 within 365 days)
-keeps old memories from dominating semantic results without overriding strong
-matches.
+memories are never reaped. For never-accessed memories, age is measured from
+creation. Reaping sets `expires_at` rather than deleting, and is logged to
+`memory_events`. Semantic ranking adds a small recency boost (up to +0.1,
+decreasing to zero over 365 days) based on the memory's update time.
 
 Settings: `agent.memory.steward.reap_after_days`, `reap_max_importance`,
 `reap_interval_hours`, `agent.memory.embeddings.min_similarity`,
@@ -58,34 +67,42 @@ Settings: `agent.memory.steward.reap_after_days`, `reap_max_importance`,
 
 ## Context Search Window
 
-Context search (used by the `context_search` tool and steward recall) defaults to
-a 90-day window (`agent.context.search_days`). The `context_search` tool accepts
-`recent_only=true` to limit to 7 days. Longer windows give more coverage; shorter
-ones improve performance.
+`context_search` and steward context recall search memories, jobs, reminders,
+inbound/outbound email, contacts, and non-email requests. Request messages use
+keyword search even when other sources use embeddings. Workspace chunks are
+searched separately through `file_semantic_search`.
+
+The shipped configuration sets `agent.context.search_days` to 90 (the code
+fallback when absent is 30). This window applies to jobs, reminders, email, and
+request messages, not memories or contacts. `recent_only=true` uses 7 days for
+the time-windowed sources; memory expiry still governs eligible memories.
 
 ## Embeddings and Ollama
 
-Embeddings use `EmbeddingClient` and local Ollama endpoint (`agent.embeddings.base_url`, default `http://ollama:11434`) with configurable model (`embeddinggemma` by default).
+Embeddings use `EmbeddingClient` and the Ollama endpoint
+(`agent.embeddings.base_url`, default `http://ollama:11434`) with configurable
+model (`embeddinggemma` by default).
 
-When embeddings fail/unavailable, relevant features fall back to non-semantic methods where supported.
+When embeddings fail or are unavailable, relevant features fall back to
+non-semantic methods where supported.
 
 Use `./setup.sh --section embeddings` to configure the model, endpoint,
-timeout, and output dimensions. Ollama's `embeddinggemma` is the 300M text model,
-not EmbeddingGemma 2. It needs Ollama 0.11.10+, supports 2,048 input tokens and
-768-dimensional output by default, with 512/256/128 reduced dimensions available.
-Long inputs may be truncated by Ollama; existing source text limits and workspace
-chunking remain unchanged. Current encoding preserves the existing raw-text
-convention rather than silently introducing query/document prefixes. Google's
-[model card](https://huggingface.co/google/embeddinggemma-300m) recommends those
-prefixes for optimized retrieval; adopting them would require rebuilding even
-same-model vectors with a consistently versioned encoding profile.
+timeout, and output dimensions. The maintenance probe requires Ollama 0.11.10+
+for `embeddinggemma` and expects 768 dimensions unless configured otherwise.
+Long inputs may be truncated by Ollama; source text limits and workspace
+chunking still apply. Encoding uses raw text without query/document prefixes;
+changing that convention would also require a consistent vector rebuild.
 
-Changing model or dimensions requires rebuilding existing vectors. Search never
-compares different models, incompatible dimensions, or unknown model metadata.
+Changing model or dimensions requires rebuilding existing vectors. Memory,
+context, and workspace retrieval filter out vectors with a different model,
+incompatible dimensions, or missing model metadata.
 Keyword fallback remains available, but semantic recall can be incomplete until
 the rebuild finishes. No source records are deleted to change embedding models.
 
-After deploying the updated agent image, inspect or rebuild from the repository:
+### Inspecting and rebuilding vectors
+
+After saving embedding settings, build the agent image and run from the
+repository root:
 
 ```sh
 docker compose --env-file data/.env build task-agent
@@ -94,14 +111,17 @@ docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-
 docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance reindex --batch-size 50
 ```
 
-`status` lists stale counts for all seven searchable sources. `probe` verifies
-the configured endpoint and vector dimensions. `reindex` replaces only missing
+`status` lists stale counts for seven embedding-backed tables (memory, workspace
+chunks, jobs, reminders, outbound email, inbound email, and contacts) and exits
+nonzero while replacements remain pending. `probe` verifies the configured
+endpoint and vector dimensions. `reindex` replaces only missing
 or incompatible vectors, preserving source data, IDs and content timestamps;
 expired memories and deleted/superseded workspace files are excluded. PostgreSQL
 receives the embedding-only timestamp safeguard before rebuilding; this command
-does not run unrelated pending schema changes. PostgreSQL
-must be running for status/reindex; Ollama must be running and the model available
-for probe/reindex. Failed runs retain completed replacements: rerun the same
+does not run unrelated pending schema changes.
+
+PostgreSQL must be running for status/reindex; Ollama must be running and the
+model available for probe/reindex. Failed runs retain completed replacements: rerun the same
 command to resume. Concurrent source edits/deletions are not overwritten, and an
 unfinished rebuild exits nonzero. Recreate all enabled embedding consumers after
 saving settings, including `task-agent` when enabled, rather than merely restarting
@@ -116,4 +136,6 @@ containers with their old environment. The rebuild does not enable workers itsel
 - records conversion lineage in `workspace_document_conversions`,
 - supports search via `file_semantic_search`.
 
-Document extraction (PDF/Office) uses MarkItDown workflow and keeps source files in place.
+Document extraction (PDF/Office) uses MarkItDown and keeps source files in place.
+Indexing extracts text without automatically replacing documents with Markdown;
+explicit conversion records derivative files and conversion lineage.

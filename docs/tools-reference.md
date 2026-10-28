@@ -1,20 +1,26 @@
 # Tools Reference
 
-Assistant tools are defined in `src/agent/src/assistant_agent/tools.py` and
-executed through `ToolRuntime.run(name, arguments)`.
+Assistant tool schemas and runtime dispatch are assembled in
+`src/agent/src/assistant_agent/tools.py`; some integration schemas live in their
+own modules. Ordinary tools execute through `ToolRuntime.run(name, arguments)`;
+terminal/meta tools are handled by `TaskAgent` in `task_agent.py`.
 
 ## Tool Exposure Model
 
 - **Core tools**: always present at loop start (`task_complete`, `task_failed`, `request_input`, plus `email_send` when SMTP available).
 - **Meta tool**: `get_tool_specs` for lazy loading.
-- **Loadable tools**: everything else (files, reminders, research, etc.).
+- **Loadable tools**: other function tools (files, reminders, research, etc.).
+  Call `get_tool_specs` with `{"tools":["file_list","file_read"]}` to enable a
+  batch. It returns loaded/invalid names and guardrails; schemas are attached to
+  subsequent model calls.
 
 Availability is computed by `available_function_names(...)` from runtime config and job context.
 
 ## Workstream relationships
 
-`workstream_list(query, before_id, limit)` discovers workstreams by title/ID,
-with bounded results and a cursor for older entries.
+`workstream_list(before_id, limit)` lists workstream titles/IDs with bounded
+results. Pass `next_before_id` back as `before_id` for older entries; there is
+no query filter.
 `workstream_read(workstream_id, thread_id, before, limit, ...)` reads paginated
 main-thread history by default. Use `next_before` for the next page. Optional
 flags expose system threads, owned/adopted objects, object-change events and
@@ -32,6 +38,10 @@ not external recipients.
 Deletion belongs to the confirmed administrator terminal workflow, not an LLM
 tool. See [workstream deletion](security.md#workstream-deletion).
 
+Updates/deletions of versioned memories, contacts, reminders, calendar events
+and Zoom meetings require `expected_version` from the latest object read.
+A stale version is rejected; re-read before deciding whether to retry.
+
 ## File Tools
 
 - `file_list`
@@ -48,9 +58,11 @@ tool. See [workstream deletion](security.md#workstream-deletion).
 Guardrails:
 
 - paths must resolve under shared root,
-- `.assistant` is read-only for writes/deletes,
+- `.assistant` is protected from file-tool writes/deletes; only its `docs`
+  subtree is a read-only mount in command containers,
 - cache/source-archive visibility is restricted,
-- workspace index is updated on file mutations.
+- file mutations attempt to update the workspace index; indexing failures are
+  logged and do not necessarily fail the file operation.
 
 ## Dropbox Tools
 
@@ -83,6 +95,13 @@ data. See [connection, limits and privacy](dropbox.md).
 - optional append to IMAP Sent folder when configured,
 - disclosure footer handling for external domains.
 
+## Telegram Tool
+
+- `telegram_send` — send text or workspace files to a linked Telegram identity,
+  including from an email task. Requires a configured Telegram integration;
+  destination authorization is checked at runtime. See
+  [Telegram and voice](telegram-and-voice.md).
+
 ## Memory Tools
 
 Memory:
@@ -93,6 +112,7 @@ Memory:
 - `memory_forget`
 
 Memory and contact details use distinct tool groups; see [Memory System](memory-system.md).
+`memory_forget` additionally requires an authenticated admin request.
 
 ## Contacts Tools
 
@@ -118,35 +138,63 @@ Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
 - `deep_research_request`
 - `deep_research_status`
 
-`deep_research_request` is an async request tool; the parent job transitions to `waiting`.
+`deep_research_request` starts asynchronous research; the parent job transitions
+to `waiting` and resumes with results. It and `web_search` require enabled
+OpenRouter search configuration; deep research must also be enabled.
 
 ## Command and Calendar Tools
 
 Command:
 
-- `command_execute`
+- `command_execute` — pass `command` as an argv array, with optional
+  `timeout_seconds` and an existing workspace `workdir`. Shell syntax requires
+  an explicit shell invocation. See [sandbox execution](sandbox.md) for
+  isolation, limits and retry behavior.
 
 Calendar:
 
 - `calendar_sync` — triggers a refresh from all configured calendar API providers; no-op when no providers are active
 - `calendar_list_busy` — lists busy windows across all configured providers within a date/time range; titles are redacted unless `allow_read_event_details` is enabled. Only `complete=true` verifies availability; `provider_errors` and `status=degraded`/`no_providers` indicate an incomplete check, even when `busy` is empty.
 - `calendar_list_events` — lists calendar events from all configured providers; titles and details subject to the same policy
+- `calendar_list_calendars` — lists provider calendar IDs and names for diagnostics
 - `calendar_create_event` — creates an event on the specified provider (or the default provider when `provider` is omitted); supports `alert_minutes` override
 - `calendar_update_event` — updates a managed event by its assistant-assigned ID; accepts `alert_minutes` override
 - `calendar_delete_event` — deletes a managed event; no-ops gracefully when the event is already gone on the provider
 
-Calendar tools are exposed only when at least one provider has credentials configured in the environment. Write operations (create/update/delete) are restricted to events the assistant itself created — non-managed events appear in free/busy results but cannot be modified. See [docs/calendar-providers.md](calendar-providers.md) for provider setup.
+Calendar tools require `agent.calendar.enabled` and at least one provider client
+ID configured through the credential store. Exposure is not a successful
+connection check: provider setup/token failures can still occur at runtime.
+Updates and deletions are restricted to assistant-managed events; non-managed
+events can appear in list results but cannot be modified. See
+[calendar providers](calendar-providers.md) for setup.
+
+## Zoom Tools
+
+- `zoom_create_meeting`, `zoom_read_meeting`, `zoom_list_meetings`
+- `zoom_update_meeting`, `zoom_delete_meeting`, `zoom_reconcile_meeting`
+
+Require an enabled Zoom integration, client ID/secret, and an account ID or
+refresh token. Tools operate on assistant-managed meetings, not arbitrary
+provider meetings. Use stable creation idempotency keys and reconcile uncertain
+creates rather than duplicating them. To link a meeting to a calendar event,
+create Zoom first, then pass its local managed ID as `zoom_meeting_id` with
+matching start and duration. The calendar tool adds the participant join URL;
+never disclose host start URLs. See [calendar providers](calendar-providers.md).
 
 ## Context and Search Tools
 
 - `context_search` — semantic search across memories, jobs, reminders, inbound/outbound emails, and contacts; accepts `recent_only=true` to limit to last 7 days
 - `job_search` — search past job history by query and status
+- `job_read` — read a past job's full details by ID
 
 ## Web and Fusion Tools
 
 - `web_search` is a function tool.
-- `openrouter:web_search` is attached server-side when non-Perplexity search model is used.
-- `openrouter:fusion` is attached when fusion is configured.
+- `openrouter:web_search` is attached to the isolated search-model request inside
+  `web_search` when a non-Perplexity search model is used, not to the main loop.
+- `openrouter:fusion` is a hosted-tool builder gated by fusion configuration,
+  not a loadable function. The normal task loop's enabled-name filter currently
+  excludes it, so enabling fusion alone does not attach it to loop requests.
 
 ## Model Preset Tool
 
@@ -176,6 +224,9 @@ Presets are local, installation-wide database records shared across jobs and
 workers, not OpenRouter-hosted presets. Store reusable instructions, not secrets
 or private job-specific content. An in-flight call retains a snapshot even if
 its preset is deleted. There is no silent model fallback.
+
+First use `query_models` to confirm that the chosen model currently advertises
+image output; the slug below is illustrative, not an availability guarantee.
 
 ```json
 {"action":"add_preset","name":"illustrator","model":"google/gemini-3.1-flash-image","system_prompt":"Create clear, uncluttered illustrations."}

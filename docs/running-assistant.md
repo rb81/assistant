@@ -2,7 +2,10 @@
 
 ## Requirements and setup
 
-Use Docker Compose and Python 3.12 or newer for the setup wizard:
+Install Docker with Compose, Python 3.12+ with virtual-environment support, and
+OpenSSL. Setup offers to create `data/.venv-setup` and install its dependencies.
+You also need model API credentials and an email mailbox or Telegram bot for
+task intake. From the repository root, run:
 
 ```bash
 ./setup.sh
@@ -13,6 +16,10 @@ starting outside the repository. Configure identity, model
 access, and any enabled integrations in the wizard. It stores mutable settings,
 credentials, setup state, and runtime data beneath the gitignored `data/`
 directory. See [configuration](configuration.md).
+
+Accept the wizard's offer to copy the example instructions, or create a
+nonempty `data/config/AGENT.md` yourself before starting. The task agent refuses
+to start without instructions.
 
 ## Start and inspect
 
@@ -30,6 +37,9 @@ Setup writes an absolute `COMPOSE_FILE` setting in `data/.env`, pointing to
 integrations are selected. Run `./setup.sh tools` for guided status, logs, and
 administration.
 
+Starting the stack enables workers and may process existing inbox messages.
+If you move the checkout, rerun setup to refresh its absolute deployment paths.
+
 ## Data locations
 
 - `data/postgres/` — database files.
@@ -38,6 +48,8 @@ administration.
 - `data/ollama/` — local embedding model cache.
 - `data/clamav/` — malware signatures.
 - `data/.env`, `data/overrides.env`, `data/.secrets/` — local configuration and credentials.
+- `data/.compose-secrets.yaml` — generated credential mounts.
+- `data/config/agent.yaml` — runtime defaults, initialized from `src/config/agent.yaml`.
 - `data/config/AGENT.md` — operator-maintained runtime instructions.
 
 Tracked templates and defaults are under `src/config/`. Host documentation is
@@ -48,7 +60,10 @@ restart services.
 
 Back up the database, shared files, private files, and local configuration and
 credentials. Stop the stack before taking filesystem copies that must be
-consistent. Keep backups protected as confidential data.
+consistent. If using Docker-volume credential storage, back up that external
+volume separately along with `data/.secrets/state.json`; copying `data/` alone
+does not include those credentials. See [credential storage](security.md#optional-docker-volume-storage).
+Keep backups protected as confidential data.
 
 ## Operations
 

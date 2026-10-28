@@ -16,12 +16,14 @@ containers receive this documentation, not the host source tree.
    environment and diagnostic guidance. It does not grant access to host files,
    secrets, or service controls.
 4. See [sandbox capabilities](SANDBOX_CAPABILITIES.md) for command environment
-and diagnostic limits.
+   and diagnostic limits.
 
 ## For operators
 
 - [Running Assistant](running-assistant.md) — setup, start, and local state.
 - [Configuration](configuration.md) — configuration files and credential handling.
+- [Advanced configuration](advanced-configuration.md) — model limits and worker scaling.
+- [Environment overrides](env-overrides.md) — supported expert settings and precedence.
 - [Security](security.md) — trust boundaries, approvals, and hardening.
 - [Docker setup](docker-setup.md) — images, Compose services, mounts, and networks.
 
@@ -46,7 +48,6 @@ and diagnostic limits.
 - [Memory system](memory-system.md) — memory, embeddings, and workspace search.
 - [OpenRouter](openrouter.md) — model and hosted-tool integration.
 - [Sandbox](sandbox.md) — command execution boundaries.
-- [Environment overrides](env-overrides.md) — setting names and defaults.
 
 The project is a prerelease. For the separate legacy conversion bundle, see
 the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).

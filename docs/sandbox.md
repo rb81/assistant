@@ -4,34 +4,60 @@ This document describes how Assistant executes shell commands safely.
 
 ## Components
 
-- `assistant_agent.tools:command_execute` — agent-facing tool.
-- `sandbox/server.py` — broker API service.
+- `ToolRuntime.command_execute` in `src/agent/src/assistant_agent/tools.py` —
+  agent-facing tool.
+- `src/sandbox/server.py` — broker API service.
 - Per-command run containers — short-lived execution environments.
 
 ## Control Flow
 
-1. Agent calls `command_execute(command, timeout_seconds, workdir)`.
+1. Agent calls `command_execute` with an argv array and optional
+   `timeout_seconds` and `workdir`.
 2. `ToolRuntime.command_execute` validates input and shared-root workdir.
 3. Request is sent to sandbox broker `POST /execute`.
 4. Broker starts a fresh run container for the request.
 5. Broker captures stdout/stderr/exit status.
-6. Broker removes run container (and per-run network).
+6. Broker attempts to remove the run container and per-run network, including
+   after errors or timeouts.
 7. Result is returned to task-agent and logged.
 
 ## Safety Properties
 
 - Commands do **not** run in task-agent container.
-- Paths are constrained under shared root.
+- The working directory must resolve under the shared root. This is not a
+  filesystem-access filter on the command itself.
 - Broker can enforce runtime limits (CPU, memory, PID, timeout).
 - Broker container is hardened (`read_only`, dropped caps, `no-new-privileges`).
 - Broker requests use HTTPS with hostname verification and a service-scoped bearer token.
-- Run containers execute as root for package installation and mount the shared workspace only (no app credentials or Docker socket).
+- Run containers execute as root by default and mount the writable shared
+  workspace plus read-only documentation at `.assistant/docs` (no app
+  credential mounts or Docker socket). Other container-local paths remain
+  accessible; do not put secrets in workspace files.
+
+## Calling the tool
+
+```json
+{"command":["python","script.py"],"workdir":"reports","timeout_seconds":60}
+```
+
+Relative workdirs resolve under `/data/share` by default and must already exist.
+The example runs `/data/share/reports/script.py`. Shell expansion, redirection
+and pipelines require an explicit shell, for example
+`{"command":["sh","-c","printf 'hello\\n' | wc -l"]}`.
+
+Results include `stdout`, `stderr`, `exit_code`, `timed_out`, `duration_ms`,
+isolation metadata and the request-attempt count. Tool-result caching may replace
+large output with previews and a workspace cache path. A command timeout is
+returned as `timed_out=true`, not retried as a broker failure.
 
 ## Network Isolation
 
 - Broker is attached to internal sandbox control network.
-- Run containers are attached to per-run bridge networks.
-- Default design isolates run containers from application service networks.
+- Run containers use per-run bridge networks by default, with outbound internet
+  access. Broker alternatives are `bridge`, `existing` and `none`.
+- Run containers do not join application service networks by default. This is
+  not an outbound firewall: reachable host, LAN and metadata endpoints still
+  need host-level egress controls.
 
 ## Isolation Modes
 
@@ -42,10 +68,11 @@ short-lived Docker container separated from the agent's application networks. Th
 runner executes as root for package installation; its writable container layer is
 removed after execution, but changes to the shared workspace and outbound data
 transfer persist. Resource limits, capability drops, network isolation, and
-per-run bridge networks are enforced by Docker. The broker itself has the Docker
-socket mounted and therefore retains root-equivalent daemon authority; these
-containers are not fully isolated from host compromise. `SANDBOX_RUN_IMAGE` must
-be set.
+per-run bridge networks are enforced by Docker. Runners drop `NET_RAW` by
+default, not all capabilities; the broker drops all capabilities. The broker has
+the Docker socket mounted and therefore retains root-equivalent daemon authority; these
+containers are not fully isolated from host compromise. The run image must
+exist in the daemon; the broker does not pull it automatically.
 
 `container` is the default in both `src/docker-compose.yml` and
 `src/sandbox/server.py`. You do not need to set anything to use it.
@@ -60,13 +87,16 @@ To enable it, set it in `data/.env`:
 SANDBOX_ISOLATION_MODE=process
 ```
 
-In process mode, commands are executed directly via `subprocess.run` on the host where the sandbox broker is running. The only restriction enforced is that the working directory must stay under the configured shared root. There are **no container-level protections**:
+In process mode, commands run via `subprocess.run` in the broker's own environment
+(inside the broker container when using Compose, or on the host if launched
+there directly). The workdir check and command timeout remain, but there is no
+separate per-command container:
 
-- No memory, CPU, or PID limits
-- No capability drops or seccomp profiles
-- No filesystem isolation beyond the workdir check
+- No per-command memory, CPU, PID, capability or seccomp configuration
+- No filesystem isolation from the broker, including its credentials and Docker
+  socket when mounted
 - No network isolation — the process inherits the broker's network context
-- Any command the broker process is permitted to run can be executed
+- Commands inherit the broker's permissions, mounts and resource limits
 
 Do not use process mode if the agent can receive instructions from untrusted input, or on any server where the consequences of arbitrary command execution are unacceptable.
 
@@ -79,19 +109,20 @@ Do not use process mode if the agent can receive instructions from untrusted inp
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
 
-It does **not** retry normal non-zero command exits automatically.
+It does **not** retry returned command results, including non-zero exits and
+command timeouts. HTTP errors below 500 fail immediately; server errors and
+transport failures are retried unless recognized as a host runtime
+misconfiguration. A lost response can cause a command that already ran to be
+executed again: retries do not guarantee exactly-once side effects.
 
-Failure classes include:
-
-- transient broker/network/timeout errors,
-- HTTP non-retriable errors,
-- host runtime misconfiguration (e.g., invalid runtime like missing `runsc`).
-
-Retry exhaustion raises `SandboxAttemptsExhausted` and is surfaced with attempt error details.
+Retry exhaustion raises `SandboxAttemptsExhausted` with attempt error details.
+A missing Docker runtime such as `runsc` raises
+`SandboxHostConfigurationError` without retrying.
 
 ## Configuration Highlights
 
-From application defaults (`src/config/agent.yaml`):
+Edit application settings in `data/config/agent.yaml`; repository defaults are
+in `src/config/agent.yaml`:
 
 - `agent.sandbox.enabled`
 - `agent.sandbox.base_url`
@@ -99,13 +130,22 @@ From application defaults (`src/config/agent.yaml`):
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
 
-From Compose env/runtime defaults:
+Compose reads these settings from `data/.env`:
 
-- run image,
-- isolation mode,
-- resource caps,
-- runtime selection (`runsc` optional override).
+- `SANDBOX_IMAGE` (used for both broker and run image)
+- `SANDBOX_ISOLATION_MODE`, `SANDBOX_RUN_NETWORK_MODE`, `SANDBOX_RUN_CAP_DROP`
+- `SANDBOX_RUN_CPUS`, `SANDBOX_RUN_MEMORY_BYTES`, `SANDBOX_RUN_PIDS_LIMIT`
+- `SANDBOX_SHARED_ROOT_HOST`, `SANDBOX_DOCS_ROOT_HOST` (generated by setup)
+
+The broker also supports `SANDBOX_RUN_RUNTIME` (for example `runsc`),
+`SANDBOX_RUN_USER`, `SANDBOX_RUN_NETWORK` and timeout overrides. The supplied
+Compose file does not forward these variables: add them to the broker's
+`environment` with a Compose override, or set them when running the broker
+directly. The default Docker runtime is used unless overridden. Broker default
+and maximum command timeouts are both 300 seconds; increasing the agent limit
+alone does not increase the broker maximum.
 
 ## Operational Note
 
-Sandbox provides process isolation, but production should additionally enforce host-level egress policy (private-range blocking / metadata endpoint blocking) for run containers.
+See [sandbox capabilities](SANDBOX_CAPABILITIES.md) for installed tools and
+[security](security.md#sandbox-docker-socket) for Docker-daemon trust limits.

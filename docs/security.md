@@ -52,8 +52,7 @@ leave a pending/failed deletion with its identifiers and database records intact
 some already-completed remote/file removals may be irreversible. Writer services
 stay stopped when a deletion remains incomplete. **Resume an incomplete
 deletion** retries that original scope. A successful receipt contains no deleted
-message bodies or object contents. The old per-job deletion path refused workstream-owned jobs because it bypassed
-shared-object retention.
+message bodies or object contents.
 
 Browsing lists object relationships; deletion preview additionally verifies
 physical files and cleanup dependencies. Workstream command failures identify
@@ -106,9 +105,10 @@ that use credentials so they switch to the volume mounts; if that step fails, ru
 `./setup.sh secrets apply` to retry.
 
 The generated overlay mounts a separate service-specific directory from the
-volume read-only at `/run/secrets`, so services do not receive each other's
-credentials. This requires Docker Engine and Compose versions supporting volume
-subpaths. A disposable `python:3.12-slim` helper (pulled on first use if absent)
+volume read-only at `/run/secrets`, limiting each service to its assigned
+credentials (some credentials are shared by multiple services). This requires
+Docker Engine and Compose versions supporting volume subpaths. A disposable
+`python:3.12-slim` helper (pulled on first use if absent)
 reads and updates the volume with no network, dropped capabilities, and container
 logging disabled. Credentials are passed over stdin, not command arguments or
 environment variables; setup does not stage plaintext copies on the host.
@@ -229,9 +229,9 @@ deployment-specific rotation procedure and are explicitly refused by this flow.
 External model and integration requests use HTTPS with normal certificate
 verification. Runtime model URLs must be HTTPS; Zoho Calendar accepts only HTTPS
 on supported regional Zoho hosts. Redirects are not followed for authenticated
-model or sandbox requests. IMAP uses implicit TLS. SMTP requires certificate-
-verified STARTTLS before login or message transfer and does not fall back to
-plaintext.
+model or sandbox requests. IMAP uses implicit TLS. SMTP uses certificate-verified
+implicit TLS on port 465 and requires STARTTLS on other ports before login or
+message transfer; it does not fall back to plaintext.
 
 PostgreSQL clients verify the service certificate and hostname; PostgreSQL rejects
 non-TLS network connections. Sandbox RPC uses HTTPS with hostname verification and
@@ -248,8 +248,10 @@ The sandbox broker mounts `/var/run/docker.sock` to create fresh per-command
 containers. Anyone controlling that socket can control the daemon and potentially
 mount host files or other containers' secrets. Read-only broker filesystems,
 dropped capabilities, `no-new-privileges`, private broker networking and resource
-limits do not eliminate this privilege. Run containers receive only the shared
-workspace, not the socket or provider credentials. Run containers execute as root
+limits do not eliminate this privilege. Run containers mount the writable shared
+workspace and read-only harness documentation, not the socket or provider
+credential mounts. Workspace contents are accessible to commands, so never
+store secrets there. Run containers execute as root
 to support package installation; their writable layer is ephemeral, but workspace
 changes and outbound data transfer persist. Container escape remains a residual
 risk.
@@ -276,11 +278,17 @@ can reach it.
 ### Mail quarantine
 
 Fresh mail from a sender that is not accepted (not in `EMAIL_ACTIONABLE_SENDERS`
-and not replying on an open job's thread) is moved, unread and unstored, to the
-quarantine folder (`IMAP_QUARANTINE_FOLDER`, default `Quarantine`, created if
-missing). Rejected and held mail goes there too. The agent never sees
-quarantined mail. If a move fails, the error is logged and the message stays in
-the inbox; it is not processed again.
+and not replying on an open job's thread) is moved to the quarantine folder
+without storing an email record. The folder is `IMAP_QUARANTINE_FOLDER`
+(default `Quarantine`, created if missing). Rejected and held mail goes there
+too. The task agent does not receive
+it unless an administrator approves held mail. Screening itself sends accepted
+non-admin content to the decision provider; held mail is retained in the pending
+approval payload, and notices can include a content preview. Quarantine is not
+a promise that no copy is stored or sent externally. If a move fails, the error
+is logged and the message stays in the inbox; the polling cursor still advances.
+The downloader fetches with `RFC822`, not `BODY.PEEK`, so unread status is not
+preserved reliably.
 
 ### Admin sender authentication (SPF/DKIM)
 
@@ -318,7 +326,7 @@ question plus two yes/no risk flags.
 
 | Target | Setting | What is screened |
 |---|---|---|
-| Inbound email | always on (cannot be disabled) | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all inbound mail; otherwise only listed senders and replies on open threads. Covers headers, text, HTML and attachment names and types. |
+| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders and replies on open threads. Covers selected headers, text, HTML and attachment names and types. |
 | Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
 | Scripts | `screen.scripts` (off) | `command_execute` calls that run code (see below). |
 
@@ -342,8 +350,9 @@ The decision model sees the manifest together with the source.
 
 - **Which commands:** Python (files, `-c`, `-m`), shell scripts and `-c`
   strings, Node, and other interpreters. Package installs and direct
-  executables (shebang or binary) are included too. Plain commands such as `ls`
-  are not screened.
+  workspace executables (shebang or binary) are included too. Plain commands
+  such as `ls` are not screened, and executable files outside the shared
+  workspace are not inspected. This is not exhaustive command interception.
 - **Python:** parsed with `ast`. The manifest records:
   - imports, split into stdlib, third-party and local; local modules in the
     shared workspace are followed, up to `scripts.max_files` files;
@@ -383,10 +392,9 @@ warning at startup while YOLO mode is on.
 
 By default (`provider: openrouter`), requests go to OpenRouter's Decisions API,
 `https://openrouter.ai/api/alpha/decisions`. OpenRouter normalizes every decision
-model to one request and response format, so `model` can be any decision model
-slug, as with the agent model. Examples are `perplexity/pplx-decider-v1.2`
-(default), `typesafe/jev-1.13`, `cloudflare/clef` and
-`openai/gpt-6-luna-decisions`. List the available models with
+model to one request and response format. Use a decision-capable model slug,
+not an arbitrary chat model; the configured default is
+`perplexity/pplx-decider-v1.2`. Check current provider availability with
 `GET https://openrouter.ai/api/v1/models?output_modalities=decisions`. Pin a
 version rather than a `~...-latest` alias so thresholds stay calibrated. This
 route reuses `OPENROUTER_API_KEY`. Setup grants that key to the downloader only

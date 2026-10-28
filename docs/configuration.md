@@ -2,8 +2,8 @@
 
 ## Setup
 
-Install Python 3.12+ and Docker Compose, then run the repository launcher from
-the repository root:
+Install Python 3.12+ with virtual-environment support, Docker with Compose, and
+OpenSSL, then run the repository launcher from the repository root:
 
 ```bash
 ./setup.sh
@@ -35,11 +35,16 @@ defaults to configure an installation.
 | `data/overrides.env` | Optional ignored expert runtime overrides |
 | `data/.secrets/` | Ignored credential files and setup metadata |
 | `data/.compose-secrets.yaml` | Generated ignored Compose secret mounts |
+| `data/config/agent.yaml` | Runtime defaults; copied from `src/config/agent.yaml` on first save if absent |
 | `data/config/AGENT.md` | Local runtime instructions |
 | `data/.setup.lock`, `data/.venv-setup`, `data/backups/` | Setup state, environment, and local backups |
 
 Other mutable service state, including PostgreSQL, private files and the shared
 workspace, remains under `data/`. Do not commit any contents of that directory.
+Setup preserves existing `data/config/agent.yaml`; updating tracked defaults
+does not replace this runtime copy. Review differences when upgrading.
+Accept the example instructions during setup or create a nonempty
+`data/config/AGENT.md` before starting the task agent.
 
 The Compose stack reads `data/.env`; setup records the absolute stack path there.
 Start the stack from the repository root with:
@@ -52,11 +57,17 @@ docker compose --env-file data/.env up -d --build
 
 The setup wizard manages routine settings. For supported expert settings, add
 one `NAME=value` per line to `data/overrides.env`. Compose loads this after
-`data/.env`, but a Compose `environment:` entry takes precedence. Do not put
-credentials in the overrides file. Use the `secrets` commands instead.
+`data/.env` into application containers, but a Compose `environment:` entry
+takes precedence. The overrides file is not used for Compose interpolation:
+deployment settings such as `TASK_AGENT_WORKERS` belong in `data/.env`.
+Setup rejects unknown, mistyped, wizard-managed, or Compose-managed override
+keys at review. Do not put credentials in the overrides file; use the `secrets`
+commands instead.
 
-Setting values and their environment names are defined alongside defaults in
-`src/config/agent.yaml` and the configuration loader. See
+The configuration loader maps environment names to YAML settings; runtime
+defaults are in `data/config/agent.yaml` and tracked defaults in
+`src/config/agent.yaml`. Setup creates a commented `data/overrides.env` template
+listing supported expert settings, and never rewrites it. See
 [environment overrides](env-overrides.md) for the documented override policy.
 After a configuration change, recreate affected services; setup provides the
 appropriate activation workflow.
@@ -64,7 +75,9 @@ appropriate activation workflow.
 ## Credentials and safety
 
 Setup stores credentials in protected, gitignored files and grants only the
-services that need them read-only mounts. Docker Compose secret mounts are not
+services that need them read-only mounts. You can instead select a dedicated,
+unencrypted Docker credential volume at review. Back up that volume separately
+and retain `data/.secrets/state.json`. Docker Compose secret mounts are not
 encrypted storage. Protect the host, Docker daemon, disks, and backups. Never
 put credentials in the shared workspace, tracked files, shell arguments, or
 logs. See [security](security.md#docker-secrets).
