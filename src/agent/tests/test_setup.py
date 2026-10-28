@@ -829,6 +829,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         instance.values = {"AGENT_EMBEDDINGS_BASE_URL": "http://ollama:11434"}
         activate_embeddings(instance, MagicMock(return_value=False), console)
         instance.compose.assert_not_called()
+        instance.docker.assert_not_called()
         activate_embeddings(instance, MagicMock(side_effect=[True, False]), console)
         commands = [call.args[0] for call in instance.compose.call_args_list]
         self.assertTrue(any(command[-1] == "probe" for command in commands))
@@ -837,6 +838,77 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         activate_embeddings(instance, MagicMock(side_effect=[True, True]), console)
         commands = [call.args[0] for call in instance.compose.call_args_list]
         self.assertTrue(any(command[-1] == "reindex" for command in commands))
+
+    def test_embedding_activation_checks_docker_access_before_build_and_uses_consented_sudo(self):
+        from assistant_agent.setup import activate_embeddings
+        with tempfile.TemporaryDirectory() as root:
+            instance = Installation(root)
+            instance.values["AGENT_EMBEDDINGS_BASE_URL"] = "http://ollama:11434"
+            confirm = MagicMock(side_effect=[True, True, False])
+            results = [subprocess.CompletedProcess([], 1, "", "permission denied"),
+                       subprocess.CompletedProcess([], 0, "28.0.0\n", "")]
+
+            def compose(arguments, **kwargs):
+                self.assertEqual(run.call_count, 2)
+                self.assertTrue(instance.use_sudo)
+                return ""
+
+            with patch("assistant_agent.setup.platform.system", return_value="Linux"), \
+                 patch("assistant_agent.setup.os.geteuid", return_value=1000), \
+                 patch("assistant_agent.setup.subprocess.run", side_effect=results) as run, \
+                 patch.object(instance, "compose", side_effect=compose) as build:
+                activate_embeddings(instance, confirm, MagicMock())
+            self.assertIn("Use sudo?", confirm.call_args_list[1].args[0])
+            self.assertFalse(confirm.call_args_list[1].args[1])
+            self.assertEqual(run.call_args.args[0], ["sudo", "-n", "docker", "info", "--format", "{{.ServerVersion}}"])
+            self.assertEqual(build.call_args_list[0].args[0], ["build", "task-agent"])
+            self.assertEqual(build.call_args_list[0].kwargs["timeout"], 1800)
+
+    def test_embedding_activation_stops_before_build_when_docker_access_is_declined(self):
+        from assistant_agent.setup import activate_embeddings
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.saved_configuration(root)
+            result = subprocess.CompletedProcess([], 1, "secret-canary", "secret-canary")
+            with patch("assistant_agent.setup.platform.system", return_value="Linux"), \
+                 patch("assistant_agent.setup.os.geteuid", return_value=1000), \
+                 patch("assistant_agent.setup.subprocess.run", return_value=result), \
+                 patch.object(instance, "compose") as compose:
+                with self.assertRaisesRegex(SetupError, "checking Docker access") as raised:
+                    activate_embeddings(instance, MagicMock(side_effect=[True, False]), MagicMock())
+            compose.assert_not_called()
+            message = str(raised.exception)
+            self.assertIn("docker info", message)
+            self.assertNotIn("sudo docker", message)
+            self.assertNotIn("secret-canary", message)
+            self.assertEqual((Path(root) / "data/.env").read_bytes(), instance.env_original)
+
+    def test_embedding_activation_failures_identify_stage_and_safe_retry_command(self):
+        from assistant_agent.setup import activate_embeddings
+        stages = [
+            ("Building the maintenance image", "build task-agent"),
+            ("Starting managed Ollama", "up -d --no-deps ollama"),
+            ("Provisioning the embedding model", "run --rm --no-deps ollama-model-puller"),
+            ("Verifying the embedding model", "assistant_agent.embedding_maintenance probe"),
+            ("Starting PostgreSQL for reindexing", "up -d --wait --wait-timeout 180 postgres"),
+            ("Rebuilding incompatible embeddings", "assistant_agent.embedding_maintenance reindex"),
+        ]
+        for index, (stage, command) in enumerate(stages):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as root:
+                instance = Installation(root)
+                instance.values["AGENT_EMBEDDINGS_BASE_URL"] = "http://ollama:11434"
+                failure = DockerCommandError("Docker command failed; output was suppressed", stdout="secret-canary")
+                with patch.object(instance, "docker", return_value="28.0.0"), \
+                     patch.object(instance, "compose", side_effect=[""] * index + [failure]) as compose:
+                    with self.assertRaises(SetupError) as raised:
+                        activate_embeddings(instance, MagicMock(return_value=True), MagicMock())
+                message = str(raised.exception)
+                self.assertIn(stage, message)
+                self.assertIn("docker compose --env-file data/.env", message)
+                self.assertIn(command, message)
+                self.assertIn("Configuration is already saved", message)
+                self.assertIn("./setup.sh --section embeddings", message)
+                self.assertNotIn("secret-canary", message)
+                self.assertEqual(compose.call_count, index + 1)
 
     def test_reopening_embeddings_preserves_explicit_model_default_dimensions(self):
         import questionary

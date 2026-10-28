@@ -1088,15 +1088,37 @@ def activate_embeddings(instance, confirm, console):
     console.print("Rebuild later: docker compose --env-file data/.env run --rm --no-deps --entrypoint python task-agent -m assistant_agent.embedding_maintenance reindex")
     if not confirm("Build the maintenance image and provision/verify the saved embedding model now?", False):
         return
-    instance.compose(["build", "task-agent"], timeout=1800)
-    endpoint = instance.values.get("AGENT_EMBEDDINGS_BASE_URL", instance.defaults.get("agent.embeddings.base_url", "http://ollama:11434"))
-    if endpoint.rstrip("/") == "http://ollama:11434":
-        instance.compose(["up", "-d", "--no-deps", "ollama"])
-        instance.compose(["run", "--rm", "--no-deps", "ollama-model-puller"], timeout=1800)
-    console.print(instance.compose(command + ["probe"], timeout=180), markup=False)
-    if confirm("Rebuild incompatible embeddings now? Source data is preserved; interrupted work can be resumed.", False):
-        instance.compose(["up", "-d", "--wait", "--wait-timeout", "180", "postgres"], timeout=240)
-        console.print(instance.compose(command + ["reindex"], timeout=1800), markup=False)
+    stage = "checking Docker access"
+    arguments = ["info", "--format", "{{.ServerVersion}}"]
+    try:
+        ensure_docker_access(instance, confirm)
+
+        def run(label, args, timeout=180):
+            nonlocal stage, arguments
+            stage, arguments = label, ["compose", "--env-file", "data/.env", *args]
+            console.print(label + "...", markup=False)
+            return instance.compose(args, timeout=timeout)
+
+        run("Building the maintenance image", ["build", "task-agent"], timeout=1800)
+        endpoint = instance.values.get("AGENT_EMBEDDINGS_BASE_URL", instance.defaults.get("agent.embeddings.base_url", "http://ollama:11434"))
+        if endpoint.rstrip("/") == "http://ollama:11434":
+            run("Starting managed Ollama", ["up", "-d", "--no-deps", "ollama"])
+            run("Provisioning the embedding model", ["run", "--rm", "--no-deps", "ollama-model-puller"], timeout=1800)
+        console.print(run("Verifying the embedding model", command + ["probe"]), markup=False)
+        if confirm("Rebuild incompatible embeddings now? Source data is preserved; interrupted work can be resumed.", False):
+            run("Starting PostgreSQL for reindexing", ["up", "-d", "--wait", "--wait-timeout", "180", "postgres"], timeout=240)
+            console.print(run("Rebuilding incompatible embeddings", command + ["reindex"], timeout=1800), markup=False)
+    except DockerCommandError as error:
+        docker = "sudo docker" if getattr(instance, "use_sudo", False) else "docker"
+        retry = docker + " " + " ".join(arguments)
+        raise SetupError(
+            f"Embedding provisioning failed during {stage}. Configuration is already saved; source data is preserved.\n"
+            f"{error}\n"
+            f"To see Docker diagnostics, run locally from the repository directory: {retry}\n"
+            "Command output may contain credentials; do not share it without reviewing/redacting it.\n"
+            "If sudo needs a password, enter it directly in your terminal; the wizard never collects it.\n"
+            "After resolving the failure, retry ./setup.sh --section embeddings."
+        ) from None
     console.print("Recreate existing embedding consumers to activate saved settings: docker compose --env-file data/.env up -d --no-deps --force-recreate task-agent workspace-indexer deep-research-agent supervisor heartbeat")
 
 
