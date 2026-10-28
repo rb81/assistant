@@ -92,6 +92,27 @@ class ApprovalReplyTest(unittest.TestCase):
         self.assertIn("status = 'queued'", downloader.db.fetch_one.call_args.args[0])
         another_request.assert_not_called()
 
+    def test_network_email_decision_applies_silently_and_explains_missing_decision(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config, downloader.db = self.config, MagicMock()
+        downloader.db.fetch_one.return_value = None
+        payload = {"kind": "network", "job_id": 17, "request_id": "abc"}
+        for body, applied in (("APPROVE ONCE\nOnly the API.", True), ("Looks fine", False)):
+            with self.subTest(body=body), patch(
+                "assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload
+            ), patch("assistant_agent.network_access.apply_decision") as apply, patch(
+                "assistant_agent.admin_commands.AdminCommands.reply"
+            ) as admin_reply:
+                result = downloader.ingest_raw(reply(body + "\n\n" + self.confirmation).as_bytes())
+            self.assertTrue(result.inserted)
+            if applied:
+                apply.assert_called_once_with(downloader.db, payload, "once", "Only the API.", "admin-email")
+                admin_reply.assert_not_called()
+            else:
+                apply.assert_not_called()
+                self.assertIn("already handled", admin_reply.call_args.args[1])
+
     def test_multiple_or_incomplete_challenges_fail_closed(self):
         for body in (MARKER, self.confirmation + "\nOTP: " + "c" * 32):
             with self.subTest(body=body):

@@ -345,7 +345,8 @@ class EmailDownloader:
                                 response = "This network request was already handled or the task changed."
                         else:
                             try:
-                                response = network_access.apply_decision(self.db, payload, decision, feedback, "admin-email")
+                                network_access.apply_decision(self.db, payload, decision, feedback, "admin-email")
+                                return IngestResult(inserted=True, queued=False, message_id=message_id)
                             except ValueError as exc:
                                 response = str(exc)
                         AdminCommands(self.db, self.config).reply(parsed, response)
