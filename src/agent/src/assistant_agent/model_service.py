@@ -26,7 +26,7 @@ MAX_INPUT_BYTES = 20 * 1024 * 1024
 MAX_PROMPT_BYTES = 200000
 MAX_OUTPUT_TOKENS = 16384
 _catalog_lock = threading.Lock()
-_catalog: tuple[float, list[dict[str, Any]]] = (0, [])
+_catalog: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
 MEDIA_TYPES = {
     "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
     "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mpeg": ".mp3",
@@ -85,21 +85,28 @@ class OpenRouterModels:
         )
 
     def models(self):
-        global _catalog
+        zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
         with _catalog_lock:
-            if time.monotonic() - _catalog[0] < 300 and _catalog[1]:
-                return _catalog[1]
+            cached = _catalog.get(zdr_only)
+            if cached and time.monotonic() - cached[0] < 300:
+                return cached[1]
+            path = "/models?output_modalities=all"
+            if zdr_only:
+                path += "&zdr=true"
             try:
-                with open_https_request(self.request("/models?output_modalities=all"), timeout=30) as response:
+                with open_https_request(self.request(path), timeout=30) as response:
                     data = self.read_json(response)
+            except urllib.error.HTTPError as exc:
+                raise ModelServiceError("OpenRouter model discovery failed (HTTP %s)" % exc.code) from exc
             except (urllib.error.URLError, OSError) as exc:
                 raise ModelServiceError("OpenRouter model discovery failed: %s" % exc) from exc
             models = data.get("data")
-            if not isinstance(models, list) or not models or any(
-                not isinstance(model, dict) or not isinstance(model.get("id"), str) for model in models
+            if not isinstance(models, list) or (not models and not zdr_only) or any(
+                not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
+                for model in models
             ):
                 raise ModelServiceError("OpenRouter returned an invalid model catalog")
-            _catalog = (time.monotonic(), models)
+            _catalog[zdr_only] = (time.monotonic(), models)
             return models
 
     @staticmethod
@@ -206,7 +213,8 @@ class ModelService:
         for model in self.client.models():
             if model["id"] == slug:
                 return model
-        raise ModelServiceError("Model is not in the current OpenRouter catalog; use query_models")
+        policy = " under the configured ZDR-only policy" if self.config.get_bool("agent.model_service.zdr_only", False) else ""
+        raise ModelServiceError("Model is not in the current OpenRouter catalog%s; use query_models" % policy)
 
     def query_models(self, query="", input_modalities=None, output_modalities=None,
                      supported_parameters=None, limit=20, offset=0):
@@ -421,6 +429,8 @@ class ModelService:
         if "image" in outputs and "audio" in outputs:
             raise ModelServiceError("Request image or audio output separately")
         request = {"model": preset["model"], "messages": self.messages(payload, preset)}
+        if self.config.get_bool("agent.model_service.zdr_only", False):
+            request["provider"] = {"zdr": True}
         supported = model.get("supported_parameters") or []
         if temperature is not None:
             if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))

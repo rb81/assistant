@@ -205,6 +205,10 @@ inherit the assistant's context or tools and does not execute returned tool call
 Enable it with `./setup.sh --section advanced` → **Model preset tool**.
 It requires `OPENROUTER_API_KEY` and an available shared workspace, even if the
 main assistant uses a different model provider. It is disabled by default.
+Setup's **Advanced Settings → Model preset tool** also selects all models
+(default) or ZDR-only discovery and routing with `AGENT_MODEL_SERVICE_ZDR_ONLY`.
+The restriction applies to existing presets as well as new ones; it does not
+govern other tools. See [OpenRouter](openrouter.md#optional-preset-based-model-tool).
 
 Actions:
 

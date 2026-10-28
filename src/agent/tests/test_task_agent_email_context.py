@@ -46,6 +46,21 @@ from assistant_agent.task_agent import TaskAgent
 
 
 class TaskAgentEmailContextTest(unittest.TestCase):
+    def test_model_and_sandbox_tools_explain_internal_authentication(self):
+        agent = self.agent()
+        enabled = set()
+        with patch("assistant_agent.task_agent.available_function_names", return_value={"llm_service", "command_execute"}):
+            result = agent.load_tool_specs({"id": 7}, {"tools": ["llm_service", "command_execute"]}, enabled)
+        self.assertEqual(result["loaded"], ["command_execute", "llm_service"])
+        self.assertIn("Authentication is handled internally", result["guardrails"])
+        self.assertIn("Never search environment variables or secret files", result["guardrails"])
+        messages = agent.messages_from_base_context(
+            {"id": 7, "thread_id": "thread-1", "task_summary": "Generate audio"}, self.context([]),
+            include_full_email_context=True,
+        )
+        self.assertIn("Never search for, read or print API keys", messages[0]["content"])
+        self.assertIn("do not recreate authenticated integrations", messages[0]["content"])
+
     def test_nested_model_tokens_stop_the_tool_batch_and_checkpoint_parent(self):
         agent = self.agent()
         agent.db = MagicMock()

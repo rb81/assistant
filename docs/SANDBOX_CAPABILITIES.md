@@ -19,6 +19,11 @@ Start with `.assistant/docs/README.md` and read relevant pages on demand.
 The mount does not grant access to host source code, settings, credentials,
 application networks, or service administration.
 
+Do not search environment variables or secret files for API keys. Use dedicated
+tools for authenticated integrations: `llm_service` handles model discovery,
+presets and audio/image generation without exposing credentials. If a capability
+is missing or fails, report the limitation rather than recreating it in scripts.
+
 In default container mode, each command uses a new container. Packages installed
 into its writable layer do not survive the command; install and use them in the
 same call, or use a workspace-local environment. Default limits are 2 CPUs,

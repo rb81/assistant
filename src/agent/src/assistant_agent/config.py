@@ -97,6 +97,7 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("TRANSCRIPTION_BASE_URL", "agent.transcription.base_url", str),
         ("TRANSCRIPTION_LANGUAGE", "agent.transcription.language", str),
         ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", bool),
+        ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", bool),
         ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", float),
         ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", int),
         

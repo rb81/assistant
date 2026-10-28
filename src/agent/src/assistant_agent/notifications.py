@@ -124,7 +124,7 @@ def _fmt_count(value: int) -> str:
 
 
 def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, reason: str, source: str) -> str:
-    latest = _latest_email(db, job)
+    latest = latest_request_context(db, job)
     checkpoint = _latest_checkpoint(db, int(job["id"]))
     diag = _diagnostics(db, config, job)
     factor = config.get_float("agent.supervisor.email_approval_increase_factor", 1.2)
@@ -183,7 +183,23 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
     return "\n".join(lines)
 
 
-def _latest_email(db: Database, job: dict[str, Any]) -> dict[str, Any]:
+def latest_request_context(db: Database, job: dict[str, Any]) -> dict[str, Any]:
+    request_id = (job.get("metadata") or {}).get("reply_request_id") or job.get("trigger_request_id")
+    request = db.fetch_one(
+        """
+        SELECT channel, sender_id, reply_route
+        FROM request_messages
+        WHERE thread_id = %s
+        ORDER BY (id = %s) DESC NULLS LAST, received_at DESC, id DESC
+        LIMIT 1
+        """,
+        (job["thread_id"], request_id),
+    )
+    if request and request["channel"] != "email":
+        return {
+            "from_address": "%s:%s" % (request["channel"], request["sender_id"]),
+            "subject": (request.get("reply_route") or {}).get("subject", ""),
+        }
     emails = db.latest_thread_emails(job["thread_id"], limit=1)
     return emails[-1] if emails else {}
 

@@ -146,6 +146,13 @@ class LoadAgentPromptTest(unittest.TestCase):
 
 
 class BuildPromptContextTest(unittest.TestCase):
+    def test_model_catalog_policy_is_explicit_and_scoped_to_model_tool(self) -> None:
+        for zdr_only, expected in ((True, "ZDR-only models and provider routing"), (False, "all models")):
+            config = AppConfig({"agent": {"model_service": {"zdr_only": zdr_only}}})
+            context = build_prompt_context(config)
+            self.assertIn("Model preset tool catalog policy: %s" % expected, context)
+            self.assertIn("only to llm_service", context)
+
     def test_https_transport_verifies_certificates_and_refuses_redirects(self) -> None:
         import ssl
         import urllib.request

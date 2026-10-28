@@ -65,6 +65,7 @@ ADVANCED_SETTINGS = {
     ),
     "Model preset tool": (
         ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
+        ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", "Restrict the model preset tool to Zero Data Retention (ZDR) models and routing? (No = all models)", False, bool, None),
         ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", "Shared model tool budget (USD; checked before each request, final request may exceed it)", 5.0, float, 0.01),
         ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", "Rolling budget period (days, 1-365)", 30, int, 1),
     ),

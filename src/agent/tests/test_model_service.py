@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from psycopg.conninfo import make_conninfo
@@ -349,7 +349,7 @@ def test_http_errors_do_not_echo_prompt_or_retry():
 
 
 def test_model_catalog_transport_uses_all_modalities_and_caches(monkeypatch):
-    monkeypatch.setattr("assistant_agent.model_service._catalog", (0, []))
+    monkeypatch.setattr("assistant_agent.model_service._catalog", {})
     monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
     client = OpenRouterModels(AppConfig({}))
     with patch("assistant_agent.model_service.open_https_request", return_value=io.BytesIO(
@@ -359,3 +359,96 @@ def test_model_catalog_transport_uses_all_modalities_and_caches(monkeypatch):
         assert client.models() == MODELS
     assert request.call_count == 1
     assert request.call_args.args[0].full_url == "https://openrouter.ai/api/v1/models?output_modalities=all"
+
+
+def test_zdr_catalog_cache_is_separate_and_retains_audio_metadata(monkeypatch):
+    monkeypatch.setattr("assistant_agent.model_service._catalog", {})
+    monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
+    all_models = OpenRouterModels(AppConfig({}))
+    zdr_models = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    with patch("assistant_agent.model_service.open_https_request", side_effect=[
+        io.BytesIO(json.dumps({"data": MODELS}).encode()),
+        io.BytesIO(json.dumps({"data": [MODELS[2]]}).encode()),
+    ]) as request:
+        assert all_models.models() == MODELS
+        assert zdr_models.models() == [MODELS[2]]
+        assert zdr_models.models()[0]["architecture"]["output_modalities"] == ["text", "audio"]
+        assert all_models.models() == MODELS
+    assert request.call_count == 2
+    assert request.call_args_list[1].args[0].full_url == "https://openrouter.ai/api/v1/models?output_modalities=all&zdr=true"
+
+
+@pytest.mark.parametrize("data", [[], [{"missing": "id"}], None])
+def test_zdr_discovery_never_falls_back_to_cached_all_models(monkeypatch, data):
+    monkeypatch.setattr("assistant_agent.model_service._catalog", {})
+    monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
+    client = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    with patch("assistant_agent.model_service.open_https_request", side_effect=[
+        io.BytesIO(json.dumps({"data": MODELS}).encode()),
+        io.BytesIO(json.dumps({"data": data}).encode()),
+    ]) as request:
+        assert OpenRouterModels(AppConfig({})).models() == MODELS
+        if data == []:
+            assert client.models() == []
+            assert client.models() == []
+        else:
+            with pytest.raises(ModelServiceError, match="invalid model catalog"):
+                client.models()
+    assert request.call_count == 2
+
+
+def test_zdr_discovery_failure_does_not_use_expired_or_unrestricted_catalog(monkeypatch):
+    monkeypatch.setattr("assistant_agent.model_service._catalog", {
+        False: (1000, MODELS), True: (1, [MODELS[2]]),
+    })
+    monkeypatch.setattr("assistant_agent.model_service.time.monotonic", lambda: 1001)
+    monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
+    client = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    error = urllib.error.HTTPError("url", 503, "unavailable", {}, io.BytesIO(b"private"))
+    with patch("assistant_agent.model_service.open_https_request", side_effect=error) as request:
+        with pytest.raises(ModelServiceError, match=r"discovery failed \(HTTP 503\)"):
+            client.models()
+    assert request.call_count == 1
+
+
+@pytest.mark.parametrize("zdr_only", [True, False])
+@pytest.mark.parametrize("model,outputs", [("test/text", ["text"]), ("test/audio", ["text", "audio"])])
+def test_catalog_policy_controls_generation_routing_without_database(zdr_only, model, outputs):
+    runtime = MagicMock()
+    runtime.config = AppConfig({"agent": {"model_service": {"zdr_only": zdr_only}}})
+    runtime.job = {"id": 7}
+    runtime.model_service_tokens = 0
+    runtime.db.fetch_one.return_value = {"name": "preset", "model": model, "system_prompt": None}
+    service = ModelService(runtime)
+    with patch.object(service.client, "models", return_value=MODELS), patch.object(
+        service.client, "complete", return_value=reply()
+    ) as complete, patch.object(service, "reserve", return_value="request-id"), patch.object(
+        service, "settle", return_value="completed"
+    ), patch.object(service, "save_reply", return_value={"content": "Hello"}), patch.object(
+        service, "budget", return_value={}
+    ):
+        service.use_preset("preset", PROMPT, output_modalities=outputs)
+    request = complete.call_args.args[0]
+    if zdr_only:
+        assert request["provider"] == {"zdr": True}
+    else:
+        assert "provider" not in request
+    if "audio" in outputs:
+        assert request["stream"] is True
+
+
+def test_existing_non_zdr_presets_are_blocked_before_spending():
+    runtime = MagicMock()
+    runtime.config = AppConfig({"agent": {"model_service": {"zdr_only": True}}})
+    runtime.db.fetch_one.return_value = {"name": "old-preset", "model": "test/text", "system_prompt": None}
+    service = ModelService(runtime)
+    with patch.object(service.client, "models", return_value=[MODELS[2]]), patch.object(
+        service.client, "complete"
+    ) as complete, patch.object(service, "reserve") as reserve:
+        with pytest.raises(ModelServiceError, match="current OpenRouter catalog"):
+            service.add_preset("new-preset", "test/text")
+        with pytest.raises(ModelServiceError, match="current OpenRouter catalog"):
+            service.use_preset("old-preset", PROMPT)
+    reserve.assert_not_called()
+    complete.assert_not_called()
+    runtime.db.connect.assert_not_called()

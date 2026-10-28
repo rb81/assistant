@@ -111,10 +111,26 @@ The dynamic `available_function_names(...)` and `available_tools(...)` paths ens
 It calls the fixed OpenRouter HTTPS base URL with `OPENROUTER_API_KEY`, does not
 refresh/inject assistant context, and never substitutes another model on error.
 Model discovery requests `GET /models?output_modalities=all` and caches successful
-catalog results for five minutes. Requests use `/chat/completions`; audio output
+catalog results for five minutes, separately for each catalog policy. Requests use `/chat/completions`; audio output
 is assembled from SSE `delta.audio` chunks with final usage accounting.
 
 Enable and budget it through setup's **Advanced Settings → Model preset tool**.
+Choose all models (the default) or enable **Zero Data Retention (ZDR) only**
+(`agent.model_service.zdr_only`, `AGENT_MODEL_SERVICE_ZDR_ONLY`). ZDR-only discovery
+uses OpenRouter's documented [`zdr=true` model catalog filter](https://openrouter.ai/docs/api/api-reference/models/get-models),
+preserving modality and voice metadata. Preset creation and use validate against
+that filtered catalog, including existing presets after a policy change. Every
+generation request also sets [`provider.zdr=true`](https://openrouter.ai/docs/guides/features/zdr)
+to prevent routing to non-ZDR endpoints. Empty results or discovery failures
+never fall back to all models. All-model mode does not override stricter
+OpenRouter account or guardrail policies.
+
+This setting only governs `llm_service`, not the primary assistant, research,
+web search or other integrations. ZDR describes provider inference retention,
+not local workspace storage: generated files and local accounting still persist.
+The tool manages authentication internally; agents must not search for API keys
+or recreate authenticated model calls in sandbox scripts.
+
 Defaults: disabled, USD 5 per rolling 30 days. Provider-reported `usage.cost` is
 the source of truth, not token-price estimates (music can have per-song charges
 despite zero token pricing). This limit only covers this tool, not ordinary

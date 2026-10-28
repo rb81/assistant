@@ -34,7 +34,7 @@ markdown_module.MarkdownIt = FakeMarkdownIt
 sys.modules.setdefault("markdown_it", markdown_module)
 
 from assistant_agent.config import AppConfig
-from assistant_agent.notifications import _already_sent, _body, _fingerprint, notify_admin_job_failure
+from assistant_agent.notifications import _already_sent, _body, _fingerprint, latest_request_context, notify_admin_job_failure
 
 
 class FakeDatabase:
@@ -76,6 +76,7 @@ class NotificationDedupeTest(unittest.TestCase):
         agent = TaskAgent.__new__(TaskAgent)
         agent.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "app": {"base_url": "https://localhost:8000"}}})
         agent.db = MagicMock()
+        agent.db.fetch_one.return_value = None
         agent.db.latest_thread_emails.return_value = [{"message_id": "<request@example.com>"}]
         runtime = MagicMock()
         with patch("assistant_agent.task_agent.admin_configured", return_value=True), patch(
@@ -97,7 +98,7 @@ class NotificationDedupeTest(unittest.TestCase):
             "usage": {"total_tokens": 100, "token_pct": 0.01, "iterations_used": 3, "iteration_pct": 6, "api_calls": 3},
             "limits": {"max_tokens": 1000000, "max_iterations": 50},
         }
-        with patch("assistant_agent.notifications._latest_email", return_value={}), patch(
+        with patch("assistant_agent.notifications.latest_request_context", return_value={}), patch(
             "assistant_agent.notifications._latest_checkpoint", return_value={}
         ), patch("assistant_agent.notifications._diagnostics", return_value=diagnostics):
             body = _body(FakeDatabase(), config, {"id": 11}, "needs_review", "Tool failure", "task-agent")
@@ -106,6 +107,67 @@ class NotificationDedupeTest(unittest.TestCase):
         self.assertIn("Both limits will be increased by 20%.", body)
         self.assertNotIn("dashboard", body.lower())
         self.assertNotIn("localhost", body)
+
+    def test_requester_uses_telegram_identity_instead_of_unrelated_email(self) -> None:
+        db = MagicMock()
+        db.fetch_one.return_value = {
+            "channel": "telegram", "sender_id": "123456", "reply_route": {"channel": "telegram", "chat_id": "123456"},
+        }
+        job = {"id": 11, "thread_id": "thread-1", "trigger_request_id": 1,
+               "metadata": {"reply_request_id": 7}}
+
+        context = latest_request_context(db, job)
+
+        self.assertEqual(context, {"from_address": "telegram:123456", "subject": ""})
+        self.assertEqual(db.fetch_one.call_args.args[1], ("thread-1", 7))
+        db.latest_thread_emails.assert_not_called()
+        self.assertNotIn("message_id", context)
+
+    def test_requester_falls_back_to_latest_thread_request_without_trigger(self) -> None:
+        db = MagicMock()
+        db.fetch_one.return_value = {"channel": "telegram", "sender_id": "123456"}
+
+        context = latest_request_context(db, {"id": 11, "thread_id": "thread-1"})
+
+        self.assertEqual(context["from_address"], "telegram:123456")
+        self.assertEqual(db.fetch_one.call_args.args[1], ("thread-1", None))
+
+    def test_requester_preserves_legacy_email_context(self) -> None:
+        db = MagicMock()
+        db.fetch_one.return_value = None
+        email = {"from_address": "requester@example.com", "subject": "Task", "message_id": "<original@example.com>"}
+        db.latest_thread_emails.return_value = [email]
+
+        self.assertEqual(latest_request_context(db, {"id": 11, "thread_id": "thread-1"}), email)
+
+    def test_telegram_requester_is_included_in_review_and_admin_input_emails(self) -> None:
+        from assistant_agent.task_agent import TaskAgent
+
+        db = MagicMock()
+        db.fetch_one.return_value = {"channel": "telegram", "sender_id": "123456", "reply_route": {}}
+        config = AppConfig({"agent": {}})
+        job = {"id": 11, "thread_id": "thread-1", "trigger_request_id": 7}
+        diagnostics = {
+            "explanation": "Security review",
+            "usage": {"total_tokens": 100, "token_pct": 1, "iterations_used": 3, "iteration_pct": 6, "api_calls": 3},
+            "limits": {"max_tokens": 10000, "max_iterations": 50},
+        }
+        with patch("assistant_agent.notifications._latest_checkpoint", return_value={}), patch(
+            "assistant_agent.notifications._diagnostics", return_value=diagnostics
+        ):
+            body = _body(db, config, job, "needs_review", "Security review", "task-agent")
+        self.assertIn("Requester: telegram:123456", body)
+
+        agent = TaskAgent.__new__(TaskAgent)
+        agent.db, agent.config = db, config
+        runtime = MagicMock()
+        with patch("assistant_agent.task_agent.admin_configured", return_value=True), patch(
+            "assistant_agent.task_agent.smtp_configured", return_value=True
+        ):
+            agent.email_admin_for_input(job, runtime, "May I proceed?")
+        sent = runtime.email_send.call_args.kwargs
+        self.assertIn("Requester: telegram:123456", sent["body"])
+        self.assertIsNone(sent["in_reply_to"])
 
     def test_fingerprint_ignores_notification_source(self) -> None:
         self.assertEqual(
