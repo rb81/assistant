@@ -1,6 +1,8 @@
-"""Approval delivery policy and verified administrator identities."""
-from .telegram import telegram_configured, telegram_identities
-from .validation import smtp_configured
+"""Approval delivery policy and verified administrator identities.
+
+Setup imports this module with only setup dependencies installed, so runtime
+modules (Telegram delivery, database) are imported inside functions.
+"""
 
 
 def channels(config):
@@ -11,6 +13,7 @@ def channels(config):
 
 
 def telegram_admins(config):
+    from .telegram_config import telegram_identities
     admin = str(config.get("agent.admin.email") or "").strip().lower()
     if not admin:
         return []
@@ -25,6 +28,8 @@ def telegram_admins(config):
 
 
 def approvals_configured(config):
+    from .telegram_config import telegram_configured
+    from .validation import smtp_configured
     mode = channels(config)
     if mode in {"telegram", "both"} and (not telegram_configured(config) or not telegram_admins(config)):
         return False

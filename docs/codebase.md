@@ -34,7 +34,8 @@ tracking and the transition path for older databases.
 - `telegram_admin.py` — deterministic browsing, confirmations, guidance and recovery controls.
 - `email_approvals.py`, `approval_channels.py`, `approval_actions.py` — shared one-use
   email/Telegram approvals, verified administrator identities and action execution.
-- `replies.py`, `telegram.py` — channel-aware replies and Telegram delivery.
+- `replies.py`, `telegram.py` — channel-aware replies and Telegram delivery;
+  `telegram_config.py` holds dependency-free settings helpers used by setup.
 - `workstreams.py`, `workstream_files.py`, `workstream_operator.py` — ownership,
   file retention, and local workstream administration.
 - `model_service.py` — configured secondary-model calls through `llm_service`,

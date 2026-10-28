@@ -16,13 +16,7 @@ from psycopg.types.json import Jsonb
 from .config import AppConfig
 from .database import Database
 from .requests import TransactionDatabase
-
-
-class TelegramError(ValueError):
-    def __init__(self, message: str, *, uncertain: bool = False, retry_after: int = 0):
-        super().__init__(message)
-        self.uncertain = uncertain
-        self.retry_after = retry_after
+from .telegram_config import TelegramError, telegram_configured, telegram_identities
 
 
 def validate_voice_note(attachment):
@@ -51,24 +45,6 @@ class TelegramURLFilter(logging.Filter):
 
 
 logging.getLogger("httpx").addFilter(TelegramURLFilter())
-
-
-def telegram_configured(config: AppConfig) -> bool:
-    identifiers = config.get_list("agent.telegram.allowed_user_ids")
-    return bool(config.get_bool("agent.telegram.enabled", False) and config.get("agent.telegram.bot_token")
-                and identifiers and all(identifier.isdigit() and int(identifier) > 0 for identifier in identifiers))
-
-
-def telegram_identities(config: AppConfig) -> dict[str, Any]:
-    value = config.get("agent.telegram.recipients", {}) or {}
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            raise TelegramError("Telegram recipient mappings must be a JSON object") from None
-    if not isinstance(value, dict):
-        raise TelegramError("Telegram recipient mappings must be an object")
-    return {str(address).lower(): identifier for address, identifier in value.items()}
 
 
 def telegram_destination(config: AppConfig, job: dict[str, Any], recipient: str = "me") -> str:

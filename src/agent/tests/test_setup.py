@@ -458,6 +458,29 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_telegram_approval_check_without_runtime_dependencies(self):
+        script = """
+import importlib.abc
+import sys
+
+class BlockRuntimeImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in {"psycopg", "markdown_it"}:
+            raise ModuleNotFoundError("Setup must not require " + fullname)
+
+sys.meta_path.insert(0, BlockRuntimeImports())
+from assistant_agent.approval_channels import approvals_configured, telegram_admins
+from assistant_agent.config import AppConfig
+
+config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "approvals": {"channel": "telegram"},
+                              "telegram": {"enabled": True, "bot_token": "token", "allowed_user_ids": ["5"],
+                                           "recipients": {"admin@example.com": 5}}}})
+assert telegram_admins(config) == ["5"]
+assert approvals_configured(config)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def saved_configuration(self, root):
         instance = Installation(root)
         instance.values = {"AGENT_NAME": "Original", "AGENT_TIMEZONE": "UTC", "AGENT_LLM_MODEL": "model",
