@@ -332,7 +332,7 @@ Administrators can list options and test a voice inside the running stack
 
 ```bash
 sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts voices elevenlabs
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts test "Hello" --model elevenlabs/eleven-v3 --voice <voice-id>
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts test "Hello" --model elevenlabs/eleven-v3 --voice jessica  # add --no-zdr to compare routing
 ```
 
 Samples are saved on the host under `data/share/tts-tests/`.

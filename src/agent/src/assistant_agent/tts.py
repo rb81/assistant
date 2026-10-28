@@ -335,6 +335,7 @@ def main(argv=None):
     test.add_argument("--model", help="Override the configured model for this test")
     test.add_argument("--voice", help="Override the configured voice for this test")
     test.add_argument("--instructions")
+    test.add_argument("--no-zdr", action="store_true", help="Skip ZDR provider routing for this test only")
     test.add_argument("--output", help="Output path without extension (default: <shared root>/tts-tests/<model>-<voice>)")
     args = parser.parse_args(argv)
     config = load_config()
@@ -366,13 +367,19 @@ def main(argv=None):
                "response_format": "pcm" if audio_format == "wav" else "mp3"}
     if args.instructions:
         payload["instructions"] = args.instructions
-    if zdr_only:
+    if zdr_only and not args.no_zdr:
         payload["provider"] = {"zdr": True}
     try:
         data, content_type, generation_id = client.synthesize(payload, lambda value: None)
         data, _ = playable_audio(data, content_type, audio_format)
     except ModelServiceError as exc:
         print("Failed: %s" % exc, file=sys.stderr)
+        # Admin-only diagnostics: the body may echo the admin's own test text, never agent content.
+        if isinstance(exc.__cause__, urllib.error.HTTPError):
+            try:
+                print("Provider response: %s" % exc.__cause__.read(2000).decode("utf-8", "replace"), file=sys.stderr)
+            except OSError:
+                pass
         return 1
     output = args.output or "%s/tts-tests/%s-%s" % (
         str(config.get("agent.filesystem.shared_root") or "/tmp").rstrip("/"),
