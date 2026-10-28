@@ -770,6 +770,7 @@ class Installation:
         try:
             prefix = ["sudo", "-n", "docker"] if elevated else ["docker"]
             result = subprocess.run([*prefix, *arguments], input=input_text, text=True, capture_output=True,
+                                    stdin=subprocess.DEVNULL if input_text is None else None,
                                     env=environment, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise DockerCommandError("Docker command timed out; command output was suppressed") from None
@@ -779,9 +780,12 @@ class Installation:
             stderr = (result.stderr or "").lower()
             if elevated and any(message in stderr for message in (
                 "sudo: a password is required", "sudo: a terminal is required", "is not in the sudoers file",
-                "is not allowed to execute", "sudo: authentication is required",
+                "is not allowed to execute", "sudo: authentication is required", "sudo: interactive authentication is required",
             )):
-                raise DockerCommandError("Noninteractive sudo authorization failed; no password was requested")
+                raise DockerCommandError(
+                    "Noninteractive sudo authorization failed; no password was requested. "
+                    "If your account is allowed to use sudo, run sudo -v directly in your terminal, then retry setup."
+                )
             raise DockerCommandError("Docker command failed; output was suppressed to protect credentials",
                                      stdout=result.stdout)
         return result.stdout
@@ -791,7 +795,7 @@ class Installation:
         self.compose(["run", "--rm", "--no-deps", "sandbox-init"])
 
     def verify_sandbox_runtime(self):
-        self.compose(["exec", "-T", "sandbox", "python", "-c",
+        self.compose(["exec", "-T", "--interactive=false", "sandbox", "python", "-c",
                       "import ssl,urllib.request; from pathlib import Path; "
                       "root=Path('/run/assistant/runtime/current'); "
                       "context=ssl.create_default_context(cafile=str(root/'sandbox.crt')); "

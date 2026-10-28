@@ -329,6 +329,36 @@ class SetupTest(unittest.TestCase):
             self.assertFalse((Path(root) / "data/.secrets/POSTGRES_PASSWORD").exists())
 
 
+    def test_captured_docker_command_does_not_wait_for_terminal_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            script = """
+import subprocess
+import sys
+from unittest.mock import patch
+from assistant_agent.setup import Installation
+
+run = subprocess.run
+def read_stdin(command, **kwargs):
+    return run([sys.executable, '-c', "import sys; print('received:' + sys.stdin.read())"], **kwargs)
+
+with patch('assistant_agent.setup.subprocess.run', side_effect=read_stdin):
+    print(Installation(sys.argv[1]).docker(
+        ['version'], input_text=None if len(sys.argv) == 2 else sys.argv[2], timeout=2))
+"""
+            master, slave = pty.openpty()
+            try:
+                for arguments, expected in (([], "received:"), (["explicit input"], "received:explicit input")):
+                    with self.subTest(input=arguments):
+                        result = subprocess.run(
+                            [sys.executable, "-c", script, root, *arguments], stdin=slave,
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(result.stdout.strip(), expected)
+            finally:
+                os.close(slave)
+                os.close(master)
+
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
     def test_live_credential_volume_migration_mounts_and_rotation(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1196,6 +1226,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             self.assertEqual(run.call_args.args[0][:3], ["sudo", "-n", "docker"])
             output = "\n".join(call.args[0] for call in console.print.call_args_list)
             self.assertIn("Noninteractive sudo authorization failed", output)
+            self.assertIn("sudo -v", output)
             self.assertIn("checking Docker access", output)
             self.assertIn("sudo docker compose up", output)
             self.assertNotIn("secret-canary", output)
@@ -1241,6 +1272,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             (False, OSError("secret-canary"), "could not be launched"),
             (False, subprocess.CompletedProcess([], 1, "secret-canary", "secret-canary"), "Docker command failed"),
             (True, subprocess.CompletedProcess([], 1, "secret-canary", "sudo: a password is required\nsecret-canary"), "sudo authorization failed"),
+            (True, subprocess.CompletedProcess([], 1, "secret-canary", "sudo: interactive authentication is required\nsecret-canary"), "sudo authorization failed"),
             (True, subprocess.CompletedProcess([], 1, "secret-canary", "user is not allowed to execute secret-canary"), "sudo authorization failed"),
             (True, subprocess.CompletedProcess([], 1, "secret-canary", "daemon unavailable secret-canary"), "Docker command failed"),
         ]
@@ -1262,6 +1294,70 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             with patch.dict(os.environ, environment, clear=True), patch("assistant_agent.setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "28.0.0", "")) as run, patch.object(instance, "start_containers", return_value=[]):
                 start_saved_containers(instance, MagicMock(), MagicMock())
             self.assertEqual(run.call_args.kwargs["env"], {"DOCKER_HOST": "ssh://server", "DOCKER_CONTEXT": "remote"})
+
+    @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and shutil.which("docker"), "requires opt-in disposable Docker tests")
+    def test_sandbox_tls_probe_finishes_with_an_open_terminal_stdin(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "src").mkdir()
+            server = """
+import http.server
+import ssl
+from pathlib import Path
+
+root = Path('/run/assistant/runtime/current')
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        authorized = self.headers.get('Authorization') == 'Bearer ' + (root / 'SANDBOX_API_TOKEN').read_text()
+        self.send_response(200 if self.path == '/health' and authorized else 403)
+        self.end_headers()
+
+server = http.server.HTTPServer(('0.0.0.0', 8080), Health)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(root / 'sandbox.crt', root / 'sandbox.key')
+server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+"""
+            base = {"name": "assistant-stdin-test-" + path.name.lower(), "services": {
+                "sandbox": {
+                    "image": "python:3.12-slim", "command": ["python", "-c", server],
+                    "volumes": ["../runtime:/run/assistant/runtime/current:ro"],
+                    "healthcheck": {
+                        "test": ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8080),timeout=2).close()"],
+                        "interval": "1s", "timeout": "3s", "retries": 10,
+                    },
+                },
+            }}
+            atomic_write(path / "src/docker-compose.yml", yaml.safe_dump(base).encode())
+            instance = Installation(root)
+            instance.save()
+            runtime = path / "runtime"
+            runtime.mkdir()
+            for name in ("sandbox.crt", "sandbox.key"):
+                atomic_write(runtime / name, (path / "data/private/tls" / name).read_bytes())
+            atomic_write(runtime / "SANDBOX_API_TOKEN", b"synthetic-token")
+            master, slave = pty.openpty()
+            script = (
+                "import sys; from assistant_agent.setup import Installation; "
+                "instance = Installation(sys.argv[1]); "
+                "instance.verify_sandbox_runtime(); print('Sandbox TLS probe passed')"
+            )
+            try:
+                instance.compose(["up", "-d", "--wait", "--wait-timeout", "20", "sandbox"])
+                result = subprocess.run(
+                    [sys.executable, "-c", script, root], stdin=slave,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Sandbox TLS probe passed", result.stdout)
+                self.assertEqual(instance.compose(
+                    ["exec", "-T", "sandbox", "python", "-c", "print(input())"],
+                    input_text="explicit input\n", timeout=5,
+                ).strip(), "explicit input")
+            finally:
+                os.close(slave)
+                os.close(master)
+                instance.compose(["down"])
 
     def test_startup_reporting_preserves_health_and_helper_failures(self):
         cases = [
