@@ -190,23 +190,86 @@ def test_invalid_audio_still_accounts_provider_charge(speech):
     assert not list(speech.runtime.shared_root.glob("outputs/job-7/*"))
 
 
-def test_reconcile_only_reads_charge_for_this_jobs_unknown_speech_request(speech):
+@pytest.mark.parametrize("owner", [7, 11])
+def test_reconcile_reads_charge_across_jobs_without_synthesis_or_duplicate_token_counting(speech, owner):
     identifier = str(uuid.uuid4())
     conn = speech.db.connect.return_value.__enter__.return_value
-    conn.execute.return_value.fetchone.return_value = {"status": "unknown", "generation_id": "gen-tts-test"}
+    conn.execute.return_value.fetchone.return_value = {"status": "unknown", "generation_id": "gen-tts-test", "job_id": owner}
     with patch.object(speech.client, "synthesize") as send:
         result = speech.reconcile(identifier)
     assert result["status"] == "completed" and result["usage"]["cost"] == 0.02
-    assert conn.execute.call_args.args[1] == (identifier, 7)
-    assert "preset->>'tool' = 'text_to_speech' FOR UPDATE" in conn.execute.call_args.args[0]
+    query = conn.execute.call_args_list[0]
+    assert query.args[1] == (identifier,)
+    assert "preset->>'tool' = 'text_to_speech' FOR UPDATE" in query.args[0]
+    assert speech.runtime.model_service_tokens == (10 if owner == 7 else 0)
+    assert conn.execute.call_args_list[1].args[1] == (str(owner),)
     speech.settle.assert_called_once_with(
         identifier, "completed", result["usage"], "gen-tts-test", conn=conn,
     )
     send.assert_not_called()
     speech.reserve.assert_not_called()
 
+def test_reconcile_without_arguments_discovers_only_eligible_speech_charges(speech):
+    identifier = str(uuid.uuid4())
+    speech.db.fetch_all.return_value = [{"id": identifier}]
+    conn = speech.db.connect.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = {
+        "status": "unknown", "generation_id": "gen-tts-test", "job_id": 11,
+    }
+    with patch.object(speech.client, "synthesize") as send:
+        result = speech.run("reconcile")
+    assert result["requests"][0]["request_id"] == identifier
+    query = speech.db.fetch_all.call_args.args[0]
+    assert "status = 'unknown'" in query and "generation_id IS NOT NULL" in query
+    assert "preset->>'tool' = 'text_to_speech'" in query and "LIMIT 20" in query
+    send.assert_not_called()
+    speech.reserve.assert_not_called()
 
-@pytest.mark.parametrize("row", [None, {"status": "completed", "generation_id": "gen-tts-test"},
+
+@pytest.mark.parametrize("arguments, expected", [
+    ({"action": "generate", "model": MODEL["id"], "text": "Hi"}, "model, text and voice"),
+    ({"action": "reconcile", "model": MODEL["id"]}, "optional request_id"),
+])
+def test_action_argument_errors_are_actionable_before_spending(speech, arguments, expected):
+    with pytest.raises(ModelServiceError, match=expected):
+        speech.run(**arguments)
+    speech.reserve.assert_not_called()
+    speech.db.fetch_all.assert_not_called()
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_admission_recovers_old_speech_accounting_before_any_new_generation(speech, ready):
+    identifier = str(uuid.uuid4())
+    speech.db.fetch_all.return_value = [{"id": identifier}]
+    conn = speech.db.connect.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = {
+        "status": "unknown", "generation_id": "gen-tts-old", "job_id": 11,
+    }
+    with patch.object(ModelToolResources, "budget", side_effect=[
+        {"unresolved_requests": 1},
+        {"unresolved_requests": 0, "remaining_usd": 4.9},
+        {"unresolved_requests": 0, "remaining_usd": 4.9},
+        {"unresolved_requests": 0, "remaining_usd": 4.9},
+    ]), patch.object(OpenRouterSpeech, "generation", return_value=GENERATION) as lookup, patch.object(
+        OpenRouterSpeech, "synthesize"
+    ) as send:
+        speech.budget.side_effect = lambda *args: ModelToolResources.budget(speech, *args)
+        if not ready:
+            lookup.side_effect = ModelServiceError("not available yet")
+            with pytest.raises(ModelServiceError, match=identifier):
+                ModelToolResources.reserve(speech, {"tool": "text_to_speech"})
+        else:
+            request_id = ModelToolResources.reserve(speech, {"tool": "text_to_speech"})
+            assert request_id != identifier
+            assert any("INSERT INTO model_service_calls" in call.args[0] for call in conn.execute.call_args_list)
+            assert speech.runtime.model_service_tokens == 0
+    lookup.assert_called_once_with("gen-tts-old")
+    send.assert_not_called()
+    if not ready:
+        assert not any("INSERT INTO model_service_calls" in call.args[0] for call in conn.execute.call_args_list)
+
+
+@pytest.mark.parametrize("row", [None, {"status": "completed", "generation_id": "gen-tts-test", "cost_usd": None},
                                 {"status": "pending", "generation_id": None}])
 def test_reconcile_does_not_mutate_foreign_completed_or_in_flight_requests(speech, row):
     conn = speech.db.connect.return_value.__enter__.return_value
@@ -215,6 +278,15 @@ def test_reconcile_does_not_mutate_foreign_completed_or_in_flight_requests(speec
         speech.reconcile(str(uuid.uuid4()))
     speech.client.generation.assert_not_called()
     speech.settle.assert_not_called()
+
+def test_reconcile_already_settled_charge_is_idempotent_without_recounting(speech):
+    conn = speech.db.connect.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = {"status": "completed", "cost_usd": 0.02, "usage": {"cost": 0.02}}
+    result = speech.reconcile(str(uuid.uuid4()))
+    assert result["already_reconciled"] is True
+    speech.client.generation.assert_not_called()
+    speech.settle.assert_not_called()
+    assert speech.runtime.model_service_tokens == 0
 
 
 def test_transport_uses_speech_endpoint_and_captures_header_before_read(monkeypatch):
@@ -303,6 +375,7 @@ def test_wav_requires_real_pcm_metadata_and_complete_frames(mime, data):
 def test_shared_budget_blocks_speech_before_provider_call(speech, unresolved, spent):
     conn = speech.db.connect.return_value.__enter__.return_value
     conn.execute.return_value.fetchone.return_value = {"spent": spent, "unresolved": unresolved}
+    speech.db.fetch_one.return_value = {"spent": spent, "unresolved": unresolved}
     with patch.object(speech, "reserve", wraps=lambda metadata: ModelToolResources.reserve(speech, metadata)), patch.object(
         speech, "budget", wraps=lambda conn=None: ModelToolResources.budget(speech, conn)
     ), patch.object(speech.client, "synthesize") as send:

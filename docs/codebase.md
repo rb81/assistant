@@ -30,6 +30,9 @@ tracking and the transition path for older databases.
 - `database.py` — PostgreSQL access, current-baseline guard, and ordered
   migration runner.
 - `email_ingest.py`, `telegram_ingest.py`, `requests.py` — intake and preprocessing.
+- `telegram_admin.py` — deterministic browsing, confirmations, guidance and recovery controls.
+- `email_approvals.py`, `approval_channels.py`, `approval_actions.py` — shared one-use
+  email/Telegram approvals, verified administrator identities and action execution.
 - `replies.py`, `telegram.py` — channel-aware replies and Telegram delivery.
 - `workstreams.py`, `workstream_files.py`, `workstream_operator.py` — ownership,
   file retention, and local workstream administration.

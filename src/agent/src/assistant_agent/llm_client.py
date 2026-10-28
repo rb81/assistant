@@ -25,6 +25,7 @@ class LlmClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout_seconds: Optional[int] = None,
+        allow_fallback: bool = True,
     ):
         self.config = config
         self.base_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
@@ -40,6 +41,7 @@ class LlmClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds or 180
+        self.allow_fallback = allow_fallback
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """Send a chat completion request, retrying with the fallback model on transient errors."""
@@ -47,7 +49,7 @@ class LlmClient:
             return self._chat_with_model(self.model, messages, tools)
         except _TransientLlmError as exc:
             fallback = str(self.config.get("agent.llm.fallback_model") or "").strip()
-            if not fallback or fallback == self.model:
+            if not self.allow_fallback or not fallback or fallback == self.model:
                 raise RuntimeError(str(exc)) from exc
             LOGGER.warning(
                 "primary model %r returned transient error (%s); retrying with fallback model %r",

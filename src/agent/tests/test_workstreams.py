@@ -5,7 +5,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
@@ -128,6 +128,68 @@ def remove(store, identifier, mode="preserve_shared"):
     preview = store.preview(identifier, mode)
     deletion = store.begin_delete(identifier, mode, preview["preview_digest"])
     return store.execute_delete(deletion)
+
+
+def archive_controls(store):
+    from assistant_agent.telegram_admin import TelegramAdmin
+    config = AppConfig({"agent": {
+        "admin": {"email": "admin@example.com"},
+        "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+    }})
+    return TelegramAdmin(MagicMock(db=store.db, config=config, client=MagicMock(), bot_id="9"))
+
+
+def archive(ui, identifier):
+    ui.confirm("123", "archive", identifier)
+    keyboard = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
+    ui.execute_confirmation("123", keyboard[0][0]["callback_data"].split(":")[-1])
+
+
+def test_archive_retains_data_and_can_be_restored(store):
+    source = job(store)
+    store.db.update_job_status(source["id"], "completed")
+    ui = archive_controls(store)
+    archive(ui, source["workstream_id"])
+    assert store.db.fetch_one("SELECT status FROM workstreams WHERE id = %s",
+                             (source["workstream_id"],))["status"] == "archived"
+    assert store.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (source["id"],))
+    assert store.preview(source["workstream_id"])["preview_digest"]
+    ui.callback({"id": "c", "from": {"id": 123}, "data": "ui:restore:%s" % source["workstream_id"]})
+    assert store.db.fetch_one("SELECT status FROM workstreams WHERE id = %s",
+                             (source["workstream_id"],))["status"] == "active"
+
+
+@pytest.mark.parametrize("outstanding", ["job", "reminder", "child", "charge"])
+def test_archive_refuses_unfinished_work(store, outstanding):
+    source = job(store)
+    if outstanding != "job":
+        store.db.update_job_status(source["id"], "completed")
+    if outstanding == "reminder":
+        store.db.for_job(source["id"]).execute(
+            "INSERT INTO reminders(title, task, run_at, created_by_job_id) VALUES ('Reminder', 'Notify', now(), %s)",
+            (source["id"],),
+        )
+    elif outstanding == "child":
+        child = job(store, parent=source["workstream_id"])
+        store.db.update_job_status(child["id"], "completed")
+    elif outstanding == "charge":
+        store.db.execute("INSERT INTO model_service_calls(id, job_id, preset, status) VALUES (%s, %s, '{}'::jsonb, 'unknown')",
+                         (str(uuid.uuid4()), source["id"]))
+    with pytest.raises(ValueError, match="still has active work"):
+        archive(archive_controls(store), source["workstream_id"])
+    assert store.db.fetch_one("SELECT status FROM workstreams WHERE id = %s",
+                             (source["workstream_id"],))["status"] == "active"
+
+
+def test_archived_workstream_still_retains_shared_jobs_during_deletion(store):
+    source, survivor = job(store), job(store)
+    for row in (source, survivor):
+        store.db.update_job_status(row["id"], "completed")
+    legacy_attach(store, survivor["workstream_id"], "job", source["id"])
+    archive(archive_controls(store), survivor["workstream_id"])
+    remove(store, source["workstream_id"])
+    assert store.db.fetch_one("SELECT workstream_id FROM jobs WHERE id = %s",
+                             (source["id"],))["workstream_id"] == survivor["workstream_id"]
 
 
 def test_read_returns_stable_message_cursor():

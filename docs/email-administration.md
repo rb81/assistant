@@ -1,10 +1,32 @@
-# Email-First Administration
+# Administration and Approvals
 
 `/admin` subjects are handled before artifact processing or assistant job
 creation. Commands and errors bypass chat/embedding models. Ordinary tasks use
 the assistant; administration uses deterministic commands and local setup tools.
 
-## Authentication
+## Approval channels
+
+In setup, open **Advanced Settings → Approvals and names**. Choose `email`,
+`telegram`, or `both`; existing installations keep `email`. Telegram-only is
+recommended when Telegram is configured. The administrator's Telegram identity is
+the existing verified `TELEGRAM_RECIPIENTS` mapping for `ADMIN_EMAIL`; its numeric
+ID must also be allowlisted. No separate administrator-ID setting is needed.
+Other recipient mappings, the general allowlist, and `/start` do not grant admin
+rights. Choose the delivery channel with `AGENT_APPROVAL_CHANNEL`.
+
+Telegram approvals use private-chat buttons instead of copied codes. Review the
+summary, open **Details** for the exact action, then confirm. In `both` mode the
+email and Telegram buttons consume the same one-use record: confirming either
+invalidates the other. There is no silent fallback to an unselected channel.
+Both selected channels are attempted; partial or uncertain delivery is reported
+and the original record is preserved rather than blindly resent.
+
+Use `/list` → **Needs attention** for paused tasks and its **Approval inbox** for
+pending confirmations, including held inbound emails. Expired buttons offer a fresh
+confirmation. Expiry never deletes the job: its status card can request a current
+approval even after the old confirmation is no longer retained.
+
+## Email authentication
 
 Run `./setup.sh` to configure the dedicated assistant mailbox and
 `ADMIN_EMAIL`. Signing keys are no longer used, and Authentication-Results never
@@ -13,10 +35,19 @@ check quarantines mail that claims your address but fails both DKIM and SPF. It 
 only reject mail; it never replaces the OTP.
 
 An `/admin` request or actionable task email from the configured admin is held
-pending approval. The assistant sends a **new, independent email** only to
+pending approval. When email approvals are selected, the assistant sends a
+**new, independent email** only to
 `ADMIN_EMAIL`, without threading headers or inherited Reply-To. It contains a
 random OTP, a SHA-256 request hash, an action summary and a ten-minute expiry.
 Job review notifications include their own confirmation.
+Admin-input questions also include the one-use OTP/hash in the initial email,
+bound to the paused job's version. Replying with that original message answers
+and resumes the job directly, without increasing limits or granting permissions;
+no second confirmation is requested. A clarification is not a safety approval.
+Requester clarifications addressed to the admin mailbox use this same
+authenticated flow, rather than a code-less question followed by another challenge.
+If a task has no deliverable requester address, it is paused before its
+administrator confirmation is generated.
 
 Reply normally, retaining the original confirmation (plain text or HTML).
 The OTP and hash may remain in quoted text. A valid reply from the configured
@@ -26,6 +57,9 @@ mismatched, automated and duplicate approvals fail closed and are logged.
 Send a fresh request after expiry; `/admin review JOB_ID` requests another review.
 Approving a job review resumes the job and records the transition without a
 separate acknowledgment email. Explicit `/admin` commands still email their results.
+Approval-email replies missing the original OTP/hash are quarantined and logged,
+not treated as fresh admin tasks. Keep the original confirmation in your reply;
+subject lines alone never authenticate an approval.
 
 Text above the quoted confirmation is additional LLM guidance for a task,
 `review`, or `instruct` command. Signatures, quoted history and approval
@@ -84,9 +118,9 @@ Memory embeddings are refreshed by ordinary workers, never inline in commands.
 ## Recovery CLI
 
 ```bash
-docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin status'
-docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
-docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin status'
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
 ```
 
 Run these examples from the repository root after saving setup. The generated

@@ -56,18 +56,17 @@ class NotificationDedupeTest(unittest.TestCase):
         db = MagicMock()
         db.fetch_one.return_value = {"updated_at": "2026-10-27T09:00:00+00:00"}
         with patch("assistant_agent.notifications._already_sent", return_value=False), patch(
-            "assistant_agent.notifications.admin_configured", return_value=True
+            "assistant_agent.notifications.approvals_configured", return_value=True
         ), patch("assistant_agent.notifications.smtp_configured", return_value=True), patch(
             "assistant_agent.notifications._body", return_value="Review diagnostics"
         ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval, patch(
             "assistant_agent.notifications.ToolRuntime.email_send"
         ) as ordinary_email:
             notify_admin_job_failure(db, AppConfig({"agent": {}}), {"id": 31}, "needs_review", "limit", "worker")
-        approval.assert_called_once_with(
+        self.assertEqual(approval.call_args.args[:2], (
             "review:31:2026-10-27T09:00:00+00:00",
-            {"kind": "review", "job_id": 31, "version": "2026-10-27T09:00:00+00:00"},
-            "Review diagnostics",
-        )
+            {"kind": "review", "job_id": 31, "version": "2026-10-27T09:00:00+00:00"}))
+        self.assertIn("Review diagnostics", approval.call_args.args[2])
         ordinary_email.assert_not_called()
 
     def test_admin_input_email_requests_reply_without_retired_dashboard(self) -> None:
@@ -76,20 +75,22 @@ class NotificationDedupeTest(unittest.TestCase):
         agent = TaskAgent.__new__(TaskAgent)
         agent.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "app": {"base_url": "https://localhost:8000"}}})
         agent.db = MagicMock()
-        agent.db.fetch_one.return_value = None
+        agent.db.fetch_one.side_effect = [{"updated_at": "2026-10-28T17:00:00+00:00"}, None]
         agent.db.latest_thread_emails.return_value = [{"message_id": "<request@example.com>"}]
         runtime = MagicMock()
-        with patch("assistant_agent.task_agent.admin_configured", return_value=True), patch(
+        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
             "assistant_agent.task_agent.smtp_configured", return_value=True
-        ):
+        ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval:
             agent.email_admin_for_input({"id": 11, "thread_id": "thread-1"}, runtime, "May I proceed?")
 
-        sent = runtime.email_send.call_args.kwargs
-        self.assertIn("May I proceed?", sent["body"])
-        self.assertIn("Reply to this email with your approval or clarification", sent["body"])
-        self.assertNotIn("dashboard", sent["body"].lower())
-        self.assertNotIn("localhost", sent["body"])
-        self.assertEqual(sent["in_reply_to"], "<request@example.com>")
+        sent = approval.call_args
+        self.assertEqual(sent.args[1], {"kind": "input", "job_id": 11, "version": "2026-10-28T17:00:00+00:00"})
+        self.assertIn("May I proceed?", sent.args[2])
+        self.assertIn("reply with the original email confirmation to continue", sent.args[2])
+        self.assertNotIn("dashboard", sent.args[2].lower())
+        self.assertNotIn("localhost", sent.args[2])
+        self.assertIn("admin input required for job #11", sent.kwargs["email_subject"])
+        runtime.email_send.assert_not_called()
 
     def test_review_email_preserves_reply_approval_without_retired_dashboard(self) -> None:
         config = AppConfig({"agent": {"app": {"base_url": "https://localhost:8000"}}})
@@ -103,7 +104,7 @@ class NotificationDedupeTest(unittest.TestCase):
         ), patch("assistant_agent.notifications._diagnostics", return_value=diagnostics):
             body = _body(FakeDatabase(), config, {"id": 11}, "needs_review", "Tool failure", "task-agent")
 
-        self.assertIn("reply to the separate OTP/hash confirmation", body)
+        self.assertIn("confirmation in this notification", body)
         self.assertIn("Both limits will be increased by 20%.", body)
         self.assertNotIn("dashboard", body.lower())
         self.assertNotIn("localhost", body)
@@ -161,13 +162,14 @@ class NotificationDedupeTest(unittest.TestCase):
         agent = TaskAgent.__new__(TaskAgent)
         agent.db, agent.config = db, config
         runtime = MagicMock()
-        with patch("assistant_agent.task_agent.admin_configured", return_value=True), patch(
+        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
             "assistant_agent.task_agent.smtp_configured", return_value=True
-        ):
+        ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval:
+            db.fetch_one.side_effect = [{"updated_at": "2026-10-28T17:00:00+00:00"},
+                                       {"channel": "telegram", "sender_id": "123456", "reply_route": {}}]
             agent.email_admin_for_input(job, runtime, "May I proceed?")
-        sent = runtime.email_send.call_args.kwargs
-        self.assertIn("Requester: telegram:123456", sent["body"])
-        self.assertIsNone(sent["in_reply_to"])
+        self.assertIn("Requester: telegram:123456", approval.call_args.args[2])
+        runtime.email_send.assert_not_called()
 
     def test_fingerprint_ignores_notification_source(self) -> None:
         self.assertEqual(

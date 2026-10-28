@@ -19,7 +19,7 @@ their original completion requirements.
 5. Optionally run `./setup.sh --section transcription`. This generates a
    protected internal token and enables the managed multilingual English/Arabic service.
 6. Review and save, then, from the repository root, start or recreate services with
-   `docker compose --env-file data/.env up -d --build`. Setup selects the
+   `sudo docker compose --env-file data/.env up -d --build`. Setup selects the
    `telegram` and `voice` profiles when those features are enabled. The generated
    `data/.env` supplies `COMPOSE_FILE` with the base file and secret overlay;
    do not omit that overlay by substituting only `-f src/docker-compose.yml`.
@@ -42,7 +42,9 @@ read the initialization container's original secret mount.
 
 - With no existing selection or association, a standalone message starts a
   workstream. Brief text/file bursts and albums are grouped.
-- `/list` shows workstreams and lets you select one. Ordinary messages continue
+- `/list` opens **Workstreams | Jobs**, with paginated lists and status cards.
+  Viewing a card does not change the selected conversation; **Continue here**
+  selects a workstream. Ordinary messages continue
   its main conversation until you switch or use `/new`; selection survives
   receiver restarts. Email-created workstreams are selectable too.
 - Reply to a task message or its status message to continue that task, including after
@@ -54,8 +56,8 @@ read the initialization container's original secret mount.
   need answers, choose a task using the provided buttons.
 - `/new` creates and selects a fresh workstream, with or without an initial
   request. Its temporary title is **New workstream**. After three user messages
-  the runtime requests a concise name; naming retries up to three times without
-  blocking normal execution, and shorter conversations keep the temporary title.
+  the runtime requests a concise name; naming retries up to three times on failure,
+  and shorter conversations keep the temporary title.
   `/tasks` and `/status` show active execution jobs.
   `/cancel 123` cancels your active task 123; it cannot undo already completed actions.
 - Normal replies contain just the answer, without automatic task-number or completion
@@ -160,6 +162,40 @@ Normal final replies must be accepted by the transport before the task completes
 Transport acceptance is not a read receipt. Notification retries do not repeat the
 scheduled task's side effects. Historical reminders without a saved recipient keep
 their previous behavior rather than being redirected to an inferred user.
+
+## Management and recovery
+
+Configure **Advanced Settings → Approvals and names** with `telegram` (recommended)
+or `both`. Administrator identity reuses the verified email-to-Telegram mapping
+for `ADMIN_EMAIL`; no separate administrator list is required. The mapped numeric
+ID must be allowlisted. Other recipient mappings and the general allowlist do not
+grant administrator permission. Existing installations remain email-only until changed.
+See [approval channels](email-administration.md#approval-channels).
+
+Administrators see **Needs attention** and **Archived** in `/list`. Job cards offer
+status, error details, results when available, rename, guidance, and state-specific
+actions. A held job requests a fresh confirmation; **Run again** is offered only for
+finished, failed, or cancelled jobs and warns that external actions may repeat.
+Cancellation cannot undo completed actions. Changes use one-use confirmations and
+reject stale task versions.
+
+**Add reply** to an administrative question resumes only that question's task
+without changing permissions or limits. Guidance on a safety-held task leaves it
+paused and requires a separate approval. Reply to the bot's specific reply prompt,
+not an unrelated message; prompts expire after fifteen minutes.
+
+Idle workstreams can be archived and restored without deleting data. Active tasks,
+child workstreams, scheduled reminders, pending intake, and unresolved deliveries or
+charges must be resolved first. Restore a parent before its child, and restore an
+archived conversation before continuing it. Archived workstreams still retain
+shared objects during deletion elsewhere. Permanent deletion remains in the local
+setup workflow with stopped writers and a verified inventory, not a Telegram button.
+
+Task titles and eligible workstream names use `AGENT_NAMING_MODEL`, defaulting to
+`openai/gpt-4.1-mini`, with a fifteen-second request timeout and no expensive-model
+fallback. Naming does not change task instructions. A failed task-naming request
+keeps a readable summary; manually chosen names are preserved. Naming runs during
+task startup, not in the Telegram receiver.
 
 ## History and Erasure
 

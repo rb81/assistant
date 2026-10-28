@@ -309,9 +309,10 @@ Both enablement and the ZDR-only/all-model choice are independent of
 - `generate`: supply an exact `model`, literal `text` (1-10000 characters),
   explicit `voice`, optional `audio_format` (`mp3` or `wav`), and optional
   `instructions` (1-2000 characters). Provider limits may be lower.
-- `reconcile`: supply the local `request_id` from an unknown-cost speech
-  request. It looks up the existing charge, never synthesizes again, and is
-  restricted to this job's speech requests with a recorded generation ID.
+- `reconcile`: pass only an optional local `request_id` from an unknown-cost
+  speech request. Omit it to retry up to 20 eligible unresolved speech charges
+  within the budget window across jobs. This reads existing provider charges;
+  it never synthesizes again or exposes another job's prompts/audio.
 
 Discover first; this illustrative slug/voice is not an availability guarantee:
 
@@ -341,11 +342,18 @@ reference upload, multi-speaker synthesis or channel delivery.
 Speech shares the model-preset spending settings and admission lock even if
 presets are disabled. Charges use OpenRouter's actual generation cost, not
 token-price estimates. Only read-only accounting lookups are retried.
+Before admitting a new request, either model tool automatically attempts to
+reconcile eligible unknown-cost speech requests. Budget admission is rechecked
+under the shared lock afterward. Charges and usage logs remain attributed to
+the original job; recovering another job's charge does not add its tokens to
+the current job's budget.
 Missing or invalid costs block both tools. If audio was received but accounting
 is delayed, the error identifies the saved path and local request ID: reuse
 that file and call `reconcile`; **do not repeat synthesis**.
-Missing generation IDs or interrupted workers require administrator
-reconciliation. Completed requests cannot be reconciled again.
+If accounting is still delayed, retry `{"action":"reconcile"}` later without
+model, text or voice arguments. Pending requests, missing generation IDs and
+requests whose owning job was deleted require administrator reconciliation.
+Completed reconciliation is idempotent and never recounts usage.
 
 To deliver the saved file, call a separate channel tool. Native Telegram voice
 messages use a per-attachment `voice_note: true` flag on `telegram_send`;

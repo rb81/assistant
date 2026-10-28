@@ -1,5 +1,6 @@
 """Dedicated OpenRouter speech synthesis; delivery belongs to channel tools."""
 import io
+import inspect
 import re
 import time
 import urllib.error
@@ -119,6 +120,12 @@ class TextToSpeech(ModelToolResources):
         methods = {"list_models": self.list_models, "generate": self.generate, "reconcile": self.reconcile}
         if action not in methods:
             raise ModelServiceError("Unknown text-to-speech action")
+        try:
+            inspect.signature(methods[action]).bind(**arguments)
+        except TypeError as exc:
+            required = {"generate": "model, text and voice", "list_models": "no required arguments",
+                        "reconcile": "no required arguments; optional request_id"}
+            raise ModelServiceError("Invalid %s arguments: %s. Expected %s." % (action, exc, required[action])) from None
         return methods[action](**arguments)
 
     def models(self):
@@ -212,7 +219,7 @@ class TextToSpeech(ModelToolResources):
         return {"request_id": call_id, "generation_id": generation_id, "model": model,
                 "files": [output], "usage": usage, "budget": self.budget()}
 
-    def account(self, call_id, generation_id, *, conn=None):
+    def account(self, call_id, generation_id, *, conn=None, job_id=None):
         generation = self.client.generation(generation_id)
         usage = {"cost": generation["total_cost"]}
         for source, target in (("tokens_prompt", "prompt_tokens"), ("tokens_completion", "completion_tokens")):
@@ -226,29 +233,53 @@ class TextToSpeech(ModelToolResources):
             raise ModelServiceError("OpenRouter omitted speech cost; request remains unresolved")
         database = self.db if conn is None else TransactionDatabase(conn)
         database.log_event(
-            self.runtime.job["id"], "model_service_response", tool_name="text_to_speech",
+            job_id if job_id is not None else self.runtime.job["id"], "model_service_response", tool_name="text_to_speech",
             output_data={"request_id": call_id, "generation_id": generation_id}, tokens_used=usage,
         )
         if conn is None:
             self.runtime.model_service_tokens += usage["total_tokens"]
         return usage
 
-    def reconcile(self, request_id):
+    def reconcile(self, request_id=None):
+        if request_id is None:
+            _, days = self.budget_settings()
+            rows = self.db.fetch_all(
+                """SELECT id FROM model_service_calls WHERE status = 'unknown'
+                   AND preset->>'tool' = 'text_to_speech' AND generation_id IS NOT NULL
+                   AND job_id IS NOT NULL
+                   AND created_at > now() - (%s * interval '1 day')
+                   ORDER BY created_at LIMIT 20""", (days,),
+            )
+            results = []
+            for row in rows:
+                try:
+                    results.append(self.reconcile(str(row["id"])))
+                except ModelServiceError as exc:
+                    raise ModelServiceError("Speech accounting for request %s remains unresolved: %s. "
+                                            "Do not repeat synthesis; retry reconcile later." % (row["id"], exc)) from exc
+            return {"requests": results, "budget": self.budget()}
         try:
             identifier = str(uuid.UUID(request_id))
         except (ValueError, TypeError, AttributeError) as exc:
             raise ModelServiceError("request_id must be a UUID returned by this tool") from exc
         with self.db.connect() as conn:
             row = conn.execute(
-                """SELECT * FROM model_service_calls WHERE id = %s AND job_id = %s
-                   AND preset->>'tool' = 'text_to_speech' FOR UPDATE""", (identifier, self.runtime.job["id"]),
+                """SELECT * FROM model_service_calls WHERE id = %s
+                   AND preset->>'tool' = 'text_to_speech' FOR UPDATE""", (identifier,),
             ).fetchone()
             if not row:
-                raise ModelServiceError("Speech request does not belong to this job")
+                raise ModelServiceError("Speech request was not found")
+            if row["status"] == "completed" and row["cost_usd"] is not None:
+                return {"request_id": identifier, "status": "completed", "usage": row["usage"],
+                        "already_reconciled": True}
             if row["status"] != "unknown" or not row["generation_id"]:
                 raise ModelServiceError("Only unknown-cost speech requests with a generation ID can be reconciled")
-            usage = self.account(identifier, row["generation_id"], conn=conn)
-        self.runtime.model_service_tokens += usage["total_tokens"]
+            if row["job_id"] is None:
+                raise ModelServiceError("Speech request has no owning job; ask the administrator to reconcile it")
+            conn.execute("SELECT set_config('assistant.job_id', %s, true)", (str(row["job_id"]),))
+            usage = self.account(identifier, row["generation_id"], conn=conn, job_id=row["job_id"])
+        if row["job_id"] == self.runtime.job["id"]:
+            self.runtime.model_service_tokens += usage["total_tokens"]
         return {"request_id": identifier, "status": "completed", "usage": usage, "budget": self.budget()}
 
 
@@ -258,7 +289,7 @@ TEXT_TO_SPEECH_TOOL = {
         "name": "text_to_speech",
         "description": (
             "Discover dedicated speech models and voices, synthesize text into a workspace audio file, "
-            "or reconcile a previous request's charge without generating again. No inherited context, "
+            "or reconcile unresolved speech charges across jobs without generating again. No inherited context, "
             "presets, voice cloning or delivery. Authentication is internal."
         ),
         "parameters": {
@@ -273,7 +304,7 @@ TEXT_TO_SPEECH_TOOL = {
                 "voice": {"type": "string", "description": "Explicit voice identifier; use the model's supported_voices."},
                 "audio_format": {"type": "string", "enum": ["mp3", "wav"], "description": "Defaults to MP3, or WAV for PCM-only models. WAV wraps provider PCM using its rate/channel metadata."},
                 "instructions": {"type": "string", "maxLength": 2000, "description": "Optional tone, pacing or emotion instructions, only for models advertising supports_instructions."},
-                "request_id": {"type": "string", "description": "Local request UUID for reconcile, not the provider generation ID."},
+                "request_id": {"type": "string", "description": "Optional local request UUID for reconcile. Omit to retry up to 20 eligible unresolved speech charges across jobs. Never supply model/text/voice for reconcile."},
             },
             "required": ["action"],
             "additionalProperties": False,

@@ -66,12 +66,20 @@ class ModelToolResources:
                 "remaining_usd": float(max(Decimal(0), amount - row["spent"]))}
 
     def reserve(self, preset):
+        if self.budget()["unresolved_requests"]:
+            from .tts import TextToSpeech
+            TextToSpeech(self.runtime).reconcile()
         call_id = str(uuid.uuid4())
         with self.db.connect() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtext('assistant_model_service_budget'))")
             budget = self.budget(conn)
             if budget["unresolved_requests"]:
-                raise ModelServiceError("Model service has a pending or unknown-cost request; wait for completion or ask the administrator to reconcile model_service_calls")
+                raise ModelServiceError(
+                    "Model service has a pending or unknown-cost request. "
+                    "Use text_to_speech action=reconcile with no other arguments to retry eligible speech accounting. "
+                    "Pending requests, non-speech charges or missing generation IDs require administrator reconciliation; "
+                    "changing models cannot bypass this block."
+                )
             if budget["remaining_usd"] <= 0:
                 raise ModelServiceError("Model service budget exhausted for the rolling period")
             conn.execute(

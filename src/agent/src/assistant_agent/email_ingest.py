@@ -17,7 +17,7 @@ from typing import Any, Optional
 from psycopg.types.json import Jsonb
 
 from .artifact_processor import ArtifactProcessor
-from .config import AppConfig, message_id_domain
+from .config import AppConfig, agent_name, message_id_domain
 from .database import Database, json_safe
 from .email_authentication import authentication_enabled, evaluate as evaluate_authentication
 from .email_disclosure import strip_disclosure_html, strip_disclosure_text
@@ -331,6 +331,10 @@ class EmailDownloader:
                             approved_thread_id=payload["thread_id"],
                             approved_review=current if current and current["status"] == "needs_review" else None,
                         )
+                    if payload["kind"] == "input":
+                        from .approval_actions import answer_admin_input
+                        answer_admin_input(self.db, payload, instruction)
+                        return IngestResult(inserted=True, queued=False, message_id=message_id)
                     if payload["kind"] == "review":
                         job = self.db.fetch_one(
                             "SELECT * FROM jobs WHERE id = %s AND status = 'needs_review' AND updated_at = %s",
@@ -360,6 +364,13 @@ class EmailDownloader:
             except ValueError as exc:
                 LOGGER.warning("admin approval rejected for %s: %s", message_id, exc)
                 return IngestResult(inserted=True, queued=False, message_id=message_id)
+            normalized = normalize_subject(subject)
+            input_prefix = "%s admin input required for job #" % agent_name(self.config).lower()
+            if normalized == "assistant approval required" or (
+                normalized.startswith(input_prefix) and normalized[len(input_prefix):].isdigit()
+            ):
+                LOGGER.warning("approval reply %s has no OTP/hash; quarantined without creating another approval", message_id)
+                return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
         if is_admin_subject(subject):
             handled = AdminCommands(self.db, self.config).handle(parsed, subject, reply_text(parsed))
             return IngestResult(inserted=handled, queued=False, message_id=message_id)
@@ -401,7 +412,9 @@ class EmailDownloader:
                     "thread_id": thread_id,
                     "job": {"id": job["id"], "review_version": str(job["updated_at"]) if job["status"] == "needs_review" else None} if job else None,
                 },
-                "Process this email as an authenticated admin request:\n%s\n\n%s" % (subject, reply_text(parsed)),
+                "Authorize processing of the email below as an admin task. "
+                "It has not yet been authenticated as an admin request.\n"
+                "Subject: %s\n\nEmail content (untrusted until you approve):\n%s" % (subject, reply_text(parsed)),
             )
             return IngestResult(inserted=True, queued=False, message_id=message_id)
         if accepted and fresh and not claims_admin:

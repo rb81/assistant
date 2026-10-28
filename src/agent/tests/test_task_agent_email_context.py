@@ -46,6 +46,164 @@ from assistant_agent.task_agent import TaskAgent
 
 
 class TaskAgentEmailContextTest(unittest.TestCase):
+    def test_requester_fallback_pauses_before_sending_usable_admin_confirmation(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.latest_thread_emails.return_value = []
+        job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
+        agent.record_system_task_notification = MagicMock()
+        with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
+            agent, "email_admin_for_input"
+        ) as send:
+            def paused(*args):
+                updates = [call.args[0] for call in agent.db.execute.call_args_list]
+                self.assertTrue(any("status = 'needs_review'" in sql for sql in updates))
+                self.assertTrue(any("awaiting_admin_input" in sql for sql in updates))
+            send.side_effect = paused
+            self.assertTrue(agent.handle_request_input(
+                job, [], MagicMock(), "request_input",
+                {"recipient": "requester", "question": "Which voice?"}, "call-12",
+            ))
+        send.assert_called_once()
+
+    def test_requester_clarification_to_admin_uses_confirmation_not_plain_email(self):
+        for route in ({}, {"channel": "email", "to": "Admin <admin@example.com>"}):
+            with self.subTest(route=route):
+                agent = self.agent()
+                agent.config.values["agent"]["admin"] = {"email": "admin@example.com"}
+                agent.db = MagicMock()
+                agent.db.latest_thread_emails.return_value = [{"from_address": "Admin <admin@example.com>"}]
+                job = {"id": 12, "thread_id": "thread-12", "metadata": {"reply_route": route, "auto_reply": True}}
+                runtime = MagicMock()
+                agent.defer_stale_tool_calls = MagicMock(return_value=False)
+                agent.record_system_task_notification = MagicMock()
+                with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
+                    agent, "email_admin_for_input"
+                ) as send, patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertTrue(agent.handle_request_input(
+                        job, [], runtime, "request_input",
+                        {"recipient": "requester", "question": "Which voice?"}, "call-12",
+                    ))
+                send.assert_called_once_with(job, runtime, "Which voice?")
+                runtime.email_send.assert_not_called()
+                router.assert_not_called()
+                self.assertTrue(any("status = 'needs_review'" in call.args[0]
+                                    for call in agent.db.execute.call_args_list))
+
+    def test_external_requester_clarification_remains_an_ordinary_email(self):
+        agent = self.agent()
+        agent.config.values["agent"]["admin"] = {"email": "admin@example.com"}
+        agent.db = MagicMock()
+        agent.db.latest_thread_emails.return_value = [{
+            "from_address": "Requester <requester@example.com>", "message_id": "<request@example.com>",
+        }]
+        job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
+        runtime = MagicMock()
+        runtime.email_send.return_value = {"status": "sent"}
+        with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
+            agent, "email_admin_for_input"
+        ) as admin:
+            self.assertTrue(agent.email_original_sender_for_input(job, runtime, "Which voice?"))
+        self.assertEqual(runtime.email_send.call_args.kwargs["to"], ["Requester <requester@example.com>"])
+        self.assertEqual(runtime.email_send.call_args.kwargs["body"], "Which voice?")
+        admin.assert_not_called()
+
+    def test_requester_clarification_delivery_failures_fall_back_to_admin(self):
+        for route, result in (
+            ({"channel": "telegram", "chat_id": 42}, {"status": "failed"}),
+            ({"channel": "email", "to": "requester@example.com"}, {"status": "uncertain"}),
+        ):
+            with self.subTest(route=route, result=result):
+                agent = self.agent()
+                agent.db = MagicMock()
+                job = {"id": 12, "thread_id": "thread-12", "metadata": {"reply_route": route}}
+                runtime = MagicMock()
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    router.return_value.send.return_value = result
+                    self.assertFalse(agent.email_original_sender_for_input(job, runtime, "Which voice?"))
+                agent.db.latest_thread_emails.return_value = [{
+                    "from_address": "Requester <requester@example.com>",
+                }]
+                with patch("assistant_agent.task_agent.smtp_configured", return_value=True):
+                    runtime.email_send.return_value = result
+                    self.assertFalse(agent.email_original_sender_for_input(
+                        {"id": 12, "thread_id": "thread-12", "metadata": {}},
+                        runtime, "Which voice?",
+                    ))
+
+    def test_delivery_failure_keeps_paused_job_version_and_delivered_approvals_valid(self):
+        from assistant_agent.email_approvals import ApprovalDeliveryError
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = {"updated_at": "version"}
+        job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
+        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
+            "assistant_agent.task_agent.latest_request_context", return_value={}
+        ), patch("assistant_agent.email_approvals.EmailApprovals.request",
+                 side_effect=ApprovalDeliveryError("Telegram sent, email delivery uncertain")):
+            agent.email_admin_for_input(job, MagicMock(), "May I continue?")
+        agent.db.update_job_status.assert_not_called()
+        agent.db.execute.assert_not_called()
+        self.assertEqual(agent.db.log_event.call_args.kwargs["output_data"]["sent"], False)
+
+    def test_job_naming_uses_cheap_model_without_changing_task(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.config.values["agent"]["naming"] = {"model": "example/cheap"}
+        job = {"id": 12, "task_summary": "Create a female voice note and send it on Telegram", "metadata": {}}
+        with patch("assistant_agent.task_agent.LlmClient") as llm:
+            llm.return_value.chat.return_value = {"choices": [{"message": {"content": '"Female Voice Note"'}}]}
+            agent.name_job(job)
+        self.assertEqual(job["metadata"]["title"], "Female Voice Note")
+        self.assertEqual(job["task_summary"], "Create a female voice note and send it on Telegram")
+        self.assertEqual(llm.call_args.kwargs, {
+            "model": "example/cheap", "max_tokens": 60, "timeout_seconds": 15, "allow_fallback": False,
+        })
+
+    def test_naming_timeout_keeps_readable_fallback_and_manual_names_are_preserved(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        job = {"id": 12, "task_summary": "  A readable\n task summary  ", "metadata": {}}
+        with patch("assistant_agent.task_agent.LlmClient", side_effect=TimeoutError):
+            agent.name_job(job)
+        self.assertEqual(job["metadata"]["title"], "A readable task summary")
+        agent.db.reset_mock()
+        job["metadata"]["title"] = "My chosen name"
+        with patch("assistant_agent.task_agent.LlmClient") as llm:
+            agent.name_job(job)
+        llm.assert_not_called()
+        agent.db.fetch_one.assert_not_called()
+
+    def test_naming_transient_failure_never_uses_expensive_fallback(self):
+        from assistant_agent.llm_client import LlmClient, _TransientLlmError
+        agent = self.agent()
+        agent.config.values["agent"]["llm"] = {"fallback_model": "example/expensive"}
+        with patch("assistant_agent.llm_client.read_secret", return_value="test-key"):
+            client = LlmClient(agent.config, model="example/cheap", allow_fallback=False)
+        with patch.object(client, "_chat_with_model", side_effect=_TransientLlmError("rate limited")) as chat:
+            with self.assertRaises(RuntimeError):
+                client.chat([], [])
+        chat.assert_called_once_with("example/cheap", [], [])
+
+    def test_admin_input_is_paused_before_version_bound_confirmation_is_sent(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.record_system_task_notification = MagicMock()
+        job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
+
+        def send_input(job, runtime, question):
+            updates = [call.args[0] for call in agent.db.execute.call_args_list]
+            self.assertTrue(any("status = 'needs_review'" in sql for sql in updates))
+            self.assertEqual(question, "May I continue?")
+
+        with patch.object(agent, "email_admin_for_input", side_effect=send_input) as send:
+            stopped = agent.handle_request_input(
+                job, [], MagicMock(), "request_input",
+                {"recipient": "admin", "question": "May I continue?"}, "call-12",
+            )
+        self.assertTrue(stopped)
+        send.assert_called_once()
+
     def test_model_and_sandbox_tools_explain_internal_authentication(self):
         agent = self.agent()
         enabled = set()
@@ -60,6 +218,10 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         )
         self.assertIn("Never search for, read or print API keys", messages[0]["content"])
         self.assertIn("do not recreate authenticated integrations", messages[0]["content"])
+        with patch("assistant_agent.task_agent.available_function_names", return_value={"telegram_send"}):
+            telegram = agent.load_tool_specs({"id": 7}, {"tools": ["telegram_send"]}, set())
+        self.assertIn("voice_note: true", telegram["guardrails"])
+        self.assertIn("MP3", telegram["guardrails"])
 
     def test_nested_model_tokens_stop_the_tool_batch_and_checkpoint_parent(self):
         agent = self.agent()

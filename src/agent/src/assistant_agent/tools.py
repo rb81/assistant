@@ -80,7 +80,11 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "No inherited context or presets. Authentication is internal: never search for API keys or use sandbox API calls. "
             "Speech files are saved in the job workspace; this tool does not deliver them. "
             "Spending and unresolved-charge blocks are shared with llm_service. Never automatically repeat synthesis "
-            "after an interruption or unknown charge; use reconcile for the existing request_id without regenerating audio."
+            "after an interruption or unknown charge. Use action=reconcile with no other arguments to retry "
+            "eligible unresolved speech accounting across jobs, or pass only request_id for one charge. "
+            "New generations automatically attempt this accounting recovery before budget admission. "
+            "Do not infer which model caused a block from earlier failed calls; use persisted accounting results. "
+            "An admin approval does not settle a charge."
         ),
     },
     "Telegram": {
@@ -89,6 +93,9 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "Set voice_note=true on an audio attachment only for an explicitly requested native voice message. "
             "MP3, M4A and Ogg/Opus are supported; WAV is not. Default attachments remain documents. "
             "Send existing workspace audio; delivery does not generate or convert speech. "
+            "When the user asks for a Telegram voice note, use an MP3-capable speech model and "
+            "telegram_send attachments=[{path: the generated MP3 path, voice_note: true}]. "
+            "Do not send it as a document unless the user requested a file. "
             "Never retry uncertain delivery or regenerate audio merely to retry a send."
         ),
     },
@@ -3519,7 +3526,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "request_input",
-            "description": "Email either the original requester for clarification or the configured admin for approval/safety guidance, then pause the task.",
+            "description": "Contact the original requester for clarification, or pause and send the configured admin a one-use confirmation through the configured approval channels. Use this, not email_send, for admin questions or approval/safety guidance; the runtime creates credentials.",
             "parameters": {
                 "type": "object",
                 "properties": {

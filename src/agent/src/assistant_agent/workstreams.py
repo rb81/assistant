@@ -275,7 +275,7 @@ class WorkstreamStore:
         for link in links:
             owners.setdefault(link["object_id"], set()).add(link["workstream_id"])
         scope, removed, shared, affected = deletion_scope(selected, mode, {w["id"]: w["parent_id"] for w in streams}, owners)
-        if any(w["status"] != "active" for w in streams if w["id"] in scope):
+        if any(w["status"] == "deleting" for w in streams if w["id"] in scope):
             raise WorkstreamError("workstream deletion is pending; resume the existing deletion")
         records, objects = {}, {}
         for kind, (table, _) in OBJECT_TABLES.items():
@@ -598,7 +598,7 @@ class WorkstreamStore:
                 continue
             owner = connection.execute(
                 """SELECT a.workstream_id FROM workstream_attachments a JOIN workstreams w ON w.id = a.workstream_id
-                   WHERE a.object_id = %s AND NOT (a.workstream_id = ANY(%s)) AND w.status = 'active'
+                   WHERE a.object_id = %s AND NOT (a.workstream_id = ANY(%s)) AND w.status IN ('active', 'archived')
                    ORDER BY a.workstream_id LIMIT 1""", (job["object_id"], scope),
             ).fetchone()
             if owner is None:

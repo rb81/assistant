@@ -562,8 +562,9 @@ def test_new_telegram_workstream_uses_temporary_title_and_persists_selection(dat
     agent.db, agent.config = database, config()
     llm = MagicMock()
     llm.chat.return_value = {"choices": [{"message": {"content": "Dinner Plans"}}]}
-    agent.name_pending_workstream({"id": 900, "workstream_id": stream["id"]}, llm)
-    agent.name_pending_workstream({"id": 901, "workstream_id": stream["id"]}, llm)
+    with patch("assistant_agent.task_agent.LlmClient", return_value=llm):
+        agent.name_pending_workstream({"id": 900, "workstream_id": stream["id"]}, llm)
+        agent.name_pending_workstream({"id": 901, "workstream_id": stream["id"]}, llm)
     named = database.fetch_one("SELECT title, name_status FROM workstreams WHERE id = %s", (stream["id"],))
     assert named == {"title": "Dinner Plans", "name_status": "named"}
     llm.chat.assert_called_once()

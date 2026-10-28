@@ -192,6 +192,14 @@ class TelegramReceiver:
             return
         if not message.get("text") and not message.get("caption") and not message_files(message):
             return
+        from .telegram_admin import TelegramAdmin
+        admin_ui = TelegramAdmin(self)
+        try:
+            if admin_ui.input_reply(message):
+                return
+        except ValueError as exc:
+            admin_ui.send(sender, str(exc))
+            return
         conversation = "%s:%s" % (self.bot_id, chat["id"])
         external = "%s:%s" % (conversation, message["message_id"])
         if self.db.fetch_one("SELECT id FROM request_messages WHERE channel = 'telegram' AND external_id = %s", (external,)):
@@ -199,7 +207,7 @@ class TelegramReceiver:
         body = str(message.get("text") or message.get("caption") or "")
         command, _, command_body = body.strip().partition(" ")
         if command == "/list":
-            self.send_workstream_list(sender, external)
+            admin_ui.home(sender)
             self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
             return
         is_new_workstream = command == "/new"
@@ -299,6 +307,9 @@ class TelegramReceiver:
             return
         chat = (callback.get("message") or {}).get("chat") or {}
         if chat.get("type") != "private" or str(chat.get("id")) != sender:
+            return
+        from .telegram_admin import TelegramAdmin
+        if TelegramAdmin(self).callback(callback):
             return
         pieces = str(callback.get("data") or "").split(":")
         if len(pieces) == 2 and pieces[0] == "ws" and pieces[1].isdigit():

@@ -28,6 +28,10 @@ receive the docs mounted in the shared workspace, not the source tree.
 `workstreams` own conversations and durable user-facing data. A workstream has
 a main conversation and can have system threads for work such as reminders and
 research. `workstream_threads` maps thread identities to their owner.
+Workstream status is `active`, `archived`, or `deleting`; archival retains all data
+and requires idle work. Archived workstreams remain retaining owners when deleting
+shared data elsewhere. Job display names live in `jobs.metadata.title`, separate
+from the original task summary and instructions.
 
 Setup's workstream browser separates **User workstreams** from **Administrative
 data**. The latter is the internal `system:unattributed` bucket for legacy data

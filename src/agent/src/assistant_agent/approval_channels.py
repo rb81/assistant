@@ -1,0 +1,52 @@
+"""Approval delivery policy and verified administrator identities."""
+from .telegram import telegram_configured, telegram_identities
+from .validation import smtp_configured
+
+
+def channels(config):
+    value = str(config.get("agent.approvals.channel", "email")).strip().lower()
+    if value not in {"email", "telegram", "both"}:
+        raise ValueError("Approval channel must be email, telegram or both")
+    return value
+
+
+def telegram_admins(config):
+    admin = str(config.get("agent.admin.email") or "").strip().lower()
+    if not admin:
+        return []
+    identifier = telegram_identities(config).get(admin)
+    if identifier is None:
+        return []
+    value = str(identifier)
+    allowed = config.get_list("agent.telegram.allowed_user_ids")
+    if not value.isdigit() or int(value) <= 0 or value not in allowed:
+        raise ValueError("The admin email's Telegram mapping must be a positive user ID on the Telegram allowlist")
+    return [value]
+
+
+def approvals_configured(config):
+    mode = channels(config)
+    if mode in {"telegram", "both"} and (not telegram_configured(config) or not telegram_admins(config)):
+        return False
+    if mode in {"email", "both"} and (not config.get("agent.admin.email") or not smtp_configured(config)):
+        return False
+    return True
+
+
+def review_label(job):
+    return str((job.get("metadata") or {}).get("title") or job.get("task_summary") or "Task")[:80]
+
+
+def review_summary(job, reason):
+    title = review_label(job)
+    metadata = job.get("metadata") or {}
+    if metadata.get("security_pending_action"):
+        return ("%s\n\nA safety check paused an action. Approve only after reviewing Details. "
+                "Approval permits the exact held action once and increases execution limits.\n"
+                "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))
+    if metadata.get("awaiting_admin_input"):
+        return ("%s\n\nYour reply is needed. Continuing does not grant extra permissions or increase limits.\n"
+                "Job #%s\n\nQuestion:\n%s\n\nDetails:\n%s" % (title, job["id"], reason[:1200], reason))
+    return ("%s\n\nThis task needs your attention. Resume continues existing work with additional "
+            "execution allowance; it does not undo actions already completed.\n"
+            "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))

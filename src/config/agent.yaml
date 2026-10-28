@@ -64,6 +64,12 @@ agent:
     enabled: false
     zdr_only: false
 
+  approvals:
+    channel: email
+
+  naming:
+    model: openai/gpt-4.1-mini
+
   limits:
     max_iterations_per_task: 50
     max_tokens_per_task: 1000000

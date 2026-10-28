@@ -17,7 +17,7 @@ from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
 from assistant_agent.model_service import ModelService, ModelServiceError, OpenRouterModels, ProviderRejected
 from assistant_agent.tools import ToolError, ToolRuntime, available_function_names, available_tools, tool_catalog
-from assistant_agent.tts import TextToSpeech
+from assistant_agent.tts import OpenRouterSpeech, TextToSpeech
 
 
 MODELS = [
@@ -123,6 +123,28 @@ def test_tts_shares_persisted_spending_and_unknown_cost_blocks_with_presets(serv
     assert send.call_count == 1
     rows = service.db.fetch_all("SELECT preset FROM model_service_calls")
     assert any(row["preset"].get("tool") == "text_to_speech" for row in rows)
+
+def test_new_job_recovers_previous_jobs_delayed_speech_charge_before_admission(service):
+    previous_id = service.reserve({"tool": "text_to_speech", "model": "test/tts"})
+    service.settle(previous_id, "unknown", generation_id="gen-tts-delayed")
+    next_job = service.db.create_manual_job("New speech request", "Generate another voice")
+    next_service = ModelService(ToolRuntime(service.db, service.config, next_job))
+    with patch.object(OpenRouterSpeech, "generation", return_value={
+        "total_cost": 0.02, "tokens_prompt": 5,
+    }) as lookup, patch.object(OpenRouterSpeech, "synthesize") as synthesize:
+        admitted_id = next_service.reserve({"tool": "text_to_speech", "model": "test/tts"})
+    row = service.db.fetch_one("SELECT * FROM model_service_calls WHERE id = %s", (previous_id,))
+    assert row["status"] == "completed" and row["cost_usd"] == Decimal("0.02")
+    assert row["job_id"] == service.runtime.job["id"]
+    log = service.db.fetch_one(
+        "SELECT job_id FROM task_logs WHERE output_data->>'request_id' = %s AND tool_name = 'text_to_speech'",
+        (previous_id,),
+    )
+    assert log["job_id"] == service.runtime.job["id"]
+    assert next_service.runtime.model_service_tokens == 0
+    lookup.assert_called_once_with("gen-tts-delayed")
+    synthesize.assert_not_called()
+    assert admitted_id != previous_id
 
 
 def test_completion_is_isolated_and_accounts_cost_and_tokens(service):

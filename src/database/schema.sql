@@ -1319,7 +1319,7 @@ CREATE TABLE workstreams (
     CONSTRAINT workstreams_check CHECK (((parent_id IS NULL) OR (parent_id <> id))),
     CONSTRAINT workstreams_name_status_check CHECK ((name_status = ANY (ARRAY['named'::text, 'temporary'::text, 'pending'::text, 'naming'::text, 'failed'::text]))),
     CONSTRAINT workstreams_origin_channel_check CHECK ((origin_channel = ANY (ARRAY['telegram'::text, 'email'::text, 'local'::text]))),
-    CONSTRAINT workstreams_status_check CHECK ((status = ANY (ARRAY['active'::text, 'deleting'::text])))
+    CONSTRAINT workstreams_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text, 'deleting'::text])))
 );
 
 CREATE SEQUENCE workstreams_id_seq
@@ -2090,6 +2090,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('008_workstreams.sql'),
   ('009_workstream_threads.sql'),
   ('010_model_service.sql'),
-  ('011_research_system_threads.sql');
+  ('011_research_system_threads.sql'),
+  ('012_workstream_archive.sql');
 
 SET check_function_bodies = true;

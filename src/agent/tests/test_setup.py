@@ -622,8 +622,8 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                 name, path, label, default, kind, minimum = setting
                 with self.subTest(setting=name):
                     self.assertEqual(defaults.get(path), default)
-                    expected = not default if kind is bool else default + 1 if kind in (int, float) else ["example.com"]
-                    override = str(expected).lower() if kind is bool else str(expected) if kind in (int, float) else ",".join(expected)
+                    expected = not default if kind is bool else default + 1 if kind in (int, float) else "example" if kind is str else ["example.com"]
+                    override = str(expected).lower() if kind is bool else str(expected) if kind in (int, float, str) else ",".join(expected)
                     with patch.dict(os.environ, {"AGENT_CONFIG": str(config_path), name: override}, clear=True):
                         self.assertEqual(load_config().get(path), expected)
 
@@ -633,7 +633,7 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             for settings in ADVANCED_SETTINGS.values():
                 for setting in settings:
                     name, path, label, default, kind, minimum = setting
-                    if kind is list:
+                    if kind in (list, str):
                         continue
                     valid = str(default).lower()
                     self.assertIsNone(advanced_value_error(setting, valid))
@@ -646,6 +646,26 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
                             with self.assertRaisesRegex(SetupError, "Advanced Settings: " + name):
                                 validate_draft(instance)
                     instance.values.pop(name)
+
+    def test_telegram_approvals_reuse_admin_email_recipient_mapping(self):
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.saved_configuration(root)
+            instance.values.update({
+                "AGENT_APPROVAL_CHANNEL": "telegram", "TELEGRAM_ENABLED": "true",
+                "TELEGRAM_ALLOWED_USER_IDS": "123,456", "TELEGRAM_RECIPIENTS": "{}",
+                "ADMIN_EMAIL": "admin@example.com",
+            })
+            instance.secret_values["TELEGRAM_BOT_TOKEN"] = "test-token"
+            for mapping in ({}, {"other@example.com": 123}, {"admin@example.com": 999},
+                            {"admin@example.com": -123}, {"admin@example.com": "someone"}):
+                instance.values["TELEGRAM_RECIPIENTS"] = json.dumps(mapping)
+                with self.subTest(mapping=mapping), self.assertRaisesRegex(SetupError, "admin email's verified"):
+                    validate_draft(instance)
+            instance.values["TELEGRAM_RECIPIENTS"] = '{"ADMIN@example.com":123,"other@example.com":456}'
+            validate_draft(instance)
+            instance.values["TELEGRAM_ENABLED"] = "false"
+            with self.assertRaisesRegex(SetupError, "enabled Telegram"):
+                validate_draft(instance)
 
     def test_advanced_token_limits_do_not_allow_unknown_credentials(self):
         with tempfile.TemporaryDirectory() as root:

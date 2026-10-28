@@ -6,6 +6,7 @@ from .config import AppConfig, agent_name
 from .database import Database
 from .tools import ToolRuntime
 from .validation import admin_configured, smtp_configured
+from .approval_channels import approvals_configured, review_summary
 
 
 LOGGER = logging.getLogger("assistant.notifications")
@@ -19,7 +20,7 @@ def notify_admin_job_failure(
     reason: str,
     source: str,
 ) -> None:
-    """Email the configured admin once for a specific job failure reason."""
+    """Notify the configured admin once for a specific job failure reason."""
     job_id = int(job["id"])
     clean_status = str(status or job.get("status") or "unknown").strip() or "unknown"
     clean_reason = str(reason or "unknown failure").strip() or "unknown failure"
@@ -29,7 +30,8 @@ def notify_admin_job_failure(
     try:
         if _already_sent(db, job_id, fingerprint, clean_status, clean_reason):
             return
-        if not admin_configured(config) or not smtp_configured(config):
+        if (not approvals_configured(config) if clean_status == "needs_review"
+                else not admin_configured(config) or not smtp_configured(config)):
             db.log_event(
                 job_id,
                 "supervisor_note",
@@ -40,21 +42,25 @@ def notify_admin_job_failure(
                     "status": clean_status,
                     "reason": clean_reason,
                     "source": clean_source,
-                    "skip_reason": "admin email or SMTP is not configured",
+                    "skip_reason": ("selected approval channels are not configured" if clean_status == "needs_review"
+                                    else "admin email or SMTP is not configured"),
                 },
             )
             return
 
         if clean_status == "needs_review":
             from .email_approvals import EmailApprovals
-            current = db.fetch_one("SELECT updated_at FROM jobs WHERE id = %s AND status = 'needs_review'", (job_id,))
+            current = db.fetch_one("SELECT updated_at, metadata FROM jobs WHERE id = %s AND status = 'needs_review'", (job_id,))
             if not current:
                 LOGGER.info("job %s is no longer awaiting review; not sending an approval", job_id)
                 return
+            metadata = current.get("metadata") or job.get("metadata") or {}
+            kind = "input" if metadata.get("awaiting_admin_input") and not metadata.get("security_pending_action") else "review"
+            review_job = {**job, "metadata": metadata}
             sent = EmailApprovals(db, config).request(
                 "review:%s:%s" % (job_id, current["updated_at"]),
-                {"kind": "review", "job_id": job_id, "version": str(current["updated_at"])},
-                _body(db, config, job, clean_status, clean_reason, clean_source),
+                {"kind": kind, "job_id": job_id, "version": str(current["updated_at"])},
+                review_summary(review_job, _body(db, config, review_job, clean_status, clean_reason, clean_source)),
             )
             result = {"status": "sent" if sent else "already_requested"}
         else:
@@ -169,15 +175,17 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
             ),
         ])
 
-    # Email-based approval instructions
+    metadata = job.get("metadata") or {}
+    answer_only = metadata.get("awaiting_admin_input") and not metadata.get("security_pending_action")
     lines.extend([
         "",
         "─── Remote Approval ────────────────────────────",
-        "For a needs-review job, reply to the separate OTP/hash confirmation to approve.",
+        "Use the confirmation in this notification: Telegram buttons, or an email reply retaining its OTP/hash.",
         "  • Your reply body will be passed to the agent as an instruction.",
-        "  • Both limits will be increased by %s%%." % increase_pct,
+        ("  • Replying to this question does not change permissions or limits." if answer_only
+         else "  • Both limits will be increased by %s%%." % increase_pct),
         "  • Keep the original confirmation quoted; add no text to approve without instructions.",
-        "  • If it expires, send /admin review %s to request a fresh confirmation." % job["id"],
+        "  • If it expires, request a fresh confirmation from /list or send /admin review %s." % job["id"],
     ])
 
     return "\n".join(lines)

@@ -46,6 +46,8 @@ Configured models are used in different loops:
 - `agent.memory.steward.model` — Memory Steward consolidation/recall model.
 - `agent.search.model` — model used by `web_search` function tool.
 - `agent.deep_research.search_model` — deep research search-focused model.
+- `agent.naming.model` — inexpensive job/workstream display names; defaults to
+  `openai/gpt-4.1-mini`, with a fifteen-second request timeout and no fallback.
 
 ## OpenRouter Hosted Tool Types
 
@@ -151,7 +153,9 @@ every speech request; it does not inherit the model-preset ZDR flag.
 The `text_to_speech` tool selects dedicated `speech` models, calls
 `POST /audio/speech`, and saves binary audio in the workspace. Authentication
 uses the internal OpenRouter secret. It shares the model-preset budget settings
-and ledger even when presets are disabled. Actual costs come from
+and ledger even when presets are disabled. Both model tools retry eligible
+unresolved speech accounting before admitting new spending, including charges
+from previous jobs, without regenerating audio. Actual costs come from
 `GET /generation?id=...`, using the response's `X-Generation-Id`, not estimates
 from token prices. Unresolved charges block both tools.
 

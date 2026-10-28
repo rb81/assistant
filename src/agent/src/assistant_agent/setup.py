@@ -73,6 +73,10 @@ ADVANCED_SETTINGS = {
         ("AGENT_TTS_ENABLED", "agent.tts.enabled", "Enable dedicated text-to-speech? (requires OPENROUTER_API_KEY; shares spending limits with the model preset tool)", False, bool, None),
         ("AGENT_TTS_ZDR_ONLY", "agent.tts.zdr_only", "Restrict text-to-speech to ZDR models and routing? (No = all speech models)", False, bool, None),
     ),
+    "Approvals and names": (
+        ("AGENT_APPROVAL_CHANNEL", "agent.approvals.channel", "Approval delivery: email, telegram, or both (Telegram recommended when configured)", "email", str, None),
+        ("AGENT_NAMING_MODEL", "agent.naming.model", "Inexpensive model for job and workstream names", "openai/gpt-4.1-mini", str, None),
+    ),
     "Research and notifications": (
         ("AGENT_DEEP_RESEARCH_ENABLED", "agent.deep_research.enabled", "Enable deep research? (requires supported model access)", True, bool, None),
         ("AGENT_DEEP_RESEARCH_MAX_TOOL_CALLS", "agent.deep_research.max_tool_calls", "Maximum tool calls per research run", 40, int, 1),
@@ -1753,6 +1757,10 @@ def start_saved_containers(instance, confirm, console):
 
 def advanced_value_error(setting, value):
     name, path, label, default, kind, minimum = setting
+    if name == "AGENT_APPROVAL_CHANNEL" and value not in {"email", "telegram", "both"}:
+        return "Approval delivery must be email, telegram or both"
+    if name == "AGENT_NAMING_MODEL" and not str(value).strip():
+        return "Naming model must not be blank"
     if kind is bool:
         if str(value).lower() not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
             return "Advanced Settings: " + name + " must be a boolean"
@@ -2119,6 +2127,27 @@ def draft_problems(instance):
     tts_enabled = values.get("AGENT_TTS_ENABLED", instance.defaults.get("agent.tts.enabled", False))
     if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
         problem("advanced", "Text-to-speech requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
+    approval_channel = values.get("AGENT_APPROVAL_CHANNEL", instance.defaults.get("agent.approvals.channel", "email"))
+    if approval_channel in {"telegram", "both"}:
+        enabled = values.get("TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
+        allowed = AppConfig({"ids": values.get("TELEGRAM_ALLOWED_USER_IDS",
+                            instance.defaults.get("agent.telegram.allowed_user_ids", []))}).get_list("ids")
+        if str(enabled).lower() not in {"true", "1", "yes", "on"} or not instance.secret_values.get("TELEGRAM_BOT_TOKEN"):
+            problem("advanced", "Telegram approvals require an enabled Telegram integration and bot token")
+        from .approval_channels import telegram_admins
+        try:
+            admins = telegram_admins(AppConfig({"agent": {
+                "admin": {"email": values.get("ADMIN_EMAIL", instance.defaults.get("agent.admin.email", ""))},
+                "telegram": {
+                    "allowed_user_ids": allowed,
+                    "recipients": values.get("TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
+                },
+            }}))
+            if not admins:
+                raise ValueError("Missing admin mapping")
+        except ValueError:
+            problem("advanced", "Telegram approvals require the admin email's verified Telegram recipient mapping "
+                    "to an allowlisted numeric user ID; configure ADMIN_EMAIL and Telegram identity mappings")
     def embedding_value(field, default):
         return values.get("AGENT_EMBEDDINGS_" + field.upper(), instance.defaults.get("agent.embeddings." + field, default))
 
