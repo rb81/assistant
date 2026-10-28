@@ -17,6 +17,13 @@
   with `network_access_request`; admins choose Approve once/always, Block
   once/always or Cancel job via Telegram or email, with optional feedback.
   `SANDBOX_EGRESS_MODE=open` restores the previous behaviour.
+- Telegram voice notes are converted to Ogg/Opus (ffmpeg in the task-agent
+  image) so they appear as native voice messages, without a filename caption.
+  `telegram_send` text is optional with attachments, and
+  `task_complete(already_delivered=true)` avoids a follow-up text reply.
+- The system prompt now guides channel choice (Telegram for short messages and
+  voice notes, email for long content) and forbids announcing voice notes.
+- The admin job-card button **Request approval** is now **Resend approval**.
 - Refreshed the README and task-oriented documentation for the current product.
 - Canonical `docs/` is mounted read-only for agent tools and sandbox commands.
 - Fresh databases initialize directly from the current schema baseline.

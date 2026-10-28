@@ -371,14 +371,14 @@ deleted require administrator reconciliation.
 Completed reconciliation is idempotent and never recounts usage.
 
 To deliver the saved file, call a separate channel tool. Native Telegram voice
-messages use a per-attachment `voice_note: true` flag on `telegram_send`;
-ordinary attachments remain documents. See [Telegram and local voice](telegram-and-voice.md).
+messages use a per-attachment `voice_note: true` flag on `telegram_send`
+(converted to Ogg/Opus automatically); ordinary attachments remain documents. See [Telegram and local voice](telegram-and-voice.md).
 
 ## Terminal and Meta Tools
 
 Terminal:
 
-- `task_complete`
+- `task_complete` (`already_delivered: true` records the response without re-sending it when the reply, e.g. a voice note, was already sent via `telegram_send`/`email_send` for the current request)
 - `task_failed`
 - `request_input`
 

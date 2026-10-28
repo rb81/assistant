@@ -82,7 +82,7 @@ SYSTEM_PROMPT_TEMPLATE = """%(agent_prompt)s
 - If you need to recall past actions, emails sent, jobs completed, or prior conversations, use context_search or job_search/job_read. These search across supported data sources including past jobs, outbound emails, reminders, memories, contacts, and inbound emails.
 - If prior action context says a reminder, calendar event, email, file, project, or research run was already created, do not repeat that durable side effect unless explicitly requested or necessary.
 - For legacy email jobs without automatic reply routing, reply to the sender via email_send before calling task_complete. Prefer replying in the original email thread by setting in_reply_to to the latest relevant Message-ID from the Email thread context. Set new_thread=true only when starting a separate email thread is materially valuable.
-- For Telegram jobs and reminders with an automatic reply destination, task_complete.response is delivered by the reply router. Do not call telegram_send merely to repeat the final answer. Load telegram_send for explicitly requested file delivery, proactive messages, or cross-channel sends.
+- For Telegram jobs and reminders with an automatic reply destination, task_complete.response is delivered by the reply router. Do not call telegram_send merely to repeat the final answer. Use telegram_send or email_send when a different channel or format serves the requester better (see Communication); then call task_complete with already_delivered=true so nothing is sent twice.
 - Email thread context after the first model call may include previews instead of full bodies. When exact wording or omitted thread context matters, call email_read with the provided Email ID.
 - For manual dashboard jobs or scheduled reminder jobs whose sender is a local system address ending in @local, do not send a bookkeeping reply to that local address. Perform the requested work, email only requested recipients or the admin as appropriate, then call task_complete with a user-visible response containing the answer or result.
 - If requester clarification is needed, call request_input with recipient="requester". It contacts the original requester through the reply channel and pauses the job.
@@ -90,6 +90,13 @@ SYSTEM_PROMPT_TEMPLATE = """%(agent_prompt)s
 - If you are unsure how to proceed safely, ask the administrator through request_input. Answering a clarification does not grant extra permissions or clear unresolved model charges.
 - Call task_complete only after required replies or requested outbound messages have been sent. Local system senders ending in @local do not require a bookkeeping reply, but task_complete.response must still contain the user-visible final answer.
 - Call task_failed if the task is impossible or blocked by missing configuration.
+
+## Communication
+- Every configured channel is available to you. If the requester names a channel, use it; otherwise choose what fits the content.
+- Telegram: short replies, quick updates and confirmations, and voice notes. Email: long or detailed answers, reports, and documents. Answer short questions on the channel they arrived on. For long content requested over Telegram, email it and send only a brief Telegram note pointing to it.
+- Send a voice note when asked, or when a spoken reply fits naturally, such as a brief personal or conversational message. Generate it with text_to_speech and send it with telegram_send (voice_note=true, no text).
+- A voice note stands alone. Never announce, preface, caption or summarize it in text (no "Here's a voice note" or "I sent you a voice note"). After sending it, call task_complete with already_delivered=true and a short record as response.
+- Write like a person, not a system: no meta-commentary about tools, channels, delivery or your process.
 
 ## Recall & Anti-Confabulation
 - Injected recall context distinguishes LINKED CONTEXT (structurally verified via entity links) from POSSIBLY RELATED (semantic similarity, uncertain). Treat POSSIBLY RELATED items as hypotheses — verify before acting on them.
@@ -515,6 +522,23 @@ class TaskAgent:
             if clean_recipient in {self.normalized_email_address(item) for item in recipients}:
                 return True
         return False
+
+    def delivered_since_request(self, job: dict[str, Any]) -> bool:
+        request_id = (job.get("metadata") or {}).get("reply_request_id")
+        row = self.db.fetch_one(
+            """WITH since AS (
+                 SELECT COALESCE((SELECT created_at FROM request_messages WHERE id = %s), '-infinity'::timestamptz) AS at
+               )
+               SELECT 1 FROM since WHERE EXISTS (
+                 SELECT 1 FROM channel_deliveries d WHERE d.job_id = %s AND d.status = 'sent'
+                   AND d.purpose = 'message' AND d.created_at >= since.at
+               ) OR EXISTS (
+                 SELECT 1 FROM outbound_email_logs o WHERE o.job_id = %s AND o.status = 'sent'
+                   AND o.created_at >= since.at
+               )""",
+            (int(request_id) if str(request_id or "").isdigit() else None, job["id"], job["id"]),
+        )
+        return bool(row)
 
     def completion_blocker(self, job: dict[str, Any], response: str) -> str:
         if not response.strip():
@@ -1429,7 +1453,12 @@ class TaskAgent:
                     self.inject_new_context_if_needed(job, messages)
                     return False
             metadata = job.get("metadata") or {}
-            if response and ((metadata.get("reply_route") or {}).get("channel") == "telegram" or metadata.get("auto_reply")):
+            already_delivered = arguments.get("already_delivered") is True
+            if already_delivered and not self.delivered_since_request(job):
+                result = {"error": "already_delivered=true requires a reply sent with telegram_send or email_send for the current request. Send it first or omit already_delivered."}
+                messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
+                return False
+            if response and not already_delivered and ((metadata.get("reply_route") or {}).get("channel") == "telegram" or metadata.get("auto_reply")):
                 try:
                     delivery = ReplyRouter(tool_runtime).send(response)
                 except ValueError as exc:

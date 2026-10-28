@@ -147,12 +147,24 @@ def test_native_voice_delivery_is_explicit_and_uses_existing_delivery_log(voice_
     delivery.client.call.return_value = {"message_id": 81}
     attachment = {"data": data, "filename": "speech", "content_type": mime,
                   "voice_note": voice_note, "metadata": {"source": "workspace"}}
-    with patch("assistant_agent.telegram.TransactionDatabase") as transaction:
+
+    def ffmpeg(command, **kwargs):
+        Path(command[-1]).write_bytes(b"OggSconvertedOpusHead")
+
+    with patch("assistant_agent.telegram.TransactionDatabase") as transaction, \
+            patch("assistant_agent.telegram.subprocess.run", side_effect=ffmpeg) as run:
         transaction.return_value.fetch_one.side_effect = [{"total": 0}, None, {"id": 1}]
         result = delivery.send({"id": 7}, "", destination="123", reply_to=17, attachments=[attachment])
     assert result["status"] == "sent"
     assert delivery.client.call.call_args.args[0] == method
-    assert field in delivery.client.call.call_args.kwargs["files"]
+    filename, upload, content_type = delivery.client.call.call_args.kwargs["files"][field]
+    payload = delivery.client.call.call_args.args[1]
+    if voice_note:
+        assert content_type == "audio/ogg" and filename == "speech.ogg" and "caption" not in payload
+        assert upload == (data if mime == "audio/ogg" else b"OggSconvertedOpusHead")
+        assert run.called is (mime != "audio/ogg")
+    else:
+        assert upload == data and payload["caption"] == "speech"
     assert json.loads(delivery.client.call.call_args.args[1]["reply_parameters"])["message_id"] == 17
     metadata = database.fetch_one.call_args.args[1][-1].obj[0]
     assert metadata.get("voice_note", False) is voice_note
@@ -178,6 +190,24 @@ def test_invalid_voice_attachments_fail_before_any_delivery(voice_note, mime, da
     delivery.client.call.assert_not_called()
 
 
+def test_voice_conversion_failure_sends_nothing():
+    database = MagicMock()
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    with patch("assistant_agent.telegram.subprocess.run", side_effect=FileNotFoundError):
+        with pytest.raises(TelegramError, match="ffmpeg"):
+            delivery.send({"id": 7}, "hello", destination="123", attachments=[
+                {"data": b"ID3audio", "filename": "speech.mp3", "content_type": "audio/mpeg",
+                 "voice_note": True, "metadata": {}}])
+    database.fetch_one.assert_not_called()
+    delivery.client.call.assert_not_called()
+
+
+def fake_ffmpeg(command, **kwargs):
+    Path(command[-1]).write_bytes(b"OggSconvertedOpusHead")
+
+
+@patch("assistant_agent.telegram.subprocess.run", fake_ffmpeg)
 def test_voice_send_identity_distinguishes_documents_without_changing_legacy_document_keys():
     database = MagicMock()
     database.fetch_one.return_value = {"id": 1, "status": "uncertain", "provider_message_ids": []}
@@ -190,6 +220,7 @@ def test_voice_send_identity_distinguishes_documents_without_changing_legacy_doc
         keys.append(database.fetch_one.call_args.args[1][3])
     assert keys[0] == keys[1] and keys[1] != keys[2]
 
+@patch("assistant_agent.telegram.subprocess.run", fake_ffmpeg)
 def test_switching_to_voice_mode_does_not_bypass_prior_uncertain_delivery():
     database = MagicMock()
     database.fetch_one.return_value = {"id": 2, "status": "pending", "provider_message_ids": []}
@@ -460,6 +491,28 @@ def test_shared_request_delivers_and_atomically_completes(database):
                                       {"summary": "Answered", "response": "Hello"}, set())
     current = database.fetch_one("SELECT * FROM jobs WHERE id = %s", (job["id"],))
     assert current["status"] == "completed" and current["metadata"]["final_response"] == "Hello"
+
+
+def test_already_delivered_completion_requires_and_skips_a_prior_send(database):
+    migrate(database)
+    RequestService(database).receive_request(IncomingRequest("telegram", "voice", "9:123", "123", "voice-task", "say hi",
+        reply_route={"channel": "telegram", "chat_id": "123"}))
+    job = database.claim_job("test-worker")
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config, agent.locked_by = database, config(), "test-worker"
+    agent.memory_steward = MagicMock()
+    runtime = ToolRuntime(database, agent.config, job)
+    arguments = {"summary": "Sent voice", "response": "Voice note saying hi", "already_delivered": True}
+    history = []
+    with patch("assistant_agent.telegram.TelegramClient.call", return_value={"message_id": 77}) as call:
+        assert not agent.handle_tool_call(job, history, runtime, "call", "task_complete", arguments, set())
+        assert "already_delivered" in history[-1]["content"] and not call.called
+        TelegramDelivery(database, agent.config).send(job, "hi", destination="123")
+        assert call.call_count == 1
+        assert agent.handle_tool_call(job, history, runtime, "call", "task_complete", arguments, set())
+        assert call.call_count == 1
+    current = database.fetch_one("SELECT * FROM jobs WHERE id = %s", (job["id"],))
+    assert current["status"] == "completed" and current["metadata"]["final_response"] == "Voice note saying hi"
 
 
 def test_followup_during_consolidation_is_not_lost(database):

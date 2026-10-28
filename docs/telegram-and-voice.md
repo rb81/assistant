@@ -79,22 +79,30 @@ read the initialization container's original secret mount.
 - Outbound attachments accept `path` inside the shared workspace, inline `content`
   with a filename, or a clean `artifact_id` from the current conversation thread.
   Exact outbound bytes are scanned. The batch is capped at 50 MiB and ten attachments.
-- Attachments default to documents. Set `voice_note: true` on an attachment to use
-  Telegram's native voice-message player. This accepts MP3, Ogg/Opus, or M4A
-  with matching content types and signatures; WAV/PCM and other formats are
-  rejected rather than silently converted. Existing recipient authorization,
-  scanning, rate limits and uncertain-delivery protection still apply.
+- Attachments default to documents. Set `voice_note: true` on an attachment to send
+  it as a native Telegram voice message. MP3, M4A and Ogg/Opus are accepted and
+  converted to Ogg/Opus with ffmpeg in the task-agent image (Telegram shows only
+  Ogg/Opus as a voice bubble). Voice notes carry no caption. WAV/PCM is rejected.
+  Existing recipient authorization, scanning, rate limits and uncertain-delivery
+  protection still apply. `text` is optional when attachments are present.
 
 For example, after a separate synthesis tool returns an MP3 workspace path:
 
 ```json
-{"text":"","attachments":[{"path":"outputs/job-12/example-0.mp3","voice_note":true}]}
+{"attachments":[{"path":"outputs/job-12/example-0.mp3","voice_note":true}]}
 ```
+
+The agent then calls `task_complete` with `already_delivered: true`, so the voice
+note is not followed by a text reply. That flag is accepted only after a
+`telegram_send` or `email_send` actually succeeded for the current request.
+The system prompt asks the agent to pick the channel by content (Telegram for
+short messages and voice notes, email for long or document-style replies, the
+requester's choice when named) and never to announce or summarize a voice note.
 
 Speech generation is independently enabled through **Advanced Settings →
 Text-to-speech** and does not require Telegram or local transcription.
-Discover a model supporting MP3 for native voice-note delivery; PCM-only models
-produce WAV files, which can still be sent as ordinary documents. See
+Choose a model with MP3 output for voice notes; PCM-only models produce WAV
+files, which can still be sent as ordinary documents. See
 [text-to-speech](tools-reference.md#text-to-speech-tool).
 
 Hosted Bot API downloads are limited to 20 MB; larger incoming files need another
@@ -178,7 +186,8 @@ network requests offer Approve once/always, Block once/always, Cancel job and
 
 Administrators see **Needs attention** and **Archived** in `/list`. Job cards offer
 status, error details, results when available, rename, guidance, and state-specific
-actions. A held job requests a fresh confirmation; **Run again** is offered only for
+actions. **Resend approval** on a held job sends a fresh one-use approval (the
+pending network request if any, otherwise the review confirmation); **Run again** is offered only for
 finished, failed, or cancelled jobs and warns that external actions may repeat.
 Cancellation cannot undo completed actions. Changes use one-use confirmations and
 reject stale task versions.

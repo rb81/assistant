@@ -221,7 +221,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         with patch("assistant_agent.task_agent.available_function_names", return_value={"telegram_send"}):
             telegram = agent.load_tool_specs({"id": 7}, {"tools": ["telegram_send"]}, set())
         self.assertIn("voice_note: true", telegram["guardrails"])
-        self.assertIn("MP3", telegram["guardrails"])
+        self.assertIn("never announce", telegram["guardrails"])
 
     def test_nested_model_tokens_stop_the_tool_batch_and_checkpoint_parent(self):
         agent = self.agent()

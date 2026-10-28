@@ -85,7 +85,7 @@ class TelegramAdmin:
         buttons = [[("Details", "ui:details:%s" % identifier), ("Results", "ui:results:%s" % identifier)]]
         if self.is_admin(sender):
             if job["status"] == "needs_review":
-                buttons.append([("Request approval", "ui:approval:%s" % identifier)])
+                buttons.append([("Resend approval", "ui:approval:%s" % identifier)])
             elif job["status"] == "waiting":
                 buttons.append([("Add reply", "ui:guidance:%s" % identifier)])
             elif job["status"] in {"completed", "failed", "cancelled"}:

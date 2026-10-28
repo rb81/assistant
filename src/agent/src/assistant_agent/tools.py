@@ -89,12 +89,12 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
     "Telegram": {
         "tools": {"telegram_send"},
         "text": (
-            "Set voice_note=true on an audio attachment only for an explicitly requested native voice message. "
-            "MP3, M4A and Ogg/Opus are supported; WAV is not. Default attachments remain documents. "
-            "Send existing workspace audio; delivery does not generate or convert speech. "
-            "When the user asks for a Telegram voice note, use an MP3-capable speech model and "
-            "telegram_send attachments=[{path: the generated MP3 path, voice_note: true}]. "
-            "Do not send it as a document unless the user requested a file. "
+            "Telegram suits short messages, quick confirmations and voice notes; prefer email for long or "
+            "document-style content unless the user asked for Telegram. "
+            "To send a voice note, generate speech with text_to_speech and call telegram_send with "
+            "attachments=[{path: the generated audio path, voice_note: true}] and no text. Delivery converts it "
+            "to a native voice message automatically. Let the voice note stand alone: never announce, preface, "
+            "caption or summarize it in text. Send audio as a plain file only when the user asked for a file. "
             "Never retry uncertain delivery or regenerate audio merely to retry a send."
         ),
     },
@@ -1041,7 +1041,7 @@ class ToolRuntime:
             "body_truncated": end_index < len(lines),
         }
 
-    def telegram_send(self, text: str, recipient: str = "me",
+    def telegram_send(self, text: str = "", recipient: str = "me",
                       attachments: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
         try:
             text = self._clean_text(text)
@@ -3547,6 +3547,11 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     "response": {
                         "type": "string",
                         "description": "User-visible final response. Do not use this to bypass email_send for external email requesters.",
+                    },
+                    "already_delivered": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set true when the reply was already delivered to the requester this turn via telegram_send or email_send (for example a voice note). response is then recorded but not sent again.",
                     },
                 },
                 "required": ["summary", "response"],

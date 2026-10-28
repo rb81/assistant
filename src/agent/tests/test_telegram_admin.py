@@ -187,7 +187,7 @@ def test_nonadmin_job_lists_are_scoped_and_have_no_mutation_controls(ui):
     ui.db.fetch_one.side_effect = [{"id": 12, "thread_id": "t", "status": "needs_review", "metadata": {}}, {"id": 1}]
     ui.job_card("456", 12)
     text = str(ui.client.call.call_args.args[1])
-    assert "Request approval" not in text and "Cancel task" not in text and "Run again" not in text
+    assert "Resend approval" not in text and "Cancel task" not in text and "Run again" not in text
     with pytest.raises(ValueError, match="Administrator permission"):
         ui.confirm("456", "cancel", 12)
 
@@ -197,7 +197,7 @@ def test_state_aware_job_controls_do_not_offer_blind_resume_for_reviews(ui):
     ui.job_card("123", 12)
     payload = ui.client.call.call_args.args[1]
     assert "Female voice note" in payload["text"]
-    assert "Request approval" in str(payload)
+    assert "Resend approval" in str(payload)
     assert "Run again" not in str(payload)
 
 

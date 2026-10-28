@@ -2,6 +2,8 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -17,6 +19,10 @@ from .config import AppConfig
 from .database import Database
 from .requests import TransactionDatabase
 from .telegram_config import TelegramError, telegram_configured, telegram_identities
+
+
+def method_field(voice):
+    return "sendVoice" if voice else "sendDocument"
 
 
 def validate_voice_note(attachment):
@@ -35,6 +41,28 @@ def validate_voice_note(attachment):
     )
     if not valid:
         raise TelegramError("Voice notes require MP3, M4A or Ogg/Opus audio; WAV/PCM and other files must be sent as documents")
+
+
+def native_voice(attachment):
+    """Telegram shows a voice bubble only for Ogg/Opus; other formats appear as audio files."""
+    stem = Path(attachment["filename"]).stem or "voice"
+    if attachment["content_type"] == "audio/ogg":
+        return {**attachment, "filename": stem + ".ogg"}
+    with tempfile.TemporaryDirectory(prefix="telegram-voice-") as directory:
+        source, target = Path(directory) / "input", Path(directory) / "voice.ogg"
+        source.write_bytes(attachment["data"])
+        try:
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-i", str(source), "-vn", "-map_metadata", "-1",
+                 "-c:a", "libopus", "-b:a", "48k", "-application", "voip", str(target)],
+                check=True, capture_output=True, timeout=120,
+            )
+        except FileNotFoundError:
+            raise TelegramError("Voice notes need ffmpeg in the task-agent image; rebuild it or send the audio as a file") from None
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            raise TelegramError("The audio could not be converted to a Telegram voice note") from None
+        converted = target.read_bytes()
+    return {**attachment, "data": converted, "filename": stem + ".ogg", "content_type": "audio/ogg"}
 
 
 class TelegramURLFilter(logging.Filter):
@@ -258,12 +286,13 @@ class TelegramDelivery:
             validate_voice_note(attachment)
             if len(attachment["data"]) > 50 * 1024 * 1024:
                 raise TelegramError("Telegram uploads are limited to 50 MB")
-            payload = {"chat_id": destination, "caption": attachment["filename"][:200]}
+            voice = attachment.get("voice_note")
+            payload = {"chat_id": destination} if voice else {"chat_id": destination, "caption": attachment["filename"][:200]}
             if reply_to:
                 payload["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
-            method, field = ("sendVoice", "voice") if attachment.get("voice_note") else ("sendDocument", "document")
-            parts.append((method, payload,
-                          {field: (attachment["filename"], attachment["data"], attachment["content_type"])}))
+            upload = native_voice(attachment) if voice else attachment
+            parts.append((method_field(voice), payload,
+                          {"voice" if voice else "document": (upload["filename"], upload["data"], upload["content_type"])}))
         identity_data = {"destination": destination, "text": text, "purpose": purpose,
                          "request": (job.get("metadata") or {}).get("reply_request_id"),
                          "files": [(item["filename"], hashlib.sha256(item["data"]).hexdigest()) for item in attachments or []]}
@@ -349,12 +378,12 @@ TELEGRAM_FUNCTION_TOOLS = [{
         "name": "telegram_send",
         "description": "Send text, files or native voice notes to a configured Telegram identity. recipient='me' resolves the requester's linked identity, including requests received by email. Identical sends within a job are deduplicated. Do not retry uncertain delivery.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "string"}, "recipient": {"type": "string", "default": "me"},
+            "text": {"type": "string", "description": "Message text. Omit when sending only a voice note or file; do not announce or summarize a voice note."}, "recipient": {"type": "string", "default": "me"},
             "attachments": {"type": "array", "items": {"type": "object", "properties": {
                 "artifact_id": {"type": "integer", "description": "Forward a clean received artifact belonging to the current task. Provide artifact_id instead of path/content."},
                 "path": {"type": "string"}, "content": {"type": "string"},
-                "voice_note": {"type": "boolean", "default": False, "description": "Send this audio as a native voice message instead of a document. Requires MP3, M4A or Ogg/Opus; no conversion is performed."},
+                "voice_note": {"type": "boolean", "default": False, "description": "Send this audio as a native Telegram voice message (it is converted to Ogg/Opus automatically). Accepts MP3, M4A or Ogg/Opus, e.g. text_to_speech output."},
                 "filename": {"type": "string"}, "content_type": {"type": "string"}}}},
-        }, "required": ["text"]},
+        }},
     },
 }]
