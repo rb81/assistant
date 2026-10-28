@@ -19,6 +19,7 @@ from .transport_security import open_https_request
 
 MAX_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_TEXT_CHARS = 10000
+ACCOUNTING_DELAYS = (1, 2, 3, 4, 5)
 
 
 def configured(config):
@@ -64,8 +65,10 @@ class OpenRouterSpeech(OpenRouterModels):
             raise ModelServiceError("OpenRouter speech interrupted; charge is uncertain, do not automatically retry") from exc
 
     def generation(self, generation_id):
-        # Only the read-only accounting lookup is retried, never synthesis.
-        for attempt in range(3):
+        # Only the read-only accounting lookup is retried, never synthesis. OpenRouter
+        # often publishes speech cost several seconds after the audio is returned.
+        attempts = len(ACCOUNTING_DELAYS) + 1
+        for attempt in range(attempts):
             try:
                 with open_https_request(self.request("/generation?" + urlencode({"id": generation_id})), timeout=30) as response:
                     data = self.read_json(response).get("data")
@@ -78,8 +81,8 @@ class OpenRouterSpeech(OpenRouterModels):
                     raise ModelServiceError("OpenRouter speech accounting failed (HTTP %s)" % exc.code) from exc
             except (urllib.error.URLError, OSError, HTTPException) as exc:
                 raise ModelServiceError("OpenRouter speech accounting lookup interrupted") from exc
-            if attempt < 2:
-                time.sleep(attempt + 1)
+            if attempt < attempts - 1:
+                time.sleep(ACCOUNTING_DELAYS[attempt])
         raise ModelServiceError("OpenRouter speech accounting is not available yet")
 
 
@@ -209,13 +212,18 @@ class TextToSpeech(ModelToolResources):
             output = self.save_media_bytes(data, mime, call_id)
         except (ModelServiceError, OSError) as exc:
             raise ModelServiceError("Speech request %s output could not be saved: %s. Do not repeat synthesis; check recorded accounting." % (call_id, exc)) from exc
-        if accounting_error:
-            recovery = ("Use reconcile with this request_id." if generation_id else
-                        "Ask the administrator to reconcile the charge; the provider omitted its generation ID.")
+        if accounting_error and not generation_id:
             raise ModelServiceError(
                 "Speech saved at %s, but request %s has unresolved accounting: %s. "
-                "Do not repeat synthesis. %s" % (output["path"], call_id, accounting_error, recovery)
+                "Do not repeat synthesis. Ask the administrator to reconcile the charge; "
+                "the provider omitted its generation ID." % (output["path"], call_id, accounting_error)
             ) from accounting_error
+        if accounting_error:
+            return {"request_id": call_id, "generation_id": generation_id, "model": model,
+                    "files": [output], "usage": None, "accounting": "pending",
+                    "note": ("Audio is ready to use. OpenRouter has not published the charge yet; it is "
+                             "reconciled automatically before the next paid request. Do not repeat synthesis."),
+                    "budget": self.budget()}
         return {"request_id": call_id, "generation_id": generation_id, "model": model,
                 "files": [output], "usage": usage, "budget": self.budget()}
 

@@ -347,9 +347,11 @@ reconcile eligible unknown-cost speech requests. Budget admission is rechecked
 under the shared lock afterward. Charges and usage logs remain attributed to
 the original job; recovering another job's charge does not add its tokens to
 the current job's budget.
-Missing or invalid costs block both tools. If audio was received but accounting
-is delayed, the error identifies the saved path and local request ID: reuse
-that file and call `reconcile`; **do not repeat synthesis**.
+Missing or invalid costs block both tools. Cost lookups wait about 15 seconds for
+OpenRouter to publish the charge. If audio was received but accounting is still
+delayed, `generate` succeeds with `accounting: "pending"` and the saved file:
+use that file; **do not repeat synthesis**. The charge is reconciled
+automatically before the next paid request.
 If accounting is still delayed, retry `{"action":"reconcile"}` later without
 model, text or voice arguments. Pending requests, missing generation IDs and
 requests whose owning job was deleted require administrator reconciliation.

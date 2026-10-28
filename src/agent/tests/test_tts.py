@@ -155,10 +155,11 @@ def test_unknown_accounting_preserves_generated_file_for_reuse(speech):
     with patch.object(speech.client, "synthesize", side_effect=synthesize()) as send, patch.object(
         speech.client, "generation", side_effect=ModelServiceError("not ready")
     ):
-        with pytest.raises(ModelServiceError, match="Speech saved at .*unresolved accounting.*Do not repeat synthesis"):
-            speech.generate(**ARGUMENTS)
+        result = speech.generate(**ARGUMENTS)
+    assert result["accounting"] == "pending" and "Do not repeat synthesis" in result["note"]
     outputs = list(speech.runtime.shared_root.glob("outputs/job-7/*.mp3"))
     assert len(outputs) == 1 and outputs[0].read_bytes() == MP3
+    assert result["files"][0]["path"].endswith(outputs[0].name)
     assert send.call_count == 1
     assert all(call.args[1] == "unknown" for call in speech.settle.call_args_list)
 
@@ -176,8 +177,7 @@ def test_invalid_cost_keeps_charge_unresolved_and_preserves_audio(speech, cost):
     with patch.object(speech.client, "generation", return_value={**GENERATION, "total_cost": cost}), patch.object(
         speech, "settle", wraps=lambda *args, **kwargs: ModelToolResources.settle(speech, *args, **kwargs)
     ), patch.object(speech.client, "synthesize", side_effect=synthesize()):
-        with pytest.raises(ModelServiceError, match="unresolved accounting"):
-            speech.generate(**ARGUMENTS)
+        assert speech.generate(**ARGUMENTS)["accounting"] == "pending"
     assert len(list(speech.runtime.shared_root.glob("outputs/job-7/*.mp3"))) == 1
     speech.db.log_event.assert_not_called()
 
