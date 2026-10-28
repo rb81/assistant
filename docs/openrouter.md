@@ -133,9 +133,28 @@ or recreate authenticated model calls in sandbox scripts.
 
 Defaults: disabled, USD 5 per rolling 30 days. Provider-reported `usage.cost` is
 the source of truth, not token-price estimates (music can have per-song charges
-despite zero token pricing). This limit only covers this tool, not ordinary
-assistant calls, web search, or research. The final admitted request can exceed
+despite zero token pricing). This limit is shared with `text_to_speech`, but
+excludes ordinary assistant calls, web search, and research. The final admitted request can exceed
 the threshold; provider-side spending limits remain recommended.
 
 See [Model Preset Tool](tools-reference.md#model-preset-tool) for schemas, file
 limits, supported modalities and uncertain-request reconciliation.
+
+## Dedicated text-to-speech
+
+Enable **Advanced Settings → Text-to-speech** independently of model presets.
+`AGENT_TTS_ENABLED` / `agent.tts.enabled` defaults to false;
+`AGENT_TTS_ZDR_ONLY` / `agent.tts.zdr_only` defaults to false (all models).
+The latter selects the filtered catalog and enforces `provider.zdr=true` on
+every speech request; it does not inherit the model-preset ZDR flag.
+
+The `text_to_speech` tool selects dedicated `speech` models, calls
+`POST /audio/speech`, and saves binary audio in the workspace. Authentication
+uses the internal OpenRouter secret. It shares the model-preset budget settings
+and ledger even when presets are disabled. Actual costs come from
+`GET /generation?id=...`, using the response's `X-Generation-Id`, not estimates
+from token prices. Unresolved charges block both tools.
+
+See [Text-to-speech](tools-reference.md#text-to-speech-tool) for formats,
+expression controls and safe accounting recovery. Telegram delivery is a
+separate `telegram_send` operation, not a feature of this tool.

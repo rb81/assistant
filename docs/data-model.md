@@ -29,6 +29,14 @@ receive the docs mounted in the shared workspace, not the source tree.
 a main conversation and can have system threads for work such as reminders and
 research. `workstream_threads` maps thread identities to their owner.
 
+Setup's workstream browser separates **User workstreams** from **Administrative
+data**. The latter is the internal `system:unattributed` bucket for legacy data
+without known provenance and administrative deliveries such as Telegram command
+responses. Zero retained objects does not mean it contains no delivery records.
+Ownership and deletion rules are unchanged; later administrative messages can
+recreate the bucket after deletion. System threads belonging to actual user
+workstreams remain with those workstreams, not in this administrative category.
+
 `workstream_objects` records object identity and origin ownership;
 `workstream_attachments` records retaining relationships. Contacts and files
 can be attached to another workstream; reading or editing an object does not

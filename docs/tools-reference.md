@@ -271,12 +271,13 @@ are never overwritten. Response size is limited to 64 MiB, each decoded media
 file to 32 MiB. Remote media URLs and unknown response formats produce explicit
 errors after accounting for the charge; they are not silently dropped.
 Inspection is the caller's responsibility, for example by attaching an output
-to a vision preset. Dedicated image/speech/transcription/video APIs are not part
-of this initial chat-compatible implementation.
+to a vision preset. Dedicated image/transcription/video APIs are not part
+of this chat-compatible tool. Dedicated speech models use `text_to_speech` below.
 
-The default budget is **USD 5 per rolling 30 days**, shared by all jobs and
-presets. Setup can change both. The check uses persisted `usage.cost`, including
-non-token media charges, and serializes request admission across workers.
+The default budget is **USD 5 per rolling 30 days**, shared by all jobs, presets
+and the separate text-to-speech tool. Setup can change the amount and period.
+The check uses persisted actual costs, including non-token media charges, and
+serializes request admission across workers.
 It is a **spending threshold, not a hard per-request price ceiling**: the final
 request can exceed the remaining amount. Use a provider-side key spending limit
 for a hard cap. Model-tool tokens also count toward the parent task token limit.
@@ -291,6 +292,64 @@ terminal `status`, never assume zero). `list_presets` reports unresolved count;
 errors identify the request ID where available. Setup factory reset has a
 separate **Model presets and model-tool spending history** category; selecting
 it explicitly clears presets and spending history but not generated files.
+
+## Text-to-speech Tool
+
+`text_to_speech` is an independently enabled, loadable tool for dedicated
+OpenRouter `speech` models, not chat models advertising `audio`.
+Enable **Advanced Settings → Text-to-speech** with
+`./setup.sh --section advanced`. It requires an internal `OPENROUTER_API_KEY`
+and writable shared workspace, but not model presets, Telegram or transcription.
+Both enablement and the ZDR-only/all-model choice are independent of
+`llm_service`; defaults are disabled and all models.
+
+- `list_models`: filter by `query` and paginate with `limit` (1-50) and `offset`.
+  Results include exact slugs, advertised voices/pricing, supported output
+  formats and whether separate expression instructions are supported.
+- `generate`: supply an exact `model`, literal `text` (1-10000 characters),
+  explicit `voice`, optional `audio_format` (`mp3` or `wav`), and optional
+  `instructions` (1-2000 characters). Provider limits may be lower.
+- `reconcile`: supply the local `request_id` from an unknown-cost speech
+  request. It looks up the existing charge, never synthesizes again, and is
+  restricted to this job's speech requests with a recorded generation ID.
+
+Discover first; this illustrative slug/voice is not an availability guarantee:
+
+```json
+{"action":"list_models","query":"tts"}
+```
+
+```json
+{"action":"generate","model":"openai/gpt-4o-mini-tts","text":"Hello! Here is your update.","voice":"alloy","audio_format":"mp3","instructions":"Speak warmly and conversationally."}
+```
+
+Expression instructions are offered conservatively for documented OpenAI
+mini-TTS, Gemini TTS and Fish Audio model families. Other models reject them
+before spending rather than silently ignoring them. Emotion, laughter and
+other effects remain model-dependent; put directions in `instructions`, not
+in literal speech text. Discovery exposes advertised voices; when no voice
+list is available, the provider validates the explicit identifier.
+
+MP3 is the default except for Google/HeyGen PCM-only models, which default
+to WAV. MiniMax is restricted to MP3. WAV wraps provider PCM using its declared
+sample rate/channels; it does not guess metadata or re-encode audio.
+Generation returns `files`, actual `usage`, request/generation IDs and the
+shared budget. Files are limited to 32 MiB and tracked under
+`outputs/job-<id>/`. There is no inherited assistant context, voice cloning,
+reference upload, multi-speaker synthesis or channel delivery.
+
+Speech shares the model-preset spending settings and admission lock even if
+presets are disabled. Charges use OpenRouter's actual generation cost, not
+token-price estimates. Only read-only accounting lookups are retried.
+Missing or invalid costs block both tools. If audio was received but accounting
+is delayed, the error identifies the saved path and local request ID: reuse
+that file and call `reconcile`; **do not repeat synthesis**.
+Missing generation IDs or interrupted workers require administrator
+reconciliation. Completed requests cannot be reconciled again.
+
+To deliver the saved file, call a separate channel tool. Native Telegram voice
+messages use a per-attachment `voice_note: true` flag on `telegram_send`;
+ordinary attachments remain documents. See [Telegram and local voice](telegram-and-voice.md).
 
 ## Terminal and Meta Tools
 

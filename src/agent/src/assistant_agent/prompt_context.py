@@ -120,6 +120,9 @@ def build_prompt_context(config: AppConfig) -> str:
             "- Model preset tool catalog policy: %s. This policy applies only to llm_service, not other model calls or web search." % (
                 "ZDR-only models and provider routing" if config.get_bool("agent.model_service.zdr_only", False) else "all models"
             ),
+            "- Text-to-speech catalog policy: %s. Speech and model preset calls share the model tool spending limit." % (
+                "ZDR-only models and provider routing" if config.get_bool("agent.tts.zdr_only", False) else "all speech models"
+            ),
         ]
     )
     return "\n".join(lines)

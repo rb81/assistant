@@ -17,7 +17,7 @@ from assistant_agent.database import Database
 from assistant_agent.requests import IncomingRequest, RequestService
 from assistant_agent.telegram import TelegramClient, TelegramDelivery, TelegramError, TelegramURLFilter, telegram_destination, telegram_message_parts
 from assistant_agent.telegram_ingest import RequestPreprocessor, TelegramReceiver, message_files
-from assistant_agent.tools import ToolRuntime, available_function_names
+from assistant_agent.tools import ToolError, ToolRuntime, available_function_names
 from assistant_agent.task_agent import TaskAgent
 from assistant_agent.replies import reminder_delivery
 from assistant_agent.reminders import ReminderScheduler
@@ -132,6 +132,109 @@ def test_uncertain_send_is_not_replayed():
     result = delivery.send({"id": 7}, "result", destination="123")
     assert result["status"] == "uncertain"
     delivery.client.call.assert_not_called()
+
+@pytest.mark.parametrize("voice_note, method, field, mime, data", [
+    (False, "sendDocument", "document", "audio/mpeg", b"ID3audio"),
+    (True, "sendVoice", "voice", "audio/mpeg", b"ID3audio"),
+    (True, "sendVoice", "voice", "audio/ogg", b"OggS1234OpusHead"),
+    (True, "sendVoice", "voice", "audio/mp4", b"\x00\x00\x00\x20ftypM4A "),
+])
+def test_native_voice_delivery_is_explicit_and_uses_existing_delivery_log(voice_note, method, field, mime, data):
+    database = MagicMock()
+    database.fetch_one.return_value = {"id": 1, "status": "pending", "provider_message_ids": []}
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    delivery.client.call.return_value = {"message_id": 81}
+    attachment = {"data": data, "filename": "speech", "content_type": mime,
+                  "voice_note": voice_note, "metadata": {"source": "workspace"}}
+    with patch("assistant_agent.telegram.TransactionDatabase") as transaction:
+        transaction.return_value.fetch_one.side_effect = [{"total": 0}, None, {"id": 1}]
+        result = delivery.send({"id": 7}, "", destination="123", reply_to=17, attachments=[attachment])
+    assert result["status"] == "sent"
+    assert delivery.client.call.call_args.args[0] == method
+    assert field in delivery.client.call.call_args.kwargs["files"]
+    assert json.loads(delivery.client.call.call_args.args[1]["reply_parameters"])["message_id"] == 17
+    metadata = database.fetch_one.call_args.args[1][-1].obj[0]
+    assert metadata.get("voice_note", False) is voice_note
+    assert "UPDATE channel_deliveries SET status = 'sent'" in database.execute.call_args.args[0]
+
+
+@pytest.mark.parametrize("voice_note,mime,data", [
+    ("true", "audio/mpeg", b"ID3audio"),
+    (True, "audio/wav", b"RIFF1234WAVE"),
+    (True, "audio/ogg", b"OggSnot-opus"),
+    (True, "audio/mpeg", b"not-mp3"),
+    (True, "text/plain", b"hello"),
+])
+def test_invalid_voice_attachments_fail_before_any_delivery(voice_note, mime, data):
+    database = MagicMock()
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    with pytest.raises(TelegramError, match="voice_note must|Voice notes require"):
+        delivery.send({"id": 7}, "Do not send before validation", destination="123", attachments=[
+            {"data": data, "filename": "speech", "content_type": mime, "voice_note": voice_note, "metadata": {}},
+        ])
+    database.fetch_one.assert_not_called()
+    delivery.client.call.assert_not_called()
+
+
+def test_voice_send_identity_distinguishes_documents_without_changing_legacy_document_keys():
+    database = MagicMock()
+    database.fetch_one.return_value = {"id": 1, "status": "uncertain", "provider_message_ids": []}
+    delivery = TelegramDelivery(database, config())
+    attachment = {"data": b"ID3audio", "filename": "speech.mp3", "content_type": "audio/mpeg", "metadata": {}}
+    keys = []
+    for extra in ({}, {"voice_note": False}, {"voice_note": True}):
+        result = delivery.send({"id": 7}, "", destination="123", attachments=[{**attachment, **extra}])
+        assert result["status"] == "uncertain"
+        keys.append(database.fetch_one.call_args.args[1][3])
+    assert keys[0] == keys[1] and keys[1] != keys[2]
+
+def test_switching_to_voice_mode_does_not_bypass_prior_uncertain_delivery():
+    database = MagicMock()
+    database.fetch_one.return_value = {"id": 2, "status": "pending", "provider_message_ids": []}
+    delivery = TelegramDelivery(database, config())
+    delivery.client = MagicMock()
+    with patch("assistant_agent.telegram.TransactionDatabase") as transaction:
+        transaction.return_value.fetch_one.side_effect = [{"total": 0}, {"id": 1}]
+        result = delivery.send({"id": 7}, "", destination="123", attachments=[
+            {"data": b"ID3audio", "filename": "speech.mp3", "content_type": "audio/mpeg",
+             "voice_note": True, "metadata": {}},
+        ])
+    assert result["status"] == "uncertain"
+    delivery.client.call.assert_not_called()
+
+
+def test_telegram_runtime_passes_voice_note_through_existing_attachment_scan(tmp_path):
+    values = config()
+    values.values["agent"]["filesystem"] = {"shared_root": str(tmp_path), "require_mount": False}
+    runtime = ToolRuntime(MagicMock(), values, {"id": 7, "thread_id": "thread-7",
+                                             "metadata": {"reply_route": {"channel": "telegram", "chat_id": "123"}}})
+    (tmp_path / "speech.mp3").write_bytes(b"ID3audio")
+    with patch("assistant_agent.tools.ArtifactProcessor") as processor, patch(
+        "assistant_agent.tools.TelegramDelivery"
+    ) as delivery:
+        processor.return_value.scan_file.return_value = {"status": "clean"}
+        delivery.return_value.send.return_value = {"status": "sent"}
+        result = runtime.telegram_send("", attachments=[{"path": "speech.mp3", "voice_note": True}])
+    assert result["status"] == "sent"
+    prepared = delivery.return_value.send.call_args.kwargs["attachments"][0]
+    assert prepared["voice_note"] is True and prepared["data"] == b"ID3audio"
+    processor.return_value.scan_file.assert_called_once()
+
+
+def test_native_voice_does_not_bypass_attachment_scanning(tmp_path):
+    values = config()
+    values.values["agent"]["filesystem"] = {"shared_root": str(tmp_path), "require_mount": False}
+    runtime = ToolRuntime(MagicMock(), values, {"id": 7, "metadata": {"reply_route": {"channel": "telegram", "chat_id": "123"}}})
+    (tmp_path / "speech.mp3").write_bytes(b"ID3audio")
+    with patch("assistant_agent.tools.ArtifactProcessor") as processor, patch(
+        "assistant_agent.tools.TelegramDelivery"
+    ) as delivery:
+        processor.return_value.scan_file.return_value = {"status": "infected"}
+        with pytest.raises(ToolError, match="clean malware scan"):
+            runtime.telegram_send("", attachments=[{"path": "speech.mp3", "voice_note": True}])
+    delivery.assert_not_called()
 
 
 def test_transport_errors_do_not_expose_token():

@@ -40,6 +40,7 @@ from .secret_store import read_secret
 from .script_analysis import ScriptAnalyzer
 from .security_screening import MALICIOUS, NOT_MALICIOUS, SecurityScreener, action_fingerprint, notify_admin
 from .telegram import TELEGRAM_FUNCTION_TOOLS, TelegramDelivery, TelegramError, telegram_configured, telegram_destination
+from .tts import TEXT_TO_SPEECH_TOOL, TextToSpeech, configured as tts_configured
 from .zoom_meetings import ZOOM_FUNCTION_TOOLS, ZOOM_TOOL_NAMES, ZoomError, ZoomMeetings
 from .tool_result_cache import ToolResultCache
 from .threading import safe_filename
@@ -66,8 +67,29 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "Use output_modalities to select text/image/audio; supported parameters vary by model. "
             "Files are attached to the final user message, up to five. Generated media is saved to outputs/job-<id>/. "
             "Inspect results yourself or via a multimodal preset. Voice/format may be required for audio. "
+            "Dedicated speech-only models use text_to_speech, not presets. "
             "The shared rolling spending limit blocks new requests once exhausted; a final call may exceed it. "
             "Never automatically retry an interrupted or unknown-cost generation, or evade limits by changing presets."
+        ),
+    },
+    "Text-to-speech": {
+        "tools": {"text_to_speech"},
+        "text": (
+            "Use list_models to discover dedicated speech models and exact voice identifiers. "
+            "Supply literal text and separate delivery instructions only for models advertising support. "
+            "No inherited context or presets. Authentication is internal: never search for API keys or use sandbox API calls. "
+            "Speech files are saved in the job workspace; this tool does not deliver them. "
+            "Spending and unresolved-charge blocks are shared with llm_service. Never automatically repeat synthesis "
+            "after an interruption or unknown charge; use reconcile for the existing request_id without regenerating audio."
+        ),
+    },
+    "Telegram": {
+        "tools": {"telegram_send"},
+        "text": (
+            "Set voice_note=true on an audio attachment only for an explicitly requested native voice message. "
+            "MP3, M4A and Ogg/Opus are supported; WAV is not. Default attachments remain documents. "
+            "Send existing workspace audio; delivery does not generate or convert speech. "
+            "Never retry uncertain delivery or regenerate audio merely to retry a send."
         ),
     },
     "Email": {
@@ -1033,6 +1055,8 @@ class ToolRuntime:
                                   "metadata": {"source": "artifact", "artifact_id": artifact["id"], "size_bytes": path.stat().st_size}}
                 else:
                     attachment = self._prepare_email_attachment(item, index, 50 * 1024 * 1024)
+                if "voice_note" in item:
+                    attachment["voice_note"] = item["voice_note"]
                 if sum(len(value["data"]) for value in prepared) + len(attachment["data"]) > 50 * 1024 * 1024:
                     raise ToolError("Telegram attachment batch exceeds 50 MB")
                 with tempfile.NamedTemporaryFile(prefix="telegram-send-") as handle:
@@ -2539,6 +2563,7 @@ class ToolRuntime:
             "file_semantic_search": self.file_semantic_search,
             "web_search": self.web_search,
             "llm_service": lambda **kwargs: ModelService(self).run(**kwargs),
+            "text_to_speech": lambda **kwargs: TextToSpeech(self).run(**kwargs),
             "email_search": self.email_search,
             "email_read": self.email_read,
             "email_send": self.email_send,
@@ -3559,6 +3584,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
 
 
 FUNCTION_TOOLS.append(MODEL_SERVICE_TOOL)
+FUNCTION_TOOLS.append(TEXT_TO_SPEECH_TOOL)
 
 
 FILE_TOOL_NAMES = {
@@ -3598,7 +3624,7 @@ CORE_TOOL_NAMES = TERMINAL_TOOL_NAMES | {"email_send"}
 META_TOOL_NAMES = {"get_tool_specs"}
 LOADABLE_TOOL_NAMES = (
     FILE_TOOL_NAMES
-    | {"llm_service"}
+    | {"llm_service", "text_to_speech"}
     | {"email_search", "email_read", "telegram_send"}
     | WEB_SEARCH_TOOL_NAMES
     | MEMORY_TOOL_NAMES
@@ -3665,6 +3691,8 @@ def available_function_names(config: AppConfig, job: Optional[dict[str, Any]] = 
         names.update(FILE_TOOL_NAMES)
         if model_service_configured(config):
             names.add("llm_service")
+        if tts_configured(config):
+            names.add("text_to_speech")
         if config.get_bool("agent.dropbox.enabled", False) and config.get("agent.dropbox.client_id") and config.get("agent.dropbox.refresh_token"):
             names.update(DROPBOX_TOOL_NAMES - {"dropbox_export"})
             if config.get_bool("agent.dropbox.allow_exports", False):
@@ -3738,8 +3766,9 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "file_semantic_search": "Search indexed workspace file contents by meaning.",
         "web_search": "Search the live web for current/source-backed information.",
         "llm_service": "Discover models; manage presets; generate text, JSON, images or audio with optional workspace files.",
+        "text_to_speech": "Discover dedicated speech models and voices; synthesize text into an audio file; reconcile charges.",
         "email_search": "Search stored email records.",
-        "telegram_send": "Send text or files to a linked Telegram identity, including from an email task.",
+        "telegram_send": "Send text, documents or native voice-note attachments to a linked Telegram identity.",
         "email_read": "Read a stored email by ID, with optional body paging.",
         "memory_remember": "Store a durable memory explicitly requested by the user.",
         "memory_search": "Search durable memories explicitly when needed.",

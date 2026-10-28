@@ -25,6 +25,24 @@ class TelegramError(ValueError):
         self.retry_after = retry_after
 
 
+def validate_voice_note(attachment):
+    value = attachment.get("voice_note", False)
+    if type(value) is not bool:
+        raise TelegramError("voice_note must be a boolean")
+    if not value:
+        return
+    data = attachment["data"]
+    mime = attachment["content_type"]
+    valid = (
+        mime == "audio/mpeg" and (data.startswith(b"ID3") or
+                                  (len(data) >= 2 and data[0] == 255 and data[1] & 224 == 224))
+        or mime == "audio/ogg" and data.startswith(b"OggS") and b"OpusHead" in data[:65536]
+        or mime in {"audio/mp4", "audio/x-m4a"} and len(data) >= 12 and data[4:8] == b"ftyp"
+    )
+    if not valid:
+        raise TelegramError("Voice notes require MP3, M4A or Ogg/Opus audio; WAV/PCM and other files must be sent as documents")
+
+
 class TelegramURLFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = re.sub(r"(/(?:file/)?bot)[^/\s]+", r"\1[REDACTED]", record.getMessage())
@@ -261,26 +279,32 @@ class TelegramDelivery:
                 payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
             parts.append(("sendMessage", payload, plain))
         for attachment in attachments or []:
+            validate_voice_note(attachment)
             if len(attachment["data"]) > 50 * 1024 * 1024:
                 raise TelegramError("Telegram uploads are limited to 50 MB")
             payload = {"chat_id": destination, "caption": attachment["filename"][:200]}
             if reply_to:
                 payload["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
-            parts.append(("sendDocument", payload,
-                          {"document": (attachment["filename"], attachment["data"], attachment["content_type"])}))
-        identity = json.dumps({"destination": destination, "text": text, "purpose": purpose,
-                               "request": (job.get("metadata") or {}).get("reply_request_id"),
-                               "files": [(item["filename"], hashlib.sha256(item["data"]).hexdigest()) for item in attachments or []]}, sort_keys=True)
+            method, field = ("sendVoice", "voice") if attachment.get("voice_note") else ("sendDocument", "document")
+            parts.append((method, payload,
+                          {field: (attachment["filename"], attachment["data"], attachment["content_type"])}))
+        identity_data = {"destination": destination, "text": text, "purpose": purpose,
+                         "request": (job.get("metadata") or {}).get("reply_request_id"),
+                         "files": [(item["filename"], hashlib.sha256(item["data"]).hexdigest()) for item in attachments or []]}
+        if any(item.get("voice_note") for item in attachments or []):
+            identity_data["voice_notes"] = [bool(item.get("voice_note")) for item in attachments]
+        identity = json.dumps(identity_data, sort_keys=True)
         prefix = "telegram:%s:%s" % (job["id"], hashlib.sha256(identity.encode()).hexdigest())
         sent_ids = []
         for index, (method, payload, content) in enumerate(parts):
-            files = content if method == "sendDocument" else None
+            files = content if method in {"sendDocument", "sendVoice"} else None
             key = "%s:%s" % (prefix, index)
             row = self.db.fetch_one(
                 """INSERT INTO channel_deliveries(job_id, channel, destination, purpose, request_key, body_text, attachments)
                    VALUES (%s, 'telegram', %s, %s, %s, %s, %s) ON CONFLICT (request_key) DO NOTHING RETURNING *""",
                 (job["id"], destination, purpose, key, content if method == "sendMessage" else "",
-                 Jsonb([item["metadata"] for item in attachments or []])),
+                 Jsonb([{**item["metadata"], **({"voice_note": True} if item.get("voice_note") else {})}
+                        for item in attachments or []])),
             )
             if row is None:
                 row = self.db.fetch_one("SELECT * FROM channel_deliveries WHERE request_key = %s", (key,))
@@ -347,12 +371,13 @@ class TelegramDelivery:
 TELEGRAM_FUNCTION_TOOLS = [{
     "type": "function", "function": {
         "name": "telegram_send",
-        "description": "Send text and generated files to a configured Telegram identity. recipient='me' resolves the requester's linked identity, including requests received by email. Identical sends within a job are deduplicated. Do not retry uncertain delivery.",
+        "description": "Send text, files or native voice notes to a configured Telegram identity. recipient='me' resolves the requester's linked identity, including requests received by email. Identical sends within a job are deduplicated. Do not retry uncertain delivery.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string"}, "recipient": {"type": "string", "default": "me"},
             "attachments": {"type": "array", "items": {"type": "object", "properties": {
                 "artifact_id": {"type": "integer", "description": "Forward a clean received artifact belonging to the current task. Provide artifact_id instead of path/content."},
                 "path": {"type": "string"}, "content": {"type": "string"},
+                "voice_note": {"type": "boolean", "default": False, "description": "Send this audio as a native voice message instead of a document. Requires MP3, M4A or Ogg/Opus; no conversion is performed."},
                 "filename": {"type": "string"}, "content_type": {"type": "string"}}}},
         }, "required": ["text"]},
     },

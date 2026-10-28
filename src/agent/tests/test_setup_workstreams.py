@@ -18,6 +18,81 @@ def tools():
     return menu
 
 
+def workstream(identifier, thread="user:task", title="Task", parent=None):
+    return {"id": identifier, "main_thread_id": thread, "title": title,
+            "object_count": 0, "status": "active", "parent_id": parent}
+
+
+@pytest.mark.parametrize("category, expected_id", [("User workstreams", 2), ("Administrative data", 1)])
+def test_chooser_separates_administrative_data_from_user_workstreams(category, expected_id):
+    menu = tools()
+    rows = [workstream(2), workstream(1, "system:unattributed", "system:unattributed")]
+    menu.command = MagicMock(return_value={"workstreams": rows})
+    menu.select = MagicMock(side_effect=lambda label, choices: category if label == "Data category" else choices[0])
+
+    assert menu.choose()["id"] == expected_id
+
+    menu.select.assert_any_call("Data category", ["User workstreams", "Administrative data"])
+    label, choices = menu.select.call_args.args
+    assert label == category
+    assert len(choices) == 1
+    assert "system:unattributed" not in choices[0]
+    assert "parent None" not in choices[0]
+    if category == "Administrative data":
+        assert "Unattributed administrative data" in choices[0]
+        assert "zero objects does not mean empty" in menu.console.print.call_args.args[0]
+
+
+def test_user_chooser_reports_no_user_workstreams_when_only_administrative_data_exists():
+    menu = tools()
+    menu.command = MagicMock(return_value={"workstreams": [workstream(1, "system:unattributed")]})
+    menu.select = MagicMock(return_value="User workstreams")
+
+    assert menu.choose() is None
+
+    menu.console.print.assert_called_once_with("No user workstreams.")
+    assert menu.select.call_count == 1
+
+
+def test_administrative_chooser_scans_older_pages_without_reclassifying_system_task_threads():
+    menu = tools()
+    administrative = workstream(1, "system:unattributed", "Legacy administrative records")
+    menu.command = MagicMock(side_effect=[
+        {"workstreams": [workstream(i, f"system:research:{i}") for i in range(51, 1, -1)]},
+        {"workstreams": [administrative]},
+    ])
+    menu.select = MagicMock(side_effect=lambda label, choices: "Administrative data" if label == "Data category" else choices[0])
+
+    assert menu.choose() == administrative
+
+    assert [call.args for call in menu.command.call_args_list] == [
+        ("list", {"before_id": None}), ("list", {"before_id": 2}),
+    ]
+
+
+def test_user_chooser_preserves_pagination_and_parent_labels():
+    menu = tools()
+    rows = [workstream(i) for i in range(51, 2, -1)] + [workstream(2, "system:unattributed")]
+    child = workstream(1, parent=7)
+    menu.command = MagicMock(side_effect=[{"workstreams": rows}, {"workstreams": [child]}])
+    menu.select = MagicMock(side_effect=["User workstreams", "Older workstreams", "#1 Task (0 objects, active; parent #7)"])
+
+    assert menu.choose() == child
+
+    assert "Older workstreams" in menu.select.call_args_list[1].args[1]
+    menu.command.assert_called_with("list", {"before_id": 2})
+
+
+def test_category_back_does_not_load_workstreams():
+    menu = tools()
+    menu.select = MagicMock(return_value="Back")
+    menu.command = MagicMock()
+
+    assert menu.choose() is None
+
+    menu.command.assert_not_called()
+
+
 @pytest.mark.parametrize("confirm", [False, True])
 def test_authoritative_preview_requires_separate_default_no_confirmation(confirm):
     menu = tools()

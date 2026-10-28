@@ -1,5 +1,4 @@
 import base64
-import binascii
 import json
 import math
 import mimetypes
@@ -8,13 +7,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import uuid
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
 from .config import app_display_name, app_referer_url
+from .model_resources import ModelServiceError, ModelToolResources, ProviderRejected, validate_media
 from .secret_store import read_secret
 from .transport_security import open_https_request
 
@@ -27,37 +25,7 @@ MAX_PROMPT_BYTES = 200000
 MAX_OUTPUT_TOKENS = 16384
 _catalog_lock = threading.Lock()
 _catalog: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
-MEDIA_TYPES = {
-    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mpeg": ".mp3",
-    "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/pcm": ".pcm",
-}
 AUDIO_FORMATS = {"wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "webm", "pcm16", "pcm24"}
-
-
-class ModelServiceError(ValueError):
-    pass
-
-
-class ProviderRejected(ModelServiceError):
-    """The provider rejected the request before generation."""
-
-
-def validate_media(data, mime):
-    signatures = {
-        "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
-        "image/jpeg": data.startswith(b"\xff\xd8\xff"),
-        "image/gif": data.startswith((b"GIF87a", b"GIF89a")),
-        "image/webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP",
-        "audio/wav": data.startswith(b"RIFF") and data[8:12] == b"WAVE",
-        "audio/x-wav": data.startswith(b"RIFF") and data[8:12] == b"WAVE",
-        "audio/flac": data.startswith(b"fLaC"),
-        "audio/ogg": data.startswith(b"OggS"),
-        "audio/mpeg": data.startswith(b"ID3") or (len(data) >= 2 and data[0] == 255 and data[1] & 224 == 224),
-        "application/pdf": data.startswith(b"%PDF-"),
-    }
-    if mime in signatures and not signatures[mime]:
-        raise ModelServiceError("Media bytes do not match MIME type %s" % mime)
 
 
 def configured(config) -> bool:
@@ -84,8 +52,9 @@ class OpenRouterModels:
             method="POST" if payload is not None else "GET",
         )
 
-    def models(self):
-        zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
+    def models(self, *, zdr_only=None):
+        if zdr_only is None:
+            zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
         with _catalog_lock:
             cached = _catalog.get(zdr_only)
             if cached and time.monotonic() - cached[0] < 300:
@@ -190,11 +159,9 @@ class OpenRouterModels:
         return result
 
 
-class ModelService:
+class ModelService(ModelToolResources):
     def __init__(self, runtime):
-        self.runtime = runtime
-        self.db = runtime.db
-        self.config = runtime.config
+        super().__init__(runtime)
         self.client = OpenRouterModels(self.config)
 
     def run(self, action, **arguments):
@@ -286,59 +253,6 @@ class ModelService:
         if row is None:
             raise ModelServiceError("Preset does not exist")
         return {"deleted": row["name"]}
-
-    def budget_settings(self):
-        try:
-            amount = Decimal(str(self.config.get("agent.model_service.budget_usd", 5)))
-            days = self.config.get("agent.model_service.budget_period_days", 30)
-            if not amount.is_finite() or amount <= 0 or type(days) is not int or not 1 <= days <= 365:
-                raise ValueError
-        except (InvalidOperation, ValueError, TypeError) as exc:
-            raise ModelServiceError("Model service budget must be positive and period must be 1-365 days") from exc
-        return amount, days
-
-    def budget(self, conn=None):
-        amount, days = self.budget_settings()
-        sql = """SELECT COALESCE(sum(cost_usd), 0) AS spent,
-                        count(*) FILTER (WHERE status IN ('pending', 'unknown')) AS unresolved
-                 FROM model_service_calls WHERE created_at > now() - (%s * interval '1 day')"""
-        row = conn.execute(sql, (days,)).fetchone() if conn is not None else self.db.fetch_one(sql, (days,))
-        return {"limit_usd": float(amount), "period_days": days, "spent_usd": float(row["spent"]),
-                "unresolved_requests": row["unresolved"],
-                "remaining_usd": float(max(Decimal(0), amount - row["spent"]))}
-
-    def reserve(self, preset):
-        call_id = str(uuid.uuid4())
-        with self.db.connect() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext('assistant_model_service_budget'))")
-            budget = self.budget(conn)
-            if budget["unresolved_requests"]:
-                raise ModelServiceError("Model service has a pending or unknown-cost request; wait for completion or ask the administrator to reconcile model_service_calls")
-            if budget["remaining_usd"] <= 0:
-                raise ModelServiceError("Model service budget exhausted for the rolling period")
-            conn.execute(
-                "INSERT INTO model_service_calls(id, job_id, preset) VALUES (%s, %s, %s)",
-                (call_id, self.runtime.job.get("id"), Jsonb(preset)),
-            )
-        return call_id
-
-    def settle(self, call_id, status, usage=None, generation_id=None):
-        cost = None
-        if usage is not None and usage.get("cost") is not None:
-            try:
-                cost = Decimal(str(usage["cost"]))
-                if not cost.is_finite() or cost < 0:
-                    raise ValueError
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                self.db.execute("UPDATE model_service_calls SET status = 'unknown' WHERE id = %s", (call_id,))
-                raise ModelServiceError("OpenRouter returned an invalid cost; request %s remains unresolved" % call_id) from exc
-        if status == "completed" and cost is None:
-            status = "unknown"
-        self.db.execute(
-            "UPDATE model_service_calls SET status = %s, cost_usd = %s, usage = %s, generation_id = %s WHERE id = %s",
-            (status, cost, Jsonb(usage) if usage is not None else None, generation_id, call_id),
-        )
-        return status
 
     def messages(self, payload, preset):
         if not isinstance(payload, dict) or set(payload) != {"messages"}:
@@ -549,29 +463,6 @@ class ModelService:
         if not texts and not outputs:
             raise ModelServiceError("OpenRouter returned an empty or unsupported reply; cost already recorded")
         return {"content": "\n".join(texts), "files": outputs}
-
-    def save_media(self, encoded, mime, call_id, index):
-        if mime not in MEDIA_TYPES or not isinstance(encoded, str):
-            raise ModelServiceError("Unsupported media MIME type; cost already recorded")
-        try:
-            data = base64.b64decode(encoded, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise ModelServiceError("Invalid base64 media output; cost already recorded") from exc
-        if not data or len(data) > 32 * 1024 * 1024:
-            raise ModelServiceError("Media output is empty or exceeds 32 MiB")
-        validate_media(data, mime)
-        value = "outputs/job-%s/%s-%s%s" % (self.runtime.job["id"], call_id, index, MEDIA_TYPES[mime])
-        self.runtime.reject_symlink_path(value)
-        path = self.runtime.resolve_path(value)
-        self.runtime.check_write_allowed(path)
-        self.runtime.workstream_files.register_path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("xb") as handle:
-            handle.write(data)
-        self.runtime.workstream_files.track_file(path)
-        self.runtime.normalize_and_index_path(path, source="model_service")
-        return {"path": str(path.relative_to(self.runtime.shared_root)), "mime_type": mime, "bytes": len(data)}
-
 
 MODEL_SERVICE_TOOL = {
     "type": "function",

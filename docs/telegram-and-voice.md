@@ -75,6 +75,23 @@ read the initialization container's original secret mount.
 - Outbound attachments accept `path` inside the shared workspace, inline `content`
   with a filename, or a clean `artifact_id` from the current conversation thread.
   Exact outbound bytes are scanned. The batch is capped at 50 MiB and ten attachments.
+- Attachments default to documents. Set `voice_note: true` on an attachment to use
+  Telegram's native voice-message player. This accepts MP3, Ogg/Opus, or M4A
+  with matching content types and signatures; WAV/PCM and other formats are
+  rejected rather than silently converted. Existing recipient authorization,
+  scanning, rate limits and uncertain-delivery protection still apply.
+
+For example, after a separate synthesis tool returns an MP3 workspace path:
+
+```json
+{"text":"","attachments":[{"path":"outputs/job-12/example-0.mp3","voice_note":true}]}
+```
+
+Speech generation is independently enabled through **Advanced Settings →
+Text-to-speech** and does not require Telegram or local transcription.
+Discover a model supporting MP3 for native voice-note delivery; PCM-only models
+produce WAV files, which can still be sent as ordinary documents. See
+[text-to-speech](tools-reference.md#text-to-speech-tool).
 
 Hosted Bot API downloads are limited to 20 MB; larger incoming files need another
 channel such as Dropbox. New document uploads are limited to 50 MB. Sending an image

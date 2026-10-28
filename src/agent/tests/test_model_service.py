@@ -17,6 +17,7 @@ from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
 from assistant_agent.model_service import ModelService, ModelServiceError, OpenRouterModels, ProviderRejected
 from assistant_agent.tools import ToolError, ToolRuntime, available_function_names, available_tools, tool_catalog
+from assistant_agent.tts import TextToSpeech
 
 
 MODELS = [
@@ -97,6 +98,31 @@ def test_model_filters_and_pagination(service):
     result = service.run("query_models", limit=1, offset=1)
     assert result["total"] == 4 and result["next_offset"] == 2
     assert result["models"][0]["id"] == "test/image"
+
+def test_tts_shares_persisted_spending_and_unknown_cost_blocks_with_presets(service):
+    service.add_preset("text", "test/text")
+    with patch.object(service.client, "complete", return_value=reply(cost=4.9)):
+        service.use_preset("text", PROMPT)
+    service.config.values["agent"]["tts"] = {"enabled": True}
+    tts = TextToSpeech(service.runtime)
+    model = {"id": "test/tts", "architecture": {"output_modalities": ["speech"]}, "supported_voices": ["voice"]}
+
+    def synthesize(payload, record_generation):
+        record_generation("gen-tts-test")
+        return b"ID3audio", "audio/mpeg", "gen-tts-test"
+
+    with patch.object(tts.client, "models", return_value=[model]), patch.object(
+        tts.client, "synthesize", side_effect=synthesize
+    ) as send, patch.object(tts.client, "generation", return_value={"total_cost": 0.2}):
+        tts.generate("test/tts", "Hello", "voice")
+        assert service.budget()["spent_usd"] == 5.1
+        with pytest.raises(ModelServiceError, match="budget exhausted"):
+            tts.generate("test/tts", "Hello", "voice")
+        with pytest.raises(ModelServiceError, match="budget exhausted"):
+            service.use_preset("text", PROMPT)
+    assert send.call_count == 1
+    rows = service.db.fetch_all("SELECT preset FROM model_service_calls")
+    assert any(row["preset"].get("tool") == "text_to_speech" for row in rows)
 
 
 def test_completion_is_isolated_and_accounts_cost_and_tokens(service):

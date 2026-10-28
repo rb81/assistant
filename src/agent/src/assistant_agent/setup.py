@@ -66,8 +66,12 @@ ADVANCED_SETTINGS = {
     "Model preset tool": (
         ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
         ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", "Restrict the model preset tool to Zero Data Retention (ZDR) models and routing? (No = all models)", False, bool, None),
-        ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", "Shared model tool budget (USD; checked before each request, final request may exceed it)", 5.0, float, 0.01),
+        ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", "Shared model preset and TTS budget (USD; checked before each request, final request may exceed it)", 5.0, float, 0.01),
         ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", "Rolling budget period (days, 1-365)", 30, int, 1),
+    ),
+    "Text-to-speech": (
+        ("AGENT_TTS_ENABLED", "agent.tts.enabled", "Enable dedicated text-to-speech? (requires OPENROUTER_API_KEY; shares spending limits with the model preset tool)", False, bool, None),
+        ("AGENT_TTS_ZDR_ONLY", "agent.tts.zdr_only", "Restrict text-to-speech to ZDR models and routing? (No = all speech models)", False, bool, None),
     ),
     "Research and notifications": (
         ("AGENT_DEEP_RESEARCH_ENABLED", "agent.deep_research.enabled", "Enable deep research? (requires supported model access)", True, bool, None),
@@ -2112,6 +2116,9 @@ def draft_problems(instance):
     model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
     if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
         problem("advanced", "Model preset tool requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
+    tts_enabled = values.get("AGENT_TTS_ENABLED", instance.defaults.get("agent.tts.enabled", False))
+    if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
+        problem("advanced", "Text-to-speech requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
     def embedding_value(field, default):
         return values.get("AGENT_EMBEDDINGS_" + field.upper(), instance.defaults.get("agent.embeddings." + field, default))
 

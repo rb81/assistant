@@ -50,16 +50,35 @@ class WorkstreamTools(Tools):
         self.console.print(json.dumps(value, ensure_ascii=False, indent=2), markup=False, highlight=False)
 
     def choose(self):
+        category = self.select("Data category", ["User workstreams", "Administrative data"])
+        if category == "Back":
+            return None
+        administrative = category == "Administrative data"
+        if administrative:
+            self.console.print(
+                "Administrative data holds unattributed legacy records and system messages, not user tasks. "
+                "The object count excludes delivery records, so zero objects does not mean empty. "
+                "Administrative messages can recreate this bucket after deletion."
+            )
         cursor = None
         while True:
             rows = self.command("list", {"before_id": cursor})["workstreams"]
-            if not rows:
-                self.console.print("No workstreams.")
+            visible = [row for row in rows
+                       if (row["main_thread_id"] == "system:unattributed") == administrative]
+            has_older = len(rows) == 50
+            if not visible:
+                if has_older:
+                    cursor = rows[-1]["id"]
+                    continue
+                self.console.print("No administrative data." if administrative else "No user workstreams.")
                 return None
-            labels = {f"#{row['id']} {row['title']} ({row['object_count']} objects, {row['status']}; parent {row['parent_id']})": row
-                      for row in rows}
-            choices = list(labels) + (["Older workstreams"] if len(rows) == 50 else [])
-            selected = self.select("Workstream", choices)
+            labels = {}
+            for row in visible:
+                title = "Unattributed administrative data" if administrative else row["title"]
+                parent = f"; parent #{row['parent_id']}" if row["parent_id"] is not None else ""
+                labels[f"#{row['id']} {title} ({row['object_count']} objects, {row['status']}{parent})"] = row
+            choices = list(labels) + (["Older workstreams"] if has_older else [])
+            selected = self.select(category, choices)
             if selected == "Back":
                 return None
             if selected != "Older workstreams":

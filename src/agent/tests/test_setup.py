@@ -676,6 +676,22 @@ assert [call[0] for call in provider.mock_calls] == ["list_calendars", "list_eve
             with self.assertRaisesRegex(SetupError, "Model preset tool requires OPENROUTER_API_KEY"):
                 validate_draft(reopened)
 
+    def test_tts_setup_saves_independent_flags_and_requires_openrouter(self):
+        import questionary
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.saved_configuration(root)
+            responses = ["Text-to-speech", True, True, "done"]
+            with patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
+                prompt_advanced_settings(instance, lambda question: question.unsafe_ask(), MagicMock())
+            instance.save()
+            reopened = Installation(root)
+            self.assertEqual(reopened.values["AGENT_TTS_ENABLED"], "true")
+            self.assertEqual(reopened.values["AGENT_TTS_ZDR_ONLY"], "true")
+            self.assertNotEqual(reopened.values.get("AGENT_MODEL_SERVICE_ENABLED"), "true")
+            reopened.secret_values.pop("OPENROUTER_API_KEY", None)
+            with self.assertRaisesRegex(SetupError, "Text-to-speech requires OPENROUTER_API_KEY"):
+                validate_draft(reopened)
+
     def test_email_section_preserves_advanced_digest_interval(self):
         import questionary
         with tempfile.TemporaryDirectory() as root:
