@@ -75,8 +75,14 @@ erasing owned records and eligible derived files.
 - `provider_mutations` — durable mutation attempts and reconciliation state.
 - `model_presets` and `model_service_calls` — secondary-model configuration,
   calls, token usage, and cost accounting.
-- `sandbox_network_rules` — admin allow/block rules for sandbox egress hosts,
-  global (`job_id` NULL) or scoped to one job.
+- `sandbox_scripts` — registered entry identities and persistent script blocks.
+- `sandbox_script_versions` — fingerprinted invocation/code manifests,
+  reusable-approval eligibility, and cached screening findings.
+- `sandbox_permission_grants` — run and host allows/blocks, scoped to one
+  execution, one version, or globally; once grants record consumption.
+- `sandbox_permission_history` — administrator permission-change audit history.
+- `sandbox_network_rules` — retained legacy egress allow/block rules, global
+  (`job_id` NULL) or scoped to one job; not converted into version-bound grants.
 - `runtime_state` and `manual_events` — runtime metadata and monitor actions.
 
 ## Queue and execution

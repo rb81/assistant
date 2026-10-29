@@ -14,9 +14,22 @@
   now opens the workstream. Legacy commands reply with a hint.
 - Sandbox egress is deny-by-default: each command gets a per-run HTTPS proxy
   sidecar (SNI-checked, no private addresses, DNS sink). Agents request hosts
-  with `network_access_request`; admins choose Approve once/always, Block
-  once/always or Cancel job via Telegram or email, with optional feedback.
-  `SANDBOX_EGRESS_MODE=open` restores the previous behaviour.
+  with `network_access_request`; new approvals use exact hosts, not URL paths
+  or implicit subdomains.
+- Scripts require **Approve once**, **Approve always**, or **Deny** through
+  email, Telegram, or both, with optional feedback. Reusable grants bind code
+  and dependency hashes, argv, workdir, sandbox image/runtime, and security
+  policy. Executions use read-only code snapshots; once grants are consumed
+  before dispatch and registered scripts are not automatically redispatched.
+- Host grants can cover one execution, one script version, or all approved
+  scripts. Telegram **/list → Permissions**, setup Tools, and the admin CLI
+  expose versions, code/diffs, grants, blocks, and history. Revocation stops
+  active sandbox runs. Legacy network rules keep their original scopes.
+- Script screening findings are cached per version/security profile; reusable
+  administrator approval avoids repeated checks. Screening is optional, but
+  script permission is not. Malicious findings remain hard-blocked.
+- Upgrading script permissions requires saving setup again and rebuilding/
+  recreating services to provision revoke-only credentials and service grants.
 - Telegram voice notes are converted to Ogg/Opus (ffmpeg in the task-agent
   image) so they appear as native voice messages, without a filename caption.
   `telegram_send` text is optional with attachments, and

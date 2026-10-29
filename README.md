@@ -114,6 +114,7 @@ Assistant can take real actions. Start with narrow permissions and expand them i
 
 - No application port is published by default; there is no browser dashboard or management API.
 - Commands run in fresh sandbox containers, not directly on your host. The sandbox broker's Docker socket still grants high privilege: review the [security boundaries](docs/security.md).
+- Scripts require version-bound run approval; website access is approved separately by exact host. Manage grants and blocks through Telegram or setup; see [script permissions](docs/sandbox.md#script-versions-and-run-permissions).
 - Email administration is restricted to the configured admin; optional sender authentication and decision-model screening add further controls.
 - Secrets are scoped to the services that need them. Read-only documentation access does not expose host configuration or credentials.
 
@@ -130,6 +131,7 @@ Start at the **[documentation index](docs/README.md)** for task-based navigation
 | Understand the harness | [Architecture](docs/architecture.md) · [Agent loop](docs/agent-loop.md) |
 | Understand the available tools | [Tool reference](docs/tools-reference.md) |
 | Check isolation, credentials, and permissions | [Security](docs/security.md) · [Sandbox](docs/sandbox.md) |
+| Activate and test script approvals | [Upgrade and acceptance checklist](docs/sandbox.md#upgrade-and-acceptance-checklist) |
 | Change the implementation | [Codebase guide](docs/codebase.md) |
 
 Upgrading an older installation? Use the separate **[transition package and guide](https://github.com/rb81/assistant/releases/tag/layout-transition)** before starting the current code.

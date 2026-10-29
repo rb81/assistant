@@ -25,6 +25,8 @@ containers receive this documentation, not the host source tree.
 - [Advanced configuration](advanced-configuration.md) — model limits and worker scaling.
 - [Environment overrides](env-overrides.md) — supported expert settings and precedence.
 - [Security](security.md) — trust boundaries, approvals, and hardening.
+- [Script and website permissions](sandbox.md#script-versions-and-run-permissions) —
+  approval scopes, revocation, and an [upgrade/testing checklist](sandbox.md#upgrade-and-acceptance-checklist).
 - [Docker setup](docker-setup.md) — images, Compose services, mounts, and networks.
 
 ## System and development

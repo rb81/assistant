@@ -87,6 +87,16 @@ the job to `needs_review`. Rate-limit exceptions apply the configured
 Security screening can also pause a tool call for admin approval in
 `needs_review`. Approval permits retrying the identical call, not changed arguments.
 
+Scripts have a separate permission workflow even when screening is disabled:
+`script_approval_request` registers the finished version, then
+`network_access_request` requests any missing hosts for the identical invocation.
+Missing grants pause the job in `needs_review` with `metadata.permission_request`.
+An authenticated decision records the grant or denial, optional feedback, and
+queues the job without increasing its budgets. A generic resume is not a grant.
+Once grants are consumed before dispatch; registered script dispatches are not
+automatically retried after an uncertain result. See
+[script permissions](sandbox.md#script-versions-and-run-permissions).
+
 ## Async Requests
 
 If tool call is async-request type (`deep_research_request`):

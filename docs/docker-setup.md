@@ -96,6 +96,11 @@ does not remove the broker service or its Docker socket mount from Compose.
 
 ## Maintenance
 
+When upgrading to version-bound script permissions, save setup again before
+rebuilding so revoke-only credentials and service-specific secret grants are
+generated. A container restart alone does not activate the change. See the
+[upgrade and acceptance checklist](sandbox.md#upgrade-and-acceptance-checklist).
+
 Rebuild and recreate after changing application source:
 
 ```bash

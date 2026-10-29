@@ -154,6 +154,58 @@ For upgrades, save setup again to generate the revoke-only credential and
 updated Compose secret grants, then rebuild/recreate the agent and sandbox
 services. Runtime database migration preserves existing rules.
 
+## Upgrade and acceptance checklist
+
+Back up local state before upgrading. From the repository root, run `./setup.sh`,
+review **Advanced Settings → Approvals and names**, select `email`, `telegram`,
+or `both`, and save. Telegram requires a configured, verified administrator;
+email requires the admin address and working mail delivery.
+
+Rebuild and recreate the stack using the generated Compose configuration:
+
+```bash
+docker compose --env-file data/.env up -d --build
+docker compose --env-file data/.env ps
+docker compose --env-file data/.env logs --tail=100 task-agent sandbox
+```
+
+Confirm services are healthy and migrations complete before testing. Do not use
+database reset or remove volumes to activate permissions. Existing legacy rules
+are preserved: inspect **Permissions → Legacy rules** for broad or job-wide
+access you no longer want.
+
+Use a harmless script and non-sensitive data for these checks:
+
+| Check | Expected result |
+|---|---|
+| New script | Run approval arrives through the configured channel(s), even with screening disabled. |
+| Approve once | One execution succeeds; a second needs approval. Failure does not restore the grant. |
+| Approve always | The unchanged invocation can run again, including in another job, without another run prompt. |
+| Change source, a local helper, or argv | A new version needs approval; old script-specific host grants do not apply. |
+| Request `https://example.com/feed.rss` | The request clearly grants `example.com`, including other HTTPS paths, not just `/feed.rss`; subdomains remain separate. |
+| Always for this script | Another version does not inherit the host grant. |
+| Always for all approved scripts | Another approved script can use the host; an unapproved script still needs run approval. |
+| Deny with feedback | The job receives the decision/guidance; the same denied request is not repeatedly prompted or bypassed. |
+| Delivery set to both | Either channel resolves the request; the other channel cannot approve it a second time. |
+| Block a host or script | Future matching execution/access is refused; all active sandbox runs are stopped. |
+| Revoke a reusable grant | Future use requires approval again unless another applicable grant remains. |
+
+Always may be unavailable for an uninspectable dependency graph; use once rather
+than treating that as a UI failure. Configured defaults and retained legacy rules
+can already allow a host, so inspect the host list before testing a missing-host
+prompt. Removing a block does not remove a separate allow, and revoking one grant
+does not remove other applicable grants.
+
+For screening tests, enable script screening and approve an unchanged version:
+successful findings are cached, reusable approval bypasses repeat checks, and
+changed code or policy requires a fresh context. Screening errors are not cached
+as success; malicious findings cannot be overridden by ordinary run approval.
+
+If revocation reports that permissions were saved but active runs could not be
+stopped, stop the sandbox service before relying on the change. Revocation cannot
+undo completed writes or external requests. See [network access approvals](#network-access-approvals)
+for management commands and credential boundaries.
+
 ## Isolation Modes
 
 ### `SANDBOX_ISOLATION_MODE=container` (default, production)

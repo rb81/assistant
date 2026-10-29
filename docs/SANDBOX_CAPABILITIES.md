@@ -3,7 +3,13 @@
 This page describes the default image built from `src/sandbox/Dockerfile` and
 `src/sandbox/requirements.txt`. Custom run images may differ.
 
-Use `command_execute` for scripts and commands. Keep task files in the shared
+Use `command_execute` for scripts and commands. Before executing a new script
+version, finish its code and helpers, call `script_approval_request` with exact
+argv/workdir and purpose, then request any missing hosts with
+`network_access_request` using the same argv/workdir. Execute that identical
+invocation only after approval. Changes require a new approval.
+
+Keep task files in the shared
 workspace (`/data/share` by default); only workspace changes persist between
 commands. Pass an argument array, not a shell command string:
 
@@ -12,6 +18,10 @@ commands. Pass an argument array, not a shell command string:
 ```
 
 For shell syntax such as pipes, explicitly invoke `["sh","-c","..."]`.
+Inline code also requires run approval. Approved code executes from a read-only
+snapshot; use the workdir or explicit workspace paths for data and outputs,
+not `__file__`. Once grants cover one execution, including failures, and are not
+restored after an uncertain response. Do not retry an uncertain script dispatch.
 
 The canonical harness documentation is mounted read-only at
 `/data/share/.assistant/docs` in the agent, broker, and each command container.
@@ -60,10 +70,13 @@ same call, or use a workspace-local environment. Default limits are 2 CPUs,
 ## Network access
 
 Commands reach the internet only over HTTPS through an approval proxy. Package
-registries (PyPI, npm) are allowed by default; every other host needs admin
-approval. Before running code that needs other hosts, call
-`network_access_request` with the URLs and a clear purpose; the job pauses until
-the administrator decides. Check the `network` field of `command_execute`
+registries (PyPI, npm) are allowed by default unless blocked; other hosts need
+an applicable grant. After run approval, call `network_access_request` with the
+URLs or exact hosts, the identical command/workdir, and a clear purpose.
+Access covers every HTTPS path on that host, not just the supplied URL;
+subdomains are not implicitly included. Redirects to another host need that
+host approved too. The administrator chooses one execution, this script version,
+or all approved scripts. Check the `network` field of `command_execute`
 results: blocked hosts are listed with reasons. Never use other hosts, mirrors,
 IP addresses, DNS tricks or tools to get around a refusal, and do not request
 hosts the administrator blocked. Plain HTTP and non-443 ports are not available.
@@ -117,7 +130,9 @@ print(text or "No main content extracted")
 - If `curl`, `wget`, or Python HTTP requests fail, inspect both stdout and stderr from `command_execute`.
 - HTTP 403/406 can indicate access restrictions or client blocking; do not assume
   changing headers will resolve it.
-- DNS issues can be checked with `dig example.com` or `nslookup example.com`.
+- Direct DNS is intentionally unavailable in proxy mode; `dig`/`nslookup`
+  failures are not evidence that the remote site is down. Check the command's
+  network summary and HTTPS response instead.
 - TLS/certificate issues may indicate a site-specific certificate problem or missing CA support.
 - Some websites require JavaScript rendering. The default sandbox does not include a browser automation stack such as Playwright or Selenium.
 
