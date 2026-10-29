@@ -740,6 +740,34 @@ with tempfile.TemporaryDirectory() as root:
                                 validate_draft(instance)
                     instance.values.pop(name)
 
+    def test_downloader_receives_telegram_approval_credentials_in_both_stores(self):
+        for use_volume in (False, True):
+            with self.subTest(use_volume=use_volume), tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+                instance = self.saved_configuration(root)
+                instance.secret_values["TELEGRAM_BOT_TOKEN"] = "test-token"
+                instance.use_credential_volume = use_volume
+                instance.save()
+
+                reopened = Installation(root)
+                overlay = reopened.overlay()
+                downloader = overlay["services"]["downloader"]
+                self.assertIsNone(downloader["environment"]["TELEGRAM_BOT_TOKEN"])
+                self.assertEqual(downloader["environment"]["TELEGRAM_BOT_TOKEN_FILE"],
+                                 "/run/secrets/TELEGRAM_BOT_TOKEN")
+                if use_volume:
+                    self.assertIn("TELEGRAM_BOT_TOKEN",
+                                  reopened.credential_volume.record["grants"]["downloader"])
+                    self.assertEqual(downloader["volumes"][0]["volume"]["subpath"],
+                                     "services/downloader")
+                    self.assertTrue(downloader["volumes"][0]["read_only"])
+                else:
+                    self.assertIn("TELEGRAM_BOT_TOKEN", downloader["secrets"])
+                    self.assertEqual(Path(overlay["secrets"]["TELEGRAM_BOT_TOKEN"]["file"]).read_text(),
+                                     "test-token")
+                for service in ("workspace-indexer", "supervisor"):
+                    self.assertNotIn("TELEGRAM_BOT_TOKEN_FILE",
+                                     overlay["services"][service]["environment"])
+
     def test_telegram_approvals_reuse_admin_email_recipient_mapping(self):
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)
