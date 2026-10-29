@@ -85,8 +85,9 @@ class EmbeddingMaintenanceTest(unittest.TestCase):
             *[[] for source in SOURCES[2:]],
         ]
         with patch.object(service.client, "embed", side_effect=[RuntimeError("offline"), [1.0, 0.0]]), \
-             self.assertLogs("assistant.embedding_maintenance", level="ERROR"):
+             self.assertLogs("assistant.embedding_maintenance", level="ERROR") as logs:
             result = service.refresh_pending(1)
+        self.assertIsNotNone(logs.records[0].exc_info)
         self.assertEqual(result, {"refreshed": 1, "conflicts": 0, "failed": 1})
         self.assertEqual(len(service.db.fetch_all.call_args_list), len(SOURCES))
         for call in service.db.fetch_all.call_args_list:
@@ -100,6 +101,29 @@ class EmbeddingMaintenanceTest(unittest.TestCase):
             self.assertEqual(service.refresh_pending(1)["refreshed"], 1)
         self.assertEqual(service.db.fetch_all.call_args_list[len(SOURCES)].args[1][-2:], (1, 1))
         self.assertEqual(service.db.fetch_all.call_args_list[len(SOURCES) + 1].args[1][-2:], (0, 1))
+
+    def test_automatic_refresh_timeout_warns_without_traceback_and_retries(self):
+        service = self.service()
+        service.db.fetch_all.side_effect = [
+            [{"id": 79, "content": "first"}],
+            [{"id": 80, "content": "second"}],
+            *[[] for source in SOURCES[2:]],
+        ]
+        with patch.object(service.client, "embed", side_effect=[TimeoutError("timed out"), [1.0, 0.0]]), \
+             self.assertLogs("assistant.embedding_maintenance", level="WARNING") as logs:
+            result = service.refresh_pending(1)
+        self.assertEqual(result, {"refreshed": 1, "conflicts": 0, "failed": 1})
+        self.assertEqual(len(logs.records), 1)
+        self.assertEqual(logs.records[0].levelname, "WARNING")
+        self.assertIsNone(logs.records[0].exc_info)
+        self.assertEqual(logs.records[0].getMessage(),
+                         "embedding request timed out for agent_memories record 79; will retry")
+
+        service.db.fetch_all.side_effect = [
+            [], [{"id": 79, "content": "first"}], [], [], *[[] for source in SOURCES[2:]],
+        ]
+        with patch.object(service.client, "embed", return_value=[1.0, 0.0]):
+            self.assertEqual(service.refresh_pending(1)["refreshed"], 1)
 
     def test_automatic_refresh_skips_disabled_or_locked_and_retries_conflicts(self):
         service = self.service()

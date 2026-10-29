@@ -121,6 +121,9 @@ class EmbeddingMaintenance:
                             if deadline is not None:
                                 self.client.timeout_seconds = min(timeout, max(0.01, deadline - time.monotonic()))
                             saved = self.refresh_row(table, fields, builder, active, row)
+                        except TimeoutError:
+                            result["failed"] += 1
+                            LOGGER.warning("embedding request timed out for %s record %s; will retry", table, row["id"])
                         except Exception:
                             result["failed"] += 1
                             LOGGER.exception("automatic embedding refresh failed for %s record %s; will retry", table, row["id"])
