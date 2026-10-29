@@ -79,10 +79,16 @@ erasing owned records and eligible derived files.
 - `sandbox_script_versions` — fingerprinted invocation/code manifests,
   reusable-approval eligibility, and cached screening findings.
 - `sandbox_permission_grants` — run and host allows/blocks, scoped to one
-  execution, one version, or globally; once grants record consumption.
-- `sandbox_permission_history` — administrator permission-change audit history.
+  execution or one version; only blocks can be global. Once grants record consumption.
+- `sandbox_development_sessions` — immutable admin-approved briefs, lifecycle,
+  job/script identity, approval-time expiry, and atomic execution budget.
+- `sandbox_development_reviews` — complete-version supervisor decisions and exact
+  host sets, separated into iteration and final reviews.
+- `sandbox_permission_history` — administrator changes, supervisor decisions
+  and development execution audit history.
 - `sandbox_network_rules` — retained legacy egress allow/block rules, global
-  (`job_id` NULL) or scoped to one job; not converted into version-bound grants.
+  (`job_id` NULL) or scoped to one job. Legacy allows are inactive; blocks still
+  apply. Global grants are retired with audit records by migration 016.
 - `runtime_state` and `manual_events` — runtime metadata and monitor actions.
 
 ## Queue and execution

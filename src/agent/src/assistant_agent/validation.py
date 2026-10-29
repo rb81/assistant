@@ -156,6 +156,13 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
             except DecisionError as exc:
                 errors.append("Security decision model: %s" % exc)
 
+    if role in ("task-agent", "all"):
+        from .development_supervisor import configuration_errors
+        errors.extend(configuration_errors(config))
+        if (config.get("agent.security.development.model_preset", "default") != "default"
+                and not is_set(read_secret("OPENROUTER_API_KEY"))):
+            errors.append("Development supervisor named presets require OPENROUTER_API_KEY")
+
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
     model_required = role in ("task-agent", "all") or deep_research_role_enabled or heartbeat_role_enabled

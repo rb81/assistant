@@ -239,6 +239,8 @@ def apply_decision(db, payload: dict[str, Any], decision: str, feedback: str = "
     from .requests import TransactionDatabase
     if decision not in DECISIONS:
         raise ValueError("Unknown network decision")
+    if decision in {"once", "always"}:
+        raise ValueError("Network-only approvals are retired. Request combined script and host approval with script_approval_request.")
     feedback = str(feedback or "").strip()
     with db.connect() as conn:
         database = TransactionDatabase(conn)
@@ -253,7 +255,7 @@ def apply_decision(db, payload: dict[str, Any], decision: str, feedback: str = "
         hosts = list(request.get("hosts") or [])
         label = DECISIONS[decision]
         note = "%s by %s: %s" % (label, actor, request.get("purpose", ""))[:1000]
-        if decision in {"once", "block"}:
+        if decision == "block":
             for host in hosts:
                 database.execute(
                     """INSERT INTO sandbox_network_rules(host, decision, job_id, note, created_by)
@@ -261,9 +263,9 @@ def apply_decision(db, payload: dict[str, Any], decision: str, feedback: str = "
                        ON CONFLICT (job_id, host) WHERE job_id IS NOT NULL
                        DO UPDATE SET decision = EXCLUDED.decision, note = EXCLUDED.note,
                                      created_by = EXCLUDED.created_by, created_at = now()""",
-                    (host, "allow" if decision == "once" else "block", job["id"], note, actor),
+                    (host, "block", job["id"], note, actor),
                 )
-        elif decision in {"always", "blockall"}:
+        elif decision == "blockall":
             for host in hosts:
                 database.execute(
                     """INSERT INTO sandbox_network_rules(host, decision, job_id, note, created_by)
@@ -271,13 +273,8 @@ def apply_decision(db, payload: dict[str, Any], decision: str, feedback: str = "
                        ON CONFLICT (host) WHERE job_id IS NULL
                        DO UPDATE SET decision = EXCLUDED.decision, note = EXCLUDED.note,
                                      created_by = EXCLUDED.created_by, created_at = now()""",
-                    (host, "allow" if decision == "always" else "block", note, actor),
+                    (host, "block", note, actor),
                 )
-                if decision == "always":
-                    database.execute(
-                        "DELETE FROM sandbox_network_rules WHERE job_id = %s AND host = %s AND decision = 'block'",
-                        (job["id"], host),
-                    )
         if decision == "cancel":
             database.execute(
                 """UPDATE jobs SET status = 'cancelled', completed_at = now(), locked_at = NULL, locked_by = NULL,
@@ -285,11 +282,9 @@ def apply_decision(db, payload: dict[str, Any], decision: str, feedback: str = "
                 ("Cancelled by admin during network access review" + (": " + feedback if feedback else ""), job["id"]),
             )
         else:
-            granted = decision in {"once", "always"}
             instruction = (
                 "Administrator decision on your network access request (%s) for %s: %s. %s" % (
                     request.get("id"), ", ".join(hosts), label,
-                    "You may now retry commands that need these hosts." if granted else
                     "Do not access these hosts or try to work around the block; continue without them "
                     "or report what cannot be done.",
                 )
@@ -339,7 +334,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m assistant_agent.network_access",
                                      description="Manage sandbox network access rules.")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="show default hosts and stored rules")
+    commands.add_parser("list", help="show inactive legacy allows and stored blocks")
     for name in ("allow", "block"):
         command = commands.add_parser(name, help="%s a host for all jobs (or one job with --job)" % name)
         command.add_argument("host", help="host name or *.example.com")
@@ -349,11 +344,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     remove.add_argument("host")
     remove.add_argument("--job", type=int)
     args = parser.parse_args(argv)
+    if args.command == "allow":
+        parser.error("Global/job host allows are retired; request combined version-bound script and host approval.")
     config = load_config()
     db = Database(database_url(config))
     if args.command == "list":
         print(json.dumps({
-            "default_allowed": default_hosts(config),
+            "inactive_legacy_defaults": default_hosts(config),
             "rules": [
                 {key: (str(value) if key == "created_at" else value) for key, value in row.items()}
                 for row in db.fetch_all(

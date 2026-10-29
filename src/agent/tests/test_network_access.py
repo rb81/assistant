@@ -49,6 +49,13 @@ def test_parse_email_decision():
     assert network_access.parse_email_decision("sure go ahead")[0] is None
 
 
+def test_legacy_cli_refuses_host_allows_without_connecting_to_database(capsys):
+    with pytest.raises(SystemExit) as raised:
+        network_access.main(["allow", "api.example.com"])
+    assert raised.value.code == 2
+    assert "Global/job host allows are retired" in capsys.readouterr().err
+
+
 @pytest.fixture
 def db():
     url = os.environ.get("ASSISTANT_TEST_DATABASE_URL")
@@ -89,19 +96,14 @@ def test_create_request_skips_already_allowed_hosts(db):
     assert result == {"allowed": ["pypi.org"], "blocked": [], "status": "no_approval_needed"}
 
 
-def test_approve_once_scopes_to_job_and_resumes_with_instruction(db):
+def test_legacy_network_only_approvals_are_refused_instead_of_granting_global_access(db):
     job, payload = paused_job(db, ["https://api.data.com/v1", "api.data.com"])
-    message = network_access.apply_decision(db, payload, "once", "only the v1 endpoint", "telegram-admin")
-    assert "api.data.com" in message and "resumed" in message
+    for decision in ("once", "always"):
+        with pytest.raises(ValueError, match="Network-only approvals are retired"):
+            network_access.apply_decision(db, payload, decision, "only the v1 endpoint", "telegram-admin")
     current = db.fetch_one("SELECT status, metadata FROM jobs WHERE id = %s", (job["id"],))
-    assert current["status"] == "queued" and "network_request" not in current["metadata"]
-    instruction = db.fetch_one("SELECT instruction FROM supervisor_instructions WHERE job_id = %s", (job["id"],))
-    assert "Approve once" in instruction["instruction"] and "only the v1 endpoint" in instruction["instruction"]
-    assert "api.data.com" in network_access.policy(db, CONFIG, job["id"])["allow"]
-    other = db.create_manual_job("Other", "Other")
-    assert "api.data.com" not in network_access.policy(db, CONFIG, other["id"])["allow"]
-    with pytest.raises(ValueError, match="already handled"):
-        network_access.apply_decision(db, payload, "always")
+    assert current["status"] == "needs_review" and "network_request" in current["metadata"]
+    assert not db.fetch_all("SELECT 1 FROM sandbox_network_rules")
 
 
 def test_block_always_is_global_and_later_requests_report_it(db):

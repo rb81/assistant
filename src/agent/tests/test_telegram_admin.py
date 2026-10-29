@@ -54,20 +54,104 @@ def test_approval_delivery_obeys_selected_channels_and_shares_one_record(mode, e
         assert state["channel"] == mode
 
 
-def test_script_permission_host_scope_requires_explicit_broad_confirmation(ui):
+def test_legacy_network_delivery_only_offers_blocks_and_cancellation():
+    with patch("assistant_agent.email_approvals.send_admin_email") as email, patch(
+        "assistant_agent.telegram.TelegramClient"
+    ) as telegram:
+        EmailApprovals(MagicMock(), config("both")).request(
+            "network:12", {"kind": "network", "job_id": 12}, "Website access requested",
+        )
+    body = email.call_args.args[2]
+    assert "fresh combined script and host approval" in body
+    assert "APPROVE ONCE" not in body and "APPROVE ALWAYS" not in body
+    assert "BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB" in body
+    message = telegram.return_value.call.call_args.args[1]
+    assert "fresh combined script and host approval" in message["text"]
+    buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
+    assert {button["text"] for button in buttons} == {
+        "Block once", "Block always", "Cancel job", "Add feedback first", "Details", "Not now",
+    }
+
+
+@pytest.mark.parametrize("action", ["once", "always"])
+def test_legacy_network_approve_callbacks_reject_before_consumption(ui, action):
+    pending = {"payload": {"kind": "network", "job_id": 12},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram") as consume, \
+            patch("assistant_agent.network_access.apply_decision") as apply:
+        with pytest.raises(ValueError, match="fresh combined script and host approval"):
+            ui.approval("123", "a" * 24, action)
+    consume.assert_not_called()
+    apply.assert_not_called()
+
+
+def test_legacy_network_review_explains_fresh_combined_approval(ui):
+    pending = {"payload": {"kind": "network", "job_id": 12},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+               "summary": "Website access requested\n\nDetails:\nmanifest"}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}):
+        ui.approval("123", "a" * 24, "review")
+    message = ui.client.call.call_args.args[1]
+    assert "fresh combined script and host approval" in message["text"]
+    buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
+    assert not any(button["callback_data"].endswith((":once", ":always")) for button in buttons)
+
+
+@pytest.mark.parametrize("action", ["scope", "broad", "global"])
+def test_legacy_global_host_approval_callbacks_fail_closed(ui, action):
     pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request",
                            "permission_type": "host", "reusable": True, "version_id": 1},
                "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
                "summary": "Allow api.example.com"}
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
-            patch.object(EmailApprovals, "consume_telegram") as consume:
-        ui.approval("123", "a" * 24, "scope")
-        buttons = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
-        assert any("this script" in button["text"] for row in buttons for button in row)
+            patch.object(EmailApprovals, "consume_telegram") as consume, \
+            patch("assistant_agent.script_permissions.apply_decision") as apply:
+        with pytest.raises(ValueError, match="Unknown permission action"):
+            ui.approval("123", "a" * 24, action)
         consume.assert_not_called()
-        ui.approval("123", "a" * 24, "broad")
-        assert "ALL approved scripts" in ui.client.call.call_args.args[1]["text"]
-        consume.assert_not_called()
+        apply.assert_not_called()
+
+
+@pytest.mark.parametrize("permission_type,reusable", [("development", True), ("final", False), ("host", False)])
+def test_unavailable_always_approval_is_rejected_without_consuming(ui, permission_type, reusable):
+    pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request",
+                           "permission_type": permission_type, "reusable": reusable, "version_id": 1},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+               "summary": "Permission approval"}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram") as consume, \
+            patch("assistant_agent.script_permissions.apply_decision") as apply:
+        with pytest.raises(ValueError, match="Unknown permission action"):
+            ui.approval("123", "a" * 24, "always")
+    consume.assert_not_called()
+    apply.assert_not_called()
+
+
+def test_final_review_card_shows_supervisor_conclusion_and_all_hosts_without_details(ui):
+    hosts = [
+        "%s.%s.%s.%s" % (chr(97 + number) * 63, "b" * 63, "c" * 63, "d" * 61)
+        for number in range(10)
+    ]
+    summary = ("Final script and host approval\n\nSupervisor conclusion: safe to proceed.\n"
+               + "Detailed supervisor comments. " * 300
+               + "\n\nHTTPS hosts (all paths; subdomains excluded):\n"
+               + "\n".join("- " + host for host in hosts) + "\n\nDetails:\nmanifest")
+    pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request",
+                           "permission_type": "final", "reusable": False, "version_id": 1},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+               "summary": summary}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}):
+        ui.approval("123", "a" * 24, "review")
+    text = ui.client.call.call_args.args[1]["text"]
+    assert "Supervisor conclusion: safe to proceed." in text
+    assert all(host in text for host in hosts)
+    assert len(text.encode("utf-16-le")) // 2 < 3900
+    assert "Brief/comments shortened" in text
+    assert "manifest" not in text
+    keyboard = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
+    assert not any(button["text"] == "Approve final always" for row in keyboard for button in row)
+    assert any(button["text"] == "Review Script" for row in keyboard for button in row)
 
 
 def test_permission_decision_applies_optional_feedback_without_generic_job_review(ui):
@@ -96,10 +180,61 @@ def test_permission_delivery_keeps_code_in_attachment_not_message_body():
     assert b"print(1)" in email.call_args.kwargs["attachment"][1]
 
 
+def test_initial_telegram_permission_message_preserves_long_host_list(ui):
+    hosts = [
+        "%s.%s.%s.%s" % (chr(97 + number) * 63, "b" * 63, "c" * 63, "d" * 61)
+        for number in range(10)
+    ]
+    summary = ("Final script and host approval\n\nSupervisor conclusion: safe to proceed.\n"
+               + "Detailed supervisor comments. " * 300
+               + "\n\nHTTPS hosts (all paths; subdomains excluded):\n"
+               + "\n".join("- " + host for host in hosts) + "\n\nDetails:\nmanifest")
+    with patch("assistant_agent.telegram.TelegramClient") as telegram:
+        EmailApprovals(ui.db, config()).request(
+            "permission:12", {"kind": "permission", "job_id": 12, "permission_type": "final"},
+            summary,
+        )
+    text = telegram.return_value.call.call_args.args[1]["text"]
+    assert "Supervisor conclusion: safe to proceed." in text
+    assert all(host in text for host in hosts)
+    assert len(text.encode("utf-16-le")) // 2 < 3900
+
+
+def test_permission_text_attachment_is_included_in_email_body():
+    db = MagicMock()
+    with patch("assistant_agent.email_approvals.send_admin_email") as email, patch(
+        "assistant_agent.telegram.TelegramClient"
+    ) as telegram:
+        EmailApprovals(db, config("email")).request(
+            "permission:12", {"kind": "permission", "job_id": 12, "permission_type": "final"},
+            "Final script approval", details_attachment=("script-version.txt", b"=== report.py ===\nprint('full source')"),
+        )
+    assert "print('full source')" in email.call_args.args[2]
+    telegram.assert_not_called()
+
+
 def test_permission_management_is_admin_only(ui):
     with pytest.raises(ValueError, match="Administrator permission"):
         ui.permissions("456")
     ui.db.fetch_all.assert_not_called()
+
+
+def test_host_management_excludes_defaults_and_global_allows_and_marks_legacy_allows_inactive(ui):
+    ui.db.fetch_all.return_value = []
+    ui.permissions("123", "phosts")
+    query = ui.db.fetch_all.call_args.args[0]
+    text = ui.client.call.call_args.args[1]["text"]
+    assert "scope IN ('script', 'once')" in query
+    assert "scope = 'global' AND decision = 'block'" in query
+    assert "Defaults and global allows are not shown as effective" in text
+    assert "Configured defaults:" not in text
+
+    ui.db.fetch_all.return_value = [{"id": 8, "decision": "allow", "host": "legacy.example.com"}]
+    ui.permissions("123", "plegacies")
+    payload = ui.client.call.call_args.args[1]
+    labels = [button["text"] for row in payload["reply_markup"]["inline_keyboard"] for button in row]
+    assert any("INACTIVE allow legacy.example.com" in label for label in labels)
+    assert "Legacy allow rules are inactive" in payload["text"]
 
 
 def test_telegram_delivery_failure_never_falls_back_to_email():

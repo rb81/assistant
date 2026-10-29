@@ -8,7 +8,7 @@ from psycopg.types.json import Jsonb
 
 from .approval_actions import apply_approval
 from .approval_channels import channels, review_label, review_summary, telegram_admins
-from .email_approvals import ApprovalDeliveryError, EmailApprovals
+from .email_approvals import ApprovalDeliveryError, EmailApprovals, telegram_permission_summary
 from .requests import TransactionDatabase
 
 
@@ -98,24 +98,26 @@ class TelegramAdmin:
                              files={"document": ("script-version-%s.txt" % identifier,
                                                  redact_secrets(content).encode(), "text/plain")}, sending=True)
         elif action == "phosts":
-            from .network_access import default_hosts
             rows = self.db.fetch_all(
                 """SELECT * FROM sandbox_permission_grants WHERE kind = 'host' AND consumed_at IS NULL
+                   AND ((version_id IS NOT NULL AND scope IN ('script', 'once'))
+                        OR (scope = 'global' AND decision = 'block'))
                    AND id > %s ORDER BY id LIMIT 9""", (identifier,))
             buttons = [[("Grant #%s %s %s" % (r["id"], r["decision"], r["target"]), "ui:phost:%s" % r["id"])]
                        for r in rows[:8]]
             if len(rows) > 8:
                 buttons.append([("More", "ui:phosts:%s" % rows[7]["id"])])
-            self.send(sender, "Configured defaults: %s\nSelect a grant to revoke or block its host." %
-                      ", ".join(default_hosts(self.config)),
+            self.send(sender, "Version-scoped grants and global blocks. Defaults and global allows are not shown as effective.",
                       buttons + [[("Legacy rules", "ui:plegacies:0"), ("Block a website...", "ui:pnewblock:0")], back])
         elif action == "plegacies":
             rows = self.db.fetch_all("SELECT * FROM sandbox_network_rules WHERE id > %s ORDER BY id LIMIT 9", (identifier,))
-            buttons = [[("Legacy #%s %s %s" % (r["id"], r["decision"], r["host"]), "ui:plegacy:%s" % r["id"])]
+            buttons = [[("Legacy #%s %s%s %s" % (
+                r["id"], "INACTIVE " if r["decision"] == "allow" else "", r["decision"], r["host"]),
+                "ui:plegacy:%s" % r["id"])]
                        for r in rows[:8]]
             if len(rows) > 8:
                 buttons.append([("More", "ui:plegacies:%s" % rows[7]["id"])])
-            self.send(sender, "Legacy host rules retain their original job/global scope.", buttons + [back])
+            self.send(sender, "Legacy allow rules are inactive and are not effective approvals.", buttons + [back])
         elif action in {"phost", "plegacy"}:
             legacy = action == "plegacy"
             row = self.db.fetch_one("SELECT * FROM " + ("sandbox_network_rules" if legacy else "sandbox_permission_grants") +
@@ -123,6 +125,10 @@ class TelegramAdmin:
             if not row:
                 raise ValueError("Grant no longer exists")
             text = json.dumps(row, default=str, indent=2)
+            if row["decision"] == "allow" and (
+                legacy or (row.get("scope") == "global" and row.get("version_id") is None)
+            ):
+                text = "INACTIVE LEGACY ALLOW — not an effective approval.\n" + text
             self.send(sender, text, [[("Remove legacy rule" if legacy else "Revoke grant",
                                       "ui:%s:%s" % ("premovelegacy" if legacy else "prevoke", identifier)),
                                      ("Block host globally", "ui:%s:%s" %
@@ -468,20 +474,16 @@ class TelegramAdmin:
                     "message_id": response["message_id"],
                     "expires": value["expires"],
                 })
-            elif action == "scope":
-                buttons = [[("Always for this script", "ap:%s:always" % callback_id)]] if value["payload"]["reusable"] else []
-                buttons += [[("All approved scripts...", "ap:%s:broad" % callback_id)],
-                            [("Back", "ap:%s:review" % callback_id)]]
-                self.send(sender, "Choose the scope for these HTTPS hosts:", buttons)
-            elif action == "broad":
-                self.send(sender, "Allow these entire HTTPS hosts for ALL approved scripts, including future versions?",
-                          [[("Confirm all scripts", "ap:%s:global" % callback_id),
-                            ("Back", "ap:%s:scope" % callback_id)]])
             elif action == "review":
                 keyboard = permission_keyboard(callback_id, value["payload"])
-                self.send(sender, value["summary"].split("\n\nDetails:", 1)[0][:2800],
+                self.send(sender, telegram_permission_summary(value["summary"]),
                           [[(button["text"], button["callback_data"]) for button in row] for row in keyboard])
-            elif action in {"once", "always", "global", "deny"}:
+            elif action in {"once", "always", "deny"}:
+                permission_type = value["payload"].get("permission_type")
+                if permission_type == "development" and action == "always":
+                    raise ValueError("Unknown permission action")
+                if action == "always" and not value["payload"].get("reusable"):
+                    raise ValueError("Unknown permission action")
                 feedback = self.db.get_state("permission-feedback:%s:%s" % (callback_id, sender)) or {}
                 payload = service.consume_telegram(callback_id, sender)
                 try:
@@ -516,9 +518,13 @@ class TelegramAdmin:
         elif action == "review" and network:
             from .email_approvals import network_keyboard
             text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
+            text = ("Legacy website requests cannot grant access. Request fresh combined script and host "
+                    "approval to allow access.\n\n" + text)
             self.send(sender, text, [[(button["text"], button["callback_data"]) for button in row]
                                      for row in network_keyboard(callback_id, value["payload"])])
-        elif network and action in {"once", "always", "block", "blockall", "cancel"}:
+        elif network and action in {"once", "always"}:
+            raise ValueError("Legacy website requests cannot grant access. Request fresh combined script and host approval.")
+        elif network and action in {"block", "blockall", "cancel"}:
             from .network_access import apply_decision
             payload = service.consume_telegram(callback_id, sender)
             try:

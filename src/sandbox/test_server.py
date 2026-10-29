@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -48,6 +49,27 @@ sys.modules.setdefault("pydantic", pydantic_module)
 
 import server
 import bootstrap
+
+
+class DevelopmentDeadlineTest(unittest.TestCase):
+    def test_expired_and_naive_authorizations_are_refused(self):
+        for expires, status in (
+            (datetime.now(timezone.utc) - timedelta(seconds=1), 409),
+            (datetime.now(), 400),
+        ):
+            request = server.CommandRequest(command=["python", "job.py"], authorization_expires_at=expires)
+            with self.assertRaises(server.HTTPException) as raised:
+                server.authorization_remaining(request)
+            self.assertEqual(raised.exception.status_code, status)
+        request = server.CommandRequest(command=["python", "job.py"],
+                                        authorization_expires_at=datetime.now(timezone.utc) + timedelta(seconds=20))
+        self.assertGreater(server.authorization_remaining(request), 0)
+
+    def test_yolo_public_policy_still_honors_blocks(self):
+        import egress_proxy
+        policy = egress_proxy.Policy(["*"], ["blocked.example.com"])
+        self.assertIsNone(policy.decide("api.example.com"))
+        self.assertEqual(policy.decide("blocked.example.com"), "blocked_by_admin")
 
 
 @unittest.skipUnless(os.getenv("ASSISTANT_TEST_PERMISSION_IMAGE"), "requires disposable permissions Docker image")
@@ -104,6 +126,18 @@ class ScriptPermissionDockerTest(unittest.TestCase):
         _, body = self.client.request("GET", "/volumes")
         import json
         self.assertFalse(any(row["Name"].startswith(self.volume + "-code-") for row in json.loads(body)["Volumes"]))
+
+    def test_development_expiry_stops_running_script_and_rejects_late_dispatch(self):
+        import time
+        request = self.request("import time\nprint('started', flush=True)\ntime.sleep(30)\n")
+        request.authorization_expires_at = datetime.now(timezone.utc) + timedelta(seconds=8)
+        started = time.monotonic()
+        response = server.execute_container(request, self.root, 20, started)
+        self.assertTrue(response.timed_out)
+        self.assertLess(time.monotonic() - started, 15)
+        with self.assertRaises(server.HTTPException) as raised:
+            server.execute_container(request, self.root, 20, time.monotonic())
+        self.assertEqual(raised.exception.status_code, 409)
 
     def test_revocation_kills_running_execution_and_rejects_stale_policy(self):
         import time

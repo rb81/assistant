@@ -50,9 +50,10 @@ CATEGORIES = {
         notes="Rebuilt automatically from the remaining workspace files."),
     "network_rules": Category(
         "Sandbox script and network approvals and blocks",
-        tables=("sandbox_permission_history", "sandbox_permission_grants", "sandbox_script_versions",
+        tables=("sandbox_development_reviews", "sandbox_development_sessions",
+                "sandbox_permission_history", "sandbox_permission_grants", "sandbox_script_versions",
                 "sandbox_scripts", "sandbox_network_rules"),
-        notes="Package registries in agent.yaml stay allowed."),
+        notes="Includes development sessions and supervisor reviews. Global host allows are not used."),
     "caches": Category("Tool-result cache and workspace trash", paths=("tool_cache", "trash")),
     "workspace_files": Category(
         "ALL workspace files in data/share (keeps .assistant/docs)",

@@ -303,6 +303,10 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         # Security screening
         ("AGENT_SECURITY_NOTIFY_MAX_PER_HOUR", "agent.security.notify_max_per_hour", int),
         ("AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", "agent.security.allow_possibly_malicious", bool),
+        ("AGENT_SECURITY_SCRIPT_YOLO", "agent.security.script_yolo", bool),
+        ("AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "agent.security.development.model_preset", str),
+        ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "agent.security.development.max_minutes", int),
+        ("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "agent.security.development.max_runs", int),
         ("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "agent.security.email_authentication.enabled", bool),
         ("AGENT_SECURITY_DECISION_ENABLED", "agent.security.decision_model.enabled", bool),
         ("AGENT_SECURITY_DECISION_PROVIDER", "agent.security.decision_model.provider", str),

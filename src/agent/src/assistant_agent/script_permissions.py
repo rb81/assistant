@@ -18,15 +18,12 @@ from .security_screening import MALICIOUS, SecurityScreener, notify_admin
 DECISIONS = {
     "once": "Approve once",
     "always": "Approve always for this script",
-    "global": "Approve always for all approved scripts",
     "deny": "Deny",
 }
 KEYWORDS = {
     "approve once": "once",
     "approve always": "always",
     "approve always for this script": "always",
-    "approve always for all scripts": "global",
-    "approve always for all approved scripts": "global",
     "deny": "deny",
 }
 UNSTABLE_SIGNALS = {
@@ -54,8 +51,8 @@ def digest(value):
 
 
 def requested_hosts(urls):
-    if not isinstance(urls, list) or not 1 <= len(urls) <= network_access.MAX_REQUEST_HOSTS:
-        raise ValueError("Provide 1 to 10 exact hostnames or HTTPS URLs")
+    if not isinstance(urls, list) or not 0 <= len(urls) <= network_access.MAX_REQUEST_HOSTS:
+        raise ValueError("Provide up to 10 exact hostnames or HTTPS URLs (empty for offline)")
     hosts = []
     for value in urls:
         if not isinstance(value, str):
@@ -155,9 +152,59 @@ def host_policy(db, config, version_id, job_id):
     legacy = network_access.policy(db, config, job_id)
     rows = [row for row in grants(db, version_id, job_id) if row["kind"] == "host"]
     return {
-        "allow": sorted(set(legacy["allow"] + [row["target"] for row in rows if row["decision"] == "allow"])),
+        "allow": sorted({row["target"] for row in rows if row["decision"] == "allow" and row["version_id"] == version_id}),
         "block": sorted(set(legacy["block"] + [row["target"] for row in rows if row["decision"] == "block"])),
     }
+
+
+def check_blocks(runtime, version, hosts, db=None):
+    if not runtime.job or not runtime.job.get("id"):
+        raise ValueError("Script permissions require a task job")
+    db = db or runtime.db
+    status = run_status(db, version, runtime.job["id"])
+    if status in {"blocked", "denied"}:
+        raise PermissionDenied("This script is blocked or denied. Do not retry or work around the decision.")
+    policy = host_policy(db, runtime.config, version["id"], runtime.job["id"])
+    blocked = [host for host in hosts if network_access.decide(policy, host) == "blocked"]
+    if blocked:
+        raise PermissionDenied("Administrator blocked: %s. Do not request or retry these hosts." % ", ".join(blocked))
+
+
+def final_request(runtime, version, hosts, purpose):
+    from . import development_sessions
+
+    check_blocks(runtime, version, hosts)
+    if runtime.config.get_bool("agent.security.script_yolo", False):
+        return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+    session = development_sessions.current(runtime, version)
+    supervisor = {"decision": "not_reviewed", "comments": "No development session; administrator review required."}
+    if session:
+        # Closing authorization before model review prevents testing while final approval is pending.
+        with runtime.db.connect() as conn:
+            db = TransactionDatabase(conn)
+            db.execute("SELECT id FROM sandbox_scripts WHERE id = %s FOR UPDATE", (version["script_id"],))
+            db.execute(
+                "UPDATE sandbox_development_sessions SET status = 'finalizing' WHERE id = %s AND status = 'active'",
+                (session["id"],),
+            )
+        try:
+            _, supervisor = development_sessions.review_version(runtime, version, hosts, final=True)
+        except PermissionDenied as exc:
+            supervisor = {"decision": "escalate", "comments": str(exc)}
+    status = run_status(runtime.db, version, runtime.job["id"])
+    policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
+    if not session and status == "approved" and set(hosts) == set(policy["allow"]):
+        return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
+    finding = screen(runtime, version)
+    if finding.get("level") == MALICIOUS:
+        raise PermissionDenied("Security screening classified this version as malicious; execution is blocked.")
+    pending = {
+        "id": uuid.uuid4().hex, "kind": "final", "version_id": version["id"],
+        "fingerprint": version["fingerprint"], "targets": hosts, "purpose": purpose,
+        "screening": finding, "reusable": version["reusable"], "supervisor": supervisor,
+        "session_id": session["id"] if session else None,
+    }
+    raise PermissionRequired(pending)
 
 
 def screen(runtime, version):
@@ -196,33 +243,9 @@ def screen(runtime, version):
 def request(runtime, version, kind, targets=None, purpose=""):
     if not runtime.job or not runtime.job.get("id"):
         raise ValueError("Script permissions require a task job")
-    status = run_status(runtime.db, version, runtime.job["id"])
-    if status in {"blocked", "denied"}:
-        raise PermissionDenied("This script is blocked or denied. Do not retry or work around the decision.")
-    if kind == "run" and status == "approved":
-        return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
-    if kind == "host" and status != "approved":
-        return {"status": "script_approval_required", "message": "Call script_approval_request first."}
-    finding = screen(runtime, version) if kind == "run" else (version.get("screening") or {})
-    if finding.get("level") == MALICIOUS:
-        raise PermissionDenied("Security screening classified this version as malicious; execution is blocked.")
-    targets = targets or []
-    if kind == "host":
-        current = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
-        decisions = {host: network_access.decide(current, host) for host in targets}
-        blocked = [host for host, value in decisions.items() if value == "blocked"]
-        if blocked:
-            raise PermissionDenied("Administrator blocked: %s. Do not request or retry these hosts." % ", ".join(blocked))
-        targets = [host for host, value in decisions.items() if value != "allowed"]
-        if not targets:
-            return {"status": "approved", "version_id": version["id"]}
-    pending = {
-        "id": uuid.uuid4().hex, "kind": kind, "version_id": version["id"],
-        "fingerprint": version["fingerprint"], "targets": targets,
-        "purpose": str(purpose or version["purpose"])[:1000], "screening": finding,
-        "reusable": version["reusable"],
-    }
-    raise PermissionRequired(pending)
+    if kind not in {"run", "host"}:
+        raise ValueError("Unknown script permission kind")
+    return final_request(runtime, version, targets or [], purpose or version["purpose"])
 
 
 def approval_payload(job):
@@ -245,20 +268,26 @@ def summary(db, job):
     entry = version["entry"]
     label = "Inline command" if entry.startswith("inline:") else entry
     lines = [
-        "Website access requested" if pending["kind"] == "host" else "Script run requested",
+        {"host": "Website access requested", "development": "Development session requested",
+         "final": "Final script and host approval"}.get(pending["kind"], "Script run requested"),
         "",
         "Script: " + label[:180],
         "Job #%s | Version #%s" % (job["id"], version["id"]),
         "",
         "Why: " + " ".join(pending["purpose"].split())[:360],
     ]
-    if pending["kind"] == "host":
-        lines += ["", "Hosts:", *["- " + (host if len(host) <= 120 else host[:117] + "...")
-                                  for host in pending["targets"][:3]],
-                  *(["See Details for the full list (%s hosts)." % len(pending["targets"])]
-                    if len(pending["targets"]) > 3 or any(len(host) > 120 for host in pending["targets"]) else []),
-                  "", "Access includes all HTTPS paths on these hosts, not subdomains."]
-    else:
+    if pending["kind"] == "development":
+        brief = pending["brief"]
+        lines += ["", "Data/files: " + brief["data_access"], "External effects: " + brief["effects"],
+                  "Limits: %s minutes; %s executions." % (brief["minutes"], brief["max_runs"]),
+                  "Related host changes delegated to supervisor: " + ("yes" if brief["allow_host_changes"] else "no"),
+                  "Live testing can have irreversible effects before final approval."]
+    if pending.get("supervisor"):
+        result = pending["supervisor"]
+        lines += ["", "Supervisor: " + result["decision"], result["comments"]]
+    lines += ["", "HTTPS hosts (all paths; subdomains excluded):",
+              *(["- " + host for host in pending["targets"]] or ["None (offline)."])]
+    if pending["kind"] != "development":
         finding = pending["screening"]
         if finding.get("summary"):
             lines += ["", "Screening: " + " ".join(finding["summary"].split())[:240]]
@@ -268,7 +297,7 @@ def summary(db, job):
     lines += ["\nDetails:", "SHA-256: " + version["fingerprint"],
               "Purpose: " + pending["purpose"],
               "Screening: " + json.dumps(pending["screening"], sort_keys=True),
-              *(["HTTPS hosts: " + ", ".join(pending["targets"])] if pending["kind"] == "host" else []),
+              "HTTPS hosts: " + ", ".join(pending["targets"]),
               json.dumps(version["manifest"], indent=2, sort_keys=True)]
     return "\n".join(lines)
 
@@ -285,12 +314,12 @@ def send_approval(db, config, job, suffix=""):
     return EmailApprovals(db, config).request(
         "permission:%s:%s%s" % (job["id"], payload["request_id"], suffix),
         payload, summary(db, job), ttl_minutes=60,
-        email_subject="Assistant approval: " + ("website access" if payload["permission_type"] == "host" else "script run"),
-        details_attachment=("script-version-%s.json" % payload["version_id"],
-                            json.dumps({**version["manifest"], "fingerprint": version["fingerprint"],
+        email_subject="Assistant approval: " + ("development session" if payload["permission_type"] == "development" else "script and hosts"),
+        details_attachment=("script-version-%s.txt" % payload["version_id"],
+                            (source_text(version) + "\n\n" + json.dumps({**version["manifest"], "fingerprint": version["fingerprint"],
                                         "requested_hosts": pending["targets"], "purpose": pending["purpose"],
-                                        "screening": pending["screening"]},
-                                       indent=2, sort_keys=True).encode()),
+                                        "screening": pending["screening"], "supervisor": pending.get("supervisor")},
+                                       indent=2, sort_keys=True)).encode()),
     )
 
 
@@ -298,7 +327,7 @@ def parse_decision(text):
     lines = str(text or "").strip().splitlines()
     decision = KEYWORDS.get(" ".join(lines[0].lower().strip(".!: ").split())) if lines else None
     if not decision:
-        raise ValueError("First line must be APPROVE ONCE, APPROVE ALWAYS, APPROVE ALWAYS FOR ALL SCRIPTS, or DENY.")
+        raise ValueError("First line must be APPROVE ONCE, APPROVE ALWAYS, or DENY.")
     return decision, "\n".join(lines[1:]).strip()
 
 
@@ -307,6 +336,12 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
         raise ValueError("Unknown permission decision")
     with db.connect() as conn:
         tx = TransactionDatabase(conn)
+        script = tx.fetch_one(
+            """SELECT s.id FROM sandbox_scripts s JOIN sandbox_script_versions v ON v.script_id = s.id
+               WHERE v.id = %s FOR UPDATE OF s""", (payload["version_id"],),
+        )
+        if not script:
+            raise ValueError("This script version is unavailable.")
         job = tx.fetch_one(
             """SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'
                AND metadata->'permission_request'->>'id' = %s FOR UPDATE""",
@@ -317,28 +352,46 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
         pending = job["metadata"]["permission_request"]
         version = tx.fetch_one(
             """SELECT v.*, s.blocked FROM sandbox_script_versions v JOIN sandbox_scripts s ON s.id = v.script_id
-               WHERE v.id = %s FOR UPDATE OF v, s""", (pending["version_id"],),
+               WHERE v.id = %s AND s.id = %s FOR UPDATE OF v""", (pending["version_id"], script["id"]),
         )
         if not version or version["blocked"] or version["fingerprint"] != pending["fingerprint"]:
             raise ValueError("This script version is unavailable or blocked.")
-        if decision == "global" and pending["kind"] != "host":
-            raise ValueError("Run approval cannot apply to all scripts")
+        if pending["kind"] == "final" and pending.get("session_id"):
+            session = tx.fetch_one("SELECT status FROM sandbox_development_sessions WHERE id = %s FOR UPDATE",
+                                   (pending["session_id"],))
+            if not session or session["status"] not in {"pending", "finalizing"}:
+                raise ValueError("The development session was closed or revoked. This approval is no longer valid.")
+        if pending["kind"] == "development":
+            from .development_sessions import approve_plan
+            approve_plan(tx, pending, decision)
         if decision == "always" and not version["reusable"]:
             raise ValueError("This script needs one-time approval because its executable dependencies cannot be pinned.")
-        scope = {"once": "once", "always": "script", "global": "global", "deny": "once"}[decision]
-        for target in pending["targets"] if pending["kind"] == "host" else [""]:
+        scope = {"once": "once", "always": "script", "deny": "once"}[decision]
+        if pending["kind"] == "final":
+            tx.execute("DELETE FROM sandbox_permission_grants WHERE version_id = %s AND decision = 'allow'", (version["id"],))
+        targets = (
+            [("run", ""), *[("host", host) for host in pending["targets"]]]
+            if pending["kind"] == "final" else
+            [("host", host) for host in pending["targets"]] if pending["kind"] == "host" else
+            [] if pending["kind"] == "development" and decision != "deny" else [("run", "")]
+        )
+        for kind, target in targets:
             tx.execute(
                 """INSERT INTO sandbox_permission_grants
                    (version_id, job_id, kind, target, scope, decision, created_by, note)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (None if scope == "global" else version["id"], job["id"] if scope == "once" else None,
-                 pending["kind"], target, scope, "block" if decision == "deny" else "allow", actor, feedback),
+                (version["id"], job["id"] if scope == "once" else None,
+                 kind, target, scope, "block" if decision == "deny" else "allow", actor, feedback),
             )
+        if pending["kind"] == "final" and pending.get("session_id"):
+            tx.execute("UPDATE sandbox_development_sessions SET status = 'closed' WHERE id = %s", (pending["session_id"],))
         instruction = (
             "Administrator %s for script version #%s (%s). %s" %
             (DECISIONS[decision], version["id"], pending["fingerprint"],
              "Do not repeat or work around this denied request." if decision == "deny" else
-             "Continue with this unchanged version; request required hosts before execution.")
+             "Continue within the approved development brief; request supervisor review before running each version."
+             if pending["kind"] == "development" else
+             "Execute this unchanged version with its approved hosts.")
         )
         if feedback:
             instruction += "\nAdministrator feedback: " + feedback
@@ -351,6 +404,10 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
         )
         audit(tx, actor, decision, {**pending, "job_id": job["id"], "feedback": feedback})
     return "%s. Job #%s resumed; execution limits unchanged." % (DECISIONS[decision], payload["job_id"])
+
+
+def source_text(version):
+    return "\n\n".join("=== %s ===\n%s" % (item["path"], item["source"]) for item in version["manifest"]["files"])
 
 
 def execution(runtime, version):
@@ -369,9 +426,21 @@ def execution(runtime, version):
         tx = TransactionDatabase(conn)
         tx.execute("SELECT id FROM sandbox_scripts WHERE id = %s FOR UPDATE", (version["script_id"],))
         tx.execute("SELECT id FROM sandbox_script_versions WHERE id = %s FOR UPDATE", (version["id"],))
+        check_blocks(runtime, version, [], db=tx)
+        current = host_policy(tx, runtime.config, version["id"], runtime.job["id"])
+        if runtime.config.get_bool("agent.security.script_yolo", False):
+            current["allow"] = ["*"]
+            audit(tx, "runtime", "script-yolo-execute", {"version_id": version["id"], "job_id": runtime.job["id"]})
+            return bundle, current
+        from . import development_sessions
+        session = development_sessions.current(runtime, version, tx)
+        if session:
+            session, hosts = development_sessions.consume(runtime, version, tx)
+            current["allow"] = hosts
+            current["expires_at"] = session["expires_at"].isoformat()
+            return bundle, current
         if run_status(tx, version, runtime.job["id"]) != "approved":
             raise PermissionDenied("Run approval is missing, consumed, denied or revoked. Request approval first.")
-        current = host_policy(tx, runtime.config, version["id"], runtime.job["id"])
         rows = grants(tx, version["id"], runtime.job["id"])
         run_once = [row["id"] for row in rows if row["kind"] == "run" and row["scope"] == "once" and row["decision"] == "allow"]
         permanent_run = any(row["kind"] == "run" and row["scope"] == "script" and row["decision"] == "allow" for row in rows)
@@ -410,7 +479,7 @@ def management(db, config, args, confirmed=False, actor="admin", *, page=None, q
         return {"rows": rows, "total": total}
     if action == "hosts":
         return {
-            "defaults": network_access.default_hosts(config),
+            "defaults": [],
             "legacy_rules": db.fetch_all("SELECT * FROM sandbox_network_rules ORDER BY id DESC LIMIT 100"),
             "grants": db.fetch_all("SELECT * FROM sandbox_permission_grants WHERE kind = 'host' AND consumed_at IS NULL ORDER BY id DESC LIMIT 100"),
         }
@@ -437,6 +506,23 @@ def management(db, config, args, confirmed=False, actor="admin", *, page=None, q
                        (SELECT id FROM sandbox_script_versions WHERE script_id = %s)""", (script_id,))
             else:
                 tx.execute("UPDATE sandbox_scripts SET blocked = %s WHERE id = %s", (action == "block-script", script_id))
+            if action != "unblock-script":
+                tx.execute(
+                    """UPDATE sandbox_development_sessions SET status = 'revoked'
+                       WHERE script_id = %s AND status IN ('pending', 'active', 'finalizing')""", (script_id,))
+                affected = tx.fetch_all(
+                    """SELECT id FROM jobs WHERE status = 'needs_review'
+                       AND metadata->'permission_request'->>'version_id' IN
+                       (SELECT id::text FROM sandbox_script_versions WHERE script_id = %s) FOR UPDATE""", (script_id,))
+                for job in affected:
+                    tx.execute(
+                        """UPDATE jobs SET metadata = metadata - 'permission_request', status = 'queued',
+                           run_at = now(), has_new_context = true, locked_at = NULL, locked_by = NULL
+                           WHERE id = %s""", (job["id"],))
+                    tx.execute(
+                        "INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",
+                        (job["id"], "Administrator revoked or blocked this script. Do not retry pending approvals or work around this decision.", actor),
+                    )
         elif action in {"block-host", "unblock-host"} and len(args) == 2:
             host = network_access.normalize_pattern(args[1])
             tx.execute("DELETE FROM sandbox_permission_grants WHERE scope = 'global' AND kind = 'host' AND target = %s AND decision = 'block'", (host,))

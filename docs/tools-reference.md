@@ -146,8 +146,16 @@ OpenRouter search configuration; deep research must also be enabled.
 
 Command:
 
-- `script_approval_request` — register a finished script and request run approval.
-  Supply exact `command` argv, `purpose` and optional workspace `workdir`.
+- `development_session_request` — ask the admin to approve a bounded development
+  brief: `command`, `purpose` (objective), `data_access`, `effects`, optional `urls`,
+  `workdir`, `minutes`, `max_runs`, and `allow_host_changes` (false by default).
+- `script_development_review` — supervisor review of the full exact `command`,
+  `workdir` and complete `urls` host set against the approved brief. An approved
+  version may run repeatedly within session limits; changes require fresh review.
+- `script_approval_request` — request combined final script and host approval.
+  Supply exact `command` argv, `purpose`, complete `urls` (empty for offline),
+  and optional workspace `workdir`. This stops further development execution and
+  includes the supervisor's final comments, if a session exists.
   Approval is bound to the code/dependency hashes, invocation and sandbox image.
   Once means one execution; always is offered only for pinnable dependency graphs.
 - `command_execute` — pass `command` as an argv array, with optional
@@ -156,12 +164,12 @@ Command:
   isolation, limits and retry behavior. Results include a `network` summary
   (`allowed_hosts`, `blocked` hosts with reasons, and a `hint`) when the
   egress proxy is active.
-- `network_access_request` — after run approval, pass the identical `command`
+- `network_access_request` — compatibility entrypoint: pass the identical `command`
   and `workdir`, `urls` (1–10 HTTPS URLs or exact hostnames), and `purpose`.
-  Already allowed hosts return `approved`; blocked hosts must not be retried.
-  Otherwise the administrator chooses one execution, always for this version,
-  always for all approved scripts, or deny, with optional feedback. Access covers
-  the entire host, not URL paths. A global host grant never authorizes execution.
+  During development this requests supervisor review; otherwise it requests
+  combined final approval. Blocked hosts must not be retried. Admin choices are
+  one execution, always for this version and host set, or deny, with feedback.
+  Access covers the entire host, not URL paths or HTTP methods. No global allows.
   See [network access approvals](sandbox.md#network-access-approvals).
 
 Calendar:

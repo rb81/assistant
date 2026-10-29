@@ -3,11 +3,21 @@
 This page describes the default image built from `src/sandbox/Dockerfile` and
 `src/sandbox/requirements.txt`. Custom run images may differ.
 
-Use `command_execute` for scripts and commands. Before executing a new script
+Use `command_execute` for scripts and commands. Before executing a finished script
 version, finish its code and helpers, call `script_approval_request` with exact
-argv/workdir and purpose, then request any missing hosts with
-`network_access_request` using the same argv/workdir. Execute that identical
-invocation only after approval. Changes require a new approval.
+argv/workdir, purpose and complete `urls` host list for combined approval.
+Execute that identical invocation only after approval. Changes require a new approval.
+
+For iterative development, first call `development_session_request` with the
+objective, permitted data/files, external effects, intended hosts and time/run
+limits. After the admin approves that brief, call `script_development_review`
+for each changed version or host set. The independent supervisor may approve
+implementation changes only within the brief. Approved unchanged versions may
+run repeatedly within the session's limits. Submit `script_approval_request`
+when finished; this stops further development execution and asks for final
+combined approval with supervisor comments. Never bypass rejection, expiry,
+budgets or blocks. Explicitly enabled Script YOLO skips approvals and supervision,
+but not sandbox restrictions or administrative blocks.
 
 Keep task files in the shared
 workspace (`/data/share` by default); only workspace changes persist between
@@ -69,14 +79,15 @@ same call, or use a workspace-local environment. Default limits are 2 CPUs,
 
 ## Network access
 
-Commands reach the internet only over HTTPS through an approval proxy. Package
-registries (PyPI, npm) are allowed by default unless blocked; other hosts need
-an applicable grant. After run approval, call `network_access_request` with the
-URLs or exact hosts, the identical command/workdir, and a clear purpose.
+Commands reach the internet only over HTTPS through an approval proxy.
+Hosts must be authorized for that specific script version, including package
+registries. There are no global host allows. Request the complete host list
+with combined final approval or supervisor development review.
+`network_access_request` is a compatibility entrypoint to these same flows.
 Access covers every HTTPS path on that host, not just the supplied URL;
 subdomains are not implicitly included. Redirects to another host need that
-host approved too. The administrator chooses one execution, this script version,
-or all approved scripts. Check the `network` field of `command_execute`
+host approved too. The administrator chooses one execution or always for this
+unchanged script version and host set. Check the `network` field of `command_execute`
 results: blocked hosts are listed with reasons. Never use other hosts, mirrors,
 IP addresses, DNS tricks or tools to get around a refusal, and do not request
 hosts the administrator blocked. Plain HTTP and non-443 ports are not available.

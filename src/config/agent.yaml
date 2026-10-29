@@ -294,12 +294,9 @@ agent:
     max_attempts: 3
     retry_backoff_seconds: 1
     network:
-      # Hosts sandbox commands may reach without approval (HTTPS only; "*.example.com" = subdomains).
-      # Everything else needs an admin decision via network_access_request.
-      allowed_hosts:
-        - pypi.org
-        - files.pythonhosted.org
-        - registry.npmjs.org
+      # Deprecated/inactive global allowlist; script execution uses per-version host approval.
+      # Legacy configuration remains loadable; network block settings remain effective.
+      allowed_hosts: []
 
   search:
     enabled: true
@@ -325,6 +322,16 @@ agent:
     notify_max_per_hour: 20
     # YOLO mode: possibly malicious email may proceed without review; script permissions remain mandatory.
     allow_possibly_malicious: false
+    # Independent opt-in: scripts + public network run without approvals/supervisor.
+    # Existing sandbox/network/credential/filesystem safety restrictions still apply.
+    script_yolo: false
+    development:
+      # "default" reuses agent.llm provider/model and its existing credential.
+      # Other names select stored OpenRouter chat model presets (OPENROUTER_API_KEY).
+      # Preset system prompts are never used as supervisor instructions.
+      model_preset: default
+      max_minutes: 30
+      max_runs: 20
     email_authentication:
       # Applies only to email whose From is the admin address (tasks, /admin commands, OTP replies).
       # Verified via DNS: an aligned DKIM signature or an aligned SPF pass is required.

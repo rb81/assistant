@@ -28,6 +28,14 @@ from assistant_agent.secret_store import read_secret
 
 
 class ConfigTest(unittest.TestCase):
+    def test_inactive_global_network_allowlist_defaults_empty_but_legacy_override_loads(self):
+        defaults = Path(__file__).resolve().parents[2] / "config/agent.yaml"
+        with patch.dict(os.environ, {"AGENT_CONFIG": str(defaults)}, clear=True):
+            self.assertEqual(load_config().get_list("agent.sandbox.network.allowed_hosts"), [])
+        with patch.dict(os.environ, {"AGENT_CONFIG": str(defaults),
+                                    "AGENT_SANDBOX_ALLOWED_HOSTS": "legacy.example"}, clear=True):
+            self.assertEqual(load_config().get_list("agent.sandbox.network.allowed_hosts"), ["legacy.example"])
+
     def test_obsolete_environment_overrides_are_ignored(self):
         retired = {
             "AGENT_MEMORY_RECENT_PROMPT_LIMIT": "agent.memory.recent_prompt_limit",

@@ -13,6 +13,7 @@ import tarfile
 import threading
 import re
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -98,6 +99,7 @@ class CommandRequest(BaseModel):
     permission_epoch: Optional[str] = None
     execution_identity: Optional[str] = None
     script_id: Optional[int] = None
+    authorization_expires_at: Optional[datetime] = None
 
 
 class CommandResponse(BaseModel):
@@ -614,7 +616,8 @@ def execute(request: CommandRequest, authorization: str = Header(default="")) ->
     timeout = request.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
     timeout = min(timeout, MAX_TIMEOUT_SECONDS)
     started = time.monotonic()
-    if getattr(request, "permission_epoch", None) is not None and (
+    authorization_remaining(request)
+    if (getattr(request, "permission_epoch", None) is not None or request.authorization_expires_at is not None) and (
         ISOLATION_MODE != "container" or (not proxy_enabled() and RUN_NETWORK_MODE != "none")
     ):
         raise HTTPException(status_code=409, detail="Approved scripts require container isolation and proxy egress")
@@ -624,6 +627,18 @@ def execute(request: CommandRequest, authorization: str = Header(default="")) ->
     if ISOLATION_MODE != "process":
         raise HTTPException(status_code=500, detail="unsupported SANDBOX_ISOLATION_MODE: %s" % ISOLATION_MODE)
     return execute_process(request, workdir, timeout, started)
+
+
+def authorization_remaining(request: CommandRequest) -> Optional[float]:
+    expires = request.authorization_expires_at
+    if expires is None:
+        return None
+    if expires.tzinfo is None:
+        raise HTTPException(status_code=400, detail="Authorization expiry must include a timezone")
+    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    if remaining <= 0:
+        raise HTTPException(status_code=409, detail="Development authorization expired")
+    return remaining
 
 
 def require_api_token(authorization: str, *, allow_revoke: bool = False) -> None:
@@ -725,6 +740,7 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
                 egress_network = create_egress_network(client, run_id)
                 proxy_id, proxy_address = start_egress_proxy(client, run_id, network_mode, egress_network, policy)
             container_id = create_run_container(client, run_id, request, workdir, network_mode, proxy_address, code_mounts)
+            authorization_remaining(request)
             client.request("POST", "/containers/%s/start" % container_id, expected=(204, 304))
 
         deadline = started + timeout
@@ -733,7 +749,8 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
             if not running:
                 exit_code = current_exit_code
                 break
-            if time.monotonic() >= deadline:
+            expires = request.authorization_expires_at
+            if time.monotonic() >= deadline or (expires is not None and datetime.now(timezone.utc) >= expires):
                 timed_out = True
                 try:
                     client.request("POST", "/containers/%s/kill" % container_id, expected=(204, 404, 409))

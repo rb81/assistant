@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from assistant_agent.config import AppConfig
 from assistant_agent.email_approvals import (
     MARKER, ApprovalDeliveryError, EmailApprovals, admin_sender, approval_reply, send_admin_email,
+    telegram_permission_summary,
 )
 
 
@@ -98,7 +99,7 @@ class ApprovalReplyTest(unittest.TestCase):
         downloader.config, downloader.db = self.config, MagicMock()
         downloader.db.fetch_one.return_value = None
         payload = {"kind": "network", "job_id": 17, "request_id": "abc"}
-        for body, applied in (("APPROVE ONCE\nOnly the API.", True), ("Looks fine", False)):
+        for body, applied in (("BLOCK ALWAYS\nOnly the API.", True), ("Looks fine", False)):
             with self.subTest(body=body), patch(
                 "assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload
             ), patch("assistant_agent.network_access.apply_decision") as apply, patch(
@@ -107,7 +108,7 @@ class ApprovalReplyTest(unittest.TestCase):
                 result = downloader.ingest_raw(reply(body + "\n\n" + self.confirmation).as_bytes())
             self.assertTrue(result.inserted)
             if applied:
-                apply.assert_called_once_with(downloader.db, payload, "once", "Only the API.", "admin-email")
+                apply.assert_called_once_with(downloader.db, payload, "blockall", "Only the API.", "admin-email")
                 admin_reply.assert_not_called()
             else:
                 apply.assert_not_called()
@@ -135,10 +136,21 @@ class ApprovalReplyTest(unittest.TestCase):
         attachment = list(smtp.return_value.send_message.call_args.args[0].iter_attachments())[0]
         self.assertEqual(attachment.get_payload(decode=True), details)
 
+    def test_script_text_attachment_uses_plain_text_mime_type(self):
+        config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "email": {"smtp_port": 587}}})
+        with patch("assistant_agent.email_approvals.smtplib.SMTP") as smtp:
+            send_admin_email(config, "Permission", "Review the attached code.",
+                             attachment=("script-version.txt", b"print('hello')"))
+        attachment = list(smtp.return_value.send_message.call_args.args[0].iter_attachments())[0]
+        self.assertEqual(attachment.get_content_type(), "text/plain")
+        self.assertEqual(attachment.get_payload(decode=True), b"print('hello')")
+
     def test_permission_email_leads_with_request_and_keeps_reference_at_bottom(self):
         from assistant_agent.email_approvals import permission_email_body
         summary = "Script run requested\n\nScript: report.py\n\nDetails:\n" + '{"source": "print(1)"}'
-        for kind, reusable in (("run", True), ("run", False), ("host", True), ("host", False)):
+        for kind, reusable in (("run", True), ("run", False), ("host", True), ("host", False),
+                               ("development", True), ("development", False),
+                               ("final", True), ("final", False)):
             with self.subTest(kind=kind, reusable=reusable):
                 body = permission_email_body(
                     {"permission_type": kind, "reusable": reusable}, summary,
@@ -147,11 +159,62 @@ class ApprovalReplyTest(unittest.TestCase):
                 self.assertLess(body.index("Script: report.py"), body.index("YOUR DECISION"))
                 self.assertLess(body.index("YOUR DECISION"), body.index("OTP:"))
                 self.assertNotIn('"source"', body)
-                self.assertEqual("APPROVE ALWAYS - " in body, reusable)
-                self.assertEqual("APPROVE ALWAYS FOR ALL SCRIPTS" in body, kind == "host")
+                self.assertEqual("APPROVE ALWAYS - " in body,
+                                 kind != "development" and reusable)
+                self.assertNotIn("APPROVE ALWAYS FOR ALL SCRIPTS", body)
+                self.assertEqual("APPROVE ONCE - approve development session" in body, kind == "development")
+                self.assertEqual("final script and requested hosts" in body, kind == "final")
                 quoted = "\n".join("> " + line for line in body.splitlines())
                 self.assertEqual(approval_reply(reply("APPROVE ONCE\nPublic data only.\n\n" + quoted)),
                                  ("a" * 32, "b" * 64, "APPROVE ONCE\nPublic data only."))
+
+    def test_permission_email_includes_optional_full_script_details(self):
+        from assistant_agent.email_approvals import permission_email_body
+        body = permission_email_body(
+            {"permission_type": "final"}, "Final approval\n\nDetails:\nprivate source",
+            "a" * 32, "b" * 64, "2026-10-29T12:00:00+00:00", 60,
+            "main.py\nprint('full source')\n",
+        )
+        self.assertIn("SCRIPT AND VERSION DETAILS\n\nmain.py\nprint('full source')", body)
+        self.assertNotIn("private source", body)
+
+    def test_permission_keyboard_has_kind_specific_actions_and_script_review(self):
+        from assistant_agent.email_approvals import permission_keyboard
+        for permission_type, reusable, expected in (
+            ("development", True, {"Approve development session", "Deny", "Review Script", "Add feedback"}),
+            ("final", True, {"Approve final once", "Approve final always", "Deny", "Review Script", "Add feedback"}),
+            ("final", False, {"Approve final once", "Deny", "Review Script", "Add feedback"}),
+        ):
+            buttons = [button for row in permission_keyboard("abc", {
+                "permission_type": permission_type, "reusable": reusable,
+            }) for button in row]
+            self.assertEqual({button["text"] for button in buttons}, expected)
+            self.assertFalse(any(":global" in button["callback_data"] or ":scope" in button["callback_data"]
+                                 for button in buttons))
+            self.assertEqual(
+                next(button for button in buttons if button["text"] == "Review Script")["callback_data"],
+                "ap:abc:details",
+            )
+
+    def test_telegram_summary_trims_comments_but_preserves_ten_max_length_hosts(self):
+        hosts = [
+            "%s.%s.%s.%s" % (chr(97 + index) * 63, "b" * 63, "c" * 63, "d" * 61)
+            for index in range(10)
+        ]
+        self.assertTrue(all(len(host) == 253 for host in hosts))
+        summary = (
+            "Final script and host approval\n\nSupervisor: approved\n"
+            + "Detailed supervisor comments. " * 300
+            + "\n\nHTTPS hosts (all paths; subdomains excluded):\n"
+            + "\n".join("- " + host for host in hosts)
+            + "\n\nOnce: one execution. Always: this unchanged version.\n\nDetails:\nprivate manifest"
+        )
+        card = telegram_permission_summary(summary)
+        self.assertLessEqual(len(card.encode("utf-16-le")) // 2, 3500)
+        self.assertIn("Supervisor: approved", card)
+        self.assertIn("Brief/comments shortened", card)
+        self.assertTrue(all(host in card for host in hosts))
+        self.assertNotIn("private manifest", card)
 
     def test_permission_summary_keeps_hashes_and_code_out_of_primary_card(self):
         from assistant_agent.script_permissions import summary
@@ -173,7 +236,7 @@ class ApprovalReplyTest(unittest.TestCase):
         pending.update(kind="host", targets=["%s.example.com" % index for index in range(10)])
         card, details = summary(db, job).split("\n\nDetails:", 1)
         self.assertIn("Website access requested", card)
-        self.assertIn("full list (10 hosts)", card)
+        self.assertTrue(all("%s.example.com" % index in card for index in range(10)))
         self.assertIn("9.example.com", details)
         self.assertLess(len(card), 1800)
 
@@ -181,7 +244,9 @@ class ApprovalReplyTest(unittest.TestCase):
         import json
         from assistant_agent.script_permissions import send_approval
         db = MagicMock()
-        db.fetch_one.return_value = {"manifest": {"files": [{"source": "print(1)"}]}, "fingerprint": "b" * 64}
+        db.fetch_one.return_value = {
+            "manifest": {"files": [{"path": "report.py", "source": "print(1)"}]}, "fingerprint": "b" * 64,
+        }
         pending = {"id": "request", "version_id": 7, "kind": "host", "reusable": True,
                    "targets": ["%s.example.com" % index for index in range(10)],
                    "purpose": "Fetch public feeds.", "screening": {"summary": "Review network access."}}
@@ -189,7 +254,11 @@ class ApprovalReplyTest(unittest.TestCase):
         with patch("assistant_agent.script_permissions.summary", return_value="Website access requested"), \
                 patch.object(EmailApprovals, "request") as request:
             send_approval(db, self.config, job)
-        document = json.loads(request.call_args.kwargs["details_attachment"][1])
+        filename, attachment = request.call_args.kwargs["details_attachment"]
+        document_text = attachment.decode()
+        self.assertEqual(filename, "script-version-7.txt")
+        self.assertIn("=== report.py ===\nprint(1)", document_text)
+        document = json.loads(document_text.split("\n\n", 1)[1])
         self.assertEqual(document["requested_hosts"], pending["targets"])
         self.assertEqual(document["screening"], pending["screening"])
         self.assertEqual(document["fingerprint"], "b" * 64)

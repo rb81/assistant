@@ -674,6 +674,10 @@ assert approvals_configured(config)
                     with patch.dict(os.environ, {"AGENT_CONFIG": str(config_path), name: override}, clear=True):
                         self.assertEqual(load_config().get(path), expected)
 
+    def test_advanced_setup_omits_inactive_global_network_allowlist(self):
+        names = {setting[0] for settings in ADVANCED_SETTINGS.values() for setting in settings}
+        self.assertNotIn("AGENT_SANDBOX_ALLOWED_HOSTS", names)
+
     def test_advanced_numeric_and_boolean_values_are_validated_before_save(self):
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)
@@ -1129,7 +1133,7 @@ assert approvals_configured(config)
                 with self.subTest(typed=typed):
                     instance.values = {"AGENT_SECURITY_DECISION_PROVIDER": "perplexity"}
                     instance.secret_values["SECURITY_DECISION_API_KEY"] = "stale-direct-key"
-                    answers = iter([False, "openrouter", "typesafe/jev-1.13", "review", False, False, False, True, typed])
+                    answers = iter(["default", "30", "20", False, False, "openrouter", "typesafe/jev-1.13", "review", False, False, False, True, typed])
                     prompt_security(instance, lambda _question: next(answers), lambda *_args: next(answers), MagicMock())
                     self.assertEqual(instance.values["AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"], expected)
                     self.assertEqual(instance.values["AGENT_SECURITY_DECISION_ENABLED"], "true")
@@ -1138,11 +1142,32 @@ assert approvals_configured(config)
                     self.assertNotIn("SECURITY_DECISION_API_KEY", instance.secret_values)
                     self.assertEqual(instance.secret_values["OPENROUTER_API_KEY"], "model-key")
                     self.assertEqual([m for section, m in draft_problems(instance) if section == "security"], [])
-            answers = iter([False, "direct", "clef", "", "", "Enter replacement", "decision-key", "review", False, False, False, False])
+            answers = iter(["default", "30", "20", False, False, "direct", "clef", "", "", "Enter replacement", "decision-key", "review", False, False, False, False])
             prompt_security(instance, lambda _question: next(answers), lambda *_args: next(answers), MagicMock())
             self.assertEqual(instance.values["AGENT_SECURITY_DECISION_PROVIDER"], "clef")
             self.assertEqual((instance.values["AGENT_SECURITY_DECISION_URL"], instance.values["AGENT_SECURITY_DECISION_MODEL"]), ("", ""))
             self.assertEqual(instance.secret_values["SECURITY_DECISION_API_KEY"], "decision-key")
+
+    def test_development_settings_validate_limits_and_named_preset_credentials(self):
+        from assistant_agent.setup import draft_problems, secret_services
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.saved_configuration(root)
+            instance.values.update({"AGENT_LLM_BASE_URL": "https://api.openai.com/v1",
+                                    "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "reviewer",
+                                    "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "0",
+                                    "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "1.5"})
+            instance.secret_values["OPENAI_API_KEY"] = "task-model-key"
+            instance.secret_values.pop("OPENROUTER_API_KEY")
+            errors = [message for section, message in draft_problems(instance) if section == "security"]
+            self.assertEqual(len(errors), 3)
+            self.assertTrue(any("max_minutes" in error for error in errors))
+            self.assertTrue(any("max_runs" in error for error in errors))
+            self.assertTrue(any("OPENROUTER_API_KEY" in error for error in errors))
+            self.assertIn("task-agent", secret_services("OPENROUTER_API_KEY"))
+            instance.values.update({"AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "10",
+                                    "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "4"})
+            instance.secret_values["OPENROUTER_API_KEY"] = "review-model-key"
+            self.assertEqual(draft_problems(instance), [])
 
     def test_openrouter_key_reaches_downloader_only_while_screening_uses_openrouter(self):
         with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
@@ -1910,7 +1935,7 @@ server.serve_forever()
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "PRIVATE-CANARY-KEY",
                 "anthropic/claude-sonnet-4.6", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "none", "Next", "done", "Next", True, "Next", "save", False,
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "default", "30", "20", False, False, "none", "Next", "done", "Next", True, "Next", "save", False,
             ]
             with patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses):
                 interactive(options)
@@ -1966,7 +1991,7 @@ server.serve_forever()
                 (path / "data/config/AGENT.md").write_text("Custom instructions\n")
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "none", "Next", "done", "Next", True, replace, "Next", "save", False]
+                    False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "default", "30", "20", False, False, "none", "Next", "done", "Next", True, replace, "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=path, command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses), patch.object(Installation, "start_containers") as start:
@@ -1986,7 +2011,7 @@ server.serve_forever()
             (path / "src/config/AGENT.md.example").write_text("Example instructions\n")
             responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "none", "Next", "done", "Next", True, "Next", "save", True]
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "default", "30", "20", False, False, "none", "Next", "done", "Next", True, "Next", "save", True]
 
             def started(instance):
                 self.assertTrue((path / "data/.env").is_file())
@@ -2036,7 +2061,7 @@ server.serve_forever()
                 responses = ["Assistant", "UTC", "User", "user@example.com", "", "", "", "Next",
                     "OpenRouter", "https://openrouter.ai/api/v1", "Keep existing", "model", "", "Next",
                     False, "Next", False, "Next", True, ["zoho"], "Keep existing", "Keep existing", "Keep existing", "zoho-calendar", "https://calendar.zoho.com", "30", False, "Next",
-                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", False, "Next", False, "none", "Next", "done", "Next", "Next", "save", False]
+                    True, mode, "Keep existing", "Keep existing", "Keep existing", "me", "Next", False, "Next", False, "Next", False, "Next", "default", "30", "20", False, False, "none", "Next", "done", "Next", "Next", "save", False]
                 output = io.StringIO()
                 options = argparse.Namespace(root=Path(root), command=None)
                 with redirect_stdout(output), patch("assistant_agent.setup.shutil.which", return_value="/usr/bin/docker"), patch.object(questionary.Question, "unsafe_ask", side_effect=responses[:-2] + ["cancel"]):
@@ -2065,7 +2090,7 @@ server.serve_forever()
         with tempfile.TemporaryDirectory() as root:
             responses = ["Assistant", "BAD_TIMEZONE", "User", "user@example.com", "", "", "", "Next",
                 "OpenRouter", "https://openrouter.ai/api/v1", "Enter replacement", "model-key", "model", "", "Generate securely", "Next",
-                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "none", "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
+                False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", False, "Next", "default", "30", "20", False, False, "none", "Next", "done", "Next", "Next", "edit", "identity", "Edit this section",
                 "Assistant", "UTC", "User", "user@example.com", "", "", "", "save", False]
             output = io.StringIO()
             options = argparse.Namespace(root=Path(root), command=None)

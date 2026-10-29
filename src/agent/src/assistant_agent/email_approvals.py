@@ -125,7 +125,8 @@ def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, 
     message.set_content(body)
     if attachment:
         filename, data = attachment
-        message.add_attachment(data, maintype="application", subtype="json", filename=filename)
+        maintype, subtype = ("text", "plain") if filename.lower().endswith(".txt") else ("application", "json")
+        message.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     host = config.get("agent.email.smtp_host")
     port = config.get_int("agent.email.smtp_port", 587)
     context = ssl.create_default_context()
@@ -138,18 +139,25 @@ def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, 
 
 
 NETWORK_EMAIL_INSTRUCTIONS = (
+    "Legacy website requests cannot grant access. Request fresh combined script and host approval to allow access.\n"
     "Reply with this original message quoted. Put your decision on the first line:\n"
-    "  APPROVE ONCE | APPROVE ALWAYS | BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB\n"
+    "  BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB\n"
     "Optional feedback for the agent can follow on the next lines."
 )
 
 
-def permission_email_body(payload, summary, token, digest, expires, ttl_minutes):
-    choices = ["APPROVE ONCE - one execution"]
-    if payload.get("reusable"):
-        choices.append("APPROVE ALWAYS - this unchanged script version")
-    if payload.get("permission_type") == "host":
-        choices.append("APPROVE ALWAYS FOR ALL SCRIPTS - all approved scripts")
+def permission_email_body(payload, summary, token, digest, expires, ttl_minutes, email_body_details=None):
+    permission_type = payload.get("permission_type")
+    if permission_type == "development":
+        choices = ["APPROVE ONCE - approve development session"]
+    elif permission_type == "final":
+        choices = ["APPROVE ONCE - final script and requested hosts"]
+        if payload.get("reusable"):
+            choices.append("APPROVE ALWAYS - this unchanged final script version and requested hosts")
+    else:
+        choices = ["APPROVE ONCE - one execution"]
+        if payload.get("reusable"):
+            choices.append("APPROVE ALWAYS - this unchanged script version")
     choices.append("DENY")
     return (
         "%s\n\n%s\n\nYOUR DECISION\n"
@@ -157,29 +165,89 @@ def permission_email_body(payload, summary, token, digest, expires, ttl_minutes)
         "Optional feedback can follow on the next lines.\n"
         "Keep this original message quoted in your reply.\n"
         "Expires in %s minutes.\n\n"
-        "Full code and hashes are in the attached version manifest.\n\n"
+        "%s"
         "APPROVAL REFERENCE (keep in your reply)\n"
         "OTP: %s\nRequest hash: %s\nExpires: %s"
     ) % (MARKER, summary.split("\n\nDetails:", 1)[0].replace("See Details", "See attachment"), "\n".join(choices),
-         ttl_minutes, token, digest, expires)
+         ttl_minutes,
+         ("\nSCRIPT AND VERSION DETAILS\n\n%s\n\n" % email_body_details if email_body_details else
+          "Full code and hashes are in the attached version manifest.\n\n"),
+         token, digest, expires)
 
 
 def permission_keyboard(callback: str, payload: dict) -> list:
-    rows = [[{"text": "Approve once", "callback_data": "ap:%s:once" % callback},
+    permission_type = payload.get("permission_type")
+    once_label = "Approve development session" if permission_type == "development" else (
+        "Approve final once" if permission_type == "final" else "Approve once")
+    rows = [[{"text": once_label, "callback_data": "ap:%s:once" % callback},
              {"text": "Deny", "callback_data": "ap:%s:deny" % callback}]]
-    if payload.get("permission_type") == "host":
-        rows.append([{"text": "Always...", "callback_data": "ap:%s:scope" % callback}])
-    elif payload.get("reusable"):
-        rows.append([{"text": "Approve always", "callback_data": "ap:%s:always" % callback}])
-    rows.append([{"text": "Details", "callback_data": "ap:%s:details" % callback},
+    if permission_type != "development" and payload.get("reusable"):
+        always_label = "Approve final always" if permission_type == "final" else "Approve always"
+        rows.append([{"text": always_label, "callback_data": "ap:%s:always" % callback}])
+    rows.append([{"text": "Review Script", "callback_data": "ap:%s:details" % callback},
                  {"text": "Add feedback", "callback_data": "ap:%s:feedback" % callback}])
     return rows
 
 
+def telegram_permission_summary(summary: str, max_units: int = 3500) -> str:
+    card = str(summary).split("\n\nDetails:", 1)[0]
+    lines = card.splitlines()
+    host_start = next((index for index, line in enumerate(lines)
+                       if line.startswith("HTTPS hosts (") or line == "Hosts:"), None)
+
+    def units(text):
+        return len(text.encode("utf-16-le")) // 2
+
+    def take(text, budget, *, from_end=False):
+        result = []
+        used = 0
+        characters = reversed(text) if from_end else iter(text)
+        for character in characters:
+            size = units(character)
+            if used + size > budget:
+                break
+            result.append(character)
+            used += size
+        if from_end:
+            result.reverse()
+        return "".join(result)
+
+    def shorten(text, budget, *, middle=False):
+        if units(text) <= budget:
+            return text
+        marker = "…"
+        remaining = max(0, budget - units(marker))
+        if middle:
+            first = take(text, remaining // 2)
+            last = take(text, remaining - units(first), from_end=True)
+            return first + marker + last
+        return marker + take(text, remaining, from_end=True)
+
+    if host_start is None:
+        return shorten(card, max_units, middle=True)
+
+    host_end = host_start + 1
+    while host_end < len(lines) and lines[host_end].startswith("- "):
+        host_end += 1
+    host_block = "\n".join(lines[host_start:host_end])
+    prefix = "\n".join(lines[:host_start]).strip()
+    suffix = "\n".join(lines[host_end:]).strip()
+    if units(card) <= max_units:
+        return card
+
+    notice = "Brief/comments shortened; use Review Script for full context."
+    overhead = units(host_block) + units("\n\n") * 2 + units(notice) + units("\n\n") + 2
+    remaining = max(0, max_units - overhead)
+    suffix_budget = min(units(suffix), min(350, remaining // 3))
+    prefix_budget = max(0, remaining - suffix_budget)
+    prefix_preview = shorten(prefix, prefix_budget, middle=True)
+    suffix_preview = shorten(suffix, suffix_budget)
+    parts = [part for part in (prefix_preview, host_block, suffix_preview) if part]
+    return "\n\n".join(parts) + "\n\n" + notice
+
+
 def network_keyboard(callback: str, payload: dict) -> list:
     return [
-        [{"text": "Approve once", "callback_data": "ap:%s:once" % callback},
-         {"text": "Approve always", "callback_data": "ap:%s:always" % callback}],
         [{"text": "Block once", "callback_data": "ap:%s:block" % callback},
          {"text": "Block always", "callback_data": "ap:%s:blockall" % callback}],
         [{"text": "Cancel job", "callback_data": "ap:%s:cancel" % callback},
@@ -200,7 +268,10 @@ class EmailApprovals:
 
     def request(self, source_id: str, payload: dict, summary: str, ttl_minutes: int = 10,
                 *, email_subject: str = "Assistant approval required",
-                details_attachment: tuple[str, bytes] | None = None) -> bool:
+                details_attachment: tuple[str, bytes] | None = None,
+                email_body_details: str | None = None) -> bool:
+        if email_body_details is None and details_attachment and details_attachment[0].lower().endswith(".txt"):
+            email_body_details = details_attachment[1].decode("utf-8", errors="replace")
         admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         mode = channels(self.config)
         admins = telegram_admins(self.config) if mode in {"telegram", "both"} else []
@@ -258,7 +329,11 @@ class EmailApprovals:
                 try:
                     client = TelegramClient(self.config)
                     callback = pending["callback_id"]
-                    title = summary.split("\n\nDetails:", 1)[0][:1800]
+                    title = (telegram_permission_summary(summary) if payload.get("kind") == "permission"
+                             else summary.split("\n\nDetails:", 1)[0][:3700])
+                    if payload.get("kind") == "network":
+                        title = ("Legacy website requests cannot grant access. Request fresh combined script and host "
+                                 "approval to allow access.\n\n" + title[:3500])
                     keyboard = network_keyboard(callback, payload) if payload.get("kind") == "network" else None
                     if payload.get("kind") == "permission":
                         keyboard = permission_keyboard(callback, payload)
@@ -278,7 +353,8 @@ class EmailApprovals:
             if mode in {"email", "both"}:
                 try:
                     body = (
-                        permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes)
+                        permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes,
+                                              email_body_details)
                         if payload.get("kind") == "permission" else
                         "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n%s\n\n%s" % (
                             MARKER, token, digest, pending["expires"],

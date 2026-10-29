@@ -349,8 +349,8 @@ class EmailDownloader:
                         if decision is None:
                             job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'", (payload["job_id"],))
                             response = ("No decision found. Reply to the new approval email with the first line set to "
-                                        "APPROVE ONCE, APPROVE ALWAYS, BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB; "
-                                        "optional feedback for the agent can follow on the next lines.")
+                                        "BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB; optional feedback can follow. "
+                                        "Network-only approvals are retired; ask the agent for combined script and host approval.")
                             if job and network_access.approval_payload(job) == payload:
                                 network_access.send_approval(self.db, self.config, job, ":retry:" + message_id)
                             else:

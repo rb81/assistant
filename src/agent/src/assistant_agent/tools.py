@@ -171,12 +171,14 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
         ),
     },
     "Sandbox": {
-        "tools": {"command_execute", "network_access_request", "script_approval_request"},
+        "tools": {"command_execute", "network_access_request", "script_approval_request",
+                  "development_session_request", "script_development_review"},
         "text": (
             "Runs commands in an isolated sandbox container. Outbound network access is deny-by-default: "
-            "traffic goes through an HTTPS-only proxy that allows package registries and hosts the administrator "
-            "approved. First call script_approval_request for the finished script, then network_access_request "
-            "with its identical command/workdir, exact hostnames or URLs and purpose, and wait for approval. "
+            "traffic goes through an HTTPS-only proxy with script-bound host permissions. For iterative work, "
+            "call development_session_request with an objective, data access, external effects, hosts and limits. "
+            "After admin approval, call script_development_review for each changed version or host set before execution. "
+            "Submit script_approval_request with the final exact command and complete host list for combined approval. "
             "Grants cover entire HTTPS hosts, not URL paths. Never work around the proxy (other hosts, mirrors, IP "
             "addresses, DNS tricks, or unproxied clients), and never use the sandbox to replace a dedicated tool "
             "that failed; ask the administrator instead. "
@@ -2212,22 +2214,28 @@ class ToolRuntime:
             version = script_permissions.inspect(self, command, workdir, environment=health["execution_identity"])
         bundle = {}
         if version:
-            script_permissions.request(self, version, "run")
+            from . import development_sessions
+            if not self.config.get_bool("agent.security.script_yolo", False) and not development_sessions.current(self, version):
+                policy = script_permissions.host_policy(self.db, self.config, version["id"], self.job["id"])
+                script_permissions.final_request(self, version, policy["allow"], version["purpose"])
             bundle, network_policy = script_permissions.execution(self, version)
             # A lost response must never execute a one-use action twice.
             max_attempts = 1
         else:
             network_policy = network_access.policy(self.db, self.config, (self.job or {}).get("id"))
-            # Explicit new global blocks also apply to ordinary utilities.
+            # Utilities cannot inherit legacy/global allows and bypass script-bound access.
+            network_policy["allow"] = ["*"] if self.config.get_bool("agent.security.script_yolo", False) else []
             rows = self.db.fetch_all(
                 """SELECT target FROM sandbox_permission_grants
                    WHERE kind = 'host' AND scope = 'global' AND decision = 'block'"""
             ) if self.db is not None else []
             network_policy["block"] += [row["target"] for row in rows]
+        authorization_expires_at = network_policy.pop("expires_at", None)
         payload = json.dumps(
             {"command": command, "timeout_seconds": timeout, "workdir": str(resolved_workdir),
              "network_policy": network_policy,
              "permission_epoch": health["permission_epoch"], "execution_identity": health["execution_identity"],
+             "authorization_expires_at": authorization_expires_at,
              **({"approved_files": bundle, "approved_arguments": version["manifest"]["code_arguments"],
                  "approved_python": version["manifest"]["language"] == "python",
                  "script_id": version["script_id"]}
@@ -2297,7 +2305,8 @@ class ToolRuntime:
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise ToolError("Sandbox control request failed: %s" % exc) from exc
 
-    def script_approval_request(self, command: list[str], purpose: str, workdir: Optional[str] = None) -> dict[str, Any]:
+    def script_approval_request(self, command: list[str], purpose: str, workdir: Optional[str] = None,
+                                urls: Optional[list[str]] = None) -> dict[str, Any]:
         from . import script_permissions
         if not str(purpose or "").strip():
             raise ValueError("purpose is required")
@@ -2307,7 +2316,34 @@ class ToolRuntime:
         )
         if version is None:
             raise ValueError("This command is not an inspectable script. Use a workspace script or explicit interpreter.")
-        return script_permissions.request(self, version, "run", purpose=purpose)
+        hosts = script_permissions.requested_hosts(urls if urls is not None else [])
+        return script_permissions.final_request(self, version, hosts, purpose)
+
+    def development_session_request(self, command: list[str], purpose: str, data_access: str, effects: str,
+                                    urls: Optional[list[str]] = None, workdir: Optional[str] = None,
+                                    minutes: int = 30, max_runs: int = 20,
+                                    allow_host_changes: bool = False) -> dict[str, Any]:
+        from . import development_sessions, script_permissions
+        health = self.sandbox_control("GET", "/health")
+        version = script_permissions.inspect(self, command, workdir, purpose, health["execution_identity"])
+        if version is None:
+            raise ValueError("Provide an inspectable workspace script for development.")
+        hosts = script_permissions.requested_hosts(urls if urls is not None else [])
+        return development_sessions.start(self, version, purpose, data_access, effects, hosts,
+                                           minutes, max_runs, allow_host_changes)
+
+    def script_development_review(self, command: list[str], urls: Optional[list[str]] = None,
+                                  workdir: Optional[str] = None) -> dict[str, Any]:
+        from . import development_sessions, script_permissions
+        health = self.sandbox_control("GET", "/health")
+        version = script_permissions.inspect(self, command, workdir, environment=health["execution_identity"])
+        if version is None:
+            raise ValueError("Provide an inspectable workspace script.")
+        hosts = script_permissions.requested_hosts(urls if urls is not None else [])
+        script_permissions.check_blocks(self, version, hosts)
+        if self.config.get_bool("agent.security.script_yolo", False):
+            return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+        return development_sessions.authorize(self, version, hosts)
 
     def network_access_request(self, urls: list[str], purpose: str, command: Optional[list[str]] = None,
                                workdir: Optional[str] = None) -> dict[str, Any]:
@@ -2319,7 +2355,13 @@ class ToolRuntime:
         version = script_permissions.inspect(self, command, workdir, purpose, health["execution_identity"])
         if version is None:
             raise ValueError("Request script approval first, then supply its identical command and workdir.")
-        return script_permissions.request(self, version, "host", hosts, purpose)
+        from . import development_sessions
+        if self.config.get_bool("agent.security.script_yolo", False):
+            script_permissions.check_blocks(self, version, hosts)
+            return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+        if development_sessions.current(self, version):
+            return development_sessions.authorize(self, version, hosts)
+        return script_permissions.final_request(self, version, hosts, purpose)
 
     def _sandbox_host_configuration_error(self, message: str) -> str:
         clean = " ".join(str(message or "").split())
@@ -2658,6 +2700,8 @@ class ToolRuntime:
             "command_execute": self.command_execute,
             "network_access_request": self.network_access_request,
             "script_approval_request": self.script_approval_request,
+            "development_session_request": self.development_session_request,
+            "script_development_review": self.script_development_review,
             "calendar_sync": self.calendar_sync,
             "calendar_list_busy": self.calendar_list_busy,
             "calendar_list_events": self.calendar_list_events,
@@ -3393,7 +3437,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "command_execute",
-            "description": "Execute an argv array in the sandbox. Scripts require version-bound run approval: first script_approval_request, then network_access_request for required hosts, then this identical invocation. Once grants are consumed by one execution even on failure; dispatch is not retried. Code files are pinned read-only; outputs in the shared workspace remain writable. Relative workdirs resolve under the workspace root.",
+            "description": "Execute an argv array in the sandbox. Scripts require combined final approval or supervisor approval for this exact version and host set within an active development session. Once grants are consumed by one execution even on failure; dispatch is not retried. Code files are pinned read-only; outputs in the shared workspace remain writable. Relative workdirs resolve under the workspace root.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3409,13 +3453,14 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "script_approval_request",
-            "description": "Register a finished script version and request administrator run approval. Supply its exact command, workdir and purpose. Changes to code, local helpers, arguments or sandbox image invalidate approval. Returns approved or pauses for approval; denied requests must not be repeated. After approval request needed hosts, then execute unchanged.",
+            "description": "Submit a finished script and its complete HTTPS host list for one combined admin approval. Closes development authorization and includes the supervisor's final comments if a session exists. Supply exact command/workdir, purpose and urls (empty for offline). Admin approves once, always for this exact executable fingerprint, or denies with feedback. Code/dependency, invocation, image or policy changes invalidate approval. Denials must not be bypassed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "workdir": {"type": "string"},
                     "purpose": {"type": "string"},
+                    "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
                 },
                 "required": ["command", "purpose"],
             },
@@ -3424,15 +3469,50 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
     {
         "type": "function",
         "function": {
+            "name": "development_session_request",
+            "description": "Request admin approval of a bounded script development brief before iterative testing. Describe objective, permitted data/files and external effects explicitly, intended HTTPS URLs/hosts, duration and run budget. Live effects occur before final approval and cannot be undone. Related host changes require explicit delegation via allow_host_changes. After approval call script_development_review on every changed version/host set, execute approved versions within limits, then submit script_approval_request for final combined approval. No blanket permission or cross-task inheritance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "purpose": {"type": "string", "description": "Objective and expected outputs."},
+                    "data_access": {"type": "string", "description": "Permitted input files/data and output locations; 'none' if absent."},
+                    "effects": {"type": "string", "description": "Permitted external actions, e.g. public reads only, test-account writes, or none."},
+                    "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+                    "workdir": {"type": "string"},
+                    "minutes": {"type": "integer", "minimum": 1},
+                    "max_runs": {"type": "integer", "minimum": 1},
+                    "allow_host_changes": {"type": "boolean"},
+                },
+                "required": ["command", "purpose", "data_access", "effects"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "script_development_review",
+            "description": "Ask the independent supervisor to review this complete exact script version and HTTPS host set against the admin-approved development brief. An approved unchanged version can run repeatedly until session expiry or budget exhaustion. Rejected/escalated versions cannot execute; revise within scope or submit final admin approval. This tool cannot change the approved brief.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+                    "workdir": {"type": "string"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "network_access_request",
             "description": (
-                "Ask the administrator to allow sandbox commands to reach specific hosts. Use before running code that "
-                "needs a host other than the package registries, or after command_execute reports a host as not approved. "
-                "Access is granted per host for HTTPS only. Hosts already allowed or blocked are answered immediately; "
-                "Supply the identical command and workdir of an approved script. Otherwise first call "
-                "script_approval_request. Administrator chooses one execution, always for this version, "
-                "always for all approved scripts, or deny. Exact hostnames only; URL paths are not restricted. "
-                "Request only what the task needs and explain why."
+                "Request the complete HTTPS host set for this exact script command/workdir. Within development, "
+                "the supervisor reviews it against the approved brief; otherwise requests combined script+host "
+                "admin approval. No global allows. Exact hostnames only; URL paths/methods are not restricted. "
+                "Blocked hosts must not be retried or bypassed."
             ),
             "parameters": {
                 "type": "object",
@@ -3720,7 +3800,8 @@ FILE_TOOL_NAMES = {
 }
 WEB_SEARCH_TOOL_NAMES = {"web_search"}
 EMAIL_TOOL_NAMES = {"email_search", "email_read", "email_send"}
-COMMAND_TOOL_NAMES = {"command_execute", "network_access_request", "script_approval_request"}
+COMMAND_TOOL_NAMES = {"command_execute", "network_access_request", "script_approval_request",
+                      "development_session_request", "script_development_review"}
 CALENDAR_TOOL_NAMES = {
     "calendar_sync",
     "calendar_list_busy",
@@ -3914,6 +3995,8 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "command_execute": "Run a command in the sandbox container (network via approval proxy).",
         "network_access_request": "Ask the administrator to allow sandbox commands to reach specific hosts.",
         "script_approval_request": "Request permission to run an exact script version.",
+        "development_session_request": "Request a time-bound supervised script development session.",
+        "script_development_review": "Review a development script against its approved brief.",
         "calendar_sync": "Fetch the latest event data from all configured calendar API providers.",
         "calendar_list_busy": "List busy windows from all configured calendar providers. Only complete=true is a reliable availability check; degraded or no_providers means availability is unknown, even when busy is empty.",
         "calendar_list_events": "List events from all configured calendar providers.",

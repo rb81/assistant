@@ -66,6 +66,8 @@ def normalize_host(value: str) -> str:
 
 def matches(pattern: str, host: str) -> bool:
     pattern = str(pattern or "").strip().lower().rstrip(".")
+    if pattern == "*":
+        return True
     if pattern.startswith("*."):
         return host.endswith(pattern[1:])
     return host == pattern

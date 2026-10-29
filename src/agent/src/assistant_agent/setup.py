@@ -67,9 +67,6 @@ ADVANCED_SETTINGS = {
         ("AGENT_SEARCH_ALLOWED_DOMAINS", "agent.search.allowed_domains", "Allowed search domains (comma-separated; blank = unrestricted)", [], list, None),
         ("AGENT_SEARCH_EXCLUDED_DOMAINS", "agent.search.excluded_domains", "Excluded search domains (comma-separated; blank = none)", [], list, None),
     ),
-    "Sandbox network": (
-        ("AGENT_SANDBOX_ALLOWED_HOSTS", "agent.sandbox.network.allowed_hosts", "Hosts sandbox commands may reach without approval (comma-separated; *.example.com = subdomains)", ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"], list, None),
-    ),
     "Model preset tool": (
         ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
         ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", "Restrict the model preset tool to Zero Data Retention (ZDR) models and routing? (No = all models)", False, bool, None),
@@ -103,6 +100,10 @@ SECURITY_SETTINGS = {
     "AGENT_SECURITY_SCREEN_SCRIPTS": "agent.security.decision_model.screen.scripts",
     "AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS": "agent.security.scripts.allowed_domains",
     "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS": "agent.security.allow_possibly_malicious",
+    "AGENT_SECURITY_SCRIPT_YOLO": "agent.security.script_yolo",
+    "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "agent.security.development.model_preset",
+    "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "agent.security.development.max_minutes",
+    "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "agent.security.development.max_runs",
 }
 YOLO_CONFIRMATION = "ALLOW POSSIBLY MALICIOUS"
 ADVANCED_ENV_NAMES = frozenset(setting[0] for settings in ADVANCED_SETTINGS.values() for setting in settings)
@@ -2010,6 +2011,13 @@ def configure_docker_boot(instance, confirm, console):
 
 def security_value(instance, name, default=None):
     """Current wizard value for a security setting, falling back to config/agent.yaml."""
+    if default is None:
+        default = {
+            "AGENT_SECURITY_SCRIPT_YOLO": False,
+            "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "default",
+            "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": 30,
+            "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": 20,
+        }.get(name)
     if name in instance.values:
         value = instance.values[name]
     else:
@@ -2050,6 +2058,8 @@ def prompt_security(instance, answer, confirm, console):
 
     def ask(name, label, default=""):
         instance.values[name] = answer(questionary.text(label, default=security_value(instance, name) or default)).strip()
+
+    prompt_development_security(instance, answer, confirm, console)
 
     console.print("Admin email authentication verifies, via DNS, the DKIM signature or SPF authorization of email "
                   "that claims to come from your admin address. Either must pass for your admin domain. Failures are "
@@ -2137,6 +2147,33 @@ def prompt_security(instance, answer, confirm, console):
     else:
         yolo = False
     instance.values["AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"] = str(yolo).lower()
+
+
+def prompt_development_security(instance, answer, confirm, console):
+    import questionary
+    from .development_supervisor import SCRIPT_YOLO_WARNING
+
+    console.print("Development sessions always use an independent, tool-free supervisor unless script YOLO is "
+                  "explicitly enabled. The supervisor reviews the entire source version against your approved brief. "
+                  "'default' uses your task chat provider/model and existing credential; other names use stored "
+                  "OpenRouter chat model presets and OPENROUTER_API_KEY. Preset prompts are not supervisor policy.")
+    for name, label, default in (
+        ("AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "Development supervisor model preset", "default"),
+        ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
+        ("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "Maximum development session runs", "20"),
+    ):
+        instance.values[name] = answer(questionary.text(
+            label, default=security_value(instance, name) or default,
+        )).strip()
+    enabled = False
+    if confirm("Enable script YOLO? Scripts + public network without approvals or supervisor",
+               security_value(instance, "AGENT_SECURITY_SCRIPT_YOLO", False) == "true"):
+        console.print("[bold red]WARNING:[/bold red] " + SCRIPT_YOLO_WARNING)
+        typed = answer(questionary.text("Type ALLOW UNSUPERVISED SCRIPTS to enable script YOLO"))
+        enabled = typed.strip() == "ALLOW UNSUPERVISED SCRIPTS"
+        if not enabled:
+            console.print("Confirmation did not match; script YOLO stays off.")
+    instance.values["AGENT_SECURITY_SCRIPT_YOLO"] = str(enabled).lower()
 
 
 def prompt_credential(answer, name, existing):
@@ -2418,6 +2455,11 @@ def draft_problems(instance):
                 raise ValueError
         except ValueError:
             problem("dropbox", "DROPBOX_MAX_FILE_BYTES must be between 1 byte and 150 MiB")
+    from .development_supervisor import configuration_errors
+    for error in configuration_errors(security_config(instance)):
+        problem("security", error)
+    if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "default") != "default":
+        required.setdefault("OPENROUTER_API_KEY", "security")
     from .security_screening import PROVIDER_CHOICES
     if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", False) not in {"true", "false"}:
         problem("security", "AGENT_SECURITY_EMAIL_AUTH_ENABLED must be true or false")

@@ -11,18 +11,21 @@ This document describes how Assistant executes shell commands safely.
 
 ## Control Flow
 
-1. Agent finishes a script and calls `script_approval_request` with its exact
-   argv, purpose and optional workdir, then `network_access_request` for needed
-   HTTPS hosts with the same argv/workdir. Both may pause for administrator approval.
-2. `ToolRuntime.command_execute` validates input and shared-root workdir.
-3. Request is sent to sandbox broker `POST /execute`.
-4. Broker starts a fresh run container. Approved code is copied into a private
+1. For iterative work, the agent calls `development_session_request` with a
+   development brief, initial script, hosts and limits. After the admin approves,
+   `script_development_review` reviews each complete version and host set against
+   that immutable brief. Alternatively, the agent requests final approval directly.
+2. `script_approval_request` closes further development execution and submits the
+   final script and hosts together, including the supervisor's final comments.
+3. `ToolRuntime.command_execute` validates input, authorization and shared-root workdir.
+4. Request is sent to sandbox broker `POST /execute`.
+5. Broker starts a fresh run container. Approved code is copied into a private
    read-only volume at `/approved-code`; script arguments reference that snapshot.
    The working directory and data outputs remain in the writable shared workspace.
-5. Broker captures stdout/stderr/exit status.
-6. Broker attempts to remove the run container and per-run network, including
+6. Broker captures stdout/stderr/exit status.
+7. Broker attempts to remove the run container and per-run network, including
    after errors or timeouts.
-7. Result is returned to task-agent and logged.
+8. Result is returned to task-agent and logged.
 
 ## Safety Properties
 
@@ -55,15 +58,16 @@ returned as `timed_out=true`, not retried as a broker failure.
 
 ### Script versions and run permissions
 
-Scripts require explicit **Approve once**, **Approve always**, or **Deny** even
-when decision-model screening is disabled. Optional feedback accompanies any
+Finished scripts and their exact HTTPS host list require one combined
+**Approve once**, **Approve always**, or **Deny** decision, unless explicitly
+enabled Script YOLO bypasses approvals. Optional feedback accompanies any
 decision. A denial does not cancel the job or authorize another attempt at the
 same action. The agent should continue without that capability or report the blocker.
 
 Versions include SHA-256 hashes of the entry file and analysed local code
 dependencies, exact command arguments, workdir, sandbox image/runtime identity,
-and security policy. Changes require new approval and invalidate script-specific
-host grants. Global host grants remain global, but never authorize execution.
+and security policy. Changes require new approval or a fresh supervisor review
+inside an active development session. Final host grants are version-bound.
 Do not use symlinks for code paths.
 
 Always approval is available only for dependency graphs that can be pinned.
@@ -82,6 +86,50 @@ Approved script dispatches are never automatically retried. Approval does not
 increase task budgets. Version-bound executions require container isolation and
 proxy egress (or network mode `none`), not process/open-network modes.
 
+### Supervised development sessions
+
+The brief specifies objective/outputs, permitted data/files, external effects,
+exact intended hosts, duration and execution budget. The admin may explicitly
+delegate related public host changes to the supervisor; the default is no
+host changes. Such delegation never permits new data recipients or effects.
+Live tests can produce irreversible effects before final approval.
+
+The supervisor is a separate, tool-free model call with the original approved
+brief and the complete code/dependency manifest, not agent summaries. It returns
+approve, reject with comments, or escalate. Implementation changes may remain
+within scope; the supervisor cannot rewrite the brief. Uncertainty, malformed
+output and provider failure never authorize execution. Static analysis and model
+judgment are best effort, not proof of behavior or a filesystem-access boundary.
+Commands still have access to the writable shared workspace; use test data and
+dedicated test accounts rather than assuming development creates a private copy.
+
+Each approved executable fingerprint and exact host set may run repeatedly
+within that job's session. Changes require review. Runs consume budget atomically,
+including failed attempts; dispatch is never automatically retried. The broker
+rejects expired dispatches and terminates running commands at session expiry.
+Unpinnable dependency graphs require final one-time admin approval instead.
+
+Configuration under `agent.security.development`:
+
+```yaml
+model_preset: default
+max_minutes: 30
+max_runs: 20
+```
+
+`default` uses the configured chat provider/model through a separate invocation;
+a named stored chat preset selects an independent OpenRouter model. Its stored
+system prompt is not used as supervisor policy. Configure this in
+**Settings → Safety & screening**. Requested session limits cannot exceed these
+ceilings. Expiry starts when the admin approves, not when the agent requests.
+
+Final submission stops further development execution. The admin sees the
+supervisor's final decision/comments and the full exact host list; an escalation
+is clearly labeled, not presented as supervisor approval. Email includes the full
+code in the body and attachment. Telegram offers **Review Script**. Final approval
+is bound to the executable fingerprint and selected hosts; a denial grants no
+ongoing permission and cannot undo development-time effects.
+
 ## Network Isolation
 
 - Broker is attached to internal sandbox control network.
@@ -94,9 +142,9 @@ proxy egress (or network mode `none`), not process/open-network modes.
   - DNS from the run container goes to a sink address, so DNS cannot be used
     to exfiltrate data.
   - The policy (allowed and blocked hosts) is fixed when the command starts.
-- Allowed hosts are configured defaults (package registries), explicitly retained
-  legacy rules, and grants for this approved script version or all approved
-  scripts. Any matching block beats any allow, including defaults. New requests
+- Allowed hosts come only from the authorized development version or final
+  approved script version. There are no global host allows or package-registry
+  exceptions. Any matching block beats any allow. New requests
   use exact hosts, never implicit wildcards. Rules cover all HTTPS paths on the
   named host, not individual URLs or repositories.
 - `command_execute` results include a `network` summary listing allowed and
@@ -112,16 +160,16 @@ proxy egress (or network mode `none`), not process/open-network modes.
 
 ### Network access approvals
 
-After run approval, the agent requests required URLs or exact hostnames with
-`network_access_request`, supplying the identical `command` and `workdir`.
-Allowed hosts return `approved`; blocked hosts are refused without another
-approval request. Otherwise the job pauses (`needs_review`).
+`script_approval_request` includes `urls` (up to ten exact hosts or HTTPS URLs),
+the exact `command` and optional `workdir`. Offline scripts use an empty list.
+`network_access_request` is a compatibility entrypoint: it asks the supervisor
+during development, or requests combined final script+host approval otherwise.
+Blocked hosts are refused without another approval request.
 
-Choices: **Approve once** (next execution), **Always for this script** (this
-version), **Always for all approved scripts**, or **Deny**. Telegram's **Always...**
-opens the scope selector; the broad all-scripts grant needs a confirmation.
-**Add feedback** collects optional guidance before deciding. Email replies use
-`APPROVE ONCE`, `APPROVE ALWAYS`, `APPROVE ALWAYS FOR ALL SCRIPTS`, or `DENY`
+Choices: **Approve once** (next execution), **Approve always** (this exact
+version and host set), or **Deny**. **Add feedback** collects optional guidance.
+Development briefs offer approval for that session or denial, never always.
+Email replies use `APPROVE ONCE`, `APPROVE ALWAYS`, or `DENY`
 on the first line, followed by optional feedback. Both channels resolve the same
 one-use request when delivery is configured as `both`.
 
@@ -145,9 +193,15 @@ could not be stopped. Stop the sandbox service before relying on revocation.
 Administrator ingress services receive only a derived **revoke-only** token,
 never the sandbox execution token.
 
-Existing `sandbox_network_rules` retain their original job/global scope and
-appear under **Legacy rules**; they are not silently converted to script grants.
-The old network CLI remains available for legacy rules. Factory reset has a
+Existing `sandbox_network_rules` remain visible under **Legacy rules**, but their
+allows and configured registry defaults no longer authorize sandbox traffic.
+Their blocks still apply. Migration retires previous global host allow grants
+with an audit record; it does not convert them into script grants.
+Old network-only approval replies and CLI allow operations are refused explicitly;
+request a fresh combined version-bound approval instead.
+Revoking or blocking a script revokes its development sessions and invalidates
+pending approvals as well as preventing use of its host permissions.
+Factory reset has a
 separate **Sandbox script and network approvals and blocks** category.
 
 For upgrades, save setup again to generate the revoke-only credential and
@@ -178,21 +232,24 @@ Use a harmless script and non-sensitive data for these checks:
 
 | Check | Expected result |
 |---|---|
-| New script | Run approval arrives through the configured channel(s), even with screening disabled. |
+| New script | Combined script/host approval arrives through the configured channel(s), even with screening disabled. |
 | Approve once | One execution succeeds; a second needs approval. Failure does not restore the grant. |
 | Approve always | The unchanged invocation can run again, including in another job, without another run prompt. |
 | Change source, a local helper, or argv | A new version needs approval; old script-specific host grants do not apply. |
 | Request `https://example.com/feed.rss` | The request clearly grants `example.com`, including other HTTPS paths, not just `/feed.rss`; subdomains remain separate. |
-| Always for this script | Another version does not inherit the host grant. |
-| Always for all approved scripts | Another approved script can use the host; an unapproved script still needs run approval. |
+| Always for this script | Another version does not inherit the host grant. No global allow is offered. |
+| Development brief | Admin approves objective, data/effects, hosts and time/run limits once. |
+| Changed development version | Supervisor reviews full code; rejection/escalation cannot execute. |
+| Expired or exhausted session | New execution is blocked; expiry also stops active commands. |
+| Final submission | Further development execution stops; final comments and hosts accompany combined approval. |
 | Deny with feedback | The job receives the decision/guidance; the same denied request is not repeatedly prompted or bypassed. |
 | Delivery set to both | Either channel resolves the request; the other channel cannot approve it a second time. |
 | Block a host or script | Future matching execution/access is refused; all active sandbox runs are stopped. |
 | Revoke a reusable grant | Future use requires approval again unless another applicable grant remains. |
 
 Always may be unavailable for an uninspectable dependency graph; use once rather
-than treating that as a UI failure. Configured defaults and retained legacy rules
-can already allow a host, so inspect the host list before testing a missing-host
+than treating that as a UI failure. Existing version-bound grants can already
+allow a host, so inspect that script's host list before testing a missing-host
 prompt. Removing a block does not remove a separate allow, and revoking one grant
 does not remove other applicable grants.
 
@@ -205,6 +262,16 @@ If revocation reports that permissions were saved but active runs could not be
 stopped, stop the sandbox service before relying on the change. Revocation cannot
 undo completed writes or external requests. See [network access approvals](#network-access-approvals)
 for management commands and credential boundaries.
+
+### Script YOLO
+
+`agent.security.script_yolo` defaults to false and is separate from the existing
+possibly-malicious-email setting. Enabling it explicitly bypasses script, host
+and supervisor approvals, allowing any public HTTPS hostname through the proxy.
+Explicit script/host blocks, private-address/SNI checks, sandbox isolation and
+resource limits remain. Setup requires a typed confirmation and logs a startup
+warning. Disabling it restores the approval flow; it does not create reusable
+script or host grants.
 
 ## Isolation Modes
 

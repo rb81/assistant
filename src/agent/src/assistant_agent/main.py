@@ -88,6 +88,11 @@ def run_role(role: str) -> None:
             "YOLO mode is ON: content the decision model rates possibly malicious is processed without admin approval"
         )
 
+    if (role in ("task-agent", "deep-research-agent", "deep-research-cron", "heartbeat", "heartbeat-cron", "all")
+            and config.get_bool("agent.security.script_yolo", False)):
+        from .development_supervisor import SCRIPT_YOLO_WARNING
+        LOGGER.warning(SCRIPT_YOLO_WARNING)
+
     # Log warnings for degraded capabilities
     if role in ("task-agent", "all"):
         from .validation import admin_configured, smtp_configured

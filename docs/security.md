@@ -269,7 +269,7 @@ changes and outbound data transfer persist. Container escape remains a residual
 risk.
 
 Outbound traffic is deny-by-default: each command reaches the internet only
-through a per-run HTTPS proxy that allows configured and admin-approved hosts,
+through a per-run HTTPS proxy that allows version-bound authorized hosts,
 checks TLS SNI, refuses private addresses and sinks DNS. Approvals are per host,
 so an approved host can receive any data the command sends it, and hosts on
 shared CDNs may relay to others. The Docker host's bridge gateway may remain
@@ -291,7 +291,9 @@ changes.
 ## Email and action screening
 
 Configure these layers in **Settings → Safety & screening**. All
-are optional; explicit script permissions are required independently of screening.
+are optional; script authorization is required independently of screening
+(final admin approval or version-bound supervision within an approved development
+session), unless Script YOLO is explicitly enabled.
 Telegram is not screened: only allow-listed, owner-proven accounts
 can reach it.
 
@@ -400,7 +402,8 @@ malicious:
 
 The approval fingerprint includes every analysed code file, argv, workdir,
 sandbox image/runtime identity and security policy. Code changes require fresh
-run approval and script-scoped host grants. Execution uses a read-only code
+run approval and script-scoped host grants, or a fresh supervisor review within
+an admin-approved development session. Execution uses a read-only code
 snapshot outside the writable workspace; data inputs remain mutable.
 Always approval is withheld for unsupported or uninspectable dependency graphs.
 Successful screening findings are cached with a per-version lock to prevent
@@ -411,10 +414,19 @@ Static analysis remains best effort, not exhaustive command interception.
 
 `agent.security.allow_possibly_malicious` (off by default) lets possibly
 malicious inbound and outbound email proceed without screening approval. The admin
-is notified afterwards. Explicit script permissions remain mandatory, and malicious
-script versions are blocked. Setup shows a strong
+is notified afterwards. This email setting does not bypass script permissions,
+and malicious script versions remain blocked. Setup shows a strong
 warning and requires typing `ALLOW POSSIBLY MALICIOUS`, and services log a
 warning at startup while YOLO mode is on.
+
+The separate `agent.security.script_yolo` (also off by default) disables script,
+host and development-supervisor approvals, including script screening. Setup
+requires typing `ALLOW UNSUPERVISED SCRIPTS` and logs a startup warning. The proxy
+allows any public HTTPS hostname in this mode, but still enforces explicit
+blocks, private-address restrictions and SNI checks; sandbox isolation and limits
+remain. Existing installations are not silently opted in. Turning it off creates
+no permanent grants. See [supervised development sessions](sandbox.md#supervised-development-sessions)
+for the normal bounded workflow and configurable supervisor model.
 
 #### Providers
 

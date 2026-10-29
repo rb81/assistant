@@ -2191,7 +2191,8 @@ CREATE TABLE sandbox_permission_grants (
     created_at timestamptz NOT NULL DEFAULT now(),
     CHECK (scope <> 'once' OR (job_id IS NOT NULL AND version_id IS NOT NULL)),
     CHECK (scope <> 'script' OR version_id IS NOT NULL),
-    CHECK (kind <> 'run' OR (version_id IS NOT NULL AND scope <> 'global'))
+    CHECK (kind <> 'run' OR (version_id IS NOT NULL AND scope <> 'global')),
+    CONSTRAINT sandbox_no_global_allow CHECK (scope <> 'global' OR decision = 'block')
 );
 CREATE INDEX sandbox_permission_grants_lookup ON sandbox_permission_grants(version_id, job_id, kind);
 CREATE TABLE sandbox_permission_history (
@@ -2200,6 +2201,32 @@ CREATE TABLE sandbox_permission_history (
     action text NOT NULL,
     details jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE sandbox_development_sessions (
+    id bigserial PRIMARY KEY,
+    job_id bigint NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    script_id bigint NOT NULL REFERENCES sandbox_scripts(id) ON DELETE CASCADE,
+    initial_version_id bigint NOT NULL REFERENCES sandbox_script_versions(id),
+    brief jsonb NOT NULL,
+    status text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'active', 'finalizing', 'closed', 'denied', 'revoked')),
+    expires_at timestamptz,
+    max_runs integer NOT NULL CHECK (max_runs > 0),
+    runs integer NOT NULL DEFAULT 0 CHECK (runs >= 0),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX sandbox_development_session_open
+    ON sandbox_development_sessions(job_id, script_id)
+    WHERE status IN ('pending', 'active', 'finalizing');
+CREATE TABLE sandbox_development_reviews (
+    session_id bigint NOT NULL REFERENCES sandbox_development_sessions(id) ON DELETE CASCADE,
+    version_id bigint NOT NULL REFERENCES sandbox_script_versions(id) ON DELETE CASCADE,
+    hosts jsonb NOT NULL,
+    final boolean NOT NULL DEFAULT false,
+    review jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, version_id, final)
 );
 
 INSERT INTO schema_migrations(filename) VALUES
@@ -2213,6 +2240,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('012_workstream_archive.sql'),
   ('013_sandbox_network_rules.sql'),
   ('014_automatic_embeddings.sql'),
-  ('015_script_permissions.sql');
+  ('015_script_permissions.sql'),
+  ('016_development_sessions.sql');
 
 SET check_function_bodies = true;

@@ -87,10 +87,8 @@ def test_always_grant_and_screening_override_survive_jobs_but_not_code_changes(r
         assert screen.call_count == 2
 
 
-def test_host_grants_are_version_scoped_once_or_explicitly_global(runtime):
+def test_combined_host_grants_are_version_scoped_and_never_global(runtime):
     item = version(runtime)
-    assert permissions.request(runtime, item, "host", ["api.example.com"])["status"] == "script_approval_required"
-    approve(runtime, item)
     approve(runtime, item, "host", ["api.example.com"])
     current = permissions.host_policy(runtime.db, runtime.config, item["id"], runtime.job["id"])
     assert permissions.network_access.decide(current, "api.example.com") == "allowed"
@@ -99,8 +97,9 @@ def test_host_grants_are_version_scoped_once_or_explicitly_global(runtime):
     assert permissions.network_access.decide(
         permissions.host_policy(runtime.db, runtime.config, other["id"], runtime.job["id"]), "api.example.com"
     ) == "not_approved"
-    approve(runtime, item, "host", ["shared.example.com"], "global")
-    assert "shared.example.com" in permissions.host_policy(runtime.db, runtime.config, other["id"], runtime.job["id"])["allow"]
+    with pytest.raises(ValueError, match="Unknown permission decision"):
+        approve(runtime, item, "host", ["shared.example.com"], "global")
+    assert "shared.example.com" not in permissions.host_policy(runtime.db, runtime.config, other["id"], runtime.job["id"])["allow"]
     approve(runtime, item, "host", ["once.example.com"], "once")
     permissions.execution(runtime, item)
     assert "once.example.com" not in permissions.host_policy(runtime.db, runtime.config, item["id"], runtime.job["id"])["allow"]
@@ -172,9 +171,10 @@ def test_revoking_script_removes_host_and_run_grants(runtime):
 
 def test_permission_keyboard_and_email_choices_are_explicit():
     buttons = permission_keyboard("abc", {"permission_type": "host", "reusable": True})
-    assert any(button["text"] == "Always..." for row in buttons for button in row)
+    assert any(button["text"] == "Approve always" for row in buttons for button in row)
     assert not any(":global" in button["callback_data"] for row in buttons for button in row)
-    assert permissions.parse_decision("APPROVE ALWAYS FOR ALL SCRIPTS\nOnly public data.") == ("global", "Only public data.")
+    with pytest.raises(ValueError):
+        permissions.parse_decision("APPROVE ALWAYS FOR ALL SCRIPTS\nOnly public data.")
     with pytest.raises(ValueError):
         permissions.parse_decision("sure")
     assert permissions.requested_hosts(["https://Example.com/feed.rss", "example.com"]) == ["example.com"]
@@ -236,9 +236,9 @@ def test_javascript_local_dependency_changes_invalidate_approval(runtime):
 
 def test_upgrade_preserves_existing_network_rules(db):
     db.execute("INSERT INTO sandbox_network_rules(host, decision) VALUES ('legacy.example.com', 'allow')")
-    db.execute("DROP TABLE sandbox_permission_history, sandbox_permission_grants, sandbox_script_versions, sandbox_scripts")
-    db.execute("DELETE FROM schema_migrations WHERE filename = '015_script_permissions.sql'")
-    assert db.run_migrations() == ["015_script_permissions.sql"]
+    db.execute("DROP TABLE sandbox_development_reviews, sandbox_development_sessions, sandbox_permission_history, sandbox_permission_grants, sandbox_script_versions, sandbox_scripts")
+    db.execute("DELETE FROM schema_migrations WHERE filename IN ('015_script_permissions.sql', '016_development_sessions.sql')")
+    assert db.run_migrations() == ["015_script_permissions.sql", "016_development_sessions.sql"]
     assert db.fetch_one("SELECT host FROM sandbox_network_rules")["host"] == "legacy.example.com"
     assert db.run_migrations() == []
 
@@ -263,7 +263,7 @@ def test_agent_tool_pauses_email_approval_resumes_and_exact_execution_consumes_g
         )
     job = runtime.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (runtime.job["id"],))
     runtime.db.update_job_status(job["id"], "needs_review")
-    assert job["metadata"]["permission_request"]["kind"] == "run"
+    assert job["metadata"]["permission_request"]["kind"] == "final"
     with patch("assistant_agent.email_approvals.send_admin_email") as send:
         assert permissions.send_approval(runtime.db, runtime.config, job)
     body = send.call_args.args[2]
