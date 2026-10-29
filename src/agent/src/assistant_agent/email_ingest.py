@@ -444,8 +444,8 @@ class EmailDownloader:
                     "thread_id": thread_id,
                     "job": {"id": job["id"], "review_version": str(job["updated_at"]) if job["status"] == "needs_review" else None} if job else None,
                 },
-                "Authorize processing of the email below as an admin task. "
-                "It has not yet been authenticated as an admin request.\n"
+                "Email from your configured admin address. "
+                "Confirm you sent this to start processing.\n"
                 "Subject: %s\n\nEmail content (untrusted until you approve):\n%s" % (subject, reply_text(parsed)),
             )
             return IngestResult(inserted=True, queued=False, message_id=message_id)

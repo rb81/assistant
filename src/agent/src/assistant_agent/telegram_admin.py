@@ -539,7 +539,8 @@ class TelegramAdmin:
         elif action == "review":
             text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
             self.send(sender, text + "\n\nConfirm this exact request?",
-                      [[("Continue task" if value["payload"]["kind"] == "input" else "Approve once",
+                      [[("Confirm & start" if value["payload"]["kind"] == "email" else
+                         "Continue task" if value["payload"]["kind"] == "input" else "Approve once",
                          "ap:%s:ok" % callback_id),
                         ("Not now", "ap:%s:later" % callback_id)],
                        [("Details", "ap:%s:details" % callback_id)]] +

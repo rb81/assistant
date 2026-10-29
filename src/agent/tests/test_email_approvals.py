@@ -300,6 +300,30 @@ class ApprovalReplyTest(unittest.TestCase):
         consume.assert_not_called()
         downloader.db.execute.assert_not_called()
 
+    def test_admin_task_recognizes_address_but_waits_for_sender_confirmation(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config, downloader.db = self.config, MagicMock()
+        downloader.db.fetch_one.return_value = None
+        message = reply("Prepare the report.")
+        message.replace_header("Subject", "Script Testing")
+        with patch.object(downloader, "resolve_thread_id", return_value="thread"), patch.object(
+            downloader, "is_actionable", return_value=True
+        ), patch("assistant_agent.email_approvals.EmailApprovals.request") as request, patch(
+            "assistant_agent.email_ingest.RequestService.receive_request"
+        ) as receive:
+            result = downloader.ingest_raw(message.as_bytes())
+        self.assertFalse(result.queued)
+        receive.assert_not_called()
+        source, payload, summary = request.call_args.args
+        self.assertEqual(source, "<reply@example.com>")
+        self.assertEqual(payload["kind"], "email")
+        self.assertIn("Email from your configured admin address.", summary)
+        self.assertIn("Confirm you sent this to start processing.", summary)
+        self.assertIn("Subject: Script Testing", summary)
+        self.assertIn("Prepare the report.", summary)
+        self.assertNotIn("not yet been authenticated", summary)
+
     def test_automation_cannot_bypass_confirmation_by_becoming_an_ordinary_task(self):
         from assistant_agent.email_ingest import EmailDownloader
         downloader = EmailDownloader.__new__(EmailDownloader)

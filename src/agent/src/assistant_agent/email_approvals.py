@@ -341,8 +341,10 @@ class EmailApprovals:
                         client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
                             "reply_markup": {"inline_keyboard": keyboard or [
-                                [{"text": "Review reply" if payload.get("kind") == "input" else "Review & approve",
-                                  "callback_data": "ap:%s:review" % callback},
+                                [{"text": "Confirm & start" if payload.get("kind") == "email" else
+                                          "Review reply" if payload.get("kind") == "input" else "Review & approve",
+                                  "callback_data": "ap:%s:%s" % (
+                                      callback, "ok" if payload.get("kind") == "email" else "review")},
                                  {"text": "Not now", "callback_data": "ap:%s:later" % callback}],
                                 [{"text": "Details", "callback_data": "ap:%s:details" % callback}],
                             ] + ([[{"text": "Add reply", "callback_data": "ui:guidance:%s" % payload["job_id"]}]]

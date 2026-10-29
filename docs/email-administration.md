@@ -50,7 +50,11 @@ check quarantines mail that claims your address but fails both DKIM and SPF. It 
 only reject mail; it never replaces the OTP.
 
 An `/admin` request or actionable task email from the configured admin is held
-pending approval. When email approvals are selected, the assistant sends a
+pending approval. The address is recognized, but confirmation is still required
+to prove you sent the request. For task emails, Telegram shows the email with a
+**Confirm & start** button that processes the held request without a second
+confirmation screen. This does not grant script permissions.
+When email approvals are selected, the assistant sends a
 **new, independent email** only to
 `ADMIN_EMAIL`, without threading headers or inherited Reply-To. It contains a
 random OTP, a SHA-256 request hash, an action summary and a ten-minute expiry.

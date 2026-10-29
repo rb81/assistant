@@ -54,6 +54,50 @@ def test_approval_delivery_obeys_selected_channels_and_shares_one_record(mode, e
         assert state["channel"] == mode
 
 
+@pytest.mark.parametrize("mode", ["telegram", "both"])
+def test_email_confirmation_button_processes_request_without_second_review(ui, mode):
+    db = ui.db
+    with patch("assistant_agent.email_approvals.send_admin_email"), patch(
+        "assistant_agent.telegram.TelegramClient"
+    ) as telegram:
+        EmailApprovals(db, config(mode)).request(
+            "email:12", {"kind": "email", "raw": "original-email", "folder": "INBOX"},
+            "Email from your configured admin address. Confirm you sent this to start processing.\n"
+            "Subject: Script Testing\n\nPrepare the report.",
+        )
+    pending = db.set_state.call_args_list[0].args[1]
+    message = telegram.return_value.call.call_args.args[1]
+    buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
+    confirm = next(button for button in buttons if button["text"] == "Confirm & start")
+    assert "Subject: Script Testing" in message["text"]
+    assert "Prepare the report." in message["text"]
+    assert {button["text"] for button in buttons} == {"Confirm & start", "Not now", "Details"}
+    _, callback_id, action = confirm["callback_data"].split(":")
+    assert action == "ok"
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram", return_value=pending["payload"]) as consume, \
+            patch("assistant_agent.telegram_admin.apply_approval", return_value="Task queued.") as apply:
+        ui.approval("123", callback_id, action)
+    consume.assert_called_once_with(callback_id, "123")
+    apply.assert_called_once_with(db, ui.config, pending["payload"])
+    assert ui.client.call.call_count == 1
+    assert ui.client.call.call_args.args[1]["text"] == "Task queued."
+
+
+def test_email_approval_inbox_review_offers_direct_confirmation(ui):
+    pending = {"payload": {"kind": "email"},
+               "summary": "Email from your configured admin address.\nSubject: Script Testing",
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram") as consume:
+        ui.approval("123", "a" * 24, "review")
+    message = ui.client.call.call_args.args[1]
+    buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
+    assert next(button for button in buttons if button["text"] == "Confirm & start")[
+        "callback_data"] == "ap:%s:ok" % ("a" * 24)
+    consume.assert_not_called()
+
+
 def test_legacy_network_delivery_only_offers_blocks_and_cancellation():
     with patch("assistant_agent.email_approvals.send_admin_email") as email, patch(
         "assistant_agent.telegram.TelegramClient"
@@ -384,8 +428,9 @@ def test_state_aware_job_controls_do_not_offer_blind_resume_for_reviews(ui):
     assert "Run again" not in str(payload)
 
 
-def test_expired_approval_offers_renewal_without_consuming_or_running(ui):
-    pending = {"payload": {"kind": "review", "job_id": 12, "version": "old"},
+@pytest.mark.parametrize("kind", ["review", "email"])
+def test_expired_approval_offers_renewal_without_consuming_or_running(ui, kind):
+    pending = {"payload": {"kind": kind, "job_id": 12, "version": "old"},
                "summary": "Task", "expires": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()}
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), patch.object(
         EmailApprovals, "consume_telegram"
