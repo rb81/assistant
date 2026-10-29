@@ -3,6 +3,7 @@ import logging
 import math
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from .config import AppConfig
@@ -10,6 +11,7 @@ from .transport_security import open_https_request, open_internal_http_request, 
 
 
 LOGGER = logging.getLogger("assistant.embedding_client")
+keyword_only: ContextVar[bool] = ContextVar("assistant_embedding_keyword_only", default=False)
 
 
 class EmbeddingClient:
@@ -44,6 +46,8 @@ class EmbeddingClient:
             self.dimensions = None
 
     def embed(self, text: str) -> list[float]:
+        if keyword_only.get():
+            raise RuntimeError("Embedding startup wait expired; using keyword-only retrieval for this run")
         if not self.enabled:
             raise RuntimeError("memory embeddings are disabled")
         clean_text = str(text or "").strip()

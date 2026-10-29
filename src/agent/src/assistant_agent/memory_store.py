@@ -173,7 +173,7 @@ class MemoryStore:
         metadata: Optional[dict[str, Any]] = None,
         source_job_id: Optional[int] = None,
         actor: str = "system",
-        embed: bool = True,
+        embed: bool = False,
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         if not text:
@@ -245,7 +245,7 @@ class MemoryStore:
         job_id: Optional[int] = None,
         actor: str = "system",
         include_expired: bool = False,
-        embed: bool = True,
+        embed: bool = False,
     ) -> dict[str, Any]:
         existing = self.get(memory_id, include_expired=include_expired)
         if existing is None:

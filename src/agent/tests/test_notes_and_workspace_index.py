@@ -278,7 +278,7 @@ class NotesAndWorkspaceIndexTest(unittest.TestCase):
             self.assertEqual(command[command.index("--to") + 1], "html5")
             self.assertEqual(db.files["note-1.html"]["index_status"], "indexed")
 
-    def test_workspace_index_embeds_chunks_and_semantic_search_returns_snippets(self) -> None:
+    def test_workspace_index_defers_embeddings_and_search_returns_keyword_snippets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             path = root / "docs" / "plan.md"
@@ -287,12 +287,13 @@ class NotesAndWorkspaceIndexTest(unittest.TestCase):
             db = FakeWorkspaceDatabase()
             index = WorkspaceIndex(db, workspace_config(temp_dir))  # type: ignore[arg-type]
 
-            with patch("assistant_agent.embedding_client.EmbeddingClient.embed", return_value=[1.0, 0.0]):
+            with patch("assistant_agent.embedding_client.EmbeddingClient.embed", return_value=[1.0, 0.0]) as embed:
                 row = index.index_path(path)
+                embed.assert_not_called()
                 matches = index.search("embedding index", limit=5)
 
             self.assertEqual(row["index_status"], "indexed")
-            self.assertEqual(db.chunks[0]["embedding"], [1.0, 0.0])
+            self.assertIsNone(db.chunks[0]["embedding"])
             self.assertEqual(matches[0]["relative_path"], "docs/plan.md")
             self.assertIn("embedding index", matches[0]["snippet"].lower())
 

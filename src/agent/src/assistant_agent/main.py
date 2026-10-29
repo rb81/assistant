@@ -144,18 +144,20 @@ def run_role(role: str) -> None:
     elif role == "workspace-indexer":
         WorkspaceIndex(db, config).run_forever(stopper)
     elif role == "workspace-index-cron":
-        count = WorkspaceIndex(db, config).run_once()
+        indexer = WorkspaceIndex(db, config)
+        count = indexer.run_idle_once()
         LOGGER.info("workspace index cron processed %s file(s)", count)
     elif role == "tool-cache-cleanup-cron":
         count = ToolResultCache(config).cleanup_expired()
         LOGGER.info("tool result cache cleanup removed %s file(s)", count)
     elif role == "all":
         LOGGER.info("role 'all' runs downloader, schedulers, agents, and supervisor sequentially")
+        indexer = WorkspaceIndex(db, config)
         while not stopper():
             EmailDownloader(db, config).sync_once()
             ReminderScheduler(db, config).run_once()
             DeepResearchAgent(db, config).run_once()
-            WorkspaceIndex(db, config).run_once()
+            indexer.run_idle_once()
             TaskAgent(db, config, role=role).run_once()
             Supervisor(db, config).run_once()
             Heartbeat(db, config).run_once()

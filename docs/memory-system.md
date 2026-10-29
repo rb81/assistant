@@ -99,6 +99,59 @@ incompatible dimensions, or missing model metadata.
 Keyword fallback remains available, but semantic recall can be incomplete until
 the rebuild finishes. No source records are deleted to change embedding models.
 
+The `workspace-indexer` service automatically refreshes missing or incompatible
+vectors across all seven sources: memories, workspace chunks, jobs, reminders,
+outbound emails, inbound emails, and contacts. PostgreSQL sends a content-free
+notification after changes commit, waking the worker without waiting for a full
+workspace scan. Missing/stale vectors in the source tables are the durable work
+queue; a one-second recovery poll handles missed notifications. File discovery
+still uses the workspace scan interval (60 seconds by default).
+
+Bulk embedding generation and workspace scans run only while task and research
+workers are idle. A shared/exclusive database advisory lock coordinates every
+worker replica and manual rebuild. Background embedding passes have a five-second
+budget and process at most 10 records per source. Refresh still runs when
+workspace file indexing is disabled. `workspace-index-cron` and `all` also perform
+idle-only refreshes.
+
+Before claiming queued task/research work, a worker drains pending vectors with
+a 60-second startup budget. It then keeps an execution lock until processing
+ends, preventing background indexing from competing with active work. A waiting
+task takes priority over another idle pass; a manual rebuild yields between
+records when a task is waiting. The handoff waits for any in-flight background
+operation to release its lock rather than overlapping it with task execution.
+
+If indexing cannot catch up within the startup budget, the task proceeds with a
+logged warning, an `embedding_index_incomplete` task event, and keyword-only
+retrieval for that run. It does not silently treat an incomplete index as current.
+Pending records remain eligible for retry when execution finishes. New changes
+that arrive during active execution are also indexed at the next idle/startup
+handoff, not concurrently with the running task.
+
+Memory writes and workspace chunk creation defer source embeddings to this
+worker instead of invoking Ollama inline. Normal semantic searches still generate
+a query embedding on demand: this is required to compare a question with the
+stored vectors and is not bulk indexing. Timed-out/degraded runs skip even these
+query calls and use existing keyword-search paths.
+
+Changes to indexed source fields invalidate the old vector, including a job's
+final response. Unrelated status or metadata updates do not invalidate vectors.
+Failures are logged and retried on later passes; a failed record does not prevent
+other records from being indexed. Expired memories and deleted/superseded
+workspace files are excluded. Automatic refresh and manual rebuilds share a
+database advisory lock, and neither overwrites concurrent source edits.
+
+To deploy automatic indexing on an existing installation, rebuild and recreate
+the services from the repository root:
+
+```sh
+sudo docker compose --env-file data/.env up -d --build
+sudo docker compose --env-file data/.env logs --tail=100 workspace-indexer
+```
+
+Services apply the embedding-invalidation/notification migration at startup. Existing pending
+records are picked up automatically; manual reindexing is not required.
+
 ### Inspecting and rebuilding vectors
 
 After saving embedding settings, build the agent image and run from the

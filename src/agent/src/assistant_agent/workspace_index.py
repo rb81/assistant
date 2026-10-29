@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import mimetypes
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from .config import AppConfig
 from .database import Database, json_safe
 from .document_text import DocumentTextExtractor, UnsupportedDocumentError
 from .embedding_client import EmbeddingClient
+from .embedding_maintenance import EmbeddingMaintenance
+from .embedding_scheduler import EmbeddingScheduler
 from .memory_store import cosine_similarity
 from .threading import safe_filename
 from .workstream_files import WorkstreamFileTracker
@@ -188,6 +191,7 @@ class WorkspaceIndex:
         self.shared_root = Path(config.get("agent.filesystem.shared_root", "/data/share")).resolve()
         self.extractor = DocumentTextExtractor(config)
         self.embedding_client = EmbeddingClient(config)
+        self.embedding_maintenance = EmbeddingMaintenance(db, config)
         self.normalizer = WorkspaceNormalizer(db, config)
 
     def enabled(self) -> bool:
@@ -318,37 +322,22 @@ class WorkspaceIndex:
         row = self.upsert_file(path, sha, stat, "pending", None, {"extractor": extractor})
         self.delete_chunks(row["id"])
         chunks = chunk_text(text, max_chars=self.config.get_int("agent.workspace.index.chunk_chars", 3500))
-        embedding_error = None
         for index, chunk in enumerate(chunks):
-            embedding = None
-            embedding_model = None
-            embedding_dimensions = None
-            embedding_updated_at = None
-            if not embedding_error and self.embedding_client.enabled:
-                try:
-                    embedding = self.embedding_client.embed(chunk["content"])
-                    embedding_model = self.embedding_client.model
-                    embedding_dimensions = len(embedding)
-                    embedding_updated_at = datetime.now(timezone.utc)
-                except Exception as exc:
-                    embedding_error = str(exc)
-                    LOGGER.warning("workspace chunk embedding failed for %s: %s", path, exc)
             self.insert_chunk(
                 file_id=row["id"],
                 chunk_index=index,
                 chunk=chunk,
-                embedding=embedding,
-                embedding_model=embedding_model,
-                embedding_dimensions=embedding_dimensions,
-                embedding_updated_at=embedding_updated_at,
+                embedding=None,
+                embedding_model=None,
+                embedding_dimensions=None,
+                embedding_updated_at=None,
             )
-        status = "embedding_failed" if embedding_error else "indexed"
         final = self.upsert_file(
             path,
             sha,
             stat,
-            status,
-            embedding_error,
+            "indexed",
+            None,
             {"extractor": extractor, "chunk_count": len(chunks), "embedding_model": self.embedding_client.model if self.embedding_client.enabled else None},
             indexed=True,
         )
@@ -528,7 +517,7 @@ class WorkspaceIndex:
                 rows.append(row)
         return rows
 
-    def run_once(self) -> int:
+    def run_once(self, should_yield=None) -> int:
         if not self.enabled() or not self.shared_root.exists():
             return 0
         seen: set[str] = set()
@@ -536,6 +525,8 @@ class WorkspaceIndex:
         for item in sorted(self.shared_root.rglob("*"), key=lambda value: str(value.relative_to(self.shared_root))):
             if item.is_dir() or self.should_skip_path(item):
                 continue
+            if should_yield and should_yield():
+                return count
             row = self.index_path(item, source="scan")
             if row:
                 seen.add(str(row["relative_path"]))
@@ -548,15 +539,45 @@ class WorkspaceIndex:
                 self.mark_deleted(path)
         return count
 
-    def run_forever(self, should_stop) -> None:
-        interval = self.config.get_int("agent.workspace.index.poll_interval_seconds", 60)
-        while not should_stop():
+    def refresh_embeddings(self) -> None:
+        result = self.embedding_maintenance.refresh_pending(deadline=time.monotonic() + 5)
+        if any(result.values()):
+            LOGGER.info("automatic embedding refresh: %s", result)
+
+    def run_idle_once(self, scan=True) -> int:
+        scheduler = EmbeddingScheduler(self.db, self.config)
+        with scheduler.idle() as idle:
+            if not idle:
+                return 0
+            count = 0
+            if scan:
+                try:
+                    count = self.run_once(should_yield=scheduler.startup_waiting)
+                    LOGGER.info("workspace indexer processed %s file(s)", count)
+                except Exception:
+                    LOGGER.exception("workspace indexer loop failed")
+            if scheduler.startup_waiting():
+                return count
             try:
-                count = self.run_once()
-                LOGGER.info("workspace indexer processed %s file(s)", count)
+                self.refresh_embeddings()
             except Exception:
-                LOGGER.exception("workspace indexer loop failed")
-            should_stop(interval)
+                LOGGER.exception("automatic embedding refresh loop failed; will retry")
+            return count
+
+    def run_forever(self, should_stop) -> None:
+        interval = max(1, self.config.get_int("agent.workspace.index.poll_interval_seconds", 60))
+        next_scan = 0
+        with self.db.connect() as connection:
+            connection.autocommit = True
+            connection.execute("LISTEN assistant_embeddings")
+            while not should_stop():
+                scan = time.monotonic() >= next_scan
+                self.run_idle_once(scan=scan)
+                if scan:
+                    next_scan = time.monotonic() + interval
+                # Notifications wake indexing quickly; polling recovers missed events.
+                for _ in connection.notifies(timeout=1, stop_after=1):
+                    break
 
     def search(self, query: str, directory: str = ".", limit: int = 10) -> list[dict[str, Any]]:
         clean_query = str(query or "").strip()

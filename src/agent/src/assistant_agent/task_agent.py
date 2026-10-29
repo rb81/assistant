@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 from .artifact_processor import public_artifact_manifest, public_attachment_metadata
 from .config import AppConfig, agent_email, agent_name, worker_id
 from .database import Database, json_safe
+from .embedding_scheduler import EmbeddingScheduler
 from .llm_client import LlmClient
 from .memory_manager import MemorySteward
 from .notifications import latest_request_context, notify_admin_job_failure
@@ -159,10 +160,21 @@ class TaskAgent:
         )
 
     def run_once(self) -> bool:
-        self.memory_steward.store.refresh_pending_embeddings()
+        if not self.db.fetch_one(
+            """SELECT id FROM jobs WHERE status = 'queued' AND run_at <= now()
+               AND COALESCE(metadata->>'worker', '') <> 'deep-research-agent' LIMIT 1"""
+        ):
+            return False
+        with EmbeddingScheduler(self.db, self.config).execution() as fresh:
+            return self.run_ready_job(fresh)
+
+    def run_ready_job(self, embeddings_ready: bool = True) -> bool:
         job = self.db.claim_job(self.locked_by)
         if job is None:
             return False
+        if not embeddings_ready:
+            self.db.log_event(job["id"], "embedding_index_incomplete",
+                              output_data={"retrieval": "keyword_only", "wait_seconds": 60})
         LOGGER.info("claimed job %s", job["id"])
         try:
             self.process_job(job)

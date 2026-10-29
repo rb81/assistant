@@ -46,6 +46,38 @@ from assistant_agent.task_agent import TaskAgent
 
 
 class TaskAgentEmailContextTest(unittest.TestCase):
+    def test_idle_task_poll_does_not_run_indexing(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = None
+        with patch("assistant_agent.task_agent.EmbeddingScheduler") as scheduler:
+            assert not agent.run_once()
+            scheduler.assert_not_called()
+        agent.db.claim_job.assert_not_called()
+
+    def test_task_waits_for_indexing_and_keeps_gate_during_execution(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = {"id": 31}
+        agent.locked_by = "test-worker"
+        job = {"id": 31}
+        agent.db.claim_job.return_value = job
+        agent.process_job = MagicMock()
+        with patch("assistant_agent.task_agent.EmbeddingScheduler") as scheduler:
+            gate = scheduler.return_value.execution.return_value
+            gate.__enter__.return_value = False
+
+            def process(current):
+                gate.__enter__.assert_called_once()
+                gate.__exit__.assert_not_called()
+
+            agent.process_job.side_effect = process
+            assert agent.run_once()
+            gate.__exit__.assert_called_once()
+        agent.db.log_event.assert_called_once_with(
+            31, "embedding_index_incomplete", output_data={"retrieval": "keyword_only", "wait_seconds": 60},
+        )
+
     def test_requester_fallback_pauses_before_sending_usable_admin_confirmation(self):
         agent = self.agent()
         agent.db = MagicMock()
@@ -476,7 +508,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
             patch("assistant_agent.task_agent.notify_admin_job_failure", lambda *args: notifications.append(args)),
             patch("assistant_agent.task_agent.LOGGER.exception", lambda *args, **kwargs: None),
         ):
-            self.assertTrue(agent.run_once())
+            self.assertTrue(agent.run_ready_job())
 
         self.assertEqual(db.statuses, [(31, "queued", "bad tool json")])
         self.assertEqual(notifications, [])
@@ -504,7 +536,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
             patch("assistant_agent.task_agent.notify_admin_job_failure", lambda *args: notifications.append(args)),
             patch("assistant_agent.task_agent.LOGGER.exception", lambda *args, **kwargs: None),
         ):
-            self.assertTrue(agent.run_once())
+            self.assertTrue(agent.run_ready_job())
 
         self.assertEqual(db.statuses, [(31, "needs_review", "bad tool json")])
         self.assertEqual(len(notifications), 1)

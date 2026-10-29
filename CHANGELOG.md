@@ -28,6 +28,12 @@
 - Canonical `docs/` is mounted read-only for agent tools and sandbox commands.
 - Fresh databases initialize directly from the current schema baseline.
   Unsupported baselines are refused without automatic conversion.
+- The workspace indexer now automatically refreshes embeddings for all seven
+  indexed sources while agents are idle, with database notifications and bounded
+  batches. Task and research workers allow up to 60 seconds for pending indexing
+  before starting; timed-out runs warn and use keyword retrieval. Shared database
+  locks prevent background generation from competing with active tasks. Source
+  writes defer embeddings, and content edits invalidate stale vectors for retry.
 - Legacy conversion scripts and instructions are distributed separately in the
   [transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).
   V1 is retired and preserved by the `v1-retired` tag.

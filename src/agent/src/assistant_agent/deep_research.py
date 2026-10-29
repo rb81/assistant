@@ -77,9 +77,20 @@ class DeepResearchAgent:
     def run_once(self) -> bool:
         if not self.config.get_bool("agent.deep_research.enabled", True):
             return False
+        if not self.db.fetch_one("SELECT id FROM deep_research_runs WHERE status = 'queued' AND run_at <= now() LIMIT 1"):
+            return False
+        from .embedding_scheduler import EmbeddingScheduler
+
+        with EmbeddingScheduler(self.db, self.config).execution() as fresh:
+            return self.run_ready_research(fresh)
+
+    def run_ready_research(self, embeddings_ready: bool = True) -> bool:
         run = self.claim_run()
         if run is None:
             return False
+        if not embeddings_ready:
+            self.db.log_event(run["execution_job_id"], "embedding_index_incomplete",
+                              output_data={"retrieval": "keyword_only", "wait_seconds": 60})
         LOGGER.info("claimed deep research run %s", run["id"])
         processor = DeepResearchAgent(self.db.for_job(run["execution_job_id"]), self.config)
         processor.locked_by = self.locked_by
