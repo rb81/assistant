@@ -173,6 +173,13 @@ def test_permission_keyboard_and_email_choices_are_explicit():
     buttons = permission_keyboard("abc", {"permission_type": "host", "reusable": True})
     assert any(button["text"] == "Approve always" for row in buttons for button in row)
     assert not any(":global" in button["callback_data"] for row in buttons for button in row)
+    assert permissions.parse_decision("APPROVE ONCE - approve development session") == ("once", "")
+    assert permissions.parse_decision("APPROVE ONCE - final script and requested hosts") == ("once", "")
+    assert permissions.parse_decision("APPROVE ONCE - one execution") == ("once", "")
+    assert permissions.parse_decision(
+        "APPROVE ALWAYS - this unchanged final script version and requested hosts"
+    ) == ("always", "")
+    assert permissions.parse_decision("APPROVE ALWAYS - this unchanged script version") == ("always", "")
     with pytest.raises(ValueError):
         permissions.parse_decision("APPROVE ALWAYS FOR ALL SCRIPTS\nOnly public data.")
     with pytest.raises(ValueError):

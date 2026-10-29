@@ -325,7 +325,10 @@ def send_approval(db, config, job, suffix=""):
 
 def parse_decision(text):
     lines = str(text or "").strip().splitlines()
-    decision = KEYWORDS.get(" ".join(lines[0].lower().strip(".!: ").split())) if lines else None
+    decision_line = " ".join(lines[0].lower().strip(".!: ").split()) if lines else ""
+    decision = KEYWORDS.get(decision_line)
+    if decision is None and " - " in decision_line:
+        decision = KEYWORDS.get(decision_line.partition(" - ")[0])
     if not decision:
         raise ValueError("First line must be APPROVE ONCE, APPROVE ALWAYS, or DENY.")
     return decision, "\n".join(lines[1:]).strip()
