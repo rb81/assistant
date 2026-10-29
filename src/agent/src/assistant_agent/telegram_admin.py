@@ -173,7 +173,10 @@ class TelegramAdmin:
                            AND status IN ('queued', 'running', 'waiting', 'needs_review'))
                        AND NOT EXISTS (SELECT 1 FROM workstreams child WHERE child.parent_id = w.id AND child.status = 'active')
                        AND NOT EXISTS (SELECT 1 FROM request_messages WHERE workstream_id = w.id
-                           AND status IN ('pending', 'processing', 'ready') AND metadata->>'queued' IS DISTINCT FROM 'true')
+                           AND status IN ('pending', 'processing', 'ready') AND metadata->>'queued' IS DISTINCT FROM 'true'
+                           AND NOT EXISTS (SELECT 1 FROM jobs j
+                               WHERE j.trigger_email_id = request_messages.email_id
+                                 AND j.status IN ('completed', 'failed', 'cancelled')))
                        AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.workstream_id = w.id AND e.is_actionable
                            AND NOT EXISTS (SELECT 1 FROM request_messages r WHERE r.email_id = e.id))
                        AND NOT EXISTS (SELECT 1 FROM reminders r JOIN workstream_objects o ON o.id = r.object_id
