@@ -72,6 +72,25 @@ def test_invalid_form_staging_is_atomic_and_does_not_replace_database_password()
         assert backend.credentials["POSTGRES_PASSWORD"] == "database-password"
 
 
+def test_native_security_form_persists_development_supervisor_settings():
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        values = {spec.key: backend.value(spec) for spec in GROUPS["security"][1]}
+        values.update(
+            AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET="reviewer",
+            AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES="15",
+            AGENT_SECURITY_DEVELOPMENT_MAX_RUNS="8",
+        )
+        backend.stage("security", values)
+        assert backend.problems() == []
+        backend.save()
+        reopened = management(root)
+        for spec in GROUPS["security"][1]:
+            if spec.key.startswith("AGENT_SECURITY_DEVELOPMENT_"):
+                assert reopened.value(spec) == values[spec.key]
+
+
 def test_save_validates_the_entire_draft_and_preserves_files_on_failure():
     with tempfile.TemporaryDirectory() as root:
         configured(root)

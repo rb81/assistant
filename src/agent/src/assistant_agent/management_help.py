@@ -20,7 +20,8 @@ GROUP_HELP = {
                      "This is speech recognition, not speech generation. Enabling it adds a Docker service.",
     "embeddings": "Configure semantic search: an embedding model turns content into searchable numeric vectors. "
                   "Local Ollama is the default. A remote endpoint receives the content being indexed.",
-    "security": "Configure admin-email authentication and optional content screening for messages and scripts. "
+    "security": "Choose the development supervisor model and session limits, configure admin-email authentication "
+                "and optional content screening for messages and scripts. "
                 "Screening is an extra check, not a guarantee of safety or a replacement for script approvals.",
     "advanced:Calendar privacy": "Choose whether the assistant can read private details of existing events, "
                                  "including titles, descriptions, locations and attendees. Disabled by default; "
@@ -237,6 +238,15 @@ ACTION_HELP = {
 ACTION_HELP["Recover database credential"] = ACTION_HELP["Recover an interrupted database password rotation"]
 
 FIELD_HELP = {
+    "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "Use default to reuse the task model, provider and credential. "
+                                            "Otherwise enter an existing OpenRouter chat model preset name "
+                                            "(not a model ID); this requires an OpenRouter API key under Models & access. "
+                                            "The supervisor uses its own tool-free instructions, not the preset prompt, "
+                                            "and does not fall back to another model.",
+    "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "Positive integer limiting the duration an administrator may authorize "
+                                           "for a development session. Expiry stops further development execution.",
+    "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "Positive integer limiting the executions an administrator may authorize "
+                                        "per development session. Each dispatched attempt consumes one run.",
     "AGENT_NAME": "The name used for the assistant's identity in prompts and communications.",
     "AGENT_TIMEZONE": "Timezone for local dates and scheduling. Use an IANA name such as Europe/London or "
                       "America/New_York, or UTC; not a city abbreviation such as EST.",
