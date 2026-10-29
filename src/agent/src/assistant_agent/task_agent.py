@@ -698,6 +698,8 @@ class TaskAgent:
             ])
         external_requester = self.latest_external_requester_from_emails(emails)
         route = (job.get("metadata") or {}).get("reply_route") or {}
+        if route.get("channel"):
+            content_lines.append("Reply channel: %s" % route["channel"])
         if route.get("channel") == "telegram" or (job.get("metadata") or {}).get("auto_reply"):
             content_lines.append("Completion requirement: task_complete.response is automatically delivered to the configured reply channel. Include the full user-visible answer. Use telegram_send only for requested files or separate messages.")
         elif external_requester:

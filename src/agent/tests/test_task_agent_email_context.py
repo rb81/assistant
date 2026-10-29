@@ -733,6 +733,21 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         self.assertIn("Sent email body omitted after preview.", content)
         self.assertNotIn("call email_read with email_id 99", content)
 
+    def test_telegram_reply_channel_and_no_duplicate_delivery_are_explicit(self) -> None:
+        agent = self.agent()
+        messages = agent.messages_from_base_context(
+            {
+                "id": 7,
+                "thread_id": "thread-1",
+                "task_summary": "Answer the question",
+                "metadata": {"reply_route": {"channel": "telegram"}},
+            },
+            self.context([]),
+            include_full_email_context=True,
+        )
+
+        self.assertIn("Reply channel: telegram", messages[1]["content"])
+
 
 class DatabaseThreadMessagesTest(unittest.TestCase):
     def test_latest_thread_messages_merges_inbound_and_sent_agent_replies(self) -> None:
