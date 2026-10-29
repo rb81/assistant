@@ -145,7 +145,8 @@ def test_structured_transport_reuses_the_image_and_passes_requests_via_stdin_wit
         backend = management(root)
         response = '{"rows": [{"id": 7, "status": "running"}], "total": 1}'
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", side_effect=["test-image", "", response, response]
+            backend.installation, "compose", side_effect=[
+                '{"services":{"task-agent":{"image":"test-image"}}}', "", response, response]
         ) as compose, patch.object(backend.installation, "docker") as docker:
             result = backend.request({"kind": "tasks", "page": 0})
             backend.request({"kind": "tasks", "page": 1})
@@ -166,13 +167,13 @@ def test_missing_management_image_requires_explicit_start_instead_of_a_hidden_bu
         configured(root)
         backend = management(root)
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", return_value="missing-image"
+            backend.installation, "compose", return_value='{"services":{"task-agent":{"image":"missing-image"}}}'
         ) as compose, patch.object(backend.installation, "docker",
                                   side_effect=DockerCommandError("Image is unavailable.")):
             with pytest.raises(SetupError, match="Services > Start app"):
                 backend.request({"kind": "memories"})
         assert compose.call_count == 1
-        assert compose.call_args.args[0] == ["config", "--images", "task-agent"]
+        assert compose.call_args.args[0] == ["config", "--format", "json"]
         assert "build" not in compose.call_args.args[0]
         assert not backend.helper_ready
 
@@ -183,7 +184,8 @@ def test_project_transport_reuses_management_preparation_without_building_anothe
         backend = management(root)
         with patch.object(backend, "access"), patch.object(
             backend.installation, "compose",
-            side_effect=["test-image", "", '{"rows": [], "total": 0}', '{"preview_digest": "reviewed"}'],
+            side_effect=['{"services":{"task-agent":{"image":"test-image"}}}', "",
+                         '{"rows": [], "total": 0}', '{"preview_digest": "reviewed"}'],
         ) as compose, patch.object(backend.installation, "docker"):
             backend.request({"kind": "memories"})
             assert backend.preview_project(7)["preview_digest"] == "reviewed"
@@ -197,15 +199,34 @@ def test_management_probe_failure_does_not_claim_the_running_app_needs_starting(
         backend = management(root)
         with patch.object(backend, "access"), patch.object(backend.installation, "docker"), \
                 patch.object(backend.installation, "compose", side_effect=[
-                    "existing-image", DockerCommandError("Helper import failed")]):
+                    '{"services":{"task-agent":{"image":"existing-image"}}}', DockerCommandError("Helper import failed")]):
             with pytest.raises(SetupError, match="does not mean the application is stopped") as failure:
                 backend.prepare_management()
         assert "Services > Start app" not in str(failure.value)
         assert not backend.helper_ready
 
 
+def test_management_selects_build_only_task_image_from_a_multi_service_configuration():
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        config = {"name": "home-server", "services": {
+            "postgres": {"image": "postgres:16"},
+            "sandbox": {"build": {"context": "/sandbox"}},
+            "task-agent": {"build": {"context": "/agent"}},
+        }}
+        with patch.object(backend, "access"), patch.object(
+                backend.installation, "compose", side_effect=[json.dumps(config), ""]) as compose, \
+                patch.object(backend.installation, "docker") as docker:
+            backend.prepare_management()
+        docker.assert_called_once_with(["image", "inspect", "home-server-task-agent"], timeout=30)
+        assert compose.call_args_list[0].args[0] == ["config", "--format", "json"]
+        assert backend.helper_ready
+
+
 @pytest.mark.skipif(os.getenv("ASSISTANT_TEST_DOCKER") != "1", reason="requires disposable Docker helpers")
-def test_management_transports_run_with_real_compose_flags_and_readonly_source_mount():
+@pytest.mark.parametrize("build_only", [False, True])
+def test_management_transports_run_with_real_compose_flags_and_readonly_source_mount(build_only):
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
@@ -221,18 +242,26 @@ def test_management_transports_run_with_real_compose_flags_and_readonly_source_m
             "import json, sys\njson.load(sys.stdin)\nprint(json.dumps({'preview_digest': 'verified'}))\n")
         (source / "embedding_maintenance.py").write_text("print('{\"pending\": 0}')\n")
         compose_file = Path(root, "management-test.yaml")
+        (Path(root) / "Dockerfile").write_text("FROM python:3.12-slim\n")
         compose_file.write_text(
-            "services:\n  task-agent:\n    image: python:3.12-slim\n"
-            "    environment:\n      PYTHONPATH: /app/src\n    read_only: true\n")
+            "services:\n  task-agent:\n" +
+            ("    build: .\n" if build_only else "    image: python:3.12-slim\n") +
+            "    depends_on:\n      - database\n"
+            "    environment:\n      PYTHONPATH: /app/src\n    read_only: true\n"
+            "  database:\n    image: postgres:16\n")
         prefix = ["compose", "--project-name", "management-test-" + uuid.uuid4().hex[:12],
                   "-f", str(compose_file)]
         with patch.object(backend, "access"), patch.object(backend.installation, "compose_prefix", return_value=prefix):
             try:
+                if build_only:
+                    backend.installation.compose(["build", "task-agent"])
                 assert backend.request({"kind": "memories"})["rows"][0]["content"] == "Readable memory"
                 assert backend.preview_project(7)["preview_digest"] == "verified"
                 assert backend.embeddings("status") == {"pending": 0}
             finally:
                 backend.installation.compose(["down", "--remove-orphans"])
+                if build_only:
+                    backend.installation.docker(["image", "rm", prefix[2] + "-task-agent"])
 
 
 def test_collection_search_and_pagination_use_parameters_not_sql_interpolation():

@@ -351,9 +351,19 @@ class Management:
             return
         self.access()
         self.progress = "Checking management runtime"
-        image = self.installation.compose(["config", "--images", "task-agent"]).strip()
-        if not image or len(image.splitlines()) != 1:
-            raise SetupError("Could not identify the task-agent image from saved Compose configuration.")
+        output = self.installation.compose(["config", "--format", "json"])
+        try:
+            config = json.loads(output)
+            service = config["services"]["task-agent"]
+            image = service.get("image")
+            if not image and service.get("build"):
+                image = config["name"] + "-task-agent"
+            if not isinstance(image, str) or not image.strip():
+                raise ValueError
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise SetupError("Could not identify the task-agent image from saved Compose configuration. "
+                             "Check that task-agent has an image or build configuration and Compose reports "
+                             "the project name.") from None
         try:
             self.installation.docker(["image", "inspect", image], timeout=30)
         except DockerCommandError as error:
