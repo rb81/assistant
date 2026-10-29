@@ -45,7 +45,9 @@ GROUP_HELP = {
                                "Model preset tool budget; it is separate from local voice transcription.",
     "advanced:Approvals and names": "Choose where human approval requests are delivered and the model used "
                                     "to generate short task and workstream names. Telegram approvals require "
-                                    "an allowlisted numeric ID mapped to the administrator's email.",
+                                    "an allowlisted numeric ID mapped to the administrator's email. Failed or "
+                                    "uncertain Telegram delivery falls back to email when SMTP is configured; "
+                                    "enable email intake to receive confirmation replies.",
     "advanced:Research and notifications": "Control the separate deep-research workflow and its tool-call limit. "
                                            "Optionally enable periodic administrator digest messages.",
 }

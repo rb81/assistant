@@ -15,7 +15,7 @@ def config(mode="telegram"):
     return AppConfig({"agent": {
         "approvals": {"channel": mode},
         "admin": {"email": "admin@example.com"},
-        "email": {"smtp_host": "smtp.example.com", "smtp_from": "assistant@example.com"},
+        "email": {"smtp_host": "mail.example.com", "smtp_from": "assistant@example.com"},
         "telegram": {"enabled": True, "bot_token": "test-token", "allowed_user_ids": ["123", "456"],
                      "recipients": {"admin@example.com": 123, "other@example.com": 456}},
     }})
@@ -302,29 +302,88 @@ def test_host_management_excludes_defaults_and_global_allows_and_marks_legacy_al
     assert "Legacy allow rules are inactive" in payload["text"]
 
 
-def test_telegram_delivery_failure_never_falls_back_to_email():
+@pytest.mark.parametrize("failure", ["initialization", "send"])
+def test_telegram_delivery_failure_falls_back_to_same_email_approval(failure, caplog):
     db = MagicMock()
     with patch("assistant_agent.telegram.TelegramClient") as telegram, patch(
         "assistant_agent.email_approvals.send_admin_email"
     ) as email:
-        telegram.return_value.call.side_effect = TelegramError("network interrupted")
-        with pytest.raises(ApprovalDeliveryError):
-            EmailApprovals(db, config()).request("review:12", {"kind": "review"}, "Paused")
-    email.assert_not_called()
-    assert db.set_state.call_args.args[1]["status"] == "delivery_uncertain"
-    db.execute.assert_called()
-
-
-def test_both_channels_are_attempted_and_partial_delivery_is_explicit():
-    db = MagicMock()
-    with patch("assistant_agent.telegram.TelegramClient") as telegram, patch(
-        "assistant_agent.email_approvals.send_admin_email"
-    ) as email:
-        telegram.return_value.call.side_effect = TelegramError("network interrupted")
-        with pytest.raises(RuntimeError, match="Telegram.*other selected channels were attempted"):
-            EmailApprovals(db, config("both")).request("review:12", {"kind": "review"}, "Paused")
+        if failure == "initialization":
+            telegram.side_effect = TelegramError("missing token")
+        else:
+            telegram.return_value.call.side_effect = TelegramError("network interrupted", uncertain=True)
+        service = EmailApprovals(db, config())
+        assert service.request("review:12", {"kind": "review"}, "Paused")
     email.assert_called_once()
-    assert db.set_state.call_args.args[1] == {"status": "delivery_uncertain"}
+    assert email.call_args.args[0].get("agent.admin.email") == "admin@example.com"
+    assert "attempting email fallback" in caplog.text
+    assert "Approval delivered by email" in caplog.text
+    key, pending = db.set_state.call_args_list[0].args
+    from assistant_agent.email_approvals import approval_reply
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message.set_content(email.call_args.args[2])
+    token, digest, _ = approval_reply(message)
+    assert key == "email-approval:" + digest
+    assert db.set_state.call_args.args == (
+        pending["source_key"], {"status": "sent", "email_fallback": True},
+    )
+    db.fetch_one.side_effect = [{"key": key}, {"value": pending}]
+    assert service.consume(token, digest) == {"kind": "review"}
+    assert "email_fallback" in db.fetch_one.call_args_list[-2].args[0]
+    assert "DELETE FROM runtime_state" in db.fetch_one.call_args.args[0]
+
+
+def test_both_channels_use_email_when_telegram_fails(caplog):
+    db = MagicMock()
+    with patch("assistant_agent.telegram.TelegramClient") as telegram, patch(
+        "assistant_agent.email_approvals.send_admin_email"
+    ) as email:
+        telegram.return_value.call.side_effect = TelegramError("network interrupted")
+        assert EmailApprovals(db, config("both")).request("review:12", {"kind": "review"}, "Paused")
+    email.assert_called_once()
+    assert db.set_state.call_args.args[1] == {"status": "sent"}
+    assert "Approval delivered by email" in caplog.text
+
+
+def test_telegram_and_email_failure_preserves_fallback_approval():
+    db = MagicMock()
+    with patch("assistant_agent.telegram.TelegramClient") as telegram, patch(
+        "assistant_agent.email_approvals.send_admin_email", side_effect=OSError("SMTP unavailable")
+    ) as email:
+        telegram.return_value.call.side_effect = TelegramError("network interrupted")
+        with pytest.raises(ApprovalDeliveryError, match="Telegram, email"):
+            EmailApprovals(db, config()).request("review:12", {"kind": "review"}, "Paused")
+    email.assert_called_once()
+    assert db.set_state.call_args.args[1] == {"status": "delivery_uncertain", "email_fallback": True}
+    assert sum(call.args[0].startswith("email-approval:") for call in db.set_state.call_args_list) == 1
+
+
+def test_fallback_without_smtp_configuration_fails_explicitly():
+    db = MagicMock()
+    values = config()
+    values.values["agent"]["email"]["smtp_host"] = ""
+    with patch("assistant_agent.telegram.TelegramClient", side_effect=TelegramError("missing token")), patch(
+        "assistant_agent.email_approvals.send_admin_email"
+    ) as email:
+        with pytest.raises(ApprovalDeliveryError, match="Telegram, email"):
+            EmailApprovals(db, values).request("review:12", {"kind": "review"}, "Paused")
+    email.assert_not_called()
+    assert db.set_state.call_args.args[1] == {"status": "delivery_uncertain", "email_fallback": True}
+
+
+def test_fallback_email_preserves_script_decisions_and_attachment():
+    with patch("assistant_agent.telegram.TelegramClient", side_effect=TelegramError("missing token")), patch(
+        "assistant_agent.email_approvals.send_admin_email"
+    ) as email:
+        EmailApprovals(MagicMock(), config()).request(
+            "permission:12", {"kind": "permission", "permission_type": "final", "reusable": False},
+            "Final script approval", details_attachment=("script-version.txt", b"print('full source')"),
+        )
+    body = email.call_args.args[2]
+    assert "APPROVE ONCE" in body and "DENY" in body
+    assert "APPROVE ALWAYS" not in body
+    assert email.call_args.kwargs["attachment"] == ("script-version.txt", b"print('full source')")
 
 
 def test_rate_limit_failure_before_delivery_releases_request_claim():
@@ -344,6 +403,7 @@ def test_only_verified_admins_can_consume_telegram_approvals():
     with pytest.raises(ValueError, match="Administrator permission"):
         service.consume_telegram("a" * 24, "456")
     db.fetch_one.assert_not_called()
+    db.fetch_one.return_value = None
     with pytest.raises(ValueError, match="Telegram only"):
         service.consume("token", "digest")
 
@@ -371,6 +431,15 @@ def test_invalid_channel_and_admin_identity_fail_closed():
     with pytest.raises(ValueError, match="allowlist"):
         telegram_admins(values)
     del values.values["agent"]["telegram"]["recipients"]["admin@example.com"]
+    assert not approvals_configured(values)
+
+
+@pytest.mark.parametrize("mode", ["telegram", "both"])
+def test_missing_telegram_token_does_not_prevent_configured_email_fallback(mode):
+    values = config(mode)
+    values.values["agent"]["telegram"]["bot_token"] = ""
+    assert approvals_configured(values)
+    values.values["agent"]["email"]["smtp_host"] = ""
     assert not approvals_configured(values)
 
 

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import smtplib
@@ -17,6 +18,7 @@ from .approval_channels import channels, telegram_admins
 MARKER = "=== ASSISTANT APPROVAL ==="
 TOKEN_PATTERN = re.compile(r"\bOTP:\s*([A-Za-z0-9_-]{32})(?![A-Za-z0-9_-])")
 HASH_PATTERN = re.compile(r"\bRequest hash:\s*([a-f0-9]{64})\b")
+LOGGER = logging.getLogger("assistant.email_approvals")
 
 
 def admin_sender(message: Message, config) -> bool:
@@ -308,6 +310,7 @@ class EmailApprovals:
         digest = hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         key = "email-approval:" + digest
         prepared = False
+        email_fallback = False
         try:
             self.db.execute(
                 "DELETE FROM runtime_state WHERE key LIKE 'email-approval:%%' AND value->>'source_id' = %s",
@@ -353,8 +356,18 @@ class EmailApprovals:
                         }, sending=True)
                 except Exception as exc:
                     delivery_errors.append(("Telegram", exc))
-            if mode in {"email", "both"}:
+                    LOGGER.warning("Telegram approval delivery failed or is uncertain (%s); attempting email fallback",
+                                   type(exc).__name__)
+            email_fallback = mode == "telegram" and bool(delivery_errors)
+            if email_fallback:
+                # Delivery metadata must not change the approval's content hash.
+                self.db.set_state(source_key, {"status": "sending", "email_fallback": True})
+            if mode in {"email", "both"} or email_fallback:
                 try:
+                    if email_fallback:
+                        from .validation import smtp_configured
+                        if not admin or not smtp_configured(self.config):
+                            raise ValueError("Email approval fallback requires ADMIN_EMAIL and SMTP configuration")
                     body = (
                         permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes,
                                               email_body_details)
@@ -371,27 +384,40 @@ class EmailApprovals:
                         self.config, email_subject, body,
                         **({"attachment": details_attachment} if details_attachment else {}),
                     )
+                    if delivery_errors:
+                        LOGGER.warning("Approval delivered by email after Telegram delivery failed or was uncertain; "
+                                       "either channel uses the same one-use approval")
+                        delivery_errors.clear()
                 except Exception as exc:
                     delivery_errors.append(("email", exc))
             if delivery_errors:
                 raise ApprovalDeliveryError(
-                    "Approval delivery failed or is uncertain for %s; other selected channels were attempted. "
+                    "Approval delivery failed or is uncertain for %s; available delivery routes were attempted. "
                     "The same one-use approval is preserved; do not resend automatically."
                     % ", ".join(name for name, _ in delivery_errors)
                 ) from delivery_errors[0][1]
         except Exception:
             if prepared:
                 # Delivery may have succeeded before a timeout; keep the same one-use record.
-                self.db.set_state(source_key, {"status": "delivery_uncertain"})
+                self.db.set_state(source_key, {"status": "delivery_uncertain",
+                                              **({"email_fallback": True} if email_fallback else {})})
             else:
                 self.db.execute("DELETE FROM runtime_state WHERE key IN (%s, %s)", (key, source_key))
             raise
-        self.db.set_state(source_key, {"status": "sent"})
+        self.db.set_state(source_key, {"status": "sent",
+                                      **({"email_fallback": True} if email_fallback else {})})
         return True
 
     def consume(self, token: str, digest: str) -> dict:
         if channels(self.config) == "telegram":
-            raise ValueError("Approvals are configured for Telegram only")
+            fallback = self.db.fetch_one(
+                """SELECT approval.key FROM runtime_state approval
+                   JOIN runtime_state source ON source.key = approval.value->>'source_key'
+                   WHERE approval.key = %s AND source.value->>'email_fallback' = 'true'""",
+                ("email-approval:" + digest,),
+            )
+            if not fallback:
+                raise ValueError("Approvals are configured for Telegram only; email fallback was not attempted")
         return self._consume(digest, hashlib.sha256(token.encode()).hexdigest())
 
     def consume_telegram(self, callback_id: str, sender: str) -> dict:

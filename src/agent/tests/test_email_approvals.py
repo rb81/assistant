@@ -617,6 +617,32 @@ class ApprovalDatabaseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.consume_telegram(pending["callback_id"], "123")
 
+    def test_telegram_fallback_shares_atomic_consumption_and_keeps_original_hash(self):
+        from assistant_agent.telegram import TelegramError
+        self.config.values["agent"].update({
+            "approvals": {"channel": "telegram"},
+            "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+            "email": {"smtp_host": "mail.example.com", "smtp_from": "assistant@example.com"},
+        })
+        for first_channel in ("email", "telegram"):
+            with self.subTest(first_channel=first_channel), patch(
+                "assistant_agent.telegram.TelegramClient", side_effect=TelegramError("network interrupted")
+            ), patch("assistant_agent.email_approvals.send_admin_email") as send:
+                self.assertTrue(self.service.request("fallback:" + first_channel, self.payload, "Cancel task"))
+            token, digest, _ = approval_reply(reply(send.call_args.args[2]))
+            pending = self.db.get_state("email-approval:" + digest)
+            self.assertTrue(self.db.get_state(pending["source_key"])["email_fallback"])
+            with self.assertRaises(ValueError):
+                self.service.consume("z" * 32, digest)
+            if first_channel == "email":
+                self.assertEqual(self.service.consume(token, digest), self.payload)
+                with self.assertRaises(ValueError):
+                    self.service.consume_telegram(pending["callback_id"], "123")
+            else:
+                self.assertEqual(self.service.consume_telegram(pending["callback_id"], "123"), self.payload)
+                with self.assertRaises(ValueError):
+                    self.service.consume(token, digest)
+
     def test_rate_limit_is_atomic_and_bounds_confirmation_floods(self):
         with patch("assistant_agent.email_approvals.send_admin_email") as send:
             for index in range(10):

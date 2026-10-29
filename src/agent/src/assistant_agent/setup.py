@@ -326,7 +326,7 @@ def secret_services(name):
     if name == "IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
     if name == "SMTP_PASSWORD":
-        return ("downloader", *MODEL_SERVICES, "reminder-scheduler")
+        return ("downloader", *MODEL_SERVICES, "reminder-scheduler", "telegram-receiver", "request-preprocessor")
     if name == "TELEGRAM_BOT_TOKEN":
         return ("downloader", "telegram-receiver", "request-preprocessor", "reminder-scheduler", *TOOL_SERVICES)
     if name == "TRANSCRIPTION_API_TOKEN":

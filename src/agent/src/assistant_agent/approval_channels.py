@@ -31,8 +31,11 @@ def approvals_configured(config):
     from .telegram_config import telegram_configured
     from .validation import smtp_configured
     mode = channels(config)
-    if mode in {"telegram", "both"} and (not telegram_configured(config) or not telegram_admins(config)):
-        return False
+    if mode in {"telegram", "both"}:
+        if not telegram_admins(config):
+            return False
+        if not telegram_configured(config) and not smtp_configured(config):
+            return False
     if mode in {"email", "both"} and (not config.get("agent.admin.email") or not smtp_configured(config)):
         return False
     return True

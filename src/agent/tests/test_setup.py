@@ -768,6 +768,22 @@ with tempfile.TemporaryDirectory() as root:
                     self.assertNotIn("TELEGRAM_BOT_TOKEN_FILE",
                                      overlay["services"][service]["environment"])
 
+    def test_telegram_approval_services_receive_smtp_fallback_credentials(self):
+        for use_volume in (False, True):
+            with self.subTest(use_volume=use_volume), tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+                instance = self.saved_configuration(root)
+                instance.secret_values["SMTP_PASSWORD"] = "mail-password"
+                instance.use_credential_volume = use_volume
+                instance.save()
+                reopened = Installation(root)
+                for service in ("telegram-receiver", "request-preprocessor"):
+                    spec = reopened.overlay()["services"][service]
+                    self.assertEqual(spec["environment"]["SMTP_PASSWORD_FILE"], "/run/secrets/SMTP_PASSWORD")
+                    if use_volume:
+                        self.assertIn("SMTP_PASSWORD", reopened.credential_volume.record["grants"][service])
+                    else:
+                        self.assertIn("SMTP_PASSWORD", spec["secrets"])
+
     def test_telegram_approvals_reuse_admin_email_recipient_mapping(self):
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)

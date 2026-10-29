@@ -17,9 +17,15 @@ rights. Choose the delivery channel with `AGENT_APPROVAL_CHANNEL`.
 Telegram approvals use private-chat buttons instead of copied codes. Review the
 summary, open **Details** for the exact action, then confirm. In `both` mode the
 email and Telegram buttons consume the same one-use record: confirming either
-invalidates the other. There is no silent fallback to an unselected channel.
-Both selected channels are attempted; partial or uncertain delivery is reported
-and the original record is preserved rather than blindly resent.
+invalidates the other. If Telegram approval delivery fails or times out, the
+assistant logs the failure and sends the same approval to `ADMIN_EMAIL` by email,
+even when `telegram` is selected. Successful Telegram delivery does not send an
+extra email. Fallback requires configured SMTP; receiving confirmation replies
+also requires email intake to be configured and the downloader running.
+Reply with the original email's OTP/hash to confirm. If Telegram delivered before
+a timeout, its buttons still share the same one-use record with the fallback email.
+If email delivery also fails, the error is reported and the original approval
+is preserved rather than blindly resent. Delivery alone never authorizes an action.
 
 Script run requests offer **Approve once**, **Approve always**, and **Deny**.
 Website requests additionally allow choosing always for this script version or
