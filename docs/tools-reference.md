@@ -146,18 +146,22 @@ OpenRouter search configuration; deep research must also be enabled.
 
 Command:
 
+- `script_approval_request` — register a finished script and request run approval.
+  Supply exact `command` argv, `purpose` and optional workspace `workdir`.
+  Approval is bound to the code/dependency hashes, invocation and sandbox image.
+  Once means one execution; always is offered only for pinnable dependency graphs.
 - `command_execute` — pass `command` as an argv array, with optional
   `timeout_seconds` and an existing workspace `workdir`. Shell syntax requires
   an explicit shell invocation. See [sandbox execution](sandbox.md) for
   isolation, limits and retry behavior. Results include a `network` summary
   (`allowed_hosts`, `blocked` hosts with reasons, and a `hint`) when the
   egress proxy is active.
-- `network_access_request` — asks the administrator to allow HTTPS hosts for
-  sandbox commands. Pass `urls` (1–10 URLs or host names) and a `purpose`.
-  Already allowed hosts return `no_approval_needed`; admin-blocked hosts are
-  reported and must not be retried. Otherwise the job pauses until the admin
-  chooses Approve once/always, Block once/always or Cancel job, and resumes
-  with that decision and any feedback as an instruction. Access is per host.
+- `network_access_request` — after run approval, pass the identical `command`
+  and `workdir`, `urls` (1–10 HTTPS URLs or exact hostnames), and `purpose`.
+  Already allowed hosts return `approved`; blocked hosts must not be retried.
+  Otherwise the administrator chooses one execution, always for this version,
+  always for all approved scripts, or deny, with optional feedback. Access covers
+  the entire host, not URL paths. A global host grant never authorizes execution.
   See [network access approvals](sandbox.md#network-access-approvals).
 
 Calendar:

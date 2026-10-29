@@ -54,6 +54,39 @@ def test_approval_delivery_obeys_selected_channels_and_shares_one_record(mode, e
         assert state["channel"] == mode
 
 
+def test_script_permission_host_scope_requires_explicit_broad_confirmation(ui):
+    pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request",
+                           "permission_type": "host", "reusable": True, "version_id": 1},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+               "summary": "Allow api.example.com"}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram") as consume:
+        ui.approval("123", "a" * 24, "scope")
+        buttons = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
+        assert any("this script" in button["text"] for row in buttons for button in row)
+        consume.assert_not_called()
+        ui.approval("123", "a" * 24, "broad")
+        assert "ALL approved scripts" in ui.client.call.call_args.args[1]["text"]
+        consume.assert_not_called()
+
+
+def test_permission_decision_applies_optional_feedback_without_generic_job_review(ui):
+    pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request"},
+               "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+    ui.db.get_state.return_value = {"text": "Public data only."}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram", return_value=pending["payload"]), \
+            patch("assistant_agent.script_permissions.apply_decision", return_value="Approved") as apply:
+        ui.approval("123", "a" * 24, "once")
+    apply.assert_called_once_with(ui.db, pending["payload"], "once", "Public data only.", "telegram-admin")
+
+
+def test_permission_management_is_admin_only(ui):
+    with pytest.raises(ValueError, match="Administrator permission"):
+        ui.permissions("456")
+    ui.db.fetch_all.assert_not_called()
+
+
 def test_telegram_delivery_failure_never_falls_back_to_email():
     db = MagicMock()
     with patch("assistant_agent.telegram.TelegramClient") as telegram, patch(

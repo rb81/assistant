@@ -55,6 +55,13 @@ def notify_admin_job_failure(
                 LOGGER.info("job %s is no longer awaiting review; not sending an approval", job_id)
                 return
             metadata = current.get("metadata") or job.get("metadata") or {}
+            if metadata.get("permission_request"):
+                from .script_permissions import send_approval
+                sent = send_approval(db, config, {**job, "metadata": metadata})
+                db.log_event(job_id, "supervisor_note", output_data={
+                    "notification": "script_permission", "sent": sent, "fingerprint": fingerprint,
+                })
+                return
             if metadata.get("network_request"):
                 from .network_access import send_approval
                 sent = send_approval(db, config, {**job, "metadata": metadata})

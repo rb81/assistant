@@ -82,6 +82,13 @@ def retry_config(shared_root: str) -> AppConfig:
 
 
 class SandboxCommandRetryTest(unittest.TestCase):
+    def setUp(self):
+        context = patch.object(ToolRuntime, "sandbox_control", return_value={
+            "permission_epoch": "epoch", "execution_identity": "image",
+        })
+        context.start()
+        self.addCleanup(context.stop)
+
     def runtime(self, shared_root: str) -> ToolRuntime:
         return ToolRuntime(None, retry_config(shared_root), {"id": 57, "thread_id": "thread-1"})  # type: ignore[arg-type]
 

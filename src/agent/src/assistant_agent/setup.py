@@ -1,6 +1,8 @@
 import argparse
 import copy
 import fcntl
+import hashlib
+import hmac
 import io
 import json
 import math
@@ -33,7 +35,7 @@ AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
 MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat")
 TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat")
 LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox", "transcription"}
-GENERATED_SECRETS = {"POSTGRES_PASSWORD", "SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"}
+GENERATED_SECRETS = {"POSTGRES_PASSWORD", "SANDBOX_API_TOKEN", "SANDBOX_REVOKE_TOKEN", "TRANSCRIPTION_API_TOKEN"}
 SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
 ADVANCED_SETTINGS = {
     "Calendar privacy": (
@@ -264,6 +266,8 @@ def secret_services(name):
         return ("transcription-init", "request-preprocessor", "downloader")
     if name == "SANDBOX_API_TOKEN":
         return ("sandbox-init", "sandbox", "task-agent")
+    if name == "SANDBOX_REVOKE_TOKEN":
+        return ("downloader", "telegram-receiver")
     if name.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
         return TOOL_SERVICES
     if name == "SECURITY_DECISION_API_KEY":
@@ -599,6 +603,9 @@ class Installation:
         self.assert_current()
         if not self.secret_values.get("SANDBOX_API_TOKEN"):
             self.secret_values["SANDBOX_API_TOKEN"] = secrets.token_urlsafe(32)
+        self.secret_values["SANDBOX_REVOKE_TOKEN"] = hmac.new(
+            self.secret_values["SANDBOX_API_TOKEN"].encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256,
+        ).hexdigest()
         if self.values.get("TRANSCRIPTION_ENABLED") == "true":
             if not self.secret_values.get("TRANSCRIPTION_API_TOKEN"):
                 self.secret_values["TRANSCRIPTION_API_TOKEN"] = secrets.token_urlsafe(32)
@@ -928,6 +935,8 @@ class Installation:
             return targets
 
     def apply_locked(self, names):
+        if "SANDBOX_API_TOKEN" in names:
+            names = list(set(names) | {"SANDBOX_REVOKE_TOKEN"})
         grants = self.overlay()["services"]
         deleted = set(self.state.get("removed", []))
         affected = {service for name in names for service in secret_services(name)
@@ -1991,9 +2000,9 @@ def prompt_security(instance, answer, confirm, console):
         except (DecisionError, OSError, ValueError) as exc:
             console.print("Test failed: %s" % exc, markup=False)
     yolo = security_value(instance, "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", False) == "true"
-    if confirm("Enable YOLO mode (process possibly malicious content without approval)?", yolo):
+    if confirm("Enable YOLO mode for possibly malicious email? (script permissions still required)", yolo):
         if not yolo:
-            console.print("[bold red]WARNING:[/bold red] YOLO mode lets email, outgoing messages and scripts the decision model "
+            console.print("[bold red]WARNING:[/bold red] YOLO mode lets email and outgoing messages the decision model "
                           "flags as possibly malicious run without your approval. Prompt injection, phishing and data "
                           "exfiltration attempts in that category will reach the assistant. You will only be notified afterwards. "
                           "Malicious items are still blocked.")

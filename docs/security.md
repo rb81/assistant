@@ -285,7 +285,8 @@ changes.
 ## Email and action screening
 
 Configure these layers in the setup wizard's **Security screening** section. All
-are optional. Telegram is not screened: only allow-listed, owner-proven accounts
+are optional; explicit script permissions are required independently of screening.
+Telegram is not screened: only allow-listed, owner-proven accounts
 can reach it.
 
 ### Mail quarantine
@@ -341,14 +342,16 @@ question plus two yes/no risk flags.
 |---|---|---|
 | Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders and replies on open threads. Covers selected headers, text, HTML and attachment names and types. |
 | Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
-| Scripts | `screen.scripts` (off) | `command_execute` calls that run code (see below). |
+| Scripts | `screen.scripts` (off) | Registered script versions before run approval; cached per version/policy. |
 
 - **Not malicious:** processed normally.
 - **Possibly malicious:**
   - Inbound email is quarantined, and the admin receives an OTP approval
     (default expiry 24 hours, `approval_ttl_minutes`).
-  - Tool calls pause the job for admin review. Approval allows the identical
-    call once.
+  - Outbound-email calls pause for review of the identical call once.
+  - Script requests show the finding alongside explicit once/always/deny
+    choices. Always is bound to a pinnable code bundle and exact invocation;
+    an explicit administrator grant bypasses repeated model checks for that version.
 - **Malicious:** quarantined or blocked, and the admin is notified.
 
 `malicious_threshold` applies to P(malicious), and `possibly_malicious_threshold`
@@ -374,7 +377,7 @@ The decision model sees the manifest together with the source.
   - code obfuscated with `exec`/`eval`.
 - **Shell:** commands, `curl | sh`-style remote execution, decode-and-run pipes,
   destructive deletions and package installs.
-- **JavaScript:** a regex-based scan.
+- **JavaScript:** a regex-based scan, following static local relative imports.
 - **All languages:** URLs, hosts, IP addresses and sensitive paths.
 
 Deterministic **hard signals** raise a not-malicious verdict to possibly
@@ -389,15 +392,21 @@ malicious:
 - `sensitive_path_access`;
 - `host_not_allowed`, only when `scripts.allowed_domains` is set.
 
-The approval fingerprint includes the hashes of every analysed file, so editing
-a script after approval requires a fresh approval. Static analysis is best
-effort; dynamically built code can evade it.
+The approval fingerprint includes every analysed code file, argv, workdir,
+sandbox image/runtime identity and security policy. Code changes require fresh
+run approval and script-scoped host grants. Execution uses a read-only code
+snapshot outside the writable workspace; data inputs remain mutable.
+Always approval is withheld for unsupported or uninspectable dependency graphs.
+Successful screening findings are cached with a per-version lock to prevent
+duplicate concurrent checks. Provider outages are not cached as successful checks.
+Static analysis remains best effort, not exhaustive command interception.
 
 #### YOLO mode
 
 `agent.security.allow_possibly_malicious` (off by default) lets possibly
-malicious email, outbound email and scripts proceed without approval. The admin
-is notified afterwards. Malicious items are still blocked. Setup shows a strong
+malicious inbound and outbound email proceed without screening approval. The admin
+is notified afterwards. Explicit script permissions remain mandatory, and malicious
+script versions are blocked. Setup shows a strong
 warning and requires typing `ALLOW POSSIBLY MALICIOUS`, and services log a
 warning at startup while YOLO mode is on.
 
@@ -434,7 +443,8 @@ Endpoints must use HTTPS. Screened content is sent to the provider, so review it
   recipient policy and the sandbox still apply.
 - Attachment contents are not screened; they are malware-scanned separately.
 - Email from the configured admin uses OTP approval instead of screening.
-- Reviews approved through other channels re-screen the held call.
+- Script permission decisions use the same authenticated shared record over email
+  and Telegram; ordinary job resumes do not grant script permissions.
 
 ## Responsible disclosure
 

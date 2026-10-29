@@ -47,7 +47,7 @@ def review_summary(job, reason):
     metadata = job.get("metadata") or {}
     if metadata.get("security_pending_action"):
         return ("%s\n\nA safety check paused an action. Approve only after reviewing Details. "
-                "Approval permits the exact held action once and increases execution limits.\n"
+                "Approval permits the exact held action once without increasing execution limits.\n"
                 "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))
     if metadata.get("awaiting_admin_input"):
         return ("%s\n\nYour reply is needed. Continuing does not grant extra permissions or increase limits.\n"

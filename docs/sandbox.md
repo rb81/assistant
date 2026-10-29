@@ -11,11 +11,14 @@ This document describes how Assistant executes shell commands safely.
 
 ## Control Flow
 
-1. Agent calls `command_execute` with an argv array and optional
-   `timeout_seconds` and `workdir`.
+1. Agent finishes a script and calls `script_approval_request` with its exact
+   argv, purpose and optional workdir, then `network_access_request` for needed
+   HTTPS hosts with the same argv/workdir. Both may pause for administrator approval.
 2. `ToolRuntime.command_execute` validates input and shared-root workdir.
 3. Request is sent to sandbox broker `POST /execute`.
-4. Broker starts a fresh run container for the request.
+4. Broker starts a fresh run container. Approved code is copied into a private
+   read-only volume at `/approved-code`; script arguments reference that snapshot.
+   The working directory and data outputs remain in the writable shared workspace.
 5. Broker captures stdout/stderr/exit status.
 6. Broker attempts to remove the run container and per-run network, including
    after errors or timeouts.
@@ -50,6 +53,35 @@ isolation metadata and the request-attempt count. Tool-result caching may replac
 large output with previews and a workspace cache path. A command timeout is
 returned as `timed_out=true`, not retried as a broker failure.
 
+### Script versions and run permissions
+
+Scripts require explicit **Approve once**, **Approve always**, or **Deny** even
+when decision-model screening is disabled. Optional feedback accompanies any
+decision. A denial does not cancel the job or authorize another attempt at the
+same action. The agent should continue without that capability or report the blocker.
+
+Versions include SHA-256 hashes of the entry file and analysed local code
+dependencies, exact command arguments, workdir, sandbox image/runtime identity,
+and security policy. Changes require new approval and invalidate script-specific
+host grants. Global host grants remain global, but never authorize execution.
+Do not use symlinks for code paths.
+
+Always approval is available only for dependency graphs that can be pinned.
+Uninspectable/dynamic code, package installs, wrapped interpreter commands and
+other unsupported dependency graphs require one-time approval. Static analysis
+is not a complete proof of script behaviour. Data inputs are not frozen.
+
+Use the workdir for data paths and outputs, not `__file__`: it refers to the
+read-only code snapshot. Python local packages and static JavaScript relative
+imports are included in the bundle. Inline Python and local module execution
+resolve code from the snapshot rather than the mutable workdir.
+
+Once means **one execution**, including subprocesses and connections. Grants
+are consumed before dispatch and are not restored on failure or a lost response.
+Approved script dispatches are never automatically retried. Approval does not
+increase task budgets. Version-bound executions require container isolation and
+proxy egress (or network mode `none`), not process/open-network modes.
+
 ## Network Isolation
 
 - Broker is attached to internal sandbox control network.
@@ -62,9 +94,11 @@ returned as `timed_out=true`, not retried as a broker failure.
   - DNS from the run container goes to a sink address, so DNS cannot be used
     to exfiltrate data.
   - The policy (allowed and blocked hosts) is fixed when the command starts.
-- Allowed hosts are `agent.sandbox.network.allowed_hosts` (package registries
-  by default) plus admin rules in `sandbox_network_rules`. Any block beats any
-  allow. Rules are per host, never per URL path.
+- Allowed hosts are configured defaults (package registries), explicitly retained
+  legacy rules, and grants for this approved script version or all approved
+  scripts. Any matching block beats any allow, including defaults. New requests
+  use exact hosts, never implicit wildcards. Rules cover all HTTPS paths on the
+  named host, not individual URLs or repositories.
 - `command_execute` results include a `network` summary listing allowed and
   blocked hosts with reasons and what to do next.
 - `SANDBOX_EGRESS_MODE=open` restores direct internet from per-run bridges
@@ -78,30 +112,47 @@ returned as `timed_out=true`, not retried as a broker failure.
 
 ### Network access approvals
 
-1. A command fails to reach a host; the proxy refuses it with HTTP 403 and
-   `X-Sandbox-Egress: not_approved`, and the tool result explains this.
-2. The agent calls `network_access_request` with the URLs and purpose. Already
-   allowed hosts return immediately; admin-blocked hosts are reported and not
-   requested again. Otherwise the job pauses (`needs_review`).
-3. The admin gets a Telegram message and/or email:
-   **Approve once** (this job), **Approve always** (all jobs), **Block once**,
-   **Block always**, or **Cancel job**. On Telegram, "Add feedback first"
-   attaches guidance; by email, reply with the decision on the first line and
-   optional feedback below.
-4. The job resumes with the decision and feedback as an administrator
-   instruction.
+After run approval, the agent requests required URLs or exact hostnames with
+`network_access_request`, supplying the identical `command` and `workdir`.
+Allowed hosts return `approved`; blocked hosts are refused without another
+approval request. Otherwise the job pauses (`needs_review`).
 
-Manage rules directly:
+Choices: **Approve once** (next execution), **Always for this script** (this
+version), **Always for all approved scripts**, or **Deny**. Telegram's **Always...**
+opens the scope selector; the broad all-scripts grant needs a confirmation.
+**Add feedback** collects optional guidance before deciding. Email replies use
+`APPROVE ONCE`, `APPROVE ALWAYS`, `APPROVE ALWAYS FOR ALL SCRIPTS`, or `DENY`
+on the first line, followed by optional feedback. Both channels resolve the same
+one-use request when delivery is configured as `both`.
+
+Manage permissions in Telegram **/list → Permissions**, or
+**./setup.sh tools → Script and website permissions**. Both use deterministic
+operations, not a model. Inspect scripts, stored code/version diffs, host scopes,
+pending requests and history; revoke grants or block/unblock scripts and hosts.
+Email approvals attach the full code manifest for inspection.
 
 ```bash
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.network_access list
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.network_access allow api.example.com
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.network_access block '*.tracker.example' --note "no trackers"
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.network_access remove api.example.com
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions scripts'
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions hosts'
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions block-host api.example.com' --yes
+sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions revoke-script 1' --yes
 ```
 
-Use `--job N` to scope `allow`, `block` and `remove` to one job. Setup factory
-reset has a separate **Sandbox network approvals and blocks** category.
+Permission changes stop active sandbox runs and invalidate in-flight policy
+snapshots; completed external actions cannot be undone. If the broker cannot
+be reached, changes remain saved and the UI explicitly reports that active runs
+could not be stopped. Stop the sandbox service before relying on revocation.
+Administrator ingress services receive only a derived **revoke-only** token,
+never the sandbox execution token.
+
+Existing `sandbox_network_rules` retain their original job/global scope and
+appear under **Legacy rules**; they are not silently converted to script grants.
+The old network CLI remains available for legacy rules. Factory reset has a
+separate **Sandbox script and network approvals and blocks** category.
+
+For upgrades, save setup again to generate the revoke-only credential and
+updated Compose secret grants, then rebuild/recreate the agent and sandbox
+services. Runtime database migration preserves existing rules.
 
 ## Isolation Modes
 
@@ -148,7 +199,7 @@ Do not use process mode if the agent can receive instructions from untrusted inp
 
 ## Retry and Failure Semantics
 
-`command_execute` retries broker-request failures according to:
+For ordinary non-script utilities, `command_execute` retries broker-request failures according to:
 
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
@@ -160,6 +211,7 @@ misconfiguration. A lost response can cause a command that already ran to be
 executed again: retries do not guarantee exactly-once side effects.
 
 Retry exhaustion raises `SandboxAttemptsExhausted` with attempt error details.
+A registered script always uses one dispatch attempt, regardless of these settings.
 A missing Docker runtime such as `runsc` raises
 `SandboxHostConfigurationError` without retrying.
 

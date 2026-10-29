@@ -25,6 +25,12 @@ HELP = """Admin commands (subject line):
 /admin memory create (memory text in message body)
 /admin reminders [--limit N]
 /admin reminder-cancel ID
+/admin permissions scripts|hosts|history
+/admin permissions show VERSION_ID
+/admin permissions block-script|unblock-script|revoke-script SCRIPT_ID
+/admin permissions block-host|unblock-host HOST
+/admin permissions revoke-grant GRANT_ID
+/admin permissions remove-legacy RULE_ID
 Memory update text and review instructions go in the message body.
 """
 
@@ -97,11 +103,14 @@ class AdminCommands:
             return self.page(result, "/admin logs %s --cursor %%s --limit %%s" % job_id, "sequence", limit)
         elif command == "memory":
             return self.memory(args, body, options.query, limit, confirmed)
+        elif command == "permissions":
+            from .script_permissions import management
+            result = management(self.db, self.config, args, confirmed)
         elif command == "reminders" and not args:
             result = self.db.fetch_all("SELECT id, title, task, run_at, status, recurrence_unit, recurrence_interval FROM reminders ORDER BY run_at NULLS LAST, id LIMIT %s", (limit,))
         elif command in {"cancel", "reminder-cancel", "review", "requeue"} and len(args) == 1:
             identifier = int(args[0])
-            if command != "review" and not confirmed:
+            if not confirmed:
                 return "This action requires confirmation. Reply to its approval email, or use the local CLI with --yes."
             if command == "requeue":
                 if not self.db.requeue_job(identifier, "requeued by admin command"):

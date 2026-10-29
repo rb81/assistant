@@ -45,6 +45,8 @@ tracking and the transition path for older databases.
   between speech and model presets; channel delivery remains in `telegram.py`.
 - `network_access.py` — sandbox egress host rules, per-command policy, network
   approval decisions and the `list`/`allow`/`block`/`remove` admin CLI.
+- `script_permissions.py` — versioned script registry, run/host grants, screening
+  cache, atomic one-execution grants, shared approval decisions and management.
 - `memory_store.py`, `memory_manager.py`, `context_store.py` — memory and context search.
 - `embedding_client.py`, `embedding_maintenance.py` — embeddings and resumable rebuilds.
 - `workspace_index.py`, `artifact_processor.py` — file indexing and artifact processing.

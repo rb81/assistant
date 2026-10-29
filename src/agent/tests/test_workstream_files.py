@@ -254,6 +254,9 @@ class WorkstreamFileTrackerTest(unittest.TestCase):
             raise urllib.error.URLError("failed after modifying workspace")
 
         with patch("assistant_agent.tools.read_secret", return_value="token"), \
+                patch.object(ToolRuntime, "sandbox_control", return_value={
+                    "permission_epoch": "epoch", "execution_identity": "image",
+                }), \
                 patch("assistant_agent.tools.ssl.create_default_context"), \
                 patch("assistant_agent.tools.open_https_request", side_effect=failed_command), \
                 self.assertRaises(SandboxAttemptsExhausted):

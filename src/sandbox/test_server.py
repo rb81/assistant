@@ -50,6 +50,116 @@ import server
 import bootstrap
 
 
+@unittest.skipUnless(os.getenv("ASSISTANT_TEST_PERMISSION_IMAGE"), "requires disposable permissions Docker image")
+class ScriptPermissionDockerTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import uuid
+        from unittest.mock import patch
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.client = server.DockerClient(server.DOCKER_SOCKET, timeout=30)
+        self.volume = "assistant-permissions-test-" + uuid.uuid4().hex
+        self.client.json_request("POST", "/volumes/create", {"Name": self.volume}, expected=(201,))
+        self.addCleanup(lambda: self.client.request("DELETE", "/volumes/" + self.volume, expected=(204, 404)))
+        for key, value in {
+            "SHARED_ROOT": self.root, "RUN_SHARED_ROOT": Path("/data/share"),
+            "RUN_IMAGE": os.environ["ASSISTANT_TEST_PERMISSION_IMAGE"],
+            "RUN_LABEL": "assistant.permissions-test.70dc",
+            "RUN_CONTAINER_PREFIX": self.volume, "RUN_NETWORK_PREFIX": self.volume,
+        }.items():
+            override = patch.object(server, key, value)
+            override.start()
+            self.addCleanup(override.stop)
+        override = patch.object(server, "run_mounts", return_value=([], [
+            {"Type": "volume", "Source": self.volume, "Target": "/data/share"},
+        ]))
+        override.start()
+        self.addCleanup(override.stop)
+
+    def request(self, source):
+        import base64
+        return server.CommandRequest(
+            command=["python", "/data/share/job.py"], workdir=str(self.root), timeout_seconds=20,
+            network_policy={"allow": [], "block": []},
+            approved_files={"job.py": base64.b64encode(source.encode()).decode()},
+            approved_arguments={"1": "job.py"}, approved_python=True,
+            permission_epoch=server._permission_epoch, execution_identity=server.execution_identity(self.client),
+            script_id=1,
+        )
+
+    def test_approved_bytes_are_mounted_readonly_and_volume_is_cleaned(self):
+        import time
+        source = (
+            "from pathlib import Path\nprint('approved snapshot', flush=True)\n"
+            "try:\n Path(__file__).write_text('changed')\n"
+            "except OSError:\n print('read-only code', flush=True)\n"
+            "Path('/data/share/result.txt').write_text('writable output')\n"
+        )
+        response = server.execute_container(self.request(source), self.root, 20, time.monotonic())
+        self.assertEqual(response.exit_code, 0, response.stderr)
+        self.assertIn("approved snapshot", response.stdout)
+        self.assertIn("read-only code", response.stdout)
+        _, body = self.client.request("GET", "/volumes")
+        import json
+        self.assertFalse(any(row["Name"].startswith(self.volume + "-code-") for row in json.loads(body)["Volumes"]))
+
+    def test_revocation_kills_running_execution_and_rejects_stale_policy(self):
+        import time
+        import json
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        request = self.request("import time\nprint('started', flush=True)\ntime.sleep(30)\n")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(server.execute_container, request, self.root, 20, time.monotonic())
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                _, body = self.client.request("GET", "/containers/json")
+                rows = [r for r in json.loads(body) if r.get("Labels", {}).get(server.RUN_LABEL)]
+                if any(not any("proxy" in name for name in row.get("Names", [])) for row in rows):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("execution did not start")
+            with patch.dict(os.environ, {"SANDBOX_API_TOKEN": "s" * 32}):
+                result = server.revoke_permissions("Bearer " + "s" * 32)
+            self.assertGreater(result["stopped_containers"], 0)
+            response = future.result(timeout=10)
+            self.assertNotEqual(response.exit_code, 0)
+        with self.assertRaises(FakeHTTPException) as raised:
+            server.execute_container(request, self.root, 20, time.monotonic())
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_local_imports_inline_and_modules_ignore_mutable_workspace_code(self):
+        import base64
+        import time
+        source = (
+            "from pathlib import Path\n"
+            "Path('/data/share/helper.py').write_text(\"value = 'unapproved'\\n\")\n"
+            "Path('/data/share/runpy.py').write_text(\"raise RuntimeError('unapproved bootstrap')\\n\")\n"
+            "import helper\nprint(helper.value)\n"
+        )
+        request = self.request(source)
+        helper = base64.b64encode(b"value = 'approved helper'\n").decode()
+        request.approved_files["helper.py"] = helper
+        for _ in range(2):
+            response = server.execute_container(request, self.root, 20, time.monotonic())
+            self.assertEqual(response.exit_code, 0, response.stderr)
+            self.assertIn("approved helper", response.stdout)
+        request.command = ["python", "-c", "import helper; print(helper.value)"]
+        request.approved_arguments = {}
+        response = server.execute_container(request, self.root, 20, time.monotonic())
+        self.assertEqual(response.exit_code, 0, response.stderr)
+        self.assertIn("approved helper", response.stdout)
+        request.command = ["python", "-m", "reports"]
+        request.approved_files["reports/__init__.py"] = ""
+        request.approved_files["reports/__main__.py"] = base64.b64encode(b"import helper\nprint(helper.value)\n").decode()
+        response = server.execute_container(request, self.root, 20, time.monotonic())
+        self.assertEqual(response.exit_code, 0, response.stderr)
+        self.assertIn("approved helper", response.stdout)
+
+
 class SandboxBootstrapTest(unittest.TestCase):
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and os.getenv("ASSISTANT_TEST_SANDBOX_IMAGE"), "requires disposable Docker test image")
     def test_capability_free_broker_uses_staged_private_files_after_rotation(self):
@@ -184,6 +294,17 @@ class DockerLogStreamTest(unittest.TestCase):
 
 
 class SandboxAuthenticationTest(unittest.TestCase):
+    def test_revoke_only_token_cannot_authenticate_execution(self):
+        import hashlib
+        import hmac
+        from unittest.mock import patch
+        root = "s" * 32
+        revoke = hmac.new(root.encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256).hexdigest()
+        with patch.dict(os.environ, {"SANDBOX_API_TOKEN": root}, clear=True):
+            server.require_api_token("Bearer " + revoke, allow_revoke=True)
+            with self.assertRaises(FakeHTTPException):
+                server.require_api_token("Bearer " + revoke)
+
     def test_bearer_token_is_required_and_compared_exactly(self) -> None:
         from unittest.mock import patch
 
@@ -211,7 +332,9 @@ class SandboxAuthenticationTest(unittest.TestCase):
         from unittest.mock import patch
 
         token = "s" * 32
-        with patch.dict("os.environ", {"SANDBOX_API_TOKEN": token}, clear=True):
+        with patch.dict("os.environ", {"SANDBOX_API_TOKEN": token}, clear=True), patch.object(
+            server, "execution_identity", return_value="image"
+        ):
             with self.assertRaises(FakeHTTPException):
                 server.health()
             self.assertEqual(server.health("Bearer " + token)["status"], "ok")

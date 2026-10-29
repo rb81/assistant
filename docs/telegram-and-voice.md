@@ -181,10 +181,14 @@ for `ADMIN_EMAIL`; no separate administrator list is required. The mapped numeri
 ID must be allowlisted. Other recipient mappings and the general allowlist do not
 grant administrator permission. Existing installations remain email-only until changed.
 See [approval channels](email-administration.md#approval-channels). Sandbox
-network requests offer Approve once/always, Block once/always, Cancel job and
-**Add feedback first**.
+script requests offer **Approve once**, **Approve always**, **Deny** and optional
+feedback. Website requests use **Always...** to choose this script version or all
+approved scripts; broad grants require confirmation. Once means one execution.
 
-Administrators see **Needs attention** and **Archived** in `/list`. Job cards offer
+Administrators see **Needs attention**, **Archived** and **Permissions** in `/list`.
+Permissions lists scripts, versions, downloadable code/diffs, host grants, legacy
+rules, pending requests and history. Revoke a grant or block a script/host here;
+confirmed permission changes stop active sandbox runs. Job cards offer
 status, error details, results when available, rename, guidance, and state-specific
 actions. **Resend approval** on a held job sends a fresh one-use approval (the
 pending network request if any, otherwise the review confirmation); **Run again** is offered only for

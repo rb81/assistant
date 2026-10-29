@@ -6,6 +6,13 @@ import socket
 import subprocess
 import time
 import uuid
+import base64
+import hashlib
+import io
+import tarfile
+import threading
+import re
+import logging
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -56,6 +63,8 @@ RUN_LABEL = "assistant.sandbox.run"
 RUN_CREATED_LABEL = "assistant.sandbox.created"
 ORPHAN_SWEEP_SECONDS = 600
 _last_orphan_sweep = 0.0
+_permission_lock = threading.RLock()
+_permission_epoch = uuid.uuid4().hex
 
 
 def parse_umask(value: str) -> int:
@@ -83,6 +92,12 @@ class CommandRequest(BaseModel):
     timeout_seconds: Optional[int] = Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS)
     workdir: str = "/data/share"
     network_policy: Optional[dict[str, list[str]]] = None
+    approved_files: Optional[dict[str, str]] = None
+    approved_arguments: Optional[dict[str, str]] = None
+    approved_python: bool = False
+    permission_epoch: Optional[str] = None
+    execution_identity: Optional[str] = None
+    script_id: Optional[int] = None
 
 
 class CommandResponse(BaseModel):
@@ -139,11 +154,11 @@ class DockerClient:
         self,
         method: str,
         path: str,
-        body: Optional[dict[str, Any]] = None,
+        body: Optional[dict[str, Any] | bytes] = None,
         expected: tuple[int, ...] = (200,),
     ) -> tuple[int, bytes]:
-        payload = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        payload = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/x-tar" if isinstance(body, bytes) else "application/json"} if payload is not None else {}
         conn = UnixSocketHTTPConnection(self.socket_path, timeout=self.timeout)
         try:
             conn.request(method, path, body=payload, headers=headers)
@@ -358,13 +373,18 @@ def sweep_orphans(client: DockerClient) -> None:
         for item in json.loads(body or b"[]"):
             if int((item.get("Labels") or {}).get(RUN_CREATED_LABEL) or now) < cutoff:
                 remove_network(client, item.get("Name"))
-    except Exception:
-        pass
+        _, body = client.request("GET", "/volumes?filters=%s" % filters)
+        for item in json.loads(body).get("Volumes") or []:
+            if int((item.get("Labels") or {}).get(RUN_CREATED_LABEL) or now) < cutoff:
+                client.request("DELETE", "/volumes/%s" % quote(item["Name"], safe=""), expected=(204, 404))
+    except (DockerApiError, OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("Sandbox orphan cleanup failed: %s", exc)
 
 
 def create_run_container(client: DockerClient, run_id: str, request: CommandRequest, workdir: Path, network_mode: str,
-                         proxy_address: Optional[str] = None) -> str:
+                         proxy_address: Optional[str] = None, code_mounts: Optional[list[dict[str, Any]]] = None) -> str:
     binds, mounts = run_mounts()
+    mounts = [*mounts, *(code_mounts or [])]
     host_config: dict[str, Any] = {
         "AutoRemove": False,
         "NetworkMode": network_mode,
@@ -389,12 +409,14 @@ def create_run_container(client: DockerClient, run_id: str, request: CommandRequ
 
     container_config: dict[str, Any] = {
         "Image": RUN_IMAGE,
-        "Cmd": command_with_umask(request.command),
+        "Cmd": command_with_umask(approved_command(request, workdir)),
         "WorkingDir": child_workdir(workdir),
         "Env": [
             "PIP_CACHE_DIR=/tmp/pip-cache",
             "NPM_CONFIG_CACHE=/tmp/npm-cache",
             "SHARED_FILE_UMASK=%s" % os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK),
+            *(["PYTHONPATH=/approved-code/%s:/approved-code" % workdir.relative_to(SHARED_ROOT)]
+              if getattr(request, "approved_files", None) is not None else []),
             *proxy_environment(proxy_address),
         ],
         "Labels": run_labels(run_id),
@@ -413,6 +435,85 @@ def create_run_container(client: DockerClient, run_id: str, request: CommandRequ
         expected=(201,),
     )
     return str(response["Id"])
+
+
+def approved_command(request: CommandRequest, workdir: Path) -> list[str]:
+    command = list(request.command)
+    if getattr(request, "approved_files", None) is None:
+        return command
+    for index, path in (getattr(request, "approved_arguments", None) or {}).items():
+        if path not in request.approved_files or not str(index).isdigit() or int(index) >= len(command):
+            raise HTTPException(status_code=400, detail="invalid approved command argument")
+        command[int(index)] = "/approved-code/" + path
+    if getattr(request, "approved_python", False) and re.fullmatch(r"(?:python|pypy)(?:\d+(?:\.\d+)*)?", Path(command[0]).name):
+        prefix = (
+            "import sys,runpy; "
+            "sys.path=%r+[p for p in sys.path if p and not p.startswith(%r)]; " %
+            (["/approved-code/" + str(workdir.relative_to(SHARED_ROOT)), "/approved-code"], str(RUN_SHARED_ROOT))
+        )
+        indexes = sorted(int(index) for index in (getattr(request, "approved_arguments", None) or {}) if int(index) > 0)
+        if indexes:
+            index = indexes[0]
+            return command[:index] + ["-I", "-c", prefix +
+                "sys.path.insert(0,sys.argv[1].rsplit('/',1)[0]); "
+                "entry=sys.argv.pop(1); runpy.run_path(entry,run_name='__main__')"] + command[index:]
+        if "-m" in command[1:] and not request.approved_arguments:
+            index = command.index("-m")
+            return command[:index] + ["-I", "-c", prefix +
+                "module=sys.argv.pop(1); runpy.run_module(module,run_name='__main__',alter_sys=True)"] + command[index + 1:]
+        if "-c" in command[1:] and not request.approved_arguments:
+            index = command.index("-c")
+            return command[:index] + ["-I", "-c", prefix +
+                "source=sys.argv.pop(1); exec(compile(source,'<approved-inline>','exec'))"] + command[index + 1:]
+    return command
+
+
+def execution_identity(client: DockerClient) -> str:
+    image = client.json_request("GET", "/images/%s/json" % quote(RUN_IMAGE, safe=""))
+    material = [image["Id"], RUN_RUNTIME, RUN_USER, RUN_CAP_DROP, RUN_SECURITY_OPT,
+                ISOLATION_MODE, RUN_NETWORK_MODE, EGRESS_MODE]
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def approved_code_mounts(client: DockerClient, run_id: str, files: dict[str, str]):
+    """Populate a private code volume, mounted read-only outside the writable workspace."""
+    if len(files) > 100:
+        raise HTTPException(status_code=400, detail="too many approved code files")
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for name, encoded in files.items():
+            path = Path(name)
+            if path.is_absolute() or ".." in path.parts or not path.parts:
+                raise HTTPException(status_code=400, detail="invalid approved code path")
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="invalid approved code encoding") from exc
+            if len(content) > 1_000_000:
+                raise HTTPException(status_code=400, detail="approved file is too large")
+            info = tarfile.TarInfo(str(path))
+            info.size, info.mode = len(content), 0o555
+            tar.addfile(info, io.BytesIO(content))
+    name = "%s-code-%s" % (RUN_CONTAINER_PREFIX, run_id)
+    client.json_request("POST", "/volumes/create",
+                        {"Name": name, "Driver": "local", "Labels": run_labels(run_id)}, expected=(201,))
+    helper = None
+    try:
+        helper = client.json_request("POST", "/containers/create", {
+            "Image": RUN_IMAGE, "Cmd": ["true"], "Labels": run_labels(run_id),
+            "HostConfig": {"NetworkMode": "none", "Mounts": [
+                {"Type": "volume", "Source": name, "Target": "/bundle"},
+            ]},
+        }, expected=(201,))["Id"]
+        client.request("PUT", "/containers/%s/archive?path=/bundle" % helper, archive.getvalue(), expected=(200,))
+        return name, [{"Type": "volume", "Source": name, "Target": "/approved-code", "ReadOnly": True}]
+    except Exception:
+        remove_container(client, helper)
+        helper = None
+        client.request("DELETE", "/volumes/%s" % quote(name, safe=""), expected=(204, 404))
+        raise
+    finally:
+        remove_container(client, helper)
 
 
 def container_running(client: DockerClient, container_id: str) -> tuple[bool, Optional[int]]:
@@ -478,13 +579,32 @@ def remove_network(client: DockerClient, network_name: Optional[str]) -> None:
 @app.get("/health")
 def health(authorization: str = Header(default="")) -> dict[str, str]:
     require_api_token(authorization)
+    identity = execution_identity(DockerClient(DOCKER_SOCKET, timeout=30)) if ISOLATION_MODE == "container" else "process"
     return {
         "status": "ok",
         "isolation_mode": ISOLATION_MODE,
         "runtime": RUN_RUNTIME or "default",
         "run_network_mode": RUN_NETWORK_MODE,
         "egress": "proxy" if proxy_enabled() else "open",
+        "execution_identity": identity,
+        "permission_epoch": _permission_epoch,
     }
+
+
+@app.post("/permissions/revoke")
+def revoke_permissions(authorization: str = Header(default="")) -> dict[str, Any]:
+    """Invalidate queued policies and stop active sandbox runs after an administrator revokes access."""
+    require_api_token(authorization, allow_revoke=True)
+    global _permission_epoch
+    with _permission_lock:
+        _permission_epoch = uuid.uuid4().hex
+        client = DockerClient(DOCKER_SOCKET, timeout=30)
+        filters = quote(json.dumps({"label": [RUN_LABEL]}), safe="")
+        _, body = client.request("GET", "/containers/json?filters=" + filters)
+        rows = json.loads(body)
+        for row in rows:
+            client.request("POST", "/containers/%s/kill" % row["Id"], expected=(204, 404, 409))
+    return {"status": "revoked", "stopped_containers": len(rows)}
 
 
 @app.post("/execute", response_model=CommandResponse)
@@ -494,6 +614,10 @@ def execute(request: CommandRequest, authorization: str = Header(default="")) ->
     timeout = request.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
     timeout = min(timeout, MAX_TIMEOUT_SECONDS)
     started = time.monotonic()
+    if getattr(request, "permission_epoch", None) is not None and (
+        ISOLATION_MODE != "container" or (not proxy_enabled() and RUN_NETWORK_MODE != "none")
+    ):
+        raise HTTPException(status_code=409, detail="Approved scripts require container isolation and proxy egress")
 
     if ISOLATION_MODE == "container":
         return execute_container(request, workdir, timeout, started)
@@ -502,7 +626,7 @@ def execute(request: CommandRequest, authorization: str = Header(default="")) ->
     return execute_process(request, workdir, timeout, started)
 
 
-def require_api_token(authorization: str) -> None:
+def require_api_token(authorization: str, *, allow_revoke: bool = False) -> None:
     token = os.getenv("SANDBOX_API_TOKEN", "")
     token_file = os.getenv("SANDBOX_API_TOKEN_FILE", "")
     if token and token_file:
@@ -518,7 +642,11 @@ def require_api_token(authorization: str) -> None:
     if len(token) < 32:
         raise HTTPException(status_code=503, detail="sandbox authentication is not configured")
     scheme, separator, supplied = authorization.partition(" ")
-    if not separator or scheme.lower() != "bearer" or not hmac.compare_digest(token.encode("utf-8"), supplied.encode("utf-8")):
+    revoke_token = hmac.new(token.encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256).hexdigest()
+    valid = hmac.compare_digest(token.encode("utf-8"), supplied.encode("utf-8"))
+    if allow_revoke:
+        valid = valid or hmac.compare_digest(revoke_token.encode(), supplied.encode("utf-8"))
+    if not separator or scheme.lower() != "bearer" or not valid:
         raise HTTPException(status_code=401, detail="authentication required")
 
 
@@ -575,6 +703,7 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
     proxy_address: Optional[str] = None
     cleanup_network: Optional[str] = None
     egress_network: Optional[str] = None
+    code_volume: Optional[str] = None
     timed_out = False
     exit_code: Optional[int] = None
     policy = clean_policy(getattr(request, "network_policy", None))
@@ -583,13 +712,20 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
         egress = "proxy" if policy is not None else "none"
 
     try:
-        sweep_orphans(client)
-        network_mode, cleanup_network = create_run_network(client, run_id)
-        if egress == "proxy":
-            egress_network = create_egress_network(client, run_id)
-            proxy_id, proxy_address = start_egress_proxy(client, run_id, network_mode, egress_network, policy)
-        container_id = create_run_container(client, run_id, request, workdir, network_mode, proxy_address)
-        client.request("POST", "/containers/%s/start" % container_id, expected=(204, 304))
+        with _permission_lock:
+            if getattr(request, "permission_epoch", None) is not None:
+                if request.permission_epoch != _permission_epoch or request.execution_identity != execution_identity(client):
+                    raise HTTPException(status_code=409, detail="Permissions or sandbox image changed; request current approval")
+            sweep_orphans(client)
+            code_mounts = []
+            if getattr(request, "approved_files", None):
+                code_volume, code_mounts = approved_code_mounts(client, run_id, request.approved_files)
+            network_mode, cleanup_network = create_run_network(client, run_id)
+            if egress == "proxy":
+                egress_network = create_egress_network(client, run_id)
+                proxy_id, proxy_address = start_egress_proxy(client, run_id, network_mode, egress_network, policy)
+            container_id = create_run_container(client, run_id, request, workdir, network_mode, proxy_address, code_mounts)
+            client.request("POST", "/containers/%s/start" % container_id, expected=(204, 304))
 
         deadline = started + timeout
         while True:
@@ -626,5 +762,7 @@ def execute_container(request: CommandRequest, workdir: Path, timeout: int, star
     finally:
         remove_container(client, container_id)
         remove_container(client, proxy_id)
+        if code_volume:
+            client.request("DELETE", "/volumes/%s" % quote(code_volume, safe=""), expected=(204, 404))
         remove_network(client, cleanup_network)
         remove_network(client, egress_network)

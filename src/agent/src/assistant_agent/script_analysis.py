@@ -10,6 +10,7 @@ are reported as signals rather than resolved.
 import ast
 import hashlib
 import ipaddress
+import os
 import re
 import shlex
 import sys
@@ -65,7 +66,11 @@ JS_RISKY = {
     "file_deletion": re.compile(r"\b(?:rmSync|rmdirSync|unlinkSync|rm|unlink)\s*\("),
     "environment": re.compile(r"process\.env"),
 }
-JS_IMPORT_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)|^\s*import\s[^'"]*?from\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)""", re.MULTILINE)
+JS_IMPORT_RE = re.compile(
+    r"""require\(\s*['"]([^'"]+)['"]\s*\)|^\s*(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]"""
+    r"""|import\(\s*['"]([^'"]+)['"]\s*\)|^\s*import\s*['"]([^'"]+)['"]""",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -154,6 +159,8 @@ class ScriptAnalyzer:
         return args
 
     def _python_command(self, argv: list[str], rest: list[str]) -> Optional[ScriptManifest]:
+        if rest in (["--version"], ["-V"], ["--help"], ["-h"]):
+            return None
         manifest = ScriptManifest(argv, "python")
         index = 0
         while index < len(rest):
@@ -170,7 +177,7 @@ class ScriptAnalyzer:
                 path = self._local_module(module.split(".")[0], self.workdir)
                 if path:
                     manifest.entry = self._display(path)
-                    self._python_file(manifest, path)
+                    self._classify_python_import(manifest, module, self.workdir)
                 else:
                     self._classify_python_import(manifest, module, self.workdir)
                     manifest.notes.append("runs module %s" % module)
@@ -255,6 +262,7 @@ class ScriptAnalyzer:
             self._source(manifest, self._display(path), text, language, path.parent, record=False)
 
     def _python_file(self, manifest: ScriptManifest, path: Path) -> None:
+        self._require_regular_code_path(path)
         if self._display(path) in manifest.files:
             return
         if len(manifest.files) >= self.max_files:
@@ -277,7 +285,7 @@ class ScriptAnalyzer:
         if language == "shell":
             self._shell_source(manifest, text, base)
         elif language == "javascript":
-            self._javascript_source(manifest, text)
+            self._javascript_source(manifest, text, base)
         self._scan_text(manifest, text)
 
     def _python_source(self, manifest: ScriptManifest, label: str, text: str, base: Path, record: bool = True) -> None:
@@ -334,6 +342,14 @@ class ScriptAnalyzer:
         if local:
             manifest.imports["local"].add(module)
             self._python_file(manifest, local)
+            if local.name == "__init__.py":
+                for child in sorted(local.parent.rglob("*.py")):
+                    if len(manifest.files) >= self.max_files:
+                        manifest.hard_signals.add("code_not_inspectable")
+                        manifest.notes.append("local package exceeds file inspection limit")
+                        break
+                    if self._inside(child):
+                        self._python_file(manifest, child)
         elif top in getattr(sys, "stdlib_module_names", ()):
             manifest.imports["stdlib"].add(module)
         else:
@@ -343,6 +359,7 @@ class ScriptAnalyzer:
         for directory in dict.fromkeys((base, self.workdir)):
             for candidate in (directory / (name + ".py"), directory / name / "__init__.py"):
                 if candidate.is_file() and self._inside(candidate):
+                    self._require_regular_code_path(candidate)
                     return candidate.resolve()
         return None
 
@@ -432,11 +449,33 @@ class ScriptAnalyzer:
                 nested = words[words.index("-c") + 1]
                 self._source(manifest, "<nested %s -c>" % name, nested, "python" if name in PYTHON else "shell" if name in SHELLS else "javascript", base, record=False)
 
-    def _javascript_source(self, manifest: ScriptManifest, text: str) -> None:
+    def _javascript_source(self, manifest: ScriptManifest, text: str, base: Path) -> None:
         for match in JS_IMPORT_RE.finditer(text):
             module = next(group for group in match.groups() if group)
             category = "local" if module.startswith((".", "/")) else "stdlib" if module.startswith("node:") or module in {"fs", "path", "os", "http", "https", "net", "child_process", "crypto", "url", "util", "zlib", "stream", "dgram", "tls", "vm"} else "third_party"
             manifest.imports[category].add(module)
+            if category == "local":
+                target = base / module
+                path = next((candidate for candidate in (
+                    target, Path(str(target) + ".js"), Path(str(target) + ".mjs"),
+                    Path(str(target) + ".cjs"), target / "index.js",
+                ) if candidate.is_file() and self._inside(candidate)), None)
+                if path is None or path.suffix not in {".js", ".mjs", ".cjs"}:
+                    manifest.hard_signals.add("code_not_inspectable")
+                    manifest.notes.append("local JavaScript dependency could not be pinned: " + module)
+                elif self._display(path) not in manifest.files:
+                    self._require_regular_code_path(path)
+                    if len(manifest.files) >= self.max_files:
+                        manifest.hard_signals.add("code_not_inspectable")
+                        manifest.notes.append("local JavaScript dependency limit reached")
+                    else:
+                        source = self._read_text(manifest, path)
+                        if source is not None:
+                            self._record_file(manifest, path, source)
+                            self._source(manifest, self._display(path), source, "javascript", path.parent, record=False)
+        if re.search(r"\b(?:require|import)\s*\(\s*[^'\"\s]", text):
+            manifest.hard_signals.add("code_not_inspectable")
+            manifest.notes.append("dynamic JavaScript dependency")
         for category, pattern in JS_RISKY.items():
             for match in pattern.finditer(text):
                 manifest.add_risk(category, match.group(0).strip()[:60])
@@ -490,10 +529,16 @@ class ScriptAnalyzer:
         candidate = Path(value)
         candidate = candidate if candidate.is_absolute() else self.workdir / candidate
         try:
+            self._require_regular_code_path(candidate)
             resolved = candidate.resolve()
         except OSError:
             return None
         return resolved if resolved.is_file() and self._inside(resolved) else None
+
+    @staticmethod
+    def _require_regular_code_path(path: Path) -> None:
+        if Path(os.path.abspath(path)) != path.resolve():
+            raise ValueError("Script code paths must not use symlinks: %s" % path)
 
     def _inside(self, path: Path) -> bool:
         try:
@@ -522,7 +567,12 @@ class ScriptAnalyzer:
             manifest.hard_signals.add("code_not_inspectable")
             manifest.notes.append("%s is unreadable or larger than %s bytes" % (self._display(path), MAX_FILE_BYTES))
             return None
-        return data.decode("utf-8", errors="replace")
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            manifest.hard_signals.add("code_not_inspectable")
+            manifest.notes.append("%s is not valid UTF-8" % self._display(path))
+            return None
 
     def _record_file(self, manifest: ScriptManifest, path: Path, text: str) -> None:
         label = self._display(path)

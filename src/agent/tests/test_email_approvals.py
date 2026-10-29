@@ -113,6 +113,28 @@ class ApprovalReplyTest(unittest.TestCase):
                 apply.assert_not_called()
                 self.assertIn("already handled", admin_reply.call_args.args[1])
 
+    def test_script_permission_email_uses_explicit_decision_and_optional_feedback(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config, downloader.db = self.config, MagicMock()
+        downloader.db.fetch_one.return_value = None
+        payload = {"kind": "permission", "job_id": 17, "request_id": "abc"}
+        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), \
+                patch("assistant_agent.script_permissions.apply_decision") as apply, \
+                patch("assistant_agent.admin_commands.AdminCommands.reply") as admin_reply:
+            result = downloader.ingest_raw(reply("APPROVE ALWAYS\nPublic data only.\n\n" + self.confirmation).as_bytes())
+        self.assertTrue(result.inserted)
+        apply.assert_called_once_with(downloader.db, payload, "always", "Public data only.", "admin-email")
+        admin_reply.assert_not_called()
+
+    def test_approval_attachment_contains_complete_script_manifest(self):
+        config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "email": {"smtp_port": 587}}})
+        details = b'{"files": [{"path": "job.py", "source": "print(1)"}]}'
+        with patch("assistant_agent.email_approvals.smtplib.SMTP") as smtp:
+            send_admin_email(config, "Permission", "Review the attached code.", attachment=("version.json", details))
+        attachment = list(smtp.return_value.send_message.call_args.args[0].iter_attachments())[0]
+        self.assertEqual(attachment.get_payload(decode=True), details)
+
     def test_multiple_or_incomplete_challenges_fail_closed(self):
         for body in (MARKER, self.confirmation + "\nOTP: " + "c" * 32):
             with self.subTest(body=body):

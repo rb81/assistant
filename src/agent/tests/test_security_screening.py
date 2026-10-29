@@ -312,38 +312,13 @@ class ToolScreeningTest(unittest.TestCase):
         runtime.job = {"id": 7, "metadata": metadata or {}}
         return runtime
 
-    def test_possibly_malicious_script_requires_single_use_approval_tied_to_its_content(self):
-        from assistant_agent.security_screening import ScreeningResult
-        from assistant_agent.tools import SecurityApprovalRequired, SecurityBlocked
+    def test_scripts_use_the_version_registry_instead_of_call_level_screening(self):
         arguments = {"command": ["python3", "job.py"]}
-        with patch("assistant_agent.tools.SecurityScreener.screen", return_value=ScreeningResult(POSSIBLY_MALICIOUS, "risky")) as screen:
-            with self.assertRaises(SecurityApprovalRequired) as raised:
-                self.runtime(scripts={"allowed_domains": ["example.com"]})._security_screen("command_execute", arguments)
-        state = screen.call_args.args[1]
-        self.assertEqual(state["manifest"]["imports"]["third_party"], ["requests"])
-        self.assertIn("example.net", state["manifest"]["network"]["hosts"])
-        self.assertIn("host_not_allowed", screen.call_args.args[2])
-        fingerprint = raised.exception.fingerprint
-        runtime = self.runtime({"security_approved_actions": [fingerprint]})
+        runtime = self.runtime({"security_approved_actions": ["legacy-fingerprint"]})
         with patch("assistant_agent.tools.SecurityScreener.screen") as screen:
             runtime._security_screen("command_execute", arguments)
         screen.assert_not_called()
-        self.assertEqual(runtime.job["metadata"]["security_approved_actions"], [])
-        (self.root / "job.py").write_text("import shutil\nshutil.rmtree('/data')\n")
-        runtime = self.runtime({"security_approved_actions": [fingerprint]})
-        with patch("assistant_agent.tools.SecurityScreener.screen", return_value=ScreeningResult(MALICIOUS, "bad")), patch(
-            "assistant_agent.tools.notify_admin"
-        ) as notify, self.assertRaises(SecurityBlocked):
-            runtime._security_screen("command_execute", arguments)
-        notify.assert_called_once()
-
-    def test_yolo_allows_possibly_malicious_scripts_with_notice(self):
-        from assistant_agent.security_screening import ScreeningResult
-        with patch("assistant_agent.tools.SecurityScreener.screen", return_value=ScreeningResult(POSSIBLY_MALICIOUS, "risky")), patch(
-            "assistant_agent.tools.notify_admin"
-        ) as notify:
-            self.runtime(allow_possibly_malicious=True)._security_screen("command_execute", {"command": ["python3", "job.py"]})
-        notify.assert_called_once()
+        self.assertEqual(runtime.job["metadata"]["security_approved_actions"], ["legacy-fingerprint"])
 
     def test_non_code_commands_internal_email_and_other_tools_are_not_screened(self):
         runtime = self.runtime()

@@ -32,6 +32,10 @@ def apply_approval(db, config, payload, instruction=""):
     from .admin_commands import AdminCommands
     from .email_ingest import EmailDownloader
     kind = payload["kind"]
+    if kind == "permission":
+        from .script_permissions import apply_decision, parse_decision
+        decision, feedback = parse_decision(instruction)
+        return apply_decision(db, payload, decision, feedback)
     if kind == "network":
         from .network_access import apply_decision, parse_email_decision
         decision, feedback = parse_email_decision(instruction)

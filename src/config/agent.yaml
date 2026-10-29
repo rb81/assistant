@@ -323,7 +323,7 @@ agent:
   # See docs/security.md#email-and-action-screening.
   security:
     notify_max_per_hour: 20
-    # YOLO mode: let "possibly malicious" items proceed without admin approval (malicious is always blocked).
+    # YOLO mode: possibly malicious email may proceed without review; script permissions remain mandatory.
     allow_possibly_malicious: false
     email_authentication:
       # Applies only to email whose From is the admin address (tasks, /admin commands, OTP replies).

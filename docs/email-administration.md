@@ -21,13 +21,20 @@ invalidates the other. There is no silent fallback to an unselected channel.
 Both selected channels are attempted; partial or uncertain delivery is reported
 and the original record is preserved rather than blindly resent.
 
-Sandbox network access requests use the same channels with five choices:
-**Approve once** (this job), **Approve always**, **Block once**, **Block always**
-and **Cancel job**. On Telegram, use **Add feedback first** to send the agent a
-note before deciding. By email, reply to the request with the decision on the
-first line (`APPROVE ONCE`, `APPROVE ALWAYS`, `BLOCK ONCE`, `BLOCK ALWAYS` or
-`CANCEL JOB`) and optional feedback below. See
+Script run requests offer **Approve once**, **Approve always**, and **Deny**.
+Website requests additionally allow choosing always for this script version or
+all approved scripts. Once means one execution, not the entire job. On Telegram,
+use **Add feedback** before deciding and **Always...** to choose website scope.
+By email, reply quoting the original request with `APPROVE ONCE`, `APPROVE ALWAYS`,
+`APPROVE ALWAYS FOR ALL SCRIPTS` (websites only), or `DENY` on the first line;
+optional feedback follows. Full script manifests are attached for review.
+See
 [network access approvals](sandbox.md#network-access-approvals).
+
+Telegram **/list → Permissions** and setup **Tools → Script and website
+permissions** list registered versions, host grants, legacy rules and approval
+history, and support revocation and blocking. Changes also stop active sandbox
+runs; failures to reach the broker are reported explicitly.
 
 Use `/list` → **Needs attention** for paused tasks and its **Approval inbox** for
 pending confirmations, including held inbound emails. Expired buttons offer a fresh
@@ -109,6 +116,13 @@ action; inspect state using the CLI before sending a fresh request.
 /admin memory delete 7
 /admin reminders
 /admin reminder-cancel 9
+/admin permissions scripts
+/admin permissions hosts
+/admin permissions show 1
+/admin permissions block-script 1
+/admin permissions revoke-script 1
+/admin permissions block-host api.example.com
+/admin permissions history
 ```
 
 Put memory text, review instructions or `instruct` instructions in the message
@@ -152,7 +166,8 @@ inbound email, the message is moved to the quarantine folder, and the admin
 receives the usual OTP confirmation. That confirmation expires after 24 hours by
 default (`approval_ttl_minutes`). Approving processes the original email once,
 with any reply text added as an admin note. It does not mark the job as
-admin-authenticated. A held tool call (outbound email or script) pauses the job
-as `needs_review`. Approving that review allows exactly the same call once; for
-scripts, only while the file contents are unchanged. With YOLO mode on, these
-items proceed and you are notified instead.
+admin-authenticated. A held outbound-email call pauses the job as `needs_review`; review permits
+exactly that call once without increasing execution budgets. Script findings
+are cached per version/security profile. An administrator's reusable run approval
+bypasses repeated model checks for that version; a once approval permits one
+execution only. Script run permissions remain mandatory even with YOLO mode on.

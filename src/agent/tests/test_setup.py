@@ -1611,6 +1611,13 @@ server.serve_forever()
             self.assertEqual(overlay["services"]["sandbox"]["secrets"], ["SANDBOX_API_TOKEN"])
             self.assertIn("SANDBOX_API_TOKEN", overlay["services"]["task-agent"]["secrets"])
             self.assertNotIn("SANDBOX_API_TOKEN", overlay["services"]["downloader"]["secrets"])
+            self.assertIn("SANDBOX_REVOKE_TOKEN", overlay["services"]["downloader"]["secrets"])
+            self.assertIn("SANDBOX_REVOKE_TOKEN", overlay["services"]["telegram-receiver"]["secrets"])
+            self.assertNotIn("SANDBOX_API_TOKEN", overlay["services"]["telegram-receiver"]["secrets"])
+            import hashlib
+            import hmac
+            self.assertEqual((path / "data/.secrets/SANDBOX_REVOKE_TOKEN").read_text(),
+                             hmac.new(sandbox_token.encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256).hexdigest())
             self.assertNotIn("OPENROUTER_API_KEY", overlay["services"]["workspace-indexer"]["secrets"])
             self.assertIsNone(overlay["services"]["task-agent"]["environment"]["OPENROUTER_API_KEY"])
             self.assertEqual(Installation(root).secret_values, instance.secret_values)

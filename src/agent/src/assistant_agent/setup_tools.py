@@ -81,6 +81,7 @@ class Tools:
             "Follow live logs (Ctrl-C returns here)": self.follow_logs,
             "Restart / start / stop services": self.lifecycle,
             "Jobs and tasks": self.jobs,
+            "Script and website permissions": self.permissions,
             "Workstreams and data deletion": self.workstreams,
             "Memories": self.memories,
             "Reminders": self.reminders,
@@ -97,6 +98,25 @@ class Tools:
     def workstreams(self):
         from .setup_workstreams import WorkstreamTools
         WorkstreamTools(self.instance, self.answer, self.confirm, self.console).menu()
+
+    def permissions(self):
+        def mutate(operation, label):
+            return lambda: self.admin("/admin permissions %s %s" %
+                                      (operation, shlex.quote(self.text(label))), mutating=True)
+        self.console.print("Permission changes stop active sandbox runs. Completed actions are not undone.")
+        self.submenu("Script and website permissions", {
+            "List scripts and versions": lambda: self.admin("/admin permissions scripts"),
+            "Inspect version, code and grants": lambda: self.admin("/admin permissions show %d" % self.number("Version ID")),
+            "List website grants, defaults and legacy rules": lambda: self.admin("/admin permissions hosts"),
+            "Approval history": lambda: self.admin("/admin permissions history"),
+            "Block a script (including future versions)": mutate("block-script", "Script ID"),
+            "Unblock a script": mutate("unblock-script", "Script ID"),
+            "Revoke a script's run and website approvals": mutate("revoke-script", "Script ID"),
+            "Block a website": mutate("block-host", "Exact host (or explicit *.example.com pattern)"),
+            "Remove a global website block": mutate("unblock-host", "Host or wildcard pattern"),
+            "Revoke a grant": mutate("revoke-grant", "Grant ID"),
+            "Remove a legacy network rule": mutate("remove-legacy", "Legacy rule ID"),
+        })
 
     def recent_logs(self):
         service = self.select("Service", ["All services", *self.services()])

@@ -313,6 +313,18 @@ class EmailDownloader:
                         return IngestResult(inserted=True, queued=False, message_id=message_id)
                     token, digest, instruction = approval
                     payload = EmailApprovals(self.db, self.config).consume(token, digest)
+                    if payload["kind"] == "permission":
+                        from . import script_permissions
+                        try:
+                            decision, feedback = script_permissions.parse_decision(instruction)
+                            script_permissions.apply_decision(self.db, payload, decision, feedback, "admin-email")
+                        except ValueError as exc:
+                            job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'",
+                                                    (payload["job_id"],))
+                            if job and script_permissions.approval_payload(job) == payload:
+                                script_permissions.send_approval(self.db, self.config, job, ":retry:" + message_id)
+                            AdminCommands(self.db, self.config).reply(parsed, str(exc))
+                        return IngestResult(inserted=True, queued=False, message_id=message_id)
                     if payload["kind"] == "screened_email":
                         return self.ingest_raw(
                             base64.b64decode(payload["raw"]), payload["folder"],
@@ -721,6 +733,11 @@ class EmailDownloader:
 
         # Determine current effective limits (override > job.metadata > config defaults).
         metadata = job.get("metadata") or {}
+        if metadata.get("permission_request"):
+            from .script_permissions import apply_decision, approval_payload, parse_decision
+            decision, feedback = parse_decision(body_text)
+            apply_decision(self.db, approval_payload(job), decision, feedback)
+            return
         existing_override = metadata.get("admin_review_override") or {}
         base_iterations = (
             existing_override.get("max_iterations_per_task")
@@ -747,6 +764,9 @@ class EmailDownloader:
         update: dict[str, Any] = {"admin_review_override": override}
         pending_action = metadata.get("security_pending_action") or {}
         if pending_action.get("fingerprint"):
+            new_iterations, new_tokens = base_iterations, base_tokens
+            override["max_iterations_per_task"] = base_iterations
+            override["max_tokens_per_task"] = base_tokens
             approved = list(metadata.get("security_approved_actions") or [])
             update["security_approved_actions"] = approved + [pending_action["fingerprint"]]
             update["security_pending_action"] = None

@@ -115,7 +115,7 @@ def approval_reply(message: Message) -> tuple[str, str, str] | None:
     return tokens.pop(), hashes.pop(), "\n".join(instructions).strip()
 
 
-def send_admin_email(config, subject: str, body: str) -> None:
+def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, bytes] | None = None) -> None:
     message = EmailMessage()
     message["From"] = agent_email(config)
     message["To"] = config.get("agent.admin.email")
@@ -123,6 +123,9 @@ def send_admin_email(config, subject: str, body: str) -> None:
     message["Message-ID"] = make_msgid()
     message["Auto-Submitted"] = "auto-generated"
     message.set_content(body)
+    if attachment:
+        filename, data = attachment
+        message.add_attachment(data, maintype="application", subtype="json", filename=filename)
     host = config.get("agent.email.smtp_host")
     port = config.get_int("agent.email.smtp_port", 587)
     context = ssl.create_default_context()
@@ -139,6 +142,24 @@ NETWORK_EMAIL_INSTRUCTIONS = (
     "  APPROVE ONCE | APPROVE ALWAYS | BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB\n"
     "Optional feedback for the agent can follow on the next lines."
 )
+PERMISSION_EMAIL_INSTRUCTIONS = (
+    "Reply quoting this original message. First line: APPROVE ONCE, APPROVE ALWAYS, or DENY.\n"
+    "For website requests only: APPROVE ALWAYS FOR ALL SCRIPTS is also available.\n"
+    "Always for this script is available only when executable dependencies can be pinned.\n"
+    "Optional feedback follows on subsequent lines. Once means one execution, not one job."
+)
+
+
+def permission_keyboard(callback: str, payload: dict) -> list:
+    rows = [[{"text": "Approve once", "callback_data": "ap:%s:once" % callback},
+             {"text": "Deny", "callback_data": "ap:%s:deny" % callback}]]
+    if payload.get("permission_type") == "host":
+        rows.append([{"text": "Always...", "callback_data": "ap:%s:scope" % callback}])
+    elif payload.get("reusable"):
+        rows.append([{"text": "Approve always", "callback_data": "ap:%s:always" % callback}])
+    rows.append([{"text": "Details", "callback_data": "ap:%s:details" % callback},
+                 {"text": "Add feedback", "callback_data": "ap:%s:feedback" % callback}])
+    return rows
 
 
 def network_keyboard(callback: str, payload: dict) -> list:
@@ -164,7 +185,8 @@ class EmailApprovals:
         self.config = config
 
     def request(self, source_id: str, payload: dict, summary: str, ttl_minutes: int = 10,
-                *, email_subject: str = "Assistant approval required") -> bool:
+                *, email_subject: str = "Assistant approval required",
+                details_attachment: tuple[str, bytes] | None = None) -> bool:
         admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         mode = channels(self.config)
         admins = telegram_admins(self.config) if mode in {"telegram", "both"} else []
@@ -224,6 +246,8 @@ class EmailApprovals:
                     callback = pending["callback_id"]
                     title = summary.split("\n\nDetails:", 1)[0][:1800]
                     keyboard = network_keyboard(callback, payload) if payload.get("kind") == "network" else None
+                    if payload.get("kind") == "permission":
+                        keyboard = permission_keyboard(callback, payload)
                     for identifier in admins:
                         client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
@@ -243,11 +267,13 @@ class EmailApprovals:
                         self.config, email_subject,
                         "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n%s\n\n%s" % (
                             MARKER, token, digest, pending["expires"],
+                            PERMISSION_EMAIL_INSTRUCTIONS if payload.get("kind") == "permission" else
                             NETWORK_EMAIL_INSTRUCTIONS if payload.get("kind") == "network" else
                             "Reply with this original message to confirm once. Add guidance above it if needed.\n"
                             "Review the requested action below before confirming.",
                             summary[:20000],
                         ),
+                        **({"attachment": details_attachment} if details_attachment else {}),
                     )
                 except Exception as exc:
                     delivery_errors.append(("email", exc))

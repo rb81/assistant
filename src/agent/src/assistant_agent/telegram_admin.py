@@ -1,5 +1,7 @@
 """Deterministic Telegram administration; never dispatched through an LLM."""
 import secrets
+import json
+import difflib
 from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
@@ -35,7 +37,148 @@ class TelegramAdmin:
         rows = [[("Workstreams", "ui:streams:0"), ("Jobs", "ui:jobs:0")]]
         if self.is_admin(sender):
             rows.append([("Needs attention", "ui:attention:0"), ("Archived", "ui:archived:0")])
+            rows.append([("Permissions", "ui:permissions:0")])
         self.send(sender, "Choose what to manage:", rows)
+
+    def permissions(self, sender, action="permissions", identifier=0):
+        if not self.is_admin(sender):
+            raise ValueError("Administrator permission is required")
+        from . import script_permissions
+        back = [("Back", "ui:permissions:0")]
+        if action == "permissions":
+            self.send(sender, "Permissions apply to exact script versions and HTTPS hosts.\n"
+                      "Revoking or blocking also stops active sandbox runs.",
+                      [[("Scripts", "ui:pscripts:0"), ("Websites", "ui:phosts:0")],
+                       [("Pending requests", "ui:ppending:0"), ("History", "ui:phistory:0")],
+                       [("Back", "ui:home:0")]])
+        elif action == "pscripts":
+            rows = self.db.fetch_all(
+                "SELECT * FROM sandbox_scripts WHERE id > %s ORDER BY id LIMIT 9", (identifier,))
+            buttons = [[(("#%s %s%s" % (row["id"], row["entry"], " [BLOCKED]" if row["blocked"] else ""))[:60],
+                         "ui:pscript:%s" % row["id"])] for row in rows[:8]]
+            if len(rows) > 8:
+                buttons.append([("More", "ui:pscripts:%s" % rows[7]["id"])])
+            self.send(sender, "Registered scripts:" if rows else "No scripts.", buttons + [back])
+        elif action == "pscript":
+            row = self.db.fetch_one("SELECT * FROM sandbox_scripts WHERE id = %s", (identifier,))
+            if not row:
+                raise ValueError("Script not found")
+            versions = self.db.fetch_all(
+                "SELECT * FROM sandbox_script_versions WHERE script_id = %s ORDER BY id DESC LIMIT 8", (identifier,))
+            buttons = [[("Version #%s %s" % (v["id"], v["fingerprint"][:12]), "ui:pversion:%s" % v["id"])] for v in versions]
+            buttons += [[("Unblock" if row["blocked"] else "Block", "ui:%s:%s" %
+                          ("punblockscript" if row["blocked"] else "pblockscript", identifier)),
+                         ("Revoke approvals", "ui:prevokescript:%s" % identifier)], back]
+            self.send(sender, "%s\nScript #%s\n%s" % (row["entry"], identifier, "Blocked" if row["blocked"] else "Not blocked"),
+                      buttons)
+        elif action == "pversion":
+            data = script_permissions.management(self.db, self.config, ["show", str(identifier)])
+            version = data["version"]
+            rows = data["grants"]
+            hosts = script_permissions.host_policy(self.db, self.config, identifier, None)
+            allowed = any(r["kind"] == "run" and r["decision"] == "allow" and r["consumed_at"] is None for r in rows)
+            self.send(sender, "Version #%s\nSHA-256 %s\n%s\nRun grant: %s\n%s\nPermanent HTTPS hosts (job rules excluded):\n%s" % (
+                identifier, version["fingerprint"], version["purpose"],
+                "present (blocks still override)" if allowed else "not approved",
+                "Reusable approval available" if version["reusable"] else "One-time approval only",
+                json.dumps(hosts)),
+                [[("Code and diff", "ui:pcode:%s" % identifier)]] +
+                [[("Revoke grant #%s: %s %s" % (r["id"], r["kind"], r["target"]), "ui:prevoke:%s" % r["id"])]
+                 for r in rows if r["consumed_at"] is None][:8] + [back])
+        elif action == "pcode":
+            version = script_permissions.management(self.db, self.config, ["show", str(identifier)])["version"]
+            previous = self.db.fetch_one(
+                """SELECT manifest FROM sandbox_script_versions WHERE script_id = %s AND id < %s
+                   ORDER BY id DESC LIMIT 1""", (version["script_id"], identifier))
+            old = json.dumps(previous["manifest"] if previous else {}, indent=2, sort_keys=True).splitlines(True)
+            new = json.dumps(version["manifest"], indent=2, sort_keys=True).splitlines(True)
+            content = "".join(new) + "\n\nDIFF FROM PREVIOUS VERSION\n" + "".join(difflib.unified_diff(old, new))
+            from .admin_commands import redact_secrets
+            self.client.call("sendDocument", {"chat_id": sender, "caption": "Stored code, invocation and version diff"},
+                             files={"document": ("script-version-%s.txt" % identifier,
+                                                 redact_secrets(content).encode(), "text/plain")}, sending=True)
+        elif action == "phosts":
+            from .network_access import default_hosts
+            rows = self.db.fetch_all(
+                """SELECT * FROM sandbox_permission_grants WHERE kind = 'host' AND consumed_at IS NULL
+                   AND id > %s ORDER BY id LIMIT 9""", (identifier,))
+            buttons = [[("Grant #%s %s %s" % (r["id"], r["decision"], r["target"]), "ui:phost:%s" % r["id"])]
+                       for r in rows[:8]]
+            if len(rows) > 8:
+                buttons.append([("More", "ui:phosts:%s" % rows[7]["id"])])
+            self.send(sender, "Configured defaults: %s\nSelect a grant to revoke or block its host." %
+                      ", ".join(default_hosts(self.config)),
+                      buttons + [[("Legacy rules", "ui:plegacies:0"), ("Block a website...", "ui:pnewblock:0")], back])
+        elif action == "plegacies":
+            rows = self.db.fetch_all("SELECT * FROM sandbox_network_rules WHERE id > %s ORDER BY id LIMIT 9", (identifier,))
+            buttons = [[("Legacy #%s %s %s" % (r["id"], r["decision"], r["host"]), "ui:plegacy:%s" % r["id"])]
+                       for r in rows[:8]]
+            if len(rows) > 8:
+                buttons.append([("More", "ui:plegacies:%s" % rows[7]["id"])])
+            self.send(sender, "Legacy host rules retain their original job/global scope.", buttons + [back])
+        elif action in {"phost", "plegacy"}:
+            legacy = action == "plegacy"
+            row = self.db.fetch_one("SELECT * FROM " + ("sandbox_network_rules" if legacy else "sandbox_permission_grants") +
+                                    " WHERE id = %s", (identifier,))
+            if not row:
+                raise ValueError("Grant no longer exists")
+            text = json.dumps(row, default=str, indent=2)
+            self.send(sender, text, [[("Remove legacy rule" if legacy else "Revoke grant",
+                                      "ui:%s:%s" % ("premovelegacy" if legacy else "prevoke", identifier)),
+                                     ("Block host globally", "ui:%s:%s" %
+                                      ("pblocklegacy" if legacy else "pblockhost", identifier))], back])
+        elif action == "phistory":
+            rows = self.db.fetch_all("SELECT * FROM sandbox_permission_history WHERE id > %s ORDER BY id LIMIT 9",
+                                     (identifier,))
+            self.send(sender, "\n".join("#%s %s by %s (%s)" % (r["id"], r["action"], r["actor"], r["created_at"])
+                                        for r in rows[:8]) or "No history.",
+                      ([[("More", "ui:phistory:%s" % rows[7]["id"])]] if len(rows) > 8 else []) + [back])
+        elif action == "ppending":
+            rows = self.db.fetch_all(
+                """SELECT * FROM jobs WHERE status = 'needs_review' AND metadata ? 'permission_request'
+                   AND id > %s ORDER BY id LIMIT 9""", (identifier,))
+            buttons = [[("Job #%s: %s" % (r["id"], review_label(r)), "ui:job:%s" % r["id"])] for r in rows[:8]]
+            if len(rows) > 8:
+                buttons.append([("More", "ui:ppending:%s" % rows[7]["id"])])
+            self.send(sender, "Pending script and website requests:" if rows else "No pending permission requests.",
+                      buttons + [back])
+        elif action == "pnewblock":
+            response = self.client.call("sendMessage", {
+                "chat_id": sender, "text": "Reply with an exact hostname to block (e.g. api.example.com). "
+                "Use *.example.com only if you intend to block all its subdomains.",
+                "reply_markup": {"force_reply": True, "selective": True},
+            }, sending=True)
+            self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
+                "action": "permission-block-host", "message_id": response["message_id"],
+                "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            })
+        else:
+            operations = {
+                "pblockscript": "block-script", "punblockscript": "unblock-script",
+                "prevokescript": "revoke-script", "prevoke": "revoke-grant",
+                "premovelegacy": "remove-legacy",
+            }
+            if action in {"pblockhost", "pblocklegacy"}:
+                legacy = action == "pblocklegacy"
+                row = self.db.fetch_one("SELECT * FROM " + ("sandbox_network_rules" if legacy else "sandbox_permission_grants") +
+                                        " WHERE id = %s", (identifier,))
+                if not row:
+                    raise ValueError("Grant no longer exists")
+                args = ["block-host", row["host" if legacy else "target"]]
+            elif action in operations:
+                args = [operations[action], str(identifier)]
+            else:
+                raise ValueError("Unknown permission operation")
+            self.permission_confirmation(sender, args)
+
+    def permission_confirmation(self, sender, args):
+        nonce = secrets.token_hex(12)
+        self.db.set_state("telegram-permission-control:" + nonce, {
+            "sender": sender, "args": args,
+            "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        })
+        self.send(sender, "Confirm %s?\nThis also stops active sandbox runs; completed actions cannot be undone." %
+                  " ".join(args), [[("Confirm", "pc:%s:ok" % nonce), ("Back", "ui:permissions:0")]])
 
     def page(self, sender, kind, before=0):
         admin = self.is_admin(sender)
@@ -234,13 +377,22 @@ class TelegramAdmin:
             self.send(sender, "Please reply with text within %s characters." % (
                 60 if pending["action"].startswith("rename") else 4000))
             return True
+        if pending["action"] == "permission-block-host":
+            from .network_access import normalize_pattern
+            host = normalize_pattern(text)
+            self.permission_confirmation(sender, ["block-host", host])
+            self.db.execute("DELETE FROM runtime_state WHERE key = %s", (key,))
+            return True
         with self.db.connect() as conn:
             db = TransactionDatabase(conn)
             claimed = db.fetch_one("DELETE FROM runtime_state WHERE key = %s AND value = %s RETURNING key",
                                    (key, Jsonb(pending)))
             if not claimed:
                 raise ValueError("This reply was already handled")
-            if pending["action"] == "renamestream":
+            if pending["action"] == "permission-feedback":
+                db.set_state("permission-feedback:%s:%s" % (pending["callback"], sender), {"text": text})
+                changed = True
+            elif pending["action"] == "renamestream":
                 changed = db.fetch_one(
                     """UPDATE workstreams SET title = %s, name_status = 'named', name_attempts = 3
                        WHERE id = %s AND status = %s RETURNING id""", (text, pending["id"], pending["version"]),
@@ -268,6 +420,9 @@ class TelegramAdmin:
             if not changed:
                 raise ValueError("This item changed. Open its current status and try again.")
             db.set_state(receipt_key, {"handled": True})
+        if pending["action"] == "permission-feedback":
+            self.approval(sender, pending["callback"], "review")
+            return True
         self.send(sender, "Reply saved. Task resumed without changing permissions or limits."
                   if pending.get("answer_only") and pending["action"] == "guidance"
                   else "Saved. Held actions still require approval.", [[("Back", "ui:home:0")]])
@@ -279,6 +434,8 @@ class TelegramAdmin:
         value = row["value"]
         if action == "details":
             from .admin_commands import redact_secrets
+            if value["payload"].get("kind") == "permission":
+                self.permissions(sender, "pcode", value["payload"]["version_id"])
             self.send(sender, str(redact_secrets(value["summary"]))[:3800],
                       [[("Back", "ap:%s:review" % callback_id)]])
             return
@@ -291,6 +448,55 @@ class TelegramAdmin:
                       [[("Request fresh approval", "ap:%s:renew" % callback_id)]])
             return
         network = value["payload"].get("kind") == "network"
+        permission = value["payload"].get("kind") == "permission"
+        if permission:
+            from . import script_permissions
+            from .email_approvals import permission_keyboard
+            if action == "renew":
+                job = self.job(sender, value["payload"]["job_id"])
+                if script_permissions.approval_payload(job) != value["payload"] or job["status"] != "needs_review":
+                    raise ValueError("This request changed or was already handled.")
+                script_permissions.send_approval(self.db, self.config, job, ":renew:" + secrets.token_hex(12))
+                self.send(sender, "Fresh approval sent.")
+            elif action == "feedback":
+                response = self.client.call("sendMessage", {
+                    "chat_id": sender, "text": "Reply with optional feedback, then choose your decision.",
+                    "reply_markup": {"force_reply": True, "selective": True},
+                }, sending=True)
+                self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
+                    "action": "permission-feedback", "callback": callback_id,
+                    "message_id": response["message_id"],
+                    "expires": value["expires"],
+                })
+            elif action == "scope":
+                buttons = [[("Always for this script", "ap:%s:always" % callback_id)]] if value["payload"]["reusable"] else []
+                buttons += [[("All approved scripts...", "ap:%s:broad" % callback_id)],
+                            [("Back", "ap:%s:review" % callback_id)]]
+                self.send(sender, "Choose the scope for these HTTPS hosts:", buttons)
+            elif action == "broad":
+                self.send(sender, "Allow these entire HTTPS hosts for ALL approved scripts, including future versions?",
+                          [[("Confirm all scripts", "ap:%s:global" % callback_id),
+                            ("Back", "ap:%s:scope" % callback_id)]])
+            elif action == "review":
+                keyboard = permission_keyboard(callback_id, value["payload"])
+                self.send(sender, value["summary"].split("\n\nDetails:", 1)[0][:2800],
+                          [[(button["text"], button["callback_data"]) for button in row] for row in keyboard])
+            elif action in {"once", "always", "global", "deny"}:
+                feedback = self.db.get_state("permission-feedback:%s:%s" % (callback_id, sender)) or {}
+                payload = service.consume_telegram(callback_id, sender)
+                try:
+                    result = script_permissions.apply_decision(self.db, payload, action, feedback.get("text", ""), "telegram-admin")
+                except ValueError:
+                    job = self.job(sender, payload["job_id"])
+                    if script_permissions.approval_payload(job) == payload and job["status"] == "needs_review":
+                        script_permissions.send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
+                    raise
+                self.send(sender, result, [[("Permissions", "ui:permissions:0")]])
+                self.db.execute("DELETE FROM runtime_state WHERE key = %s",
+                                ("permission-feedback:%s:%s" % (callback_id, sender),))
+            else:
+                raise ValueError("Unknown permission action")
+            return
         if action == "renew":
             payload = value["payload"]
             if network:
@@ -344,16 +550,33 @@ class TelegramAdmin:
     def callback(self, callback):
         sender = str(callback["from"]["id"])
         pieces = str(callback.get("data") or "").split(":")
-        if not pieces or pieces[0] not in {"ui", "ap"}:
+        if not pieces or pieces[0] not in {"ui", "ap", "pc"}:
             return False
         self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         try:
             if len(pieces) != 3:
                 raise ValueError("Invalid menu action")
+            if pieces[0] == "pc":
+                if not self.is_admin(sender):
+                    raise ValueError("Administrator permission is required")
+                row = self.db.fetch_one(
+                    """DELETE FROM runtime_state WHERE key = %s AND value->>'sender' = %s
+                       AND (value->>'expires')::timestamptz > now() RETURNING value""",
+                    ("telegram-permission-control:" + pieces[1], sender),
+                )
+                if not row:
+                    raise ValueError("Confirmation expired or already handled")
+                from .script_permissions import management
+                result = management(self.db, self.config, row["value"]["args"], True, "telegram-admin")
+                self.send(sender, json.dumps(result), [[("Permissions", "ui:permissions:0")]])
+                return True
             if pieces[0] == "ap":
                 self.approval(sender, pieces[1], pieces[2])
                 return True
             _, action, argument = pieces
+            if action.startswith("p") and action != "prompt":
+                self.permissions(sender, action, int(argument))
+                return True
             if action == "home":
                 self.home(sender)
             elif action == "confirm":
@@ -396,7 +619,10 @@ class TelegramAdmin:
                         if job["status"] != "needs_review":
                             raise ValueError("Task is not awaiting approval")
                         metadata = job.get("metadata") or {}
-                        if metadata.get("network_request"):
+                        if metadata.get("permission_request"):
+                            from .script_permissions import send_approval
+                            send_approval(self.db, self.config, job, ":menu:" + secrets.token_hex(12))
+                        elif metadata.get("network_request"):
                             from .network_access import send_approval
                             send_approval(self.db, self.config, job, ":menu:" + secrets.token_hex(12))
                         else:

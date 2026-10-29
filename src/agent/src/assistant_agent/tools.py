@@ -171,12 +171,13 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
         ),
     },
     "Sandbox": {
-        "tools": {"command_execute", "network_access_request"},
+        "tools": {"command_execute", "network_access_request", "script_approval_request"},
         "text": (
             "Runs commands in an isolated sandbox container. Outbound network access is deny-by-default: "
             "traffic goes through an HTTPS-only proxy that allows package registries and hosts the administrator "
-            "approved. Before running code that must reach any other host, call network_access_request with the "
-            "URLs and purpose and wait for the decision. Never work around the proxy (other hosts, mirrors, IP "
+            "approved. First call script_approval_request for the finished script, then network_access_request "
+            "with its identical command/workdir, exact hostnames or URLs and purpose, and wait for approval. "
+            "Grants cover entire HTTPS hosts, not URL paths. Never work around the proxy (other hosts, mirrors, IP "
             "addresses, DNS tricks, or unproxied clients), and never use the sandbox to replace a dedicated tool "
             "that failed; ask the administrator instead. "
             "Application credentials are not available here. Never search environment variables or secret files "
@@ -2204,10 +2205,33 @@ class ToolRuntime:
         max_attempts = max(1, self.config.get_int("agent.sandbox.max_attempts", 3))
         retry_backoff = max(0.0, self.config.get_float("agent.sandbox.retry_backoff_seconds", 1.0))
         from . import network_access
-        network_policy = network_access.policy(self.db, self.config, (self.job or {}).get("id"))
+        from . import script_permissions
+        version = None
+        health = self.sandbox_control("GET", "/health")
+        if ScriptAnalyzer(self.shared_root, resolved_workdir, []).analyze(command) is not None:
+            version = script_permissions.inspect(self, command, workdir, environment=health["execution_identity"])
+        bundle = {}
+        if version:
+            script_permissions.request(self, version, "run")
+            bundle, network_policy = script_permissions.execution(self, version)
+            # A lost response must never execute a one-use action twice.
+            max_attempts = 1
+        else:
+            network_policy = network_access.policy(self.db, self.config, (self.job or {}).get("id"))
+            # Explicit new global blocks also apply to ordinary utilities.
+            rows = self.db.fetch_all(
+                """SELECT target FROM sandbox_permission_grants
+                   WHERE kind = 'host' AND scope = 'global' AND decision = 'block'"""
+            ) if self.db is not None else []
+            network_policy["block"] += [row["target"] for row in rows]
         payload = json.dumps(
             {"command": command, "timeout_seconds": timeout, "workdir": str(resolved_workdir),
-             "network_policy": network_policy}
+             "network_policy": network_policy,
+             "permission_epoch": health["permission_epoch"], "execution_identity": health["execution_identity"],
+             **({"approved_files": bundle, "approved_arguments": version["manifest"]["code_arguments"],
+                 "approved_python": version["manifest"]["language"] == "python",
+                 "script_id": version["script_id"]}
+                if version else {})}
         ).encode("utf-8")
         attempt_errors: list[dict[str, Any]] = []
         last_message = ""
@@ -2256,8 +2280,46 @@ class ToolRuntime:
             if before is not None:
                 self.workstream_files.reconcile(before, self.workstream_files.snapshot())
 
-    def network_access_request(self, urls: list[str], purpose: str) -> dict[str, Any]:
-        raise ToolError("network_access_request is only available in task jobs, which can pause for admin approval")
+    def sandbox_control(self, method: str, path: str) -> dict[str, Any]:
+        token = read_secret("SANDBOX_REVOKE_TOKEN") if path == "/permissions/revoke" else None
+        token = token or read_secret("SANDBOX_API_TOKEN")
+        if not token:
+            raise ToolError("sandbox authentication is not configured")
+        url = str(self.config.get("agent.sandbox.base_url", "https://sandbox:8080")).rstrip("/") + path
+        validate_https_url(url, "Sandbox control URL")
+        context = ssl.create_default_context(cafile="/run/assistant/tls/sandbox.crt")
+        request = urllib.request.Request(
+            url, method=method, headers={"Authorization": "Bearer " + token},
+        )
+        try:
+            with open_https_request(request, timeout=30, context=context) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise ToolError("Sandbox control request failed: %s" % exc) from exc
+
+    def script_approval_request(self, command: list[str], purpose: str, workdir: Optional[str] = None) -> dict[str, Any]:
+        from . import script_permissions
+        if not str(purpose or "").strip():
+            raise ValueError("purpose is required")
+        health = self.sandbox_control("GET", "/health")
+        version = script_permissions.inspect(
+            self, command, workdir, purpose, health["execution_identity"],
+        )
+        if version is None:
+            raise ValueError("This command is not an inspectable script. Use a workspace script or explicit interpreter.")
+        return script_permissions.request(self, version, "run", purpose=purpose)
+
+    def network_access_request(self, urls: list[str], purpose: str, command: Optional[list[str]] = None,
+                               workdir: Optional[str] = None) -> dict[str, Any]:
+        from . import script_permissions
+        if not str(purpose or "").strip():
+            raise ValueError("purpose is required")
+        hosts = script_permissions.requested_hosts(urls)
+        health = self.sandbox_control("GET", "/health")
+        version = script_permissions.inspect(self, command, workdir, purpose, health["execution_identity"])
+        if version is None:
+            raise ValueError("Request script approval first, then supply its identical command and workdir.")
+        return script_permissions.request(self, version, "host", hosts, purpose)
 
     def _sandbox_host_configuration_error(self, message: str) -> str:
         clean = " ".join(str(message or "").split())
@@ -2512,27 +2574,8 @@ class ToolRuntime:
             }
             material: dict[str, Any] = arguments
         elif name == "command_execute":
-            target = "scripts"
-            if not screener.enabled(target):
-                return
-            try:
-                workdir = self.resolve_path(arguments["workdir"]) if arguments.get("workdir") else self.shared_root
-            except ToolError:
-                return
-            command = arguments.get("command")
-            if not isinstance(command, list) or not workdir.is_dir():
-                return
-            analyzer = ScriptAnalyzer(
-                self.shared_root, workdir,
-                self.config.get_list("agent.security.scripts.allowed_domains"),
-                self.config.get_int("agent.security.scripts.max_files", 20),
-            )
-            manifest = analyzer.analyze(command)
-            if manifest is None:
-                return
-            state = manifest.state()
-            hard_signals = tuple(sorted(manifest.hard_signals))
-            material = {**arguments, "script": manifest.fingerprint_material()}
+            # Script screening and explicit approvals share the version registry.
+            return
         else:
             return
         fingerprint = action_fingerprint(name, material)
@@ -2614,6 +2657,7 @@ class ToolRuntime:
             "deep_research_status": self.deep_research_status,
             "command_execute": self.command_execute,
             "network_access_request": self.network_access_request,
+            "script_approval_request": self.script_approval_request,
             "calendar_sync": self.calendar_sync,
             "calendar_list_busy": self.calendar_list_busy,
             "calendar_list_events": self.calendar_list_events,
@@ -3349,7 +3393,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "command_execute",
-            "description": "Execute a command in the sandbox container. Command must be an argv array. Relative workdir paths are resolved under the shared workspace root. Use this to run scripts written into the shared workspace. Network access is HTTPS-only through an approval proxy (package registries are allowed by default); the result's network field lists allowed and blocked hosts. Request other hosts with network_access_request before running code that needs them.",
+            "description": "Execute an argv array in the sandbox. Scripts require version-bound run approval: first script_approval_request, then network_access_request for required hosts, then this identical invocation. Once grants are consumed by one execution even on failure; dispatch is not retried. Code files are pinned read-only; outputs in the shared workspace remain writable. Relative workdirs resolve under the workspace root.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3364,13 +3408,31 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
     {
         "type": "function",
         "function": {
+            "name": "script_approval_request",
+            "description": "Register a finished script version and request administrator run approval. Supply its exact command, workdir and purpose. Changes to code, local helpers, arguments or sandbox image invalidate approval. Returns approved or pauses for approval; denied requests must not be repeated. After approval request needed hosts, then execute unchanged.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "workdir": {"type": "string"},
+                    "purpose": {"type": "string"},
+                },
+                "required": ["command", "purpose"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "network_access_request",
             "description": (
                 "Ask the administrator to allow sandbox commands to reach specific hosts. Use before running code that "
                 "needs a host other than the package registries, or after command_execute reports a host as not approved. "
                 "Access is granted per host for HTTPS only. Hosts already allowed or blocked are answered immediately; "
-                "otherwise the job pauses until the administrator approves once (this job), approves always, blocks, "
-                "or cancels. Request only what the task needs and explain why."
+                "Supply the identical command and workdir of an approved script. Otherwise first call "
+                "script_approval_request. Administrator chooses one execution, always for this version, "
+                "always for all approved scripts, or deny. Exact hostnames only; URL paths are not restricted. "
+                "Request only what the task needs and explain why."
             ),
             "parameters": {
                 "type": "object",
@@ -3383,8 +3445,10 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                         "type": "string",
                         "description": "What the access is for and which script or package needs it.",
                     },
+                    "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "workdir": {"type": "string"},
                 },
-                "required": ["urls", "purpose"],
+                "required": ["urls", "purpose", "command"],
             },
         },
     },
@@ -3656,7 +3720,7 @@ FILE_TOOL_NAMES = {
 }
 WEB_SEARCH_TOOL_NAMES = {"web_search"}
 EMAIL_TOOL_NAMES = {"email_search", "email_read", "email_send"}
-COMMAND_TOOL_NAMES = {"command_execute", "network_access_request"}
+COMMAND_TOOL_NAMES = {"command_execute", "network_access_request", "script_approval_request"}
 CALENDAR_TOOL_NAMES = {
     "calendar_sync",
     "calendar_list_busy",
@@ -3849,6 +3913,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "deep_research_status": "Inspect linked deep research progress/results.",
         "command_execute": "Run a command in the sandbox container (network via approval proxy).",
         "network_access_request": "Ask the administrator to allow sandbox commands to reach specific hosts.",
+        "script_approval_request": "Request permission to run an exact script version.",
         "calendar_sync": "Fetch the latest event data from all configured calendar API providers.",
         "calendar_list_busy": "List busy windows from all configured calendar providers. Only complete=true is a reliable availability check; degraded or no_providers means availability is unknown, even when busy is empty.",
         "calendar_list_events": "List events from all configured calendar providers.",
