@@ -75,7 +75,8 @@ class TaskAgentEmailContextTest(unittest.TestCase):
             assert agent.run_once()
             gate.__exit__.assert_called_once()
         agent.db.log_event.assert_called_once_with(
-            31, "embedding_index_incomplete", output_data={"retrieval": "keyword_only", "wait_seconds": 60},
+            31, "timeout", output_data={"reason": "embedding_index_incomplete",
+                                       "retrieval": "keyword_only", "wait_seconds": 60},
         )
 
     def test_requester_fallback_pauses_before_sending_usable_admin_confirmation(self):

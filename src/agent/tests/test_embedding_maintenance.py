@@ -356,6 +356,36 @@ def test_execution_timeout_uses_keyword_fallback_and_releases_locks(embedding_da
     assert scheduler.maintenance.status()["complete"] is False
 
 
+@pytest.mark.parametrize("role", ["task", "research"])
+def test_timed_out_execution_logs_valid_event_and_still_processes_work(embedding_database, role):
+    from assistant_agent.deep_research import DeepResearchAgent
+    from assistant_agent.task_agent import TaskAgent
+
+    db = embedding_database
+    job = db.create_manual_job("Timeout fallback", "Process despite indexing backlog")
+    config = AppConfig({"agent": {"embeddings": {"model": "test-model", "dimensions": 2}}})
+    scheduler = EmbeddingScheduler(db, config)
+    with scheduler.execution(wait_seconds=0) as fresh:
+        assert not fresh
+        if role == "task":
+            agent = TaskAgent(db, config)
+            with patch.object(agent, "process_job") as process:
+                assert agent.run_ready_job(fresh)
+                assert process.call_args.args[0]["id"] == job["id"]
+        else:
+            agent = DeepResearchAgent(db, config)
+            run = {"id": 1, "execution_job_id": job["id"]}
+            with patch.object(agent, "claim_run", return_value=run), \
+                 patch.object(DeepResearchAgent, "process_run") as process:
+                assert agent.run_ready_research(fresh)
+                process.assert_called_once_with(run)
+    event = db.fetch_one("SELECT event_type, output_data FROM task_logs WHERE job_id = %s", (job["id"],))
+    assert event == {
+        "event_type": "timeout",
+        "output_data": {"reason": "embedding_index_incomplete", "retrieval": "keyword_only", "wait_seconds": 60},
+    }
+
+
 def test_concurrent_execution_does_not_index_while_another_task_is_active(embedding_database):
     db = embedding_database
     config = AppConfig({"agent": {"embeddings": {"model": "test-model", "dimensions": 2}}})

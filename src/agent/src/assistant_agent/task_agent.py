@@ -173,8 +173,9 @@ class TaskAgent:
         if job is None:
             return False
         if not embeddings_ready:
-            self.db.log_event(job["id"], "embedding_index_incomplete",
-                              output_data={"retrieval": "keyword_only", "wait_seconds": 60})
+            self.db.log_event(job["id"], "timeout",
+                              output_data={"reason": "embedding_index_incomplete",
+                                           "retrieval": "keyword_only", "wait_seconds": 60})
         LOGGER.info("claimed job %s", job["id"])
         try:
             self.process_job(job)

@@ -89,8 +89,9 @@ class DeepResearchAgent:
         if run is None:
             return False
         if not embeddings_ready:
-            self.db.log_event(run["execution_job_id"], "embedding_index_incomplete",
-                              output_data={"retrieval": "keyword_only", "wait_seconds": 60})
+            self.db.log_event(run["execution_job_id"], "timeout",
+                              output_data={"reason": "embedding_index_incomplete",
+                                           "retrieval": "keyword_only", "wait_seconds": 60})
         LOGGER.info("claimed deep research run %s", run["id"])
         processor = DeepResearchAgent(self.db.for_job(run["execution_job_id"]), self.config)
         processor.locked_by = self.locked_by

@@ -122,7 +122,7 @@ records when a task is waiting. The handoff waits for any in-flight background
 operation to release its lock rather than overlapping it with task execution.
 
 If indexing cannot catch up within the startup budget, the task proceeds with a
-logged warning, an `embedding_index_incomplete` task event, and keyword-only
+logged warning, a `timeout` task event with reason `embedding_index_incomplete`, and keyword-only
 retrieval for that run. It does not silently treat an incomplete index as current.
 Pending records remain eligible for retry when execution finishes. New changes
 that arrive during active execution are also indexed at the next idle/startup
