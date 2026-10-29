@@ -505,6 +505,48 @@ assert approvals_configured(config)
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_supervisor_settings_review_and_save_without_runtime_dependencies(self):
+        script = """
+import importlib.abc
+import sys
+import tempfile
+from unittest.mock import Mock
+
+class BlockRuntimeImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in {"psycopg", "markdown_it"}:
+            raise ModuleNotFoundError("Setup must not require " + fullname)
+
+sys.meta_path.insert(0, BlockRuntimeImports())
+from assistant_agent.management import GROUPS, Management
+from assistant_agent.setup import Installation, SetupError
+
+with tempfile.TemporaryDirectory() as root:
+    backend = Management(root, Mock(return_value=False))
+    backend.load()
+    backend.accepted = True
+    backend.values.update(AGENT_LLM_MODEL="model", AGENT_LLM_BASE_URL="https://openrouter.ai/api/v1")
+    backend.credentials.update(POSTGRES_PASSWORD="database-password", OPENROUTER_API_KEY="model-key")
+    backend.instructions = b"Ask for approval before external actions."
+    values = {spec.key: backend.value(spec) for spec in GROUPS["security"][1]}
+    values["AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET"] = "openai/gpt-sol-6.1"
+    backend.stage("security", values)
+    assert any("not a provider/model ID" in message for _, message in backend.problems())
+    try:
+        backend.save()
+    except SetupError as exc:
+        assert "not a provider/model ID" in str(exc)
+    else:
+        raise AssertionError("Invalid preset must not be saved")
+    values["AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET"] = "reviewer"
+    backend.stage("security", values)
+    assert backend.problems() == [], backend.problems()
+    backend.save()
+    assert Installation(root).values["AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET"] == "reviewer"
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def saved_configuration(self, root):
         instance = Installation(root)
         instance.values = {"AGENT_NAME": "Original", "AGENT_TIMEZONE": "UTC", "AGENT_LLM_MODEL": "model",

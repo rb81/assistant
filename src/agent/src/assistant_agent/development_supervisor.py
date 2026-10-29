@@ -6,8 +6,6 @@ import re
 from http.client import HTTPException
 from urllib.parse import urlsplit
 
-from psycopg import Error as DatabaseError
-
 from .config import AppConfig, database_url
 from .llm_client import LlmClient
 
@@ -62,7 +60,8 @@ def configuration_errors(config: AppConfig) -> list[str]:
         errors.append("agent.security.script_yolo must be a boolean")
     preset = config.get("agent.security.development.model_preset", "default")
     if not isinstance(preset, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", preset):
-        errors.append("Development supervisor model_preset must be 1-64 letters, digits, underscores or hyphens")
+        errors.append("Development supervisor model_preset must be 'default' or a preset name "
+                      "(1-64 letters, digits, underscores or hyphens), not a provider/model ID")
     for key, default in (("max_minutes", 30), ("max_runs", 20)):
         value = config.get("agent.security.development." + key, default)
         if (isinstance(value, bool) or not isinstance(value, (int, str))
@@ -105,6 +104,8 @@ def _unique_object(pairs):
 
 def review(config, brief: dict, version: dict, hosts: list[str], *, final: bool = False) -> dict:
     """Review full source without truncation; every error fails closed."""
+    from psycopg import Error as DatabaseError
+
     try:
         errors = configuration_errors(config)
         if errors:
