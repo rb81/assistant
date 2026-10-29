@@ -344,15 +344,15 @@ def test_native_security_form_exposes_and_stages_development_supervisor_settings
             ui.app.layout.focus(action.window)
             pipe.send_text("\r")
             await wait_for(lambda: ui.form_group == "security")
-            key = "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET"
-            assert ui.form[key].text == "default"
+            key = "AGENT_SECURITY_DEVELOPMENT_MODEL"
+            assert ui.form[key].text == ""
             ui.app.layout.focus(ui.form[key])
-            assert "existing OpenRouter chat model preset name" in ui.context_topic()[1]
-            ui.form[key].text = "reviewer"
+            assert "OpenRouter model ID" in ui.context_topic()[1]
+            ui.form[key].text = "openai/gpt-sol-6.1"
             ui.form["AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES"].text = "15"
             ui.form["AGENT_SECURITY_DEVELOPMENT_MAX_RUNS"].text = "8"
             ui.keep_draft()
-            assert ui.backend.values[key] == "reviewer"
+            assert ui.backend.values[key] == "openai/gpt-sol-6.1"
             assert ui.backend.values["AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES"] == "15"
             assert ui.backend.values["AGENT_SECURITY_DEVELOPMENT_MAX_RUNS"] == "8"
     with tempfile.TemporaryDirectory() as root:

@@ -238,10 +238,10 @@ ACTION_HELP = {
 ACTION_HELP["Recover database credential"] = ACTION_HELP["Recover an interrupted database password rotation"]
 
 FIELD_HELP = {
-    "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "Use default to reuse the task model, provider and credential. "
-                                            "Otherwise enter an existing OpenRouter chat model preset name "
-                                            "(not a model ID); this requires an OpenRouter API key under Models & access. "
-                                            "The supervisor uses its own tool-free instructions, not the preset prompt, "
+    "AGENT_SECURITY_DEVELOPMENT_MODEL": "Leave blank to reuse the agent model, provider and credential. "
+                                            "Otherwise enter an OpenRouter model ID such as openai/gpt-sol-6.1; "
+                                            "this requires an OpenRouter API key under Models & access. "
+                                            "Presets are not used. The supervisor uses its own tool-free instructions "
                                             "and does not fall back to another model.",
     "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "Positive integer limiting the duration an administrator may authorize "
                                            "for a development session. Expiry stops further development execution.",

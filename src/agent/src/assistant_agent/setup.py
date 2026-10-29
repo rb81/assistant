@@ -101,7 +101,7 @@ SECURITY_SETTINGS = {
     "AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS": "agent.security.scripts.allowed_domains",
     "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS": "agent.security.allow_possibly_malicious",
     "AGENT_SECURITY_SCRIPT_YOLO": "agent.security.script_yolo",
-    "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "agent.security.development.model_preset",
+    "AGENT_SECURITY_DEVELOPMENT_MODEL": "agent.security.development.model",
     "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "agent.security.development.max_minutes",
     "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "agent.security.development.max_runs",
 }
@@ -2014,7 +2014,7 @@ def security_value(instance, name, default=None):
     if default is None:
         default = {
             "AGENT_SECURITY_SCRIPT_YOLO": False,
-            "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "default",
+            "AGENT_SECURITY_DEVELOPMENT_MODEL": "",
             "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": 30,
             "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": 20,
         }.get(name)
@@ -2155,10 +2155,10 @@ def prompt_development_security(instance, answer, confirm, console):
 
     console.print("Development sessions always use an independent, tool-free supervisor unless script YOLO is "
                   "explicitly enabled. The supervisor reviews the entire source version against your approved brief. "
-                  "'default' uses your task chat provider/model and existing credential; other names use stored "
-                  "OpenRouter chat model presets and OPENROUTER_API_KEY. Preset prompts are not supervisor policy.")
+                  "Leave the model blank to use your agent model, provider and existing credential. Enter an "
+                  "OpenRouter provider/model ID to select another model using OPENROUTER_API_KEY. Presets are not used.")
     for name, label, default in (
-        ("AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "Development supervisor model preset", "default"),
+        ("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID (blank = agent model)", ""),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "Maximum development session runs", "20"),
     ):
@@ -2458,7 +2458,7 @@ def draft_problems(instance):
     from .development_supervisor import configuration_errors
     for error in configuration_errors(security_config(instance)):
         problem("security", error)
-    if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "default") != "default":
+    if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL", "").strip():
         required.setdefault("OPENROUTER_API_KEY", "security")
     from .security_screening import PROVIDER_CHOICES
     if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", False) not in {"true", "false"}:

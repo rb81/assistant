@@ -112,15 +112,22 @@ Unpinnable dependency graphs require final one-time admin approval instead.
 Configuration under `agent.security.development`:
 
 ```yaml
-model_preset: default
+model: ""
 max_minutes: 30
 max_runs: 20
 ```
 
-`default` uses the configured chat provider/model through a separate invocation;
-a named stored chat preset selects an independent OpenRouter model. Its stored
-system prompt is not used as supervisor policy. Configure this in
-**Settings → Safety & screening**. Requested session limits cannot exceed these
+Leave `model` blank to use the configured agent provider/model through a separate invocation.
+To choose a different model, enter its OpenRouter ID, such as
+`openai/gpt-sol-6.1`; this uses `OPENROUTER_API_KEY` and needs no preset.
+Presets and the literal `default` are not accepted as model IDs.
+Configure this in **`./run.sh` → Settings → Safety & screening → Development supervisor model ID**,
+or run `./run.sh --plain --section security`.
+The environment override is `AGENT_SECURITY_DEVELOPMENT_MODEL`; an empty value
+also clears a model configured in YAML. This replaces the earlier
+`model_preset` / `AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET` setting; re-enter any
+previous override as a model ID in the new field.
+Requested session limits cannot exceed these
 ceilings. Expiry starts when the admin approves, not when the agent requests.
 
 Final submission stops further development execution. The admin sees the

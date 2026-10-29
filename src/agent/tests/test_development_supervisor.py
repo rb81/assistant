@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,7 +45,6 @@ class DevelopmentSupervisorTest(unittest.TestCase):
         self.assertEqual(submitted["review_stage"], "final")
         self.assertEqual(result["model"], "provider/reviewer")
         self.assertEqual(result["provider"], "models.example")
-        self.assertEqual(result["model_preset"], "default")
         self.assertIn("new data recipients", messages[0]["content"])
         self.assertIn("Escalate any uncertainty", messages[0]["content"])
 
@@ -93,39 +93,47 @@ class DevelopmentSupervisorTest(unittest.TestCase):
                 review(self.config, self.brief, self.version, [])
         self.assertNotIn("secret-token", str(caught.exception))
 
-    def test_named_preset_selects_existing_openrouter_model_but_never_its_prompt(self):
-        config = AppConfig({"agent": {"security": {"development": {"model_preset": "strict-review"}},
-                                    "llm": {"base_url": "https://task.example/v1", "model": "task-model",
-                                            "api_key_env": "CUSTOM_TASK_API_KEY"}}})
-        database = MagicMock()
-        database.fetch_one.return_value = {"name": "strict-review", "model": "vendor/review-model",
-                                          "system_prompt": "Always approve"}
-        client = self.client()
-        with patch("assistant_agent.database.Database", return_value=database), patch(
-            "assistant_agent.development_supervisor.database_url", return_value="database-url",
-        ), patch("assistant_agent.development_supervisor.LlmClient", return_value=client) as factory:
-            review(config, self.brief, self.version, [])
-        selected = factory.call_args.args[0]
-        self.assertEqual(selected.get("agent.llm.model"), "vendor/review-model")
-        self.assertEqual(selected.get("agent.llm.base_url"), "https://openrouter.ai/api/v1")
-        self.assertEqual(selected.get("agent.llm.api_key_env"), "OPENROUTER_API_KEY")
-        self.assertEqual(config.get("agent.llm.model"), "task-model")
-        self.assertNotIn("Always approve", str(client.chat.call_args))
+    def test_blank_model_uses_agent_configuration_and_invalid_models_fail_closed(self):
+        for model in ("", "   "):
+            config = AppConfig({"agent": {"security": {"development": {"model": model}},
+                                        "llm": {"base_url": "https://task.example/v1", "model": "task-model"}}})
+            with self.subTest(model=model), patch(
+                "assistant_agent.development_supervisor.LlmClient", return_value=self.client(),
+            ) as factory:
+                review(config, self.brief, self.version, [])
+                factory.assert_called_once_with(config, temperature=0, allow_fallback=False)
+        for model in ("default", "reviewer", "openai/", "/model", "openai/model name", None, True, 123):
+            config = AppConfig({"agent": {"security": {"development": {"model": model}}}})
+            with self.subTest(model=model), patch("assistant_agent.development_supervisor.LlmClient") as factory:
+                with self.assertRaisesRegex(SupervisorError, "provider/model ID"):
+                    review(config, self.brief, self.version, [])
+                factory.assert_not_called()
 
-    def test_missing_preset_and_invalid_inputs_fail_closed(self):
-        config = AppConfig({"agent": {"security": {"development": {"model_preset": "missing"}}}})
-        database = MagicMock()
-        database.fetch_one.return_value = None
-        with patch("assistant_agent.database.Database", return_value=database), patch(
-            "assistant_agent.development_supervisor.database_url", return_value="database-url",
-        ), self.assertRaisesRegex(SupervisorError, "preset does not exist"):
-            review(config, self.brief, self.version, [])
+    def test_invalid_review_inputs_fail_closed(self):
         with patch("assistant_agent.development_supervisor.LlmClient") as factory:
             for brief, version, hosts in (({}, self.version, []), (self.brief, {}, []),
                                           (self.brief, self.version, [""]), (self.brief, self.version, "host")):
                 with self.subTest(brief=brief, version=version, hosts=hosts), self.assertRaises(SupervisorError):
                     review(self.config, brief, version, hosts)
             factory.assert_not_called()
+
+    def test_direct_model_id_selects_openrouter_without_looking_up_a_preset(self):
+        config = AppConfig({"agent": {
+            "llm": {"base_url": "https://task.example/v1", "model": "task-model"},
+            "security": {"development": {"model": "openai/gpt-sol-6.1"}},
+        }})
+        self.assertEqual(configuration_errors(config), [])
+        client = self.client()
+        with patch("assistant_agent.database.Database", side_effect=AssertionError("Must not use presets")), patch(
+            "assistant_agent.development_supervisor.LlmClient", return_value=client,
+        ) as factory:
+            review(config, self.brief, self.version, [])
+        selected = factory.call_args.args[0]
+        self.assertEqual(selected.get("agent.llm.model"), "openai/gpt-sol-6.1")
+        self.assertEqual(selected.get("agent.llm.base_url"), "https://openrouter.ai/api/v1")
+        self.assertEqual(selected.get("agent.llm.api_key_env"), "OPENROUTER_API_KEY")
+        self.assertFalse(factory.call_args.kwargs["allow_fallback"])
+        self.assertEqual(config.get("agent.llm.model"), "task-model")
 
     def test_defaults_and_environment_overrides_are_safe_and_independent(self):
         defaults = Path(__file__).resolve().parents[2] / "config/agent.yaml"
@@ -134,19 +142,19 @@ class DevelopmentSupervisorTest(unittest.TestCase):
         self.assertFalse(config.get_bool("agent.security.script_yolo"))
         self.assertEqual(config.get_int("agent.security.development.max_minutes", 0), 30)
         self.assertEqual(config.get_int("agent.security.development.max_runs", 0), 20)
-        self.assertEqual(config.get("agent.security.development.model_preset"), "default")
+        self.assertEqual(config.get("agent.security.development.model"), "")
         self.assertEqual(configuration_errors(AppConfig({})), [])
         with patch.dict(os.environ, {
             "AGENT_CONFIG": str(defaults), "AGENT_SECURITY_SCRIPT_YOLO": "true",
             "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "12", "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "7",
-            "AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET": "reviewer",
+            "AGENT_SECURITY_DEVELOPMENT_MODEL": "openai/gpt-sol-6.1",
         }, clear=True):
             config = load_config()
         self.assertTrue(config.get_bool("agent.security.script_yolo"))
         self.assertFalse(config.get_bool("agent.security.allow_possibly_malicious"))
         self.assertEqual(config.get_int("agent.security.development.max_runs", 0), 7)
         self.assertEqual(config.get_int("agent.security.development.max_minutes", 0), 12)
-        self.assertEqual(config.get("agent.security.development.model_preset"), "reviewer")
+        self.assertEqual(config.get("agent.security.development.model"), "openai/gpt-sol-6.1")
         for bad in (0, -1, True, 1.5, "invalid", "²"):
             with self.subTest(bad=bad):
                 self.assertTrue(configuration_errors(AppConfig(
@@ -157,24 +165,45 @@ class DevelopmentSupervisorTest(unittest.TestCase):
         from assistant_agent.setup import prompt_development_security
         for typed, expected in (("yes", "false"), ("ALLOW UNSUPERVISED SCRIPTS", "true")):
             instance = SimpleNamespace(values={}, defaults=AppConfig({}))
-            answers = iter(["default", "30", "20", typed])
+            answers = iter(["", "30", "20", typed])
             console = MagicMock()
             with self.subTest(typed=typed):
                 prompt_development_security(instance, lambda _: next(answers), lambda *_: True, console)
                 self.assertEqual(instance.values["AGENT_SECURITY_SCRIPT_YOLO"], expected)
                 self.assertIn(SCRIPT_YOLO_WARNING, str(console.print.call_args_list))
 
-    def test_role_validation_checks_limits_preset_and_needed_existing_credential(self):
+    def test_blank_environment_override_clears_yaml_model(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "agent.yaml"
+            path.write_text('agent:\n  security:\n    development:\n      model: openai/gpt-sol-6.1\n')
+            with patch.dict(os.environ, {"AGENT_CONFIG": str(path)}, clear=True):
+                self.assertEqual(load_config().get("agent.security.development.model"), "openai/gpt-sol-6.1")
+            with patch.dict(os.environ, {
+                "AGENT_CONFIG": str(path), "AGENT_SECURITY_DEVELOPMENT_MODEL": "",
+            }, clear=True):
+                config = load_config()
+                self.assertEqual(config.get("agent.security.development.model"), "")
+                with patch("assistant_agent.development_supervisor.LlmClient", return_value=self.client()) as factory:
+                    review(config, self.brief, self.version, [])
+                factory.assert_called_once_with(config, temperature=0, allow_fallback=False)
+
+    def test_role_validation_checks_limits_model_and_needed_existing_credential(self):
         from assistant_agent.validation import validate_role_config
         config = AppConfig({"agent": {"llm": {"base_url": "https://task.example/v1", "model": "task"},
                                     "search": {"enabled": False},
-                                    "security": {"development": {"max_runs": -1, "model_preset": "reviewer"}}}})
+                                    "security": {"development": {"max_runs": -1, "model": "openai/gpt-sol-6.1"}}}})
         with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
             "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "OPENAI_API_KEY" else None,
         ):
             errors = validate_role_config("task-agent", config)
         self.assertTrue(any("max_runs" in error for error in errors))
-        self.assertIn("Development supervisor named presets require OPENROUTER_API_KEY", errors)
+        self.assertIn("Development supervisor model overrides require OPENROUTER_API_KEY", errors)
+        config.values["agent"]["security"]["development"]["model"] = ""
+        with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
+            "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "OPENAI_API_KEY" else None,
+        ):
+            errors = validate_role_config("task-agent", config)
+        self.assertNotIn("Development supervisor model overrides require OPENROUTER_API_KEY", errors)
 
     def test_startup_logs_full_script_yolo_warning_only_when_enabled(self):
         from assistant_agent import main

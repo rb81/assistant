@@ -106,7 +106,7 @@ GROUPS = {
         field("AGENT_EMBEDDINGS_TIMEOUT_SECONDS", "Timeout (seconds)", "20"),
     ]),
     "security": ("Safety & screening", [
-        field("AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "Development supervisor model preset (default = task model)", "default"),
+        field("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID (blank = agent model)"),
         field("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
         field("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "Maximum development session runs", "20"),
         field("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Authenticate admin email", "false"),

@@ -6,7 +6,7 @@ import re
 from http.client import HTTPException
 from urllib.parse import urlsplit
 
-from .config import AppConfig, database_url
+from .config import AppConfig
 from .llm_client import LlmClient
 
 
@@ -58,10 +58,12 @@ def configuration_errors(config: AppConfig) -> list[str]:
         "true", "false", "1", "0", "yes", "no", "on", "off",
     }:
         errors.append("agent.security.script_yolo must be a boolean")
-    preset = config.get("agent.security.development.model_preset", "default")
-    if not isinstance(preset, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", preset):
-        errors.append("Development supervisor model_preset must be 'default' or a preset name "
-                      "(1-64 letters, digits, underscores or hyphens), not a provider/model ID")
+    model = config.get("agent.security.development.model", "")
+    if not isinstance(model, str) or (model.strip() and not re.fullmatch(
+        r"[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._:/-]*", model.strip(),
+    )):
+        errors.append("Development supervisor model must be blank to use the agent model, "
+                      "or an OpenRouter provider/model ID (e.g. openai/gpt-sol-6.1)")
     for key, default in (("max_minutes", 30), ("max_runs", 20)):
         value = config.get("agent.security.development." + key, default)
         if (isinstance(value, bool) or not isinstance(value, (int, str))
@@ -70,27 +72,18 @@ def configuration_errors(config: AppConfig) -> list[str]:
     return errors
 
 
-def _client(config: AppConfig) -> tuple[LlmClient, str]:
-    preset = config.get("agent.security.development.model_preset", "default")
-    if preset == "default":
+def _client(config: AppConfig) -> LlmClient:
+    model = config.get("agent.security.development.model", "").strip()
+    if not model:
         # The task chat configuration is the established default model/provider.
-        return LlmClient(config, temperature=0, allow_fallback=False), preset
-    from .database import Database
-    from .model_service import BASE_URL
-
-    row = Database(database_url(config)).fetch_one(
-        "SELECT name, model FROM model_presets WHERE name = %s", (preset,),
-    )
-    if not row or not isinstance(row.get("model"), str) or not row["model"].strip():
-        raise SupervisorError("Development supervisor model preset does not exist or has no model")
+        return LlmClient(config, temperature=0, allow_fallback=False)
     values = copy.deepcopy(config.values)
     values.setdefault("agent", {}).setdefault("llm", {}).update({
-        "base_url": BASE_URL,
+        "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
-        "model": row["model"],
+        "model": model,
     })
-    # Stored preset prompts are task content, not supervisor policy.
-    return LlmClient(AppConfig(values), temperature=0, allow_fallback=False), preset
+    return LlmClient(AppConfig(values), temperature=0, allow_fallback=False)
 
 
 def _unique_object(pairs):
@@ -116,7 +109,7 @@ def review(config, brief: dict, version: dict, hosts: list[str], *, final: bool 
             raise SupervisorError("Development review hosts must be a list of nonempty strings")
         if type(final) is not bool:
             raise SupervisorError("Development review final must be a boolean")
-        client, preset = _client(config)
+        client = _client(config)
         # Never route this payload through task history, summaries, or clipping.
         messages = [
             {"role": "system", "content": INSTRUCTIONS},
@@ -152,7 +145,6 @@ def review(config, brief: dict, version: dict, hosts: list[str], *, final: bool 
             "comments": result["comments"].strip(),
             "model": client.model,
             "provider": urlsplit(client.base_url).hostname,
-            "model_preset": preset,
         }
     except SupervisorError:
         raise

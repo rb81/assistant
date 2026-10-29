@@ -326,10 +326,10 @@ agent:
     # Existing sandbox/network/credential/filesystem safety restrictions still apply.
     script_yolo: false
     development:
-      # "default" reuses agent.llm provider/model and its existing credential.
-      # Other names select stored OpenRouter chat model presets (OPENROUTER_API_KEY).
-      # Preset system prompts are never used as supervisor instructions.
-      model_preset: default
+      # Blank reuses agent.llm provider/model and its existing credential.
+      # Use an OpenRouter provider/model ID to select another model (OPENROUTER_API_KEY).
+      # Presets are not used; the supervisor has its own instructions.
+      model: ""
       max_minutes: 30
       max_runs: 20
     email_authentication:

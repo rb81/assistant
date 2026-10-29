@@ -78,7 +78,7 @@ def test_native_security_form_persists_development_supervisor_settings():
         backend = management(root)
         values = {spec.key: backend.value(spec) for spec in GROUPS["security"][1]}
         values.update(
-            AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET="reviewer",
+            AGENT_SECURITY_DEVELOPMENT_MODEL="openai/gpt-sol-6.1",
             AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES="15",
             AGENT_SECURITY_DEVELOPMENT_MAX_RUNS="8",
         )
@@ -89,6 +89,10 @@ def test_native_security_form_persists_development_supervisor_settings():
         for spec in GROUPS["security"][1]:
             if spec.key.startswith("AGENT_SECURITY_DEVELOPMENT_"):
                 assert reopened.value(spec) == values[spec.key]
+        values["AGENT_SECURITY_DEVELOPMENT_MODEL"] = ""
+        reopened.stage("security", values)
+        reopened.save()
+        assert Installation(root).values["AGENT_SECURITY_DEVELOPMENT_MODEL"] == ""
 
 
 def test_save_validates_the_entire_draft_and_preserves_files_on_failure():

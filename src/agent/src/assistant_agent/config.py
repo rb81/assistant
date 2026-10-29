@@ -304,7 +304,7 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_SECURITY_NOTIFY_MAX_PER_HOUR", "agent.security.notify_max_per_hour", int),
         ("AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", "agent.security.allow_possibly_malicious", bool),
         ("AGENT_SECURITY_SCRIPT_YOLO", "agent.security.script_yolo", bool),
-        ("AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET", "agent.security.development.model_preset", str),
+        ("AGENT_SECURITY_DEVELOPMENT_MODEL", "agent.security.development.model", str),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "agent.security.development.max_minutes", int),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "agent.security.development.max_runs", int),
         ("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "agent.security.email_authentication.enabled", bool),
@@ -343,6 +343,8 @@ def load_config() -> AppConfig:
         if not raw_value.strip():
             if env_name == "AGENT_EMBEDDINGS_DIMENSIONS":
                 _set_nested(values, path_name, None)
+            elif env_name == "AGENT_SECURITY_DEVELOPMENT_MODEL":
+                _set_nested(values, path_name, "")
             elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS", "AGENT_SANDBOX_ALLOWED_HOSTS"}:
                 _set_nested(values, path_name, [])
             continue

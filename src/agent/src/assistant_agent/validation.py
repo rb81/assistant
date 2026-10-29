@@ -159,9 +159,9 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if role in ("task-agent", "all"):
         from .development_supervisor import configuration_errors
         errors.extend(configuration_errors(config))
-        if (config.get("agent.security.development.model_preset", "default") != "default"
+        if (str(config.get("agent.security.development.model", "")).strip()
                 and not is_set(read_secret("OPENROUTER_API_KEY"))):
-            errors.append("Development supervisor named presets require OPENROUTER_API_KEY")
+            errors.append("Development supervisor model overrides require OPENROUTER_API_KEY")
 
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
