@@ -9,13 +9,13 @@ if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)
 fi
 VENV="$ROOT/data/.venv-setup"
 if [ ! -x "$VENV/bin/python" ]; then
-    printf '%s\n' 'Create an isolated setup environment and install the setup dependencies? [y/N]'
+    printf '%s\n' 'Create an isolated administration environment and install its dependencies? [y/N]'
     read -r choice
     case "$choice" in y|Y|yes|YES) ;; *) exit 0 ;; esac
     "$PYTHON" -m venv "$VENV"
 fi
-if ! "$VENV/bin/python" -c 'import yaml, dotenv, questionary, rich, httpx' 2>/dev/null; then
-    printf '%s\n' 'Install/update the isolated setup dependencies? [y/N]'
+if ! "$VENV/bin/python" -c 'import yaml, dotenv, questionary, rich, httpx, prompt_toolkit' 2>/dev/null; then
+    printf '%s\n' 'Install/update the isolated administration dependencies? [y/N]'
     read -r choice
     case "$choice" in y|Y|yes|YES) ;; *) exit 0 ;; esac
     "$VENV/bin/python" -m pip install -r "$ROOT/src/agent/requirements-setup.txt"

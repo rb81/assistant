@@ -17,7 +17,7 @@ Run these from the repository directory (prefix with sudo if your user cannot re
   docker compose --env-file data/.env stop                                  stop everything (data is kept)
   docker compose --env-file data/.env run --rm --no-deps -T --entrypoint python task-agent -m assistant_agent.admin_commands "/admin help"
   docker compose --env-file data/.env run --rm --no-deps -T --entrypoint python task-agent -m assistant_agent.embedding_maintenance status
-  ./setup.sh secrets status | ./setup.sh secrets apply
+  ./run.sh secrets status | ./run.sh secrets apply
 Admin commands that change data need --yes when run locally (the menus ask first)."""
 
 
@@ -207,7 +207,7 @@ class Tools:
         if pending and self.confirm("Recreate affected running services to activate pending credentials?", False):
             targets = self.instance.apply(pending)
             self.console.print("Recreated: " + (", ".join(targets) or "none; credentials remain pending until startup"))
-        self.console.print("Replace a credential with: ./setup.sh secrets update NAME")
+        self.console.print("Replace a credential with: ./run.sh secrets update NAME")
 
     def submenu(self, title, actions):
         while True:
@@ -267,7 +267,10 @@ def run_factory_reset(instance, console):
     def step(label, arguments, stdout=None):
         console.print(label + "\n$ " + ("sudo " if getattr(instance, "use_sudo", False) else "") + "docker compose --env-file data/.env " + shlex.join(arguments),
                       markup=False, highlight=False, soft_wrap=True)
-        if instance.compose_interactive(arguments, stdout=stdout):
+        code = (console.run_command(instance, arguments)
+                if callable(getattr(type(console), "run_command", None))
+                else instance.compose_interactive(arguments, stdout=stdout))
+        if code:
             raise SetupError(label + " failed; see the output above")
 
     running = sorted(set(instance.compose(["ps", "--status", "running", "--services"]).split()))

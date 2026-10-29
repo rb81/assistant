@@ -24,7 +24,7 @@ app key; each user authorizes their own account. No client secret is required.
 Run:
 
 ```bash
-./setup.sh --section dropbox
+./run.sh --section dropbox
 ```
 
 Enable Dropbox, enter the app key, open the displayed authorization URL on any

@@ -43,7 +43,7 @@ approval even after the old confirmation is no longer retained.
 
 ## Email authentication
 
-Run `./setup.sh` to configure the dedicated assistant mailbox and
+Run `./run.sh` to configure the dedicated assistant mailbox and
 `ADMIN_EMAIL`. Signing keys are no longer used, and Authentication-Results never
 authorize an action. The optional [admin sender authentication](security.md#admin-sender-authentication-spfdkim)
 check quarantines mail that claims your address but fails both DKIM and SPF. It can
@@ -149,7 +149,7 @@ Run these examples from the repository root after saving setup. The generated
 `data/.env` supplies `COMPOSE_FILE`, including the protected-secret overlay.
 The CLI uses local OS/container authorization and the same service without
 models or mailbox dependencies. `--yes` confirms commands locally.
-`./setup.sh tools` wraps these commands in menus.
+`./run.sh tools` wraps these commands in menus.
 
 ## Memory And Deletion
 

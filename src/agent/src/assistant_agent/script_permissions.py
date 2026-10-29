@@ -35,6 +35,10 @@ UNSTABLE_SIGNALS = {
 }
 
 
+class PermissionRevocationIncomplete(ValueError):
+    pass
+
+
 class PermissionRequired(Exception):
     def __init__(self, request):
         self.request = request
@@ -380,19 +384,30 @@ def execution(runtime, version):
     return bundle, current
 
 
-def management(db, config, args, confirmed=False, actor="admin"):
+def management(db, config, args, confirmed=False, actor="admin", *, page=None, query=""):
     action = args[0] if args else "scripts"
     if action == "scripts":
-        return db.fetch_all(
+        source = """FROM sandbox_scripts s
+                    LEFT JOIN sandbox_script_versions v ON v.script_id = s.id"""
+        parameters = ()
+        if query:
+            source += " WHERE s.entry ILIKE %s"
+            parameters = ("%" + query + "%",)
+        rows = db.fetch_all(
             """SELECT s.id, s.entry, s.blocked, v.id AS version_id, v.fingerprint, v.reusable,
                EXISTS (SELECT 1 FROM sandbox_permission_grants g WHERE g.version_id = v.id
                    AND g.kind = 'run' AND g.decision = 'allow' AND g.scope = 'script') AS approved_always,
                EXISTS (SELECT 1 FROM sandbox_permission_grants g WHERE g.version_id = v.id
                    AND g.kind = 'run' AND g.decision = 'allow' AND g.scope = 'once'
                    AND g.consumed_at IS NULL) AS has_once_grant,
-               v.purpose, v.created_at FROM sandbox_scripts s
-               LEFT JOIN sandbox_script_versions v ON v.script_id = s.id ORDER BY s.id DESC, v.id DESC LIMIT 100"""
+               v.purpose, v.created_at """ + source +
+            " ORDER BY s.id DESC, v.id DESC LIMIT %s OFFSET %s",
+            (*parameters, 100 if page is None else 8, 0 if page is None else page * 8),
         )
+        if page is None:
+            return rows
+        total = db.fetch_one("SELECT count(*) AS total " + source, parameters)["total"]
+        return {"rows": rows, "total": total}
     if action == "hosts":
         return {
             "defaults": network_access.default_hosts(config),
@@ -445,6 +460,7 @@ def management(db, config, args, confirmed=False, actor="admin"):
     try:
         result = ToolRuntime(db, config, {}).sandbox_control("POST", "/permissions/revoke")
     except ToolError as exc:
-        raise ValueError("Permissions were saved, but active sandbox runs could not be stopped. "
-                         "Stop the sandbox service before relying on revocation. %s" % exc) from exc
+        raise PermissionRevocationIncomplete(
+            "Permissions were saved, but active sandbox runs could not be stopped. "
+            "Stop the sandbox service before relying on revocation. %s" % exc) from exc
     return {"status": "updated", "action": action, "active_runs": result}

@@ -57,7 +57,7 @@ CALENDAR_GOOGLE_2_CALENDAR_ID=work@group.calendar.google.com
 The same suffix scheme works for Outlook and Zoho. Provider identifiers become
 `google_2`, `outlook_2`, etc. Numbered non-secret settings are environment-only;
 there are no numbered YAML paths. The wizard configures the first account per
-provider; manage additional credentials with `./setup.sh secrets update NAME`
+provider; manage additional credentials with `./run.sh secrets update NAME`
 and non-secret settings in `data/overrides.env`, then recreate affected services.
 
 ---
@@ -116,7 +116,7 @@ configuration for a persistent installation.
 
 ### Step 4 — Store the credentials
 
-Enter them in `./setup.sh --section calendar` (stored as protected secrets, not in `data/.env`), or update later with `./setup.sh secrets update NAME`. The names are:
+Enter them in `./run.sh --section calendar` (stored as protected secrets, not in `data/.env`), or update later with `./run.sh secrets update NAME`. The names are:
 
 ```text
 CALENDAR_GOOGLE_CLIENT_ID
@@ -184,7 +184,7 @@ Copy `refresh_token` from the response.
 
 ### Step 5 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./setup.sh --section calendar` (stored as protected secrets), or update later with `./setup.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `data/.env` through the wizard:
+Enter the client ID, client secret and refresh token in `./run.sh --section calendar` (stored as protected secrets), or update later with `./run.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `data/.env` through the wizard:
 
 ```env
 CALENDAR_OUTLOOK_TENANT_ID=your-tenant-id
@@ -241,7 +241,7 @@ Copy `refresh_token` from the response.
 
 ### Step 4 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./setup.sh --section calendar` (stored as protected secrets), or update later with `./setup.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `data/.env` through the wizard:
+Enter the client ID, client secret and refresh token in `./run.sh --section calendar` (stored as protected secrets), or update later with `./run.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `data/.env` through the wizard:
 
 ```env
 # Optional: target a specific calendar UID. If omitted, the integration uses "default",
@@ -284,7 +284,7 @@ These variables apply across all providers:
 
 ## Verifying configuration
 
-Run `./setup.sh --section calendar`.
+Run `./run.sh --section calendar`.
 The optional read-only verification uses a fresh access token and checks both
 calendar discovery and event access, without creating events or persisting the
 test token. Verification failure does not prevent saving an offline draft, and
@@ -295,7 +295,7 @@ Zoho `.com` accounts use `https://accounts.zoho.com/oauth/v2/token` and
 not proof of an empty calendar. If it persists after fixing the route, verify the
 client ID/secret and matching refresh token. `INVALID_OAUTHSCOPE` requires renewed
 consent for `ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`: token refresh
-cannot grant missing scopes. Use setup or `./setup.sh secrets update`
+cannot grant missing scopes. Use setup or `./run.sh secrets update`
 to store replacements, and explicitly activate/recreate affected consumers.
 
 `calendar_list_busy` returns `status`, `complete`, and `provider_errors` alongside
@@ -305,7 +305,7 @@ providers, healthy-provider windows remain available but `status=degraded` and
 providers, `status=no_providers` and `complete=false`.
 
 After adding credentials and activating the affected services, check tool status
-with `./setup.sh tools`. Calendar-provider requests use verified HTTPS; never
+with `./run.sh tools`. Calendar-provider requests use verified HTTPS; never
 use plain HTTP or disable certificate verification.
 
 ---

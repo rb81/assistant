@@ -57,13 +57,36 @@ class SetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             path = Path(root)
             (path / "src/scripts").mkdir(parents=True)
-            shutil.copyfile(repository / "setup.sh", path / "setup.sh")
-            launcher = path / "src/scripts/setup.sh"
+            shutil.copyfile(repository / "run.sh", path / "run.sh")
+            launcher = path / "src/scripts/run.sh"
             launcher.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             launcher.chmod(0o700)
-            result = subprocess.run(["sh", str(path / "setup.sh"), "--section", "models", "a b"],
+            result = subprocess.run(["sh", str(path / "run.sh"), "--section", "models", "a b"],
                                     cwd=elsewhere, capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.splitlines(), ["--section", "models", "a b"])
+
+    def test_run_launcher_reuses_the_existing_environment_and_opens_command_help(self):
+        import shlex
+
+        repository = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "src/scripts").mkdir(parents=True)
+            (path / "data/.venv-setup/bin").mkdir(parents=True)
+            shutil.copyfile(repository / "run.sh", path / "run.sh")
+            shutil.copyfile(repository / "src/scripts/run.sh", path / "src/scripts/run.sh")
+            (path / "src/scripts/run.sh").chmod(0o700)
+            python = path / "data/.venv-setup/bin/python"
+            python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+            python.chmod(0o700)
+            environment = dict(os.environ, PYTHON=sys.executable,
+                               PYTHONPATH=str(repository / "src/agent/src"))
+            result = subprocess.run(["sh", str(path / "run.sh"), "--help"],
+                                    env=environment, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, check=True)
+            self.assertIn("Assistant local administration", result.stdout)
+            self.assertIn("--plain", result.stdout)
+            self.assertNotIn("install its dependencies", result.stdout)
 
     def test_every_workspace_service_mounts_canonical_documentation_read_only(self):
         repository = Path(__file__).resolve().parents[2]
@@ -999,7 +1022,7 @@ assert approvals_configured(config)
                 self.assertIn("docker compose --env-file data/.env", message)
                 self.assertIn(command, message)
                 self.assertIn("Configuration is already saved", message)
-                self.assertIn("./setup.sh --section embeddings", message)
+                self.assertIn("./run.sh --section embeddings", message)
                 self.assertNotIn("secret-canary", message)
                 self.assertEqual(compose.call_count, index + 1)
 
@@ -1288,10 +1311,11 @@ root = sys.argv[1]
 instance = Installation(root)
 instance.state['setup_complete'] = True
 instance.save()
-sys.argv = ['assistant_agent.setup', '--root', root]
+sys.argv = ['assistant_agent.setup', '--root', root, '--plain']
 responses = ['tools', True, 'Back', 'cancel']
 results = [
     subprocess.CompletedProcess([], 1, 'secret-canary', 'permission denied secret-canary'),
+    subprocess.CompletedProcess([], 0, '', ''),
     subprocess.CompletedProcess([], 0, '29.0.0', ''),
 ]
 with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True), \\
@@ -1302,7 +1326,7 @@ with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', re
      patch('subprocess.run', side_effect=results) as run:
     runpy.run_module('assistant_agent.setup', run_name='__main__')
     assert ask.call_count == 4, ask.call_count
-    assert run.call_count == 2, run.call_count
+    assert run.call_count == 3, run.call_count
     assert run.call_args.args[0] == ['sudo', '-n', 'docker', 'info', '--format', '{{.ServerVersion}}']
 """
         with tempfile.TemporaryDirectory() as root:
@@ -1329,7 +1353,8 @@ with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', re
             self.assertEqual(run.call_args.args[0][:3], ["sudo", "-n", "docker"])
             output = "\n".join(call.args[0] for call in console.print.call_args_list)
             self.assertIn("Noninteractive sudo authorization failed", output)
-            self.assertIn("sudo -v", output)
+            self.assertIn("renew authorization", output)
+            self.assertNotIn("run sudo -v", output)
             self.assertIn("checking Docker access", output)
             self.assertIn("sudo docker compose up", output)
             self.assertNotIn("secret-canary", output)
@@ -1844,7 +1869,7 @@ server.serve_forever()
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 50, 0, 0))
             environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"), PATH=tools + os.pathsep + os.environ.get("PATH", ""))
-            process = subprocess.Popen([sys.executable, "-m", "assistant_agent.setup", "--root", root], stdin=slave, stdout=slave, stderr=slave, env=environment)
+            process = subprocess.Popen([sys.executable, "-m", "assistant_agent.setup", "--root", root, "--plain"], stdin=slave, stdout=slave, stderr=slave, env=environment)
             os.close(slave)
             try:
                 captured = b""

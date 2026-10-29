@@ -126,7 +126,7 @@ on the first line, followed by optional feedback. Both channels resolve the same
 one-use request when delivery is configured as `both`.
 
 Manage permissions in Telegram **/permissions** (also **/menu → Permissions**), or
-**./setup.sh tools → Script and website permissions**. Both use deterministic
+**./run.sh tools → Script and website permissions**. Both use deterministic
 operations, not a model. Inspect scripts, stored code/version diffs, host scopes,
 pending requests and history; revoke grants or block/unblock scripts and hosts.
 Email approvals attach the full code manifest for inspection.
@@ -156,7 +156,7 @@ services. Runtime database migration preserves existing rules.
 
 ## Upgrade and acceptance checklist
 
-Back up local state before upgrading. From the repository root, run `./setup.sh`,
+Back up local state before upgrading. From the repository root, run `./run.sh`,
 review **Advanced Settings → Approvals and names**, select `email`, `telegram`,
 or `both`, and save. Telegram requires a configured, verified administrator;
 email requires the admin address and working mail delivery.

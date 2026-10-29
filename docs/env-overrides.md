@@ -30,7 +30,7 @@ do not reliably disable or clear a setting.
 The overrides file does **not** supply Compose interpolation variables. Put
 deployment settings such as `TASK_AGENT_WORKERS`, `COMPOSE_PROFILES`, and
 `SANDBOX_ISOLATION_MODE` in `data/.env`, not here. Do not put credentials in the
-overrides file; update them with `./setup.sh secrets update NAME`.
+overrides file; update them with `./run.sh secrets update NAME`.
 `AGENT_SANDBOX_ENABLED=false` disables the command tool, but does not stop the
 Compose sandbox service or remove its Docker socket mount.
 
@@ -41,7 +41,7 @@ or:
 docker compose --env-file data/.env up -d --force-recreate
 ```
 
-The root `setup.sh` resolves the repository path; invoke it by its path if
+The root `run.sh` resolves the repository path; invoke it by its path if
 starting elsewhere. Compose commands should be run from the repository root
 with `--env-file data/.env`.
 See [configuration](configuration.md) for local files and

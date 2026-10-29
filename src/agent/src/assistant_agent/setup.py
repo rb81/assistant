@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from email.utils import parseaddr
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import urlsplit
@@ -25,8 +26,9 @@ from dotenv.parser import parse_stream
 
 from .secret_store import SECRET_NAMES, is_secret_name
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
-from .transport_security import validate_embedding_url
+from .transport_security import validate_embedding_url, validate_https_url
 from .validation import WEAK_PASSWORDS
+from .setup_privileges import authorization_handler, prepare_sudo, terminal_authorization
 
 
 AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
@@ -164,8 +166,8 @@ OVERRIDES_HEADER = """\
 #
 # Uncomment a line and set a value to override config/agent.yaml in the agent containers.
 # Setup creates this file once and never rewrites it, so your edits survive re-running setup.
-# Settings the setup wizard manages are deliberately absent: change those with ./setup.sh.
-# Never put credentials here; use: ./setup.sh secrets update NAME
+# Settings the setup wizard manages are deliberately absent: change those with ./run.sh.
+# Never put credentials here; use: ./run.sh secrets update NAME
 # Booleans: true/false. Lists: comma-separated. Apply edits by recreating containers:
 #   docker compose --env-file data/.env up -d --force-recreate
 # Setup reports unknown, misspelled, mistyped or wizard-managed keys at its review step.
@@ -223,7 +225,7 @@ def overrides_problems(root, text):
     problems = []
     for name, value in values.items():
         if is_secret_name(name.removesuffix("_FILE")) or any(part in name for part in ("PASSWORD", "SECRET", "TOKEN", "API_KEY", "SIGNING_KEY")) and name not in allowed:
-            problems.append(OVERRIDES_FILE + ": remove credential " + name + "; use ./setup.sh secrets update")
+            problems.append(OVERRIDES_FILE + ": remove credential " + name + "; use ./run.sh secrets update")
         elif wizard_managed(name) or name in compose_environment_names(root):
             problems.append(OVERRIDES_FILE + ": " + name + " is managed by setup or docker-compose.yml and would be ignored or conflict; remove it")
         elif name not in allowed:
@@ -241,9 +243,73 @@ def overrides_problems(root, text):
 
 
 class DockerCommandError(SetupError):
-    def __init__(self, message, *, stdout=None):
+    def __init__(self, message, *, stdout=None, reason=None):
         super().__init__(message)
         self.stdout = stdout
+        self.reason = reason
+
+
+def docker_failure(arguments, result):
+    """Translate known failure signatures without displaying Docker's raw output."""
+    stderr = (result.stderr or "").lower()
+    reason = None
+    if "context" in stderr and any(part in stderr for part in ("does not exist", "context not found")):
+        reason = "context"
+        detail = "The selected Docker context does not exist. Check `docker context ls` and select the intended context."
+    elif "permission denied" in stderr and any(part in stderr for part in ("docker.sock", "docker daemon socket")):
+        reason = "permission"
+        detail = "Access to the Docker socket was denied."
+        detail += (" Check Docker Desktop and the selected context; macOS normally does not require sudo for Docker."
+                   if platform.system() == "Darwin" else "Use the interactive authorization flow if your account permits sudo.")
+    elif any(part in stderr for part in (
+        "cannot connect to the docker daemon", "is the docker daemon running",
+        "failed to connect to the docker", "error during connect",
+    )) or ("docker" in stderr and "connection refused" in stderr):
+        reason = "unavailable"
+        detail = "Docker is unavailable. Check that the selected daemon is running and reachable."
+        if platform.system() == "Darwin":
+            detail += " Open Docker Desktop (or start your chosen runtime), wait until it is ready, then retry."
+        detail += " Verify with `docker info`; check the endpoint with `docker context ls`."
+    elif "error getting credentials" in stderr or "docker-credential-" in stderr:
+        reason = "credentials"
+        detail = ("Docker's registry credential helper failed. Check that your Docker runtime is installed correctly, "
+                  "its credential helper is on PATH, and your keychain is unlocked. Retry `docker login` if needed.")
+    elif any(part in stderr for part in ("client version", "client is newer than server", "minimum supported api version")):
+        reason = "version"
+        detail = "Docker client and server API versions are incompatible. Update Docker and check `docker version`."
+    elif "no such volume" in stderr:
+        reason = "volume"
+        detail = ("The saved Docker credential volume is missing from the selected daemon. Check `docker context ls`; "
+                  "use the original daemon or restore the credential-volume backup. Do not reset storage to bypass this.")
+    elif "mounts denied" in stderr or "is not shared from the host" in stderr:
+        reason = "mount"
+        detail = "Docker cannot mount a host path. Allow the checkout and data directories in your runtime's file-sharing settings."
+    elif "no matching manifest" in stderr or "exec format error" in stderr:
+        reason = "architecture"
+        detail = "The image does not support the selected CPU architecture. Check image platform support, especially on Apple Silicon."
+    elif "no space left on device" in stderr:
+        reason = "disk"
+        detail = "Docker has run out of disk space. Check the runtime's disk allocation; do not delete data volumes to make room."
+    elif any(part in stderr for part in ("pull access denied", "failed to resolve reference", "toomanyrequests", "unauthorized: authentication required")):
+        reason = "registry"
+        detail = "Docker could not pull an image. Check registry access, login, network connectivity, and rate limits."
+    elif any(part in stderr for part in ("'compose' is not a docker command", "unknown command: docker compose")):
+        reason = "compose"
+        detail = "Docker Compose is unavailable. Install or update the Compose plugin and verify `docker compose version`."
+    else:
+        detail = ("Docker command failed; output was suppressed to protect credentials. "
+                  "Check `docker info` and `docker version`. Inspect the failing command locally if those succeed; "
+                  "review and redact its output before sharing it.")
+    operation = "Docker command"
+    if arguments[:1] == ["volume"]:
+        operation = "Accessing Docker credential storage"
+    elif arguments[:1] == ["run"]:
+        operation = "Running a Docker helper"
+    elif arguments[:1] == ["compose"]:
+        operation = "Docker Compose"
+        detail += " For configuration diagnostics, run `docker compose --env-file data/.env config --quiet` from the repository root."
+    return DockerCommandError(f"{operation} failed (exit status {result.returncode}). {detail}",
+                              stdout=result.stdout, reason=reason)
 
 
 def secret_services(name):
@@ -432,18 +498,34 @@ class Installation:
         self.state_original = state
         self.overlay_original = read_regular(self.data / ".compose-secrets.yaml")
         self.state = json.loads(state) if state else {"pending": []}
+        if (not isinstance(self.state, dict)
+                or any(not isinstance(self.state.get(key, []), list)
+                       or any(not isinstance(name, str) for name in self.state.get(key, []))
+                       for key in ("pending", "removed"))
+                or any(key in self.state and type(self.state[key]) is not bool
+                       for key in ("setup_complete", "credential_volume_sudo", "previous_credential_volume_sudo"))
+                or any(key in self.state and (not isinstance(self.state[key], str)
+                                              or not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", self.state[key]))
+                       for key in ("credential_volume", "previous_credential_volume"))):
+            raise SetupError("Saved setup state is invalid. Restore data/.secrets/state.json from a trusted backup.")
         self.credential_volume = None
         self.use_credential_volume = bool(self.state.get("credential_volume"))
         if self.state.get("previous_credential_volume"):
-            self.use_sudo = bool(self.state.get("previous_credential_volume_sudo"))
+            self.use_sudo = platform.system() == "Linux" and bool(self.state.get("previous_credential_volume_sudo"))
         if self.use_credential_volume:
-            self.use_sudo = bool(self.state.get("credential_volume_sudo"))
+            self.use_sudo = platform.system() == "Linux" and bool(self.state.get("credential_volume_sudo"))
             from .credential_volume import CredentialVolume
             name = self.state["credential_volume"]
             if not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", name):
                 raise SetupError("Invalid credential volume name in setup state")
             self.credential_volume = CredentialVolume(self, name)
-            self.credential_volume.load()
+            try:
+                self.credential_volume.load()
+            except DockerCommandError as error:
+                raise DockerCommandError(
+                    "Could not load saved credentials from Docker. " + str(error),
+                    reason=error.reason,
+                ) from None
         if not recovering and self.read_credential("rotation.json"):
             raise SetupError("Database rotation recovery is pending; run secrets recover first")
         names = set(SECRET_NAMES) | {name for name in self.values if is_secret_name(name)}
@@ -777,11 +859,18 @@ class Installation:
         return {key: value for key, value in os.environ.items()
                 if not is_secret_name(key.removesuffix("_FILE")) and key not in {"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME"}}
 
-    def compose_interactive(self, arguments, stdout=None):
+    def compose_interactive(self, arguments, stdout=None, stderr=None):
         """Run Compose attached to the terminal (or stdout) so operators see real output; returns the exit code."""
         prefix = ["sudo", "-n", "docker"] if getattr(self, "use_sudo", False) else ["docker"]
         try:
-            return subprocess.run([*prefix, *self.compose_prefix(), *arguments], env=self.docker_environment(), stdout=stdout).returncode
+            runner = getattr(self, "command_runner", subprocess.run)
+            if getattr(self, "use_sudo", False):
+                prepare_sudo(["docker", *self.compose_prefix(), *arguments],
+                             runner=runner, environment=self.docker_environment())
+            return runner([*prefix, *self.compose_prefix(), *arguments], env=self.docker_environment(),
+                          stdout=stdout, stderr=stderr).returncode
+        except subprocess.TimeoutExpired:
+            raise DockerCommandError("Docker command timed out. Inspect service state before retrying; the command may have partially completed.") from None
         except OSError:
             raise DockerCommandError("Docker command could not be launched; check that Docker and any required sudo are installed") from None
 
@@ -790,9 +879,12 @@ class Installation:
         elevated = getattr(self, "use_sudo", False)
         try:
             prefix = ["sudo", "-n", "docker"] if elevated else ["docker"]
-            result = subprocess.run([*prefix, *arguments], input=input_text, text=True, capture_output=True,
-                                    stdin=subprocess.DEVNULL if input_text is None else None,
-                                    env=environment, timeout=timeout)
+            runner = getattr(self, "command_runner", subprocess.run)
+            if elevated:
+                prepare_sudo(["docker", *arguments], runner=runner, environment=environment)
+            result = runner([*prefix, *arguments], input=input_text, text=True, capture_output=True,
+                            stdin=subprocess.DEVNULL if input_text is None else None,
+                            env=environment, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise DockerCommandError("Docker command timed out; command output was suppressed") from None
         except OSError:
@@ -800,15 +892,19 @@ class Installation:
         if result.returncode:
             stderr = (result.stderr or "").lower()
             if elevated and any(message in stderr for message in (
+                "is not in the sudoers file", "is not allowed to execute",
+                "not allowed to run sudo",
+            )):
+                raise DockerCommandError("sudo authorization failed: this account is not permitted to run the required command.")
+            if elevated and any(message in stderr for message in (
                 "sudo: a password is required", "sudo: a terminal is required", "is not in the sudoers file",
                 "is not allowed to execute", "sudo: authentication is required", "sudo: interactive authentication is required",
             )):
                 raise DockerCommandError(
-                    "Noninteractive sudo authorization failed; no password was requested. "
-                    "If your account is allowed to use sudo, run sudo -v directly in your terminal, then retry setup."
+                    "Noninteractive sudo authorization failed. The command was not automatically retried. "
+                    "Return to the interactive action to renew authorization; Assistant never reads your password."
                 )
-            raise DockerCommandError("Docker command failed; output was suppressed to protect credentials",
-                                     stdout=result.stdout)
+            raise docker_failure(arguments, result)
         return result.stdout
 
     def stage_sandbox_runtime(self):
@@ -1014,13 +1110,13 @@ class Installation:
         self.compose(["exec", "-T", "postgres", "sh", "-c", 'IFS= read -r PGPASSWORD; export PGPASSWORD PGSSLMODE=verify-full PGSSLROOTCERT=/run/assistant/tls/postgres.crt; exec psql --no-psqlrc -h postgres -U assistant -d assistant -v ON_ERROR_STOP=1 -c "SELECT 1"'], value + "\n")
 
 
-def recover_database(root):
+def recover_database(root, prepare=None):
     root = Path(root).resolve()
     with installation_lock(root):
-        recover_database_locked(root)
+        recover_database_locked(root, prepare=prepare)
 
 
-def recover_database_locked(root):
+def recover_database_locked(root, prepare=None):
     state = json.loads(read_regular(root / "data/.secrets/state.json") or b"{}")
     if state.get("credential_volume"):
         instance = Installation(root, recovering=True)
@@ -1028,6 +1124,8 @@ def recover_database_locked(root):
         if not contents:
             raise SetupError("No database rotation needs recovery")
         record = json.loads(contents)
+        if prepare is not None:
+            prepare(instance)
         instance.set_database_password(record["previous"])
         instance.write_credential("POSTGRES_PASSWORD", record["previous"].encode())
         instance.verify_database_password(record["previous"])
@@ -1045,6 +1143,8 @@ def recover_database_locked(root):
     instance.source = root / "src"
     instance.data = root / "data"
     instance.env_path = root / "data/.env"
+    if prepare is not None:
+        prepare(instance)
     instance.set_database_password(record["previous"])
     atomic_write(root / "data/.secrets/POSTGRES_PASSWORD", record["previous"].encode())
     instance.verify_database_password(record["previous"])
@@ -1075,16 +1175,17 @@ def setup_failure_message(error, stage):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Guided Assistant setup and Docker secret management")
+    parser = argparse.ArgumentParser(description="Assistant local administration, guided setup, and credential management")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     navigation = parser.add_mutually_exclusive_group()
     navigation.add_argument("--section", choices=SECTION_IDS, help="Edit one section of an existing installation")
-    navigation.add_argument("--wizard", action="store_true", help="Run every setup section")
+    navigation.add_argument("--wizard", action="store_true", help="Open setup configuration (all sections with --plain)")
+    parser.add_argument("--plain", action="store_true", help="Use the traditional line-oriented menus")
     commands = parser.add_subparsers(dest="command")
     secret_parser = commands.add_parser("secrets", help="Manage credentials without displaying values")
     secret_parser.add_argument("action", choices=("status", "update", "apply", "recover"))
     secret_parser.add_argument("name", nargs="?")
-    commands.add_parser("tools", help="Troubleshooting menus: service status/logs/restarts, jobs, memories, reminders, embeddings")
+    commands.add_parser("tools", help="Open management at Services (legacy troubleshooting menus with --plain)")
     commands.add_parser("reset", help="Factory reset: rebuild the database while preserving settings, secrets and files")
     options = parser.parse_args()
     try:
@@ -1098,7 +1199,14 @@ def main():
             return
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise SetupError("Interactive setup requires a terminal; no files were changed")
-        interactive(options)
+        if options.plain:
+            with authorization_handler(terminal_authorization):
+                interactive(options)
+        else:
+            from .management_tui import ManagementApp
+            ui = ManagementApp(options.root)
+            with authorization_handler(ui.authorize):
+                ui.run(options)
     except SetupError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None
@@ -1144,7 +1252,7 @@ def activate_embeddings(instance, confirm, console):
             f"To see Docker diagnostics, run locally from the repository directory: {retry}\n"
             "Command output may contain credentials; do not share it without reviewing/redacting it.\n"
             "If sudo needs a password, enter it directly in your terminal; the wizard never collects it.\n"
-            "After resolving the failure, retry ./setup.sh --section embeddings."
+            "After resolving the failure, retry ./run.sh --section embeddings."
         ) from None
     console.print("Recreate existing embedding consumers to activate saved settings: docker compose --env-file data/.env up -d --no-deps --force-recreate task-agent workspace-indexer deep-research-agent supervisor heartbeat")
 
@@ -1171,7 +1279,10 @@ def interactive(options):
     if options.command == "secrets" and options.action == "recover":
         console.print("Recovery restores the previous database password and recreates its consumers.")
         if confirm("Run database rotation recovery?"):
-            recover_database(options.root)
+            def prepare_recovery(instance):
+                ensure_docker_access(instance, confirm)
+
+            recover_database(options.root, prepare=prepare_recovery)
             console.print("Previous database credential restored. Check service health.")
         return
     options.stage = "loading saved configuration"
@@ -1193,6 +1304,7 @@ def interactive(options):
                     raise SetupError("This credential has no pending activation")
                 names = [options.name]
             if names and confirm("Recreate affected running services? Brief downtime is expected."):
+                ensure_docker_access(instance, confirm)
                 targets = instance.apply(names)
                 console.print("Recreated: " + (", ".join(targets) or "none; credentials remain pending until startup"))
             return
@@ -1207,11 +1319,13 @@ def interactive(options):
         if not confirm("Save and coordinate database rotation?" if name == "POSTGRES_PASSWORD" else "Save this replacement credential?"):
             return
         if name == "POSTGRES_PASSWORD":
+            ensure_docker_access(instance, confirm)
             instance.rotate_database(value)
         else:
             instance.secret_values[name] = value
             instance.save()
             if confirm("Activate now by recreating affected running services?"):
+                ensure_docker_access(instance, confirm)
                 instance.apply([name])
             else:
                 console.print("Saved; activation pending. Run secrets apply when ready.")
@@ -1684,7 +1798,7 @@ def interactive(options):
             console.print("Recreated with volume mounts: " + (", ".join(targets) or "none running; mounts apply at startup"))
         except SetupError as error:
             console.print("Credentials are saved, but activation failed: " + str(error)
-                          + "\nRun ./setup.sh secrets apply to retry.", markup=False)
+                          + "\nRun ./run.sh secrets apply to retry.", markup=False)
     elif storage_changed:
         console.print("Credentials saved in protected plaintext .secrets files.")
         options.stage = "removing the previous credential volume"
@@ -1740,12 +1854,16 @@ def ensure_docker_access(instance, confirm):
     instance.use_sudo = False
     try:
         instance.docker(["info", "--format", "{{.ServerVersion}}"], timeout=15)
-    except DockerCommandError:
+    except DockerCommandError as error:
+        if error.reason not in {None, "permission"}:
+            raise
         if platform.system() != "Linux" or os.geteuid() == 0:
             raise
-        instance.use_sudo = confirm("Direct Docker access failed. Use sudo? (uses existing authorization; never prompts for a password)", False)
+        instance.use_sudo = getattr(instance, "sudo_consent", False) or confirm(
+            "Direct Docker access failed. Use sudo? Your system may ask for authorization; Assistant never reads your password.", False)
         if not instance.use_sudo:
             raise
+        instance.sudo_consent = True
         instance.docker(["info", "--format", "{{.ServerVersion}}"], timeout=15)
 
 
@@ -1874,6 +1992,7 @@ def configure_docker_boot(instance, confirm, console):
             return False
         command = ["systemctl", "enable", "--now", "docker.service"]
         if os.geteuid() != 0:
+            prepare_sudo(command, runner=subprocess.run)
             command = ["sudo", "-n", *command]
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
         if result.returncode:
@@ -1892,8 +2011,13 @@ def configure_docker_boot(instance, confirm, console):
 def security_value(instance, name, default=None):
     """Current wizard value for a security setting, falling back to config/agent.yaml."""
     if name in instance.values:
-        return instance.values[name]
-    value = instance.defaults.get(SECURITY_SETTINGS[name], default)
+        value = instance.values[name]
+    else:
+        value = instance.defaults.get(SECURITY_SETTINGS[name], default)
+    if next((caster for key, _, caster in ENV_OVERRIDES if key == name), None) is bool:
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            return str(normalized in {"true", "1", "yes", "on"}).lower()
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, list):
@@ -2120,12 +2244,30 @@ def validate_draft(instance):
 
 def draft_problems(instance):
     """Return every validation problem as (section_id, message), in the order validate_draft reports them."""
-    values = instance.values
+    values = {}
+    for name, path, _ in ENV_OVERRIDES:
+        configured = instance.defaults.get(path)
+        if configured is not None and not is_secret_name(name):
+            values[name] = (str(configured).lower() if isinstance(configured, bool) else
+                            ",".join(map(str, configured)) if isinstance(configured, list) else
+                            json.dumps(configured) if isinstance(configured, dict) else str(configured))
+    values.update(instance.values)
     problems = []
 
     def problem(section, message):
         problems.append((section, message))
 
+    for name, _, caster in ENV_OVERRIDES:
+        if caster is bool and name in values:
+            value = str(values[name]).strip().lower()
+            if value in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                values[name] = str(value in {"true", "1", "yes", "on"}).lower()
+            elif name not in ADVANCED_ENV_NAMES:
+                section = next((section for section, (names, prefixes) in SECTION_KEYS.items()
+                                if name in names or name.startswith(prefixes)), "advanced")
+                problem(section, name + " must be a boolean")
+    values.setdefault("SETUP_EMAIL_ENABLED",
+                      str("email" in [profile.strip() for profile in values.get("COMPOSE_PROFILES", "").split(",")]).lower())
     if instance.secret_values.get("DATABASE_URL"):
         try:
             validate_database_url(instance.secret_values["DATABASE_URL"])
@@ -2186,7 +2328,7 @@ def draft_problems(instance):
         except (RuntimeError, ValueError, TypeError):
             problem("embeddings", "Embeddings and search: use HTTPS except for local Ollama at http://ollama:11434; check the model, positive timeout, and supported dimensions (EmbeddingGemma: 128/256/512/768)")
     try:
-        ZoneInfo(values.get("AGENT_TIMEZONE", "UTC"))
+        ZoneInfo(values.get("AGENT_TIMEZONE", instance.defaults.get("agent.app.timezone") or "UTC"))
     except (ValueError, ZoneInfoNotFoundError):
         problem("identity", "Check the timezone (IANA identifier, e.g. Europe/London)")
     for name, section in (("IMAP_PORT", "email"), ("SMTP_PORT", "email")):
@@ -2195,20 +2337,42 @@ def draft_problems(instance):
                 raise ValueError
         except ValueError:
             problem(section, "Check the port number for " + name)
-    base_url = values.get("AGENT_LLM_BASE_URL", "")
-    if not values.get("AGENT_LLM_MODEL") or not base_url.startswith("https://"):
-        problem("models", "A model and HTTPS model API URL are required")
-    elif urlsplit(base_url).username or urlsplit(base_url).password:
-        problem("models", "Keep credentials out of the model API URL")
+    base_url = values.get("AGENT_LLM_BASE_URL", instance.defaults.get("agent.llm.base_url") or "")
+    model = values.get("AGENT_LLM_MODEL", instance.defaults.get("agent.llm.model"))
+    try:
+        if not model or not str(model).strip():
+            raise RuntimeError
+        validate_https_url(base_url, "Model API URL")
+        if any(char.isspace() for char in base_url):
+            raise RuntimeError
+    except RuntimeError:
+        problem("models", "A model and valid HTTPS model API URL without credentials are required")
     required = {"POSTGRES_PASSWORD": "models", ("OPENROUTER_API_KEY" if "openrouter.ai" in base_url else "OPENAI_API_KEY"): "models"}
     if values.get("SETUP_EMAIL_ENABLED") == "true":
         required.update(dict.fromkeys(("IMAP_PASSWORD", "SMTP_PASSWORD"), "email"))
         for name in ("ADMIN_EMAIL", "IMAP_HOST", "IMAP_USERNAME", "SMTP_HOST", "SMTP_USERNAME", "SMTP_FROM", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS"):
             if not values.get(name):
                 problem("identity" if name == "ADMIN_EMAIL" else "email", "Email operation requires " + name)
+        for name in ("IMAP_HOST", "SMTP_HOST"):
+            host = values.get(name, "")
+            if host and (any(char.isspace() for char in host) or any(char in host for char in "/@")):
+                problem("email", name + " must be a server hostname, not a URL")
+    for name, section in (("ADMIN_EMAIL", "identity"), ("ORG_SECURITY_EMAIL", "identity"),
+                          ("SMTP_FROM", "email"), ("AGENT_EMAIL", "email")):
+        address = values.get(name, "")
+        if address and not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", parseaddr(address)[1]):
+            problem(section, name + " must be a valid email address")
     if values.get("CALENDAR_ENABLED") == "true":
-        provider = values.get("CALENDAR_DEFAULT_PROVIDER", "").upper()
-        required.update(dict.fromkeys(("CALENDAR_" + provider + "_" + field for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
+        provider = values.get("CALENDAR_DEFAULT_PROVIDER", instance.defaults.get("agent.calendar.default_provider") or "google").upper()
+        if not re.fullmatch(r"(GOOGLE|OUTLOOK|ZOHO)(_[2-9])?", provider):
+            problem("calendar", "Default calendar provider must be google, outlook or zoho")
+        else:
+            required.update(dict.fromkeys(("CALENDAR_" + provider + "_" + field for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
+        for name, value in instance.secret_values.items():
+            match = re.fullmatch(r"(CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO)(?:_[2-9])?)_(?:CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name)
+            if match and value:
+                required.update(dict.fromkeys((match[1] + "_" + field for field in
+                                               ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
     zoho_api_bases = [value for name, value in values.items()
                       if name == "CALENDAR_ZOHO_API_BASE"
                       or (name.startswith("CALENDAR_ZOHO_") and name.endswith("_API_BASE"))]
@@ -2221,7 +2385,29 @@ def draft_problems(instance):
                 problem("calendar", "Zoho Calendar API base must use HTTPS on a supported Zoho Calendar host")
                 break
     if values.get("ZOOM_ENABLED") == "true":
-        required.update(dict.fromkeys(("ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_ACCOUNT_ID" if values.get("ZOOM_AUTH_MODE") == "s2s" else "ZOOM_REFRESH_TOKEN"), "zoom"))
+        mode = values.get("ZOOM_AUTH_MODE", instance.defaults.get("agent.zoom.auth_mode") or "s2s")
+        if mode not in {"s2s", "oauth"}:
+            problem("zoom", "Zoom authorization mode must be s2s or oauth")
+        required.update(dict.fromkeys(("ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_ACCOUNT_ID" if mode == "s2s" else "ZOOM_REFRESH_TOKEN"), "zoom"))
+    if values.get("TRANSCRIPTION_ENABLED") == "true" and values.get("TRANSCRIPTION_LANGUAGE", "auto") not in {"auto", "en", "ar"}:
+        problem("transcription", "Voice transcription language must be auto, en or ar")
+    telegram_enabled = values.get("TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
+    if AppConfig({"enabled": telegram_enabled}).get_bool("enabled"):
+        from .telegram_config import telegram_identities
+        required["TELEGRAM_BOT_TOKEN"] = "telegram"
+        identifiers = AppConfig({"ids": values.get("TELEGRAM_ALLOWED_USER_IDS",
+                                instance.defaults.get("agent.telegram.allowed_user_ids", []))}).get_list("ids")
+        if not identifiers or any(not re.fullmatch(r"[1-9][0-9]{0,18}", identifier)
+                                  or int(identifier) >= 2**63 for identifier in identifiers):
+            problem("telegram", "Telegram requires an explicit list of positive numeric user IDs")
+        try:
+            identities = telegram_identities(AppConfig({"agent": {"telegram": {
+                "recipients": values.get("TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
+            }}}))
+            if any(str(identifier) not in identifiers for identifier in identities.values()):
+                raise ValueError("Telegram recipient mappings must use authorized numeric user IDs")
+        except ValueError as error:
+            problem("telegram", str(error))
     for name in ("DROPBOX_ENABLED", "DROPBOX_ALLOW_EXPORTS"):
         if values.get(name, "false") not in {"true", "false"}:
             problem("dropbox", name + " must be true or false")
@@ -2235,12 +2421,19 @@ def draft_problems(instance):
     from .security_screening import PROVIDER_CHOICES
     if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", False) not in {"true", "false"}:
         problem("security", "AGENT_SECURITY_EMAIL_AUTH_ENABLED must be true or false")
-    if security_value(instance, "AGENT_SECURITY_DECISION_ENABLED", False) == "true":
+    if values.get("AGENT_SECURITY_DECISION_ENABLED", "false") == "true":
         provider = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter"
         url = security_value(instance, "AGENT_SECURITY_DECISION_URL")
         if provider not in PROVIDER_CHOICES:
             problem("security", "Decision model provider must be one of " + ", ".join(PROVIDER_CHOICES))
-        if (provider == "custom" and not url) or (url and (not url.startswith("https://") or urlsplit(url).username or urlsplit(url).password)):
+        try:
+            if provider == "custom" and not url:
+                raise RuntimeError
+            if url:
+                validate_https_url(url, "Decision model URL")
+                if any(char.isspace() for char in url):
+                    raise RuntimeError
+        except RuntimeError:
             problem("security", "Decision model URL must be an HTTPS URL without credentials")
         if provider == "custom" and not security_value(instance, "AGENT_SECURITY_DECISION_MODEL"):
             problem("security", "A custom decision model requires a model identifier")

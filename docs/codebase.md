@@ -14,10 +14,20 @@
 - `docs/` — canonical host documentation.
 - `data/` — gitignored local settings, credentials, and runtime state.
 
-The root `setup.sh` forwards all arguments to `src/scripts/setup.sh`. Compose
+The root `run.sh` forwards all arguments to `src/scripts/run.sh`. Compose
 configuration is in `src/docker-compose.yml`; setup writes an absolute
 `COMPOSE_FILE` value to `data/.env`. These paths describe the host checkout;
 the runtime receives documentation, not the repository source tree.
+
+The Python entry module is `assistant_agent.setup`.
+`management_tui.py` owns one persistent
+prompt-toolkit application; `management.py` provides presentation-free host
+operations and configuration field metadata. `management_operator.py` is the
+local-only JSON transport for typed database records and trusted admin actions
+inside Compose. Native sudo authorization lives in `setup_privileges.py`.
+The native interface does not call the legacy setup or Tools menus; those remain
+available only through `--plain`. The previous wrapper and design mockup were
+removed. Existing runtime paths and dependency-environment names are unchanged.
 
 `src/database/schema.sql` is the generated current schema baseline. Startup
 requires its baseline marker and applies unrecorded migrations in filename order.

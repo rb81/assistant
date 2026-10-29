@@ -67,7 +67,7 @@ class DropboxClient:
         self.client_id = str(config.get("agent.dropbox.client_id") or "")
         self.refresh_token = str(config.get("agent.dropbox.refresh_token") or "")
         if not config.get_bool("agent.dropbox.enabled", False) or not self.client_id or not self.refresh_token:
-            raise DropboxError("Dropbox is not connected; use ./scripts/setup.sh --section dropbox")
+            raise DropboxError("Dropbox is not connected; use ./run.sh --section dropbox")
         self.max_bytes = config.get_int("agent.dropbox.max_file_bytes", 25 * 1024 * 1024)
         if not 1 <= self.max_bytes <= 150 * 1024 * 1024:
             raise DropboxError("Dropbox file limit must be between 1 byte and 150 MiB")

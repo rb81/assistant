@@ -578,13 +578,13 @@ class DropboxSetupTest(unittest.TestCase):
             root = Path(root)
             (root / "src/scripts").mkdir(parents=True)
             (root / "data/.venv-setup/bin").mkdir(parents=True)
-            shutil.copyfile(repository / "scripts/setup.sh", root / "src/scripts/setup.sh")
+            shutil.copyfile(repository / "scripts/run.sh", root / "src/scripts/run.sh")
             executable = root / "data/.venv-setup/bin/python"
             executable.write_text('#!/bin/sh\ncase "$*" in *httpx*) exit 1 ;; esac\nexit 0\n')
             executable.chmod(0o755)
-            result = subprocess.run(["sh", str(root / "src/scripts/setup.sh")], input="n\n", text=True, capture_output=True,
+            result = subprocess.run(["sh", str(root / "src/scripts/run.sh")], input="n\n", text=True, capture_output=True,
                                     env={**os.environ, "PYTHON": str(executable)}, check=True)
-            self.assertIn("Install/update the isolated setup dependencies?", result.stdout)
+            self.assertIn("Install/update the isolated administration dependencies?", result.stdout)
             self.assertFalse((root / ".env").exists())
 
     def test_dropbox_section_cancel_does_not_save_connection_or_consent(self):

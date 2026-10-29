@@ -5,7 +5,17 @@
 - Application code, scripts, deployment files, and defaults now live under `src/`.
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.
-- Root `./setup.sh` remains the single setup and administration entry point.
+- Root `./run.sh` replaces `setup.sh` for setup and local administration.
+- Native full-screen management now uses one persistent application with
+  service-health rows, live logs, searchable records, detail screens, draft forms,
+  review/save validation, and confirmed actions. Navigation and pagination remain
+  fixed; only sudo's system password prompt leaves the interface.
+- Removed the embedded-menu wrapper and fictional-data mockup.
+- Docker startup failures provide actionable diagnostics and a visible retry.
+- Every administration page, menu action and configuration field has contextual
+  help in a fixed About panel, with full explanations available through F1.
+- Administration uses a compact, borderless layout: contextual help sits above
+  content, actions are grouped together, and empty status messages take no space.
 - Text-to-speech uses an admin-configured model and voice (`AGENT_TTS_MODEL`,
   `AGENT_TTS_VOICE`); the agent supplies only text and optional instructions.
   Admin CLI: `python -m assistant_agent.tts voices|test`. Audio is returned even
@@ -44,7 +54,7 @@
   voice notes, email for long content) and forbids announcing voice notes.
 - The admin job-card button **Request approval** is now **Resend approval**.
 - Refreshed the README and task-oriented documentation for the current product.
-- `./setup.sh reset` now destroys and rebuilds the bundled PostgreSQL cluster
+- `./run.sh reset` now destroys and rebuilds the bundled PostgreSQL cluster
   without a backup or selective reset. It preserves settings, secrets, and files,
   then starts workspace reindexing when enabled; custom database configurations
   are refused.

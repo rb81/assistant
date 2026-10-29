@@ -466,8 +466,8 @@ services:
         condition: service_completed_successfully
     environment:
       SANDBOX_SHARED_ROOT: /data/share
-      SANDBOX_SHARED_ROOT_HOST: ${SANDBOX_SHARED_ROOT_HOST:?Run ./setup.sh first}
-      SANDBOX_DOCS_ROOT_HOST: ${SANDBOX_DOCS_ROOT_HOST:?Run ./setup.sh first}
+      SANDBOX_SHARED_ROOT_HOST: ${SANDBOX_SHARED_ROOT_HOST:?Run ./run.sh first}
+      SANDBOX_DOCS_ROOT_HOST: ${SANDBOX_DOCS_ROOT_HOST:?Run ./run.sh first}
       SANDBOX_TLS_CERT_FILE: /run/assistant/runtime/current/sandbox.crt
       SANDBOX_TLS_KEY_FILE: /run/assistant/runtime/current/sandbox.key
       SANDBOX_API_TOKEN_FILE: /run/assistant/runtime/current/SANDBOX_API_TOKEN

@@ -9,7 +9,7 @@ directory.
 Run setup first, then use the root Compose environment file:
 
 ```bash
-./setup.sh
+./run.sh
 docker compose --env-file data/.env up -d --build
 ```
 
@@ -26,6 +26,37 @@ docker compose --env-file data/.env logs --tail=100 task-agent
 For a custom Compose override, explicit `-f` options replace `COMPOSE_FILE`.
 Include `-f src/docker-compose.yml -f data/.compose-secrets.yaml` before your
 override file so the base services and credential mounts are retained.
+
+## Troubleshooting local administration
+
+If `./run.sh` fails while opening, check Docker in the same terminal:
+
+```bash
+docker info
+docker version
+docker context ls
+```
+
+On macOS, open Docker Desktop (or start your chosen runtime), wait for it to be
+ready, and retry. A context selects a particular daemon; a different context
+can have different images and volumes. Check `DOCKER_HOST` and `DOCKER_CONTEXT`
+if the selected endpoint is unexpected. Sudo normally is not needed for Docker
+Desktop and will not fix a stopped runtime.
+
+Docker-volume credentials must be read before the home screen can open.
+If their volume is missing, select the original daemon or restore the volume
+backup; do not create an empty replacement. If Docker reports a registry
+credential-helper failure, repair the runtime's helper installation/PATH,
+unlock the macOS keychain, and renew `docker login` if necessary. Starting the
+credential helper container may need to pull `python:3.12-slim`.
+
+The interface reports recognized error categories, the failed operation, and
+its exit status without displaying raw Docker output. For Compose configuration
+errors, run `docker compose --env-file data/.env config --quiet` from the
+repository root. For unrecognized failures, inspect the failing operation
+locally. Docker output can contain credentials and private paths: review and
+redact it before sharing. Neither diagnostics nor retry recreate missing
+credential volumes or reset application data.
 
 ## Services and profiles
 

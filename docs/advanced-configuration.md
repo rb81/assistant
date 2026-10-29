@@ -1,16 +1,16 @@
 # Advanced configuration
 
-Use the setup wizard for normal configuration:
+Use the management forms for normal configuration:
 
 ```bash
-./setup.sh
-./setup.sh --section advanced
+./run.sh
+./run.sh --section advanced
 ```
 
-The wizard manages identity, models, email, integrations, safety options, and
-common limits. Credentials are entered through protected prompts, not stored in
+The interface manages identity, models, email, integrations, safety options, and
+common limits. Credentials are entered through masked fields, not stored in
 `data/.env`. Use `data/overrides.env` only for supported expert settings that
-the wizard does not manage; see [configuration](configuration.md) and
+the forms do not manage; see [configuration](configuration.md) and
 [environment overrides](env-overrides.md).
 
 ## Models and limits

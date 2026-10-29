@@ -4,7 +4,7 @@
 #
 # This tracked file contains all operational defaults. You should not need to
 # edit it for normal deployments. Setup copies it to data/config/agent.yaml;
-# configure credentials and identity through ./setup.sh.
+# configure credentials and identity through ./run.sh.
 #
 # Settings can be overridden through setup or data/overrides.env.
 # See docs/env-overrides.md for the complete list of available overrides.
@@ -319,7 +319,7 @@ agent:
     max_completion_tokens:
     temperature:
 
-  # Optional admin sender authentication and decision-model screening; configure with ./setup.sh.
+  # Optional admin sender authentication and decision-model screening; configure with ./run.sh.
   # See docs/security.md#email-and-action-screening.
   security:
     notify_max_per_hour: 20

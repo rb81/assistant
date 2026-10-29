@@ -215,7 +215,7 @@ never disclose host start URLs. See [calendar providers](calendar-providers.md).
 including supported image/audio generation and multimodal inputs. It does not
 inherit the assistant's context or tools and does not execute returned tool calls.
 
-Enable it with `./setup.sh --section advanced` → **Model preset tool**.
+Enable it with `./run.sh --section advanced` → **Model preset tool**.
 It requires `OPENROUTER_API_KEY` and an available shared workspace, even if the
 main assistant uses a different model provider. It is disabled by default.
 Setup's **Advanced Settings → Model preset tool** also selects all models
@@ -302,7 +302,7 @@ costs and worker crashes leave an unresolved ledger entry that blocks new
 requests within the rolling period. Administrators must reconcile it against
 OpenRouter activity in `model_service_calls` (set the verified `cost_usd` and a
 terminal `status`, never assume zero). `list_presets` reports unresolved count;
-errors identify the request ID where available. `./setup.sh reset` destroys and
+errors identify the request ID where available. `./run.sh reset` destroys and
 rebuilds the bundled PostgreSQL cluster, clearing presets and spending history
 along with all other database state. It preserves files and starts workspace
 reindexing after the database is rebuilt when workspace indexing is enabled;
@@ -313,7 +313,7 @@ see [factory reset](running-assistant.md#factory-reset).
 `text_to_speech` is an independently enabled, loadable tool for dedicated
 OpenRouter `speech` models, not chat models advertising `audio`.
 Enable **Advanced Settings → Text-to-speech** with
-`./setup.sh --section advanced`. It requires an internal `OPENROUTER_API_KEY`
+`./run.sh --section advanced`. It requires an internal `OPENROUTER_API_KEY`
 and writable shared workspace, but not model presets, Telegram or transcription.
 Both enablement and the ZDR-only/all-model choice are independent of
 `llm_service`; defaults are disabled and all models.

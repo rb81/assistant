@@ -2,4 +2,4 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$ROOT/src/scripts/setup.sh" "$@"
+exec "$ROOT/src/scripts/run.sh" "$@"

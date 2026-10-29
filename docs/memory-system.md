@@ -86,7 +86,7 @@ model (`embeddinggemma` by default).
 When embeddings fail or are unavailable, relevant features fall back to
 non-semantic methods where supported.
 
-Use `./setup.sh --section embeddings` to configure the model, endpoint,
+Use `./run.sh --section embeddings` to configure the model, endpoint,
 timeout, and output dimensions. The maintenance probe requires Ollama 0.11.10+
 for `embeddinggemma` and expects 768 dimensions unless configured otherwise.
 Long inputs may be truncated by Ollama; source text limits and workspace

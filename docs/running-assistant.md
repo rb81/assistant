@@ -8,18 +8,114 @@ You also need model API credentials and an email mailbox or Telegram bot for
 task intake. From the repository root, run:
 
 ```bash
-./setup.sh
+./run.sh
 ```
+
+`run.sh` is the entry point for both setup and everyday administration.
+Existing `data/` settings and the `data/.venv-setup` environment are reused.
 
 The root launcher resolves the repository path; invoke it by its path if
 starting outside the repository. Configure identity, model
-access, and any enabled integrations in the wizard. It stores mutable settings,
+access, and any enabled integrations in the native forms. It stores mutable settings,
 credentials, setup state, and runtime data beneath the gitignored `data/`
 directory. See [configuration](configuration.md).
 
-Accept the wizard's offer to copy the example instructions, or create a
-nonempty `data/config/AGENT.md` yourself before starting. The task agent refuses
-to start without instructions.
+Setup opens a full-screen terminal interface. After initial setup, the home
+screen shows actual component health and links to **Services**, **Activity**,
+**Connections**, **Settings**, and **Help**. This is one persistent application:
+services and database records are native rows and detail views, not terminal
+command output or embedded setup menus. Startup checks the existing application
+image for management use; browsing records never builds images. If no image is
+available, **Services → Start app** explicitly builds and starts the application.
+Record requests use short-lived containers with the checkout's Python source
+mounted read-only, not a persistent background helper. Loading and failed reads
+are distinguished from a successfully loaded empty collection. Navigation stays
+available during reads; a page selected while another operation runs loads next.
+
+Use Tab/Shift-Tab or arrows to move, Enter to open an action, and Esc to go back.
+The compact, borderless layout keeps navigation at the top and page actions at
+the bottom. There is no repeated branding banner. The **About** panel above the
+content explains the focused menu option, field or action,
+including its purpose, input format and important consequences. **F1** opens
+the full explanation and page context in a read-only, scrollable help dialog.
+Esc closes help and restores focus without saving or discarding edits.
+Navigation, action buttons, pagination and contextual help stay outside the scrolling
+content. Status appears only when there is something to report. F5 refreshes the
+current view. Service health updates quietly every five
+seconds without flashing a loading indicator or rebuilding unchanged content.
+Failures still appear in the status area. Service logs have an in-place **Live**
+toggle with the same refresh interval.
+No shell is opened for service controls or logs.
+
+Settings and connection forms preserve a session draft across sections.
+Click a field to edit it; the focused field and insertion position are highlighted,
+with a beam cursor where the terminal supports it. In single-line
+fields, Up/Down or Tab/Shift-Tab move between controls and Enter advances.
+On checkbox fields, Space or Enter toggles the setting; arrows and Tab move
+between controls without changing it.
+Left/Right move the text cursor; multiline editors retain normal editing keys.
+Long single-line values scroll horizontally instead of hiding the edited portion.
+**Keep draft** retains form edits; **Discard this form** drops only the current
+form. **Review & save** (Ctrl-S) lists changes and validation problems before a
+confirmed save. Saving does not restart workers. Open a component under
+**Services** and choose **Apply settings** to recreate it from saved configuration.
+Connection labels describe the draft, not verified account connectivity.
+API keys are masked and existing values are never prefilled into visible fields.
+Telegram recipient mappings use a JSON object, for example
+`{"you@example.com": "123456"}`; each ID must be on the allowed-user list.
+
+**Activity** provides searchable, paginated tasks, memories, reminders, projects,
+and script permissions. Open records for details and available confirmed actions:
+retry/cancel/review tasks, add instructions, edit/pin/delete memories, cancel
+reminders, inspect project objects, preview project deletion, and revoke or
+block script permissions. Deletion previews retain shared objects and require a
+new confirmation if the inventory changes. Failed deletions keep writers stopped;
+use **Settings → Storage & recovery** to resume. After recovery, start any
+previously stopped writers from Services.
+Tab or click into long record details or deletion inventories, then use
+arrows or PgUp/PgDn to read all content. Live log updates preserve the active
+text control and cursor position. Invalid text or credential entries stay in
+their dialog for correction. Confirmed writes temporarily hold navigation
+until completion so a configuration reload cannot discard new edits; reads
+remain navigable.
+
+First-run setup uses these same native forms: acknowledge the safety notice,
+configure identity and models, choose connections, review instructions, then
+review and save. In model settings, **Generate secure database password** adds
+a masked password to the form; keep the draft to retain it, or discard the form
+to drop it. Generation refuses existing PostgreSQL data. An existing database
+password must be rotated through **Settings → Credentials** instead.
+
+The interface needs at least 76 columns and 24 rows. Smaller windows show a
+resize notice without losing the draft. `./run.sh --plain` is an explicit legacy
+line-oriented fallback; the native interface does not invoke those menus.
+
+On Linux, if Docker requires sudo, setup asks permission before elevating.
+Cached authorization is reused. When authentication is needed, the interface
+yields to sudo's own terminal password prompt, then resumes; Assistant never
+reads or stores the password. There is no need to run `sudo -v` beforehand or
+run the entire setup as root. Expired authorization can be renewed at the next
+command. Cancellation leaves that command unexecuted; failed Docker operations
+are not automatically repeated. Sudo permissions and daemon availability are
+still enforced by the host.
+
+On macOS, start Docker Desktop (or your chosen Docker runtime) and wait until
+it is ready. `docker info` should succeed in the same terminal. Use
+`docker context ls` to check which daemon is selected; do not use sudo as a
+workaround for an unavailable Desktop daemon.
+
+If credentials are stored in a Docker volume, opening administration also
+requires the original daemon: setup reads the saved credentials before showing
+the home screen. A stopped runtime, changed context, registry credential-helper
+failure, or missing volume can therefore prevent startup. The UI explains
+recognized failures with **Retry** and **Quit** buttons pinned below the error.
+Start Docker, wait until it is ready, then select **Retry**.
+Do not delete the volume or switch credential storage to bypass an error; see
+[Docker troubleshooting](docker-setup.md#troubleshooting-local-administration).
+
+Open **Settings → Assistant instructions** to review the example or edit your
+own instructions, then keep the draft and save. You can also create a nonempty
+`data/config/AGENT.md` yourself. The task agent refuses to start without instructions.
 
 ## Start and inspect
 
@@ -34,7 +130,7 @@ docker compose --env-file data/.env logs -f task-agent
 Setup writes an absolute `COMPOSE_FILE` setting in `data/.env`, pointing to
 `src/docker-compose.yml` and the generated secrets overlay. The `email`,
 `telegram`, and `voice` profiles are enabled by configuration when those
-integrations are selected. Run `./setup.sh tools` for guided status, logs, and
+integrations are selected. Run `./run.sh tools` for guided status, logs, and
 administration.
 
 Starting the stack enables workers and may process existing inbox messages.
@@ -67,7 +163,7 @@ Keep backups protected as confidential data.
 
 ### Factory reset
 
-Run `./setup.sh reset` to permanently destroy and recreate the bundled PostgreSQL
+Run `./run.sh reset` to permanently destroy and recreate the bundled PostgreSQL
 cluster under `data/postgres/pgdata`. This deletes all databases and database
 state in that cluster, including rows, indexes, ID sequences, and migration
 history; startup recreates the schema and applies migrations. The reset makes

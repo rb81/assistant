@@ -6,23 +6,25 @@ Install Python 3.12+ with virtual-environment support, Docker with Compose, and
 OpenSSL, then run the repository launcher from the repository root:
 
 ```bash
-./setup.sh
+./run.sh
 ```
 
 The launcher resolves the repository root and forwards its arguments to
-`src/scripts/setup.sh`; invoke it by its path if starting outside the repository.
-The setup wizard creates or updates local configuration only after review and
-save. Common section commands include:
+`src/scripts/run.sh`; invoke it by its path if starting outside the repository.
+The native forms keep a session draft and create or update local configuration
+only after **Review & save** and confirmation. Navigation does not discard edits.
+Saving and applying changes to running services are separate actions.
+Common section commands include:
 
 ```bash
-./setup.sh --section email
-./setup.sh --section calendar
-./setup.sh --section telegram
-./setup.sh secrets status
-./setup.sh secrets update OPENROUTER_API_KEY
+./run.sh --section email
+./run.sh --section calendar
+./run.sh --section telegram
+./run.sh secrets status
+./run.sh secrets update OPENROUTER_API_KEY
 ```
 
-Use the wizard for managed settings and credentials. Do not edit tracked
+Use the native Settings and Connections forms for managed settings and credentials. Do not edit tracked
 defaults to configure an installation.
 
 ## Local and tracked files
@@ -43,7 +45,7 @@ Other mutable service state, including PostgreSQL, private files and the shared
 workspace, remains under `data/`. Do not commit any contents of that directory.
 Setup preserves existing `data/config/agent.yaml`; updating tracked defaults
 does not replace this runtime copy. Review differences when upgrading.
-Accept the example instructions during setup or create a nonempty
+Review and save the example instructions in Settings, or create a nonempty
 `data/config/AGENT.md` before starting the task agent.
 
 The Compose stack reads `data/.env`; setup records the absolute stack path there.
@@ -55,7 +57,7 @@ docker compose --env-file data/.env up -d --build
 
 ## Overrides
 
-The setup wizard manages routine settings. For supported expert settings, add
+The management forms handle routine settings. For supported expert settings, add
 one `NAME=value` per line to `data/overrides.env`. Compose loads this after
 `data/.env` into application containers, but a Compose `environment:` entry
 takes precedence. The overrides file is not used for Compose interpolation:
@@ -76,7 +78,8 @@ appropriate activation workflow.
 
 Setup stores credentials in protected, gitignored files and grants only the
 services that need them read-only mounts. You can instead select a dedicated,
-unencrypted Docker credential volume at review. Back up that volume separately
+unencrypted Docker credential volume in **Settings → Storage & recovery**.
+Back up that volume separately
 and retain `data/.secrets/state.json`. Docker Compose secret mounts are not
 encrypted storage. Protect the host, Docker daemon, disks, and backups. Never
 put credentials in the shared workspace, tracked files, shell arguments, or

@@ -9,14 +9,14 @@ their original completion requirements.
 ## Setup
 
 1. Create a bot using Telegram's BotFather and keep its token private.
-2. Run `./setup.sh --section telegram` on an already configured installation,
+2. Run `./run.sh --section telegram` on an already configured installation,
    or select Telegram during initial setup. Enter the bot token through the masked prompt.
 3. Supply an explicit allowlist of numeric Telegram user IDs. Private chats only are
    accepted; empty allowlists grant nobody access. `/start` never grants admin rights.
 4. Enter verified identity mappings as JSON, for example
    `{"owner@example.net":123456789}`. Confirm the numeric ID with that person outside
    an untrusted forwarded message. The mapped IDs must also be allowlisted.
-5. Optionally run `./setup.sh --section transcription`. This generates a
+5. Optionally run `./run.sh --section transcription`. This generates a
    protected internal token and enables the managed multilingual English/Arabic service.
 6. Review and save, then, from the repository root, start or recreate services with
    `sudo docker compose --env-file data/.env up -d --build`. Setup selects the

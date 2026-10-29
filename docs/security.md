@@ -2,9 +2,11 @@
 
 ## Workstream deletion
 
-Open `./setup.sh tools` -> **Workstreams and data deletion**. The terminal
-menus list workstreams, their parents and retained objects, and allow explicit
-attachments.
+Open `./run.sh` -> **Activity → Projects & workstreams**. Select a project
+to inspect its relationships or **Preview deletion**. The native interface
+exposes only the preserve-shared policy. Other policies and explicit contact/file
+attachments remain available through the legacy compatibility interface:
+`./run.sh --plain tools` -> **Workstreams and data deletion**.
 
 New explicit adoption is restricted to contacts and files. Inspection or edits
 do not create retaining links. There are three deletion policies:
@@ -19,9 +21,10 @@ do not create retaining links. There are three deletion policies:
    can connect most or all of the installation; review the complete list.
 
 The terminal shows per-table counts, shared-object relationships, local-file
-counts, remote cleanup operations and blockers. It stops the writer services,
-refreshes the preview, and requires a separate default-No confirmation of that
-exact scope. A changed inventory invalidates confirmation. Running jobs/research
+counts, remote cleanup operations and blockers. Native deletion requires an
+explicit confirmation with Cancel selected by default, then stops the writer
+services and rechecks that exact scope. A changed inventory invalidates
+confirmation and requires another preview. Running jobs/research
 must finish first; deleting records is not a way to interrupt an in-flight call.
 Shared reminders with queued work in the deletion tree must finish or be
 cancelled first, rather than silently leaving a stranded queued reminder.
@@ -50,8 +53,11 @@ events and Zoom meetings are deleted through their configured providers.
 Each cleanup step is journaled before database erasure. Failures or interruptions
 leave a pending/failed deletion with its identifiers and database records intact for retry;
 some already-completed remote/file removals may be irreversible. Writer services
-stay stopped when a deletion remains incomplete. **Resume an incomplete
-deletion** retries that original scope. A successful receipt contains no deleted
+stay stopped when a deletion remains incomplete or completion cannot be verified.
+**Settings → Storage & recovery → Resume an incomplete project deletion**
+retries that original scope. Only writers running when the current operation
+began are restarted automatically; after successful recovery, use Services to
+start writers left stopped by an earlier failure. A successful receipt contains no deleted
 message bodies or object contents.
 
 Browsing lists object relationships; deletion preview additionally verifies
@@ -88,21 +94,21 @@ are excluded from model context.
 
 ## Docker secrets
 
-Run `./setup.sh` to configure credentials without editing `data/.env`.
+Run `./run.sh` to configure credentials without editing `data/.env`.
 Credentials are stored in gitignored `data/.secrets/` files with directory mode `0700`
 and file mode `0600`. Generated `data/.compose-secrets.yaml` grants read-only mounts
 under `/run/secrets` only to relevant services. `data/.env` contains non-secret settings.
 
 ### Optional Docker volume storage
 
-Choose **Move credentials to a dedicated Docker volume** at the wizard's final
-review, or in the post-setup configuration menu. The choice takes effect only on
-**Save**. Setup copies credentials into an installation-specific external Docker
+After saving setup, open **Settings → Storage & recovery → Move credentials to
+a Docker volume**. This separate confirmed operation requires any settings draft
+to be saved or discarded first. Setup copies credentials into an installation-specific external Docker
 volume, verifies their contents and volume-subpath support, then deletes the
 original `data/.secrets` credential files. A failed transfer leaves the original
 configuration and credential files intact. Setup then recreates running services
 that use credentials so they switch to the volume mounts; if that step fails, run
-`./setup.sh secrets apply` to retry.
+`./run.sh secrets apply` to retry.
 
 The generated overlay mounts a separate service-specific directory from the
 volume read-only at `/run/secrets`, limiting each service to its assigned
@@ -141,7 +147,7 @@ any step fails, `data/.secrets` stays authoritative, the volume is kept, and set
 retries removal the next time it opens. Moving back to the
 volume later copies the current host values, including intervening updates.
 
-Factory reset (`./setup.sh reset`) permanently destroys and rebuilds the bundled
+Factory reset (`./run.sh reset`) permanently destroys and rebuilds the bundled
 PostgreSQL cluster at `data/postgres/pgdata`, including all databases, rows,
 indexes, sequences and migration history. It is not selective and makes no
 backup. Configuration and settings, credentials (`data/.secrets/` or the
@@ -207,10 +213,10 @@ removal does not retract remote files or revoke Dropbox authorization. See the
 ## Updating credentials
 
 ```bash
-./setup.sh secrets status
-./setup.sh secrets update
-./setup.sh secrets update OPENROUTER_API_KEY
-./setup.sh secrets apply
+./run.sh secrets status
+./run.sh secrets update
+./run.sh secrets update OPENROUTER_API_KEY
+./run.sh secrets apply
 ```
 
 Status shows names, not values. Updates use masked input and explicit confirmation.
@@ -225,7 +231,7 @@ Database-password updates use a coordinated maintenance flow: stop consumers,
 alter the database role, replace the file, verify network authentication, and
 recreate consumers. `POSTGRES_PASSWORD_FILE` alone only controls initialization,
 not the password in an existing database. If interrupted, use
-`./setup.sh secrets recover` to restore the previous credential and resume
+`./run.sh secrets recover` to restore the previous credential and resume
 the recorded services. Recovery data is protected locally; database and filesystem
 changes are not one atomic transaction. Custom/external databases require a
 deployment-specific rotation procedure and are explicitly refused by this flow.
@@ -284,7 +290,7 @@ changes.
 
 ## Email and action screening
 
-Configure these layers in the setup wizard's **Security screening** section. All
+Configure these layers in **Settings → Safety & screening**. All
 are optional; explicit script permissions are required independently of screening.
 Telegram is not screened: only allow-listed, owner-proven accounts
 can reach it.
