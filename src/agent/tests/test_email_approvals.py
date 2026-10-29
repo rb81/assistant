@@ -163,7 +163,7 @@ class ApprovalReplyTest(unittest.TestCase):
                                  kind != "development" and reusable)
                 self.assertNotIn("APPROVE ALWAYS FOR ALL SCRIPTS", body)
                 self.assertEqual("APPROVE ONCE - approve development session" in body, kind == "development")
-                self.assertEqual("final script and requested hosts" in body, kind == "final")
+                self.assertEqual("one execution with the listed hosts" in body, kind == "final")
                 quoted = "\n".join("> " + line for line in body.splitlines())
                 self.assertEqual(approval_reply(reply("APPROVE ONCE\nPublic data only.\n\n" + quoted)),
                                  ("a" * 32, "b" * 64, "APPROVE ONCE\nPublic data only."))
@@ -181,9 +181,9 @@ class ApprovalReplyTest(unittest.TestCase):
     def test_permission_keyboard_has_kind_specific_actions_and_script_review(self):
         from assistant_agent.email_approvals import permission_keyboard
         for permission_type, reusable, expected in (
-            ("development", True, {"Approve development session", "Deny", "Review Script", "Add feedback"}),
-            ("final", True, {"Approve final once", "Approve final always", "Deny", "Review Script", "Add feedback"}),
-            ("final", False, {"Approve final once", "Deny", "Review Script", "Add feedback"}),
+            ("development", True, {"Approve development session", "Deny", "View script & details", "Add feedback"}),
+            ("final", True, {"Approve one run", "Always allow this version", "Deny", "View script & details", "Add feedback"}),
+            ("final", False, {"Approve one run", "Deny", "View script & details", "Add feedback"}),
         ):
             buttons = [button for row in permission_keyboard("abc", {
                 "permission_type": permission_type, "reusable": reusable,
@@ -192,7 +192,7 @@ class ApprovalReplyTest(unittest.TestCase):
             self.assertFalse(any(":global" in button["callback_data"] or ":scope" in button["callback_data"]
                                  for button in buttons))
             self.assertEqual(
-                next(button for button in buttons if button["text"] == "Review Script")["callback_data"],
+                next(button for button in buttons if button["text"] == "View script & details")["callback_data"],
                 "ap:abc:details",
             )
 
@@ -263,6 +263,35 @@ class ApprovalReplyTest(unittest.TestCase):
         self.assertEqual(document["screening"], pending["screening"])
         self.assertEqual(document["fingerprint"], "b" * 64)
         self.assertEqual(document["files"][0]["source"], "print(1)")
+
+    def test_final_card_uses_plain_language_assessments_and_keeps_raw_screening_in_details(self):
+        from assistant_agent.script_permissions import summary
+        db = MagicMock()
+        db.fetch_one.return_value = {
+            "id": 7, "entry": "report.py", "fingerprint": "b" * 64, "reusable": True, "manifest": {},
+        }
+        pending = {
+            "version_id": 7, "kind": "final", "purpose": "Fetch public feeds.", "targets": ["example.com"],
+            "screening": {"level": "not_malicious", "summary": "not_malicious; signals: destructive=0.03"},
+            "supervisor": {"decision": "approve", "comments": "Reads public feeds and writes a local report."},
+        }
+        job = {"id": 12, "metadata": {"permission_request": pending}}
+        card, details = summary(db, job).split("\n\nDetails:", 1)
+        self.assertIn("Supervisor: Recommends approval", card)
+        self.assertIn(pending["supervisor"]["comments"], card)
+        self.assertIn("Security screening: No concerns flagged.", card)
+        self.assertIn("one execution with the listed hosts", card)
+        self.assertIn("until revoked. Changes need new approval.", card)
+        self.assertNotIn("destructive=0.03", card)
+        self.assertNotIn("not_malicious", card)
+        self.assertIn("destructive=0.03", details)
+        pending["screening"]["error"] = "timeout"
+        pending["supervisor"] = {"decision": "unavailable", "comments": "Provider unavailable"}
+        card = summary(db, job).split("\n\nDetails:", 1)[0]
+        self.assertIn("Supervisor: Review unavailable", card)
+        self.assertIn("No supervisor assessment was completed", card)
+        self.assertIn("Security screening: Unavailable; manual review required.", card)
+        self.assertNotIn("No concerns flagged", card)
 
     def test_multiple_or_incomplete_challenges_fail_closed(self):
         for body in (MARKER, self.confirmation + "\nOTP: " + "c" * 32):

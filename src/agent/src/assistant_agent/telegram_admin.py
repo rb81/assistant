@@ -440,9 +440,13 @@ class TelegramAdmin:
         value = row["value"]
         if action == "details":
             from .admin_commands import redact_secrets
+            content = str(redact_secrets(value["summary"]))
             if value["payload"].get("kind") == "permission":
                 self.permissions(sender, "pcode", value["payload"]["version_id"])
-            self.send(sender, str(redact_secrets(value["summary"]))[:3800],
+                self.client.call("sendDocument", {"chat_id": sender, "caption": "Full approval context and assessments"},
+                                 files={"document": ("approval-details.txt", content.encode(), "text/plain")}, sending=True)
+                content = telegram_permission_summary(content)
+            self.send(sender, content[:3800],
                       [[("Back", "ap:%s:review" % callback_id)]])
             return
         if action == "later":

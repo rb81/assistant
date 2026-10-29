@@ -23,7 +23,12 @@ def runtime(db, tmp_path):
         "sandbox": {"network": {"allowed_hosts": ["pypi.org"]}},
     }})
     job = db.create_manual_job("Permission test", "Run report")
-    return ToolRuntime(db, config, job)
+    client = MagicMock(model="test/reviewer", base_url="https://models.example/v1")
+    client.chat.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+        "decision": "approve", "comments": "Reads local input and writes a report.",
+    })}}]}
+    with patch("assistant_agent.development_supervisor.LlmClient", return_value=client):
+        yield ToolRuntime(db, config, job)
 
 
 def version(runtime, command=None, image="image-v1"):
@@ -150,6 +155,42 @@ def test_malicious_verdict_cannot_be_overridden_by_regular_approval(runtime):
     with patch.object(permissions.SecurityScreener, "screen", return_value=ScreeningResult(MALICIOUS, "destructive")):
         with pytest.raises(permissions.PermissionDenied, match="malicious"):
             permissions.request(runtime, version(runtime), "run")
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject", "escalate"])
+def test_direct_final_request_gets_supervisor_comments_but_still_requires_admin(runtime, decision):
+    item = version(runtime)
+    assessment = {"decision": decision, "comments": "Public reads and local report output."}
+    with patch("assistant_agent.development_supervisor.review", return_value=assessment) as review, \
+            pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.final_request(runtime, item, ["api.example.com"], "Finished report")
+    review.assert_called_once_with(runtime.config, None, {**item, "purpose": "Finished report"},
+                                   ["api.example.com"], final=True)
+    assert raised.value.request["supervisor"] == assessment
+    assert raised.value.request["session_id"] is None
+    assert permissions.run_status(runtime.db, item, runtime.job["id"]) == "not_approved"
+    history = runtime.db.fetch_one("SELECT details FROM sandbox_permission_history WHERE action = 'final-review'")
+    assert history["details"]["decision"] == decision
+    assert history["details"]["version_id"] == item["id"]
+
+
+def test_direct_final_supervisor_failure_is_explicit_and_never_grants_execution(runtime):
+    from assistant_agent.development_supervisor import SupervisorError
+    item = version(runtime)
+    with patch("assistant_agent.development_supervisor.review", side_effect=SupervisorError("Provider unavailable")), \
+            pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.final_request(runtime, item, [], "Finished report")
+    assert raised.value.request["supervisor"] == {"decision": "unavailable", "comments": "Provider unavailable"}
+    assert permissions.run_status(runtime.db, item, runtime.job["id"]) == "not_approved"
+
+
+def test_direct_final_review_can_serialize_stored_versions_with_database_timestamps(runtime):
+    item = version(runtime)
+    assert item["created_at"] is not None
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.final_request(runtime, item, [], "Finished report")
+    assert raised.value.request["supervisor"]["decision"] == "approve"
+    assert raised.value.request["supervisor"]["comments"] == "Reads local input and writes a report."
 
 
 def test_snapshot_contains_exact_approved_bytes(runtime):

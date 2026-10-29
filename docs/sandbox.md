@@ -17,6 +17,8 @@ This document describes how Assistant executes shell commands safely.
    that immutable brief. Alternatively, the agent requests final approval directly.
 2. `script_approval_request` closes further development execution and submits the
    final script and hosts together, including the supervisor's final comments.
+   Direct requests without a development session also receive a tool-free
+   supervisor assessment, without treating the agent's purpose as an approved brief.
 3. `ToolRuntime.command_execute` validates input, authorization and shared-root workdir.
 4. Request is sent to sandbox broker `POST /execute`.
 5. Broker starts a fresh run container. Approved code is copied into a private
@@ -59,10 +61,17 @@ returned as `timed_out=true`, not retried as a broker failure.
 ### Script versions and run permissions
 
 Finished scripts and their exact HTTPS host list require one combined
-**Approve once**, **Approve always**, or **Deny** decision, unless explicitly
+**Approve one run**, **Always allow this version**, or **Deny** decision, unless explicitly
 enabled Script YOLO bypasses approvals. Optional feedback accompanies any
 decision. A denial does not cancel the job or authorize another attempt at the
 same action. The agent should continue without that capability or report the blocker.
+
+The approval card shows the purpose, supervisor recommendation and comments, exact
+hosts, and a plain-language screening result. Code, hashes, raw screening data and
+version details are attachments, not inline JSON. Telegram's **View script & details**
+opens these documents. Email replies still use `APPROVE ONCE`, `APPROVE ALWAYS`, or
+`DENY`. A supervisor outage is shown explicitly and requires manual administrator
+review; a model recommendation never grants execution permission by itself.
 
 Versions include SHA-256 hashes of the entry file and analysed local code
 dependencies, exact command arguments, workdir, sandbox image/runtime identity,

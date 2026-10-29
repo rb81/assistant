@@ -194,8 +194,8 @@ def test_final_review_card_shows_supervisor_conclusion_and_all_hosts_without_det
     assert "Brief/comments shortened" in text
     assert "manifest" not in text
     keyboard = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
-    assert not any(button["text"] == "Approve final always" for row in keyboard for button in row)
-    assert any(button["text"] == "Review Script" for row in keyboard for button in row)
+    assert not any(button["text"] == "Always allow this version" for row in keyboard for button in row)
+    assert any(button["text"] == "View script & details" for row in keyboard for button in row)
 
 
 def test_permission_decision_applies_optional_feedback_without_generic_job_review(ui):
@@ -244,7 +244,7 @@ def test_initial_telegram_permission_message_preserves_long_host_list(ui):
     assert len(text.encode("utf-16-le")) // 2 < 3900
 
 
-def test_permission_text_attachment_is_included_in_email_body():
+def test_permission_text_attachment_stays_out_of_email_body():
     db = MagicMock()
     with patch("assistant_agent.email_approvals.send_admin_email") as email, patch(
         "assistant_agent.telegram.TelegramClient"
@@ -253,8 +253,29 @@ def test_permission_text_attachment_is_included_in_email_body():
             "permission:12", {"kind": "permission", "job_id": 12, "permission_type": "final"},
             "Final script approval", details_attachment=("script-version.txt", b"=== report.py ===\nprint('full source')"),
         )
-    assert "print('full source')" in email.call_args.args[2]
+    assert "print('full source')" not in email.call_args.args[2]
+    assert "Full code and hashes are in the attached version manifest." in email.call_args.args[2]
+    assert b"print('full source')" in email.call_args.kwargs["attachment"][1]
     telegram.assert_not_called()
+
+
+def test_view_script_sends_full_assessments_as_document_not_raw_chat_text(ui):
+    pending = {
+        "payload": {"kind": "permission", "version_id": 7},
+        "summary": 'Script and website access approval\n\nSupervisor: Recommends approval\nReads public data.'
+                   '\n\nDetails:\n{"screening": {"signals": [0.03]}}',
+    }
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(ui, "permissions") as code:
+        ui.approval("123", "a" * 24, "details")
+    code.assert_called_once_with("123", "pcode", 7)
+    document, message = ui.client.call.call_args_list
+    assert document.args[0] == "sendDocument"
+    assert b'"signals": [0.03]' in document.kwargs["files"]["document"][1]
+    assert message.args[0] == "sendMessage"
+    assert "Supervisor: Recommends approval" in message.args[1]["text"]
+    assert '"screening"' not in message.args[1]["text"]
+
 
 
 def test_permission_management_is_admin_only(ui):

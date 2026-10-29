@@ -151,9 +151,9 @@ def permission_email_body(payload, summary, token, digest, expires, ttl_minutes,
     if permission_type == "development":
         choices = ["APPROVE ONCE - approve development session"]
     elif permission_type == "final":
-        choices = ["APPROVE ONCE - final script and requested hosts"]
+        choices = ["APPROVE ONCE - one execution with the listed hosts"]
         if payload.get("reusable"):
-            choices.append("APPROVE ALWAYS - this unchanged final script version and requested hosts")
+            choices.append("APPROVE ALWAYS - repeat runs of this unchanged version with the listed hosts")
     else:
         choices = ["APPROVE ONCE - one execution"]
         if payload.get("reusable"):
@@ -178,13 +178,13 @@ def permission_email_body(payload, summary, token, digest, expires, ttl_minutes,
 def permission_keyboard(callback: str, payload: dict) -> list:
     permission_type = payload.get("permission_type")
     once_label = "Approve development session" if permission_type == "development" else (
-        "Approve final once" if permission_type == "final" else "Approve once")
+        "Approve one run" if permission_type == "final" else "Approve once")
     rows = [[{"text": once_label, "callback_data": "ap:%s:once" % callback},
              {"text": "Deny", "callback_data": "ap:%s:deny" % callback}]]
     if permission_type != "development" and payload.get("reusable"):
-        always_label = "Approve final always" if permission_type == "final" else "Approve always"
+        always_label = "Always allow this version" if permission_type == "final" else "Approve always"
         rows.append([{"text": always_label, "callback_data": "ap:%s:always" % callback}])
-    rows.append([{"text": "Review Script", "callback_data": "ap:%s:details" % callback},
+    rows.append([{"text": "View script & details", "callback_data": "ap:%s:details" % callback},
                  {"text": "Add feedback", "callback_data": "ap:%s:feedback" % callback}])
     return rows
 
@@ -235,7 +235,7 @@ def telegram_permission_summary(summary: str, max_units: int = 3500) -> str:
     if units(card) <= max_units:
         return card
 
-    notice = "Brief/comments shortened; use Review Script for full context."
+    notice = "Brief/comments shortened; use View script & details for full context."
     overhead = units(host_block) + units("\n\n") * 2 + units(notice) + units("\n\n") + 2
     remaining = max(0, max_units - overhead)
     suffix_budget = min(units(suffix), min(350, remaining // 3))
@@ -270,7 +270,8 @@ class EmailApprovals:
                 *, email_subject: str = "Assistant approval required",
                 details_attachment: tuple[str, bytes] | None = None,
                 email_body_details: str | None = None) -> bool:
-        if email_body_details is None and details_attachment and details_attachment[0].lower().endswith(".txt"):
+        if (payload.get("kind") != "permission" and email_body_details is None
+                and details_attachment and details_attachment[0].lower().endswith(".txt")):
             email_body_details = details_attachment[1].decode("utf-8", errors="replace")
         admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         mode = channels(self.config)

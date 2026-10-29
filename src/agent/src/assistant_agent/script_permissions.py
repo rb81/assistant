@@ -172,12 +172,16 @@ def check_blocks(runtime, version, hosts, db=None):
 
 def final_request(runtime, version, hosts, purpose):
     from . import development_sessions
+    from .development_supervisor import SupervisorError, review
 
     check_blocks(runtime, version, hosts)
     if runtime.config.get_bool("agent.security.script_yolo", False):
         return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
     session = development_sessions.current(runtime, version)
-    supervisor = {"decision": "not_reviewed", "comments": "No development session; administrator review required."}
+    status = run_status(runtime.db, version, runtime.job["id"])
+    policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
+    if not session and status == "approved" and set(hosts) == set(policy["allow"]):
+        return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
     if session:
         # Closing authorization before model review prevents testing while final approval is pending.
         with runtime.db.connect() as conn:
@@ -187,17 +191,22 @@ def final_request(runtime, version, hosts, purpose):
                 "UPDATE sandbox_development_sessions SET status = 'finalizing' WHERE id = %s AND status = 'active'",
                 (session["id"],),
             )
+    finding = screen(runtime, version)
+    if finding.get("level") == MALICIOUS:
+        raise PermissionDenied("Security screening classified this version as malicious; execution is blocked.")
+    if session:
         try:
             _, supervisor = development_sessions.review_version(runtime, version, hosts, final=True)
         except PermissionDenied as exc:
             supervisor = {"decision": "escalate", "comments": str(exc)}
-    status = run_status(runtime.db, version, runtime.job["id"])
-    policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
-    if not session and status == "approved" and set(hosts) == set(policy["allow"]):
-        return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
-    finding = screen(runtime, version)
-    if finding.get("level") == MALICIOUS:
-        raise PermissionDenied("Security screening classified this version as malicious; execution is blocked.")
+    else:
+        try:
+            supervisor = review(runtime.config, None, {**version, "purpose": purpose}, hosts, final=True)
+        except SupervisorError as exc:
+            supervisor = {"decision": "unavailable", "comments": str(exc)}
+        audit(runtime.db, "supervisor", "final-review", {
+            "version_id": version["id"], "job_id": runtime.job["id"], "hosts": hosts, **supervisor,
+        })
     pending = {
         "id": uuid.uuid4().hex, "kind": "final", "version_id": version["id"],
         "fingerprint": version["fingerprint"], "targets": hosts, "purpose": purpose,
@@ -269,7 +278,7 @@ def summary(db, job):
     label = "Inline command" if entry.startswith("inline:") else entry
     lines = [
         {"host": "Website access requested", "development": "Development session requested",
-         "final": "Final script and host approval"}.get(pending["kind"], "Script run requested"),
+         "final": "Script and website access approval"}.get(pending["kind"], "Script run requested"),
         "",
         "Script: " + label[:180],
         "Job #%s | Version #%s" % (job["id"], version["id"]),
@@ -284,14 +293,30 @@ def summary(db, job):
                   "Live testing can have irreversible effects before final approval."]
     if pending.get("supervisor"):
         result = pending["supervisor"]
-        lines += ["", "Supervisor: " + result["decision"], result["comments"]]
+        conclusion = {
+            "approve": "Recommends approval", "reject": "Recommends denial",
+            "escalate": "Needs administrator judgment", "unavailable": "Review unavailable",
+            "not_reviewed": "Not reviewed (older request; request a fresh assessment)",
+        }.get(result["decision"], result["decision"])
+        lines += ["", "Supervisor: " + conclusion, result["comments"]]
+        if result["decision"] == "unavailable":
+            lines += ["No supervisor assessment was completed. Review the script manually before approving."]
     lines += ["", "HTTPS hosts (all paths; subdomains excluded):",
               *(["- " + host for host in pending["targets"]] or ["None (offline)."])]
     if pending["kind"] != "development":
         finding = pending["screening"]
-        if finding.get("summary"):
-            lines += ["", "Screening: " + " ".join(finding["summary"].split())[:240]]
-        lines += ["", "Once: one execution. Always: this unchanged version."]
+        screening = (
+            "Unavailable; manual review required." if finding.get("error") else {
+                "not_malicious": "No concerns flagged.",
+                "possibly_malicious": "Potential risks flagged; review the supervisor's comments and script.",
+                "malicious": "Malicious code detected; execution blocked.",
+                "not_configured": "Not configured.",
+            }.get(finding.get("level"), " ".join(finding.get("summary", "").split())[:240])
+        )
+        if screening:
+            lines += ["", "Security screening: " + screening]
+        lines += ["", "Approve one run: one execution with the listed hosts.",
+                  "Always allow this version: repeat runs with these hosts, until revoked. Changes need new approval."]
         if not version["reusable"]:
             lines[-1] = "One-time approval only: executable dependencies cannot be pinned."
     lines += ["\nDetails:", "SHA-256: " + version["fingerprint"],
