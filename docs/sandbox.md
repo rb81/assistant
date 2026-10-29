@@ -125,7 +125,7 @@ opens the scope selector; the broad all-scripts grant needs a confirmation.
 on the first line, followed by optional feedback. Both channels resolve the same
 one-use request when delivery is configured as `both`.
 
-Manage permissions in Telegram **/list → Permissions**, or
+Manage permissions in Telegram **/permissions** (also **/menu → Permissions**), or
 **./setup.sh tools → Script and website permissions**. Both use deterministic
 operations, not a model. Inspect scripts, stored code/version diffs, host scopes,
 pending requests and history; revoke grants or block/unblock scripts and hosts.

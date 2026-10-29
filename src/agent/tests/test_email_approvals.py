@@ -135,6 +135,66 @@ class ApprovalReplyTest(unittest.TestCase):
         attachment = list(smtp.return_value.send_message.call_args.args[0].iter_attachments())[0]
         self.assertEqual(attachment.get_payload(decode=True), details)
 
+    def test_permission_email_leads_with_request_and_keeps_reference_at_bottom(self):
+        from assistant_agent.email_approvals import permission_email_body
+        summary = "Script run requested\n\nScript: report.py\n\nDetails:\n" + '{"source": "print(1)"}'
+        for kind, reusable in (("run", True), ("run", False), ("host", True), ("host", False)):
+            with self.subTest(kind=kind, reusable=reusable):
+                body = permission_email_body(
+                    {"permission_type": kind, "reusable": reusable}, summary,
+                    "a" * 32, "b" * 64, "2026-10-29T12:00:00+00:00", 60,
+                )
+                self.assertLess(body.index("Script: report.py"), body.index("YOUR DECISION"))
+                self.assertLess(body.index("YOUR DECISION"), body.index("OTP:"))
+                self.assertNotIn('"source"', body)
+                self.assertEqual("APPROVE ALWAYS - " in body, reusable)
+                self.assertEqual("APPROVE ALWAYS FOR ALL SCRIPTS" in body, kind == "host")
+                quoted = "\n".join("> " + line for line in body.splitlines())
+                self.assertEqual(approval_reply(reply("APPROVE ONCE\nPublic data only.\n\n" + quoted)),
+                                 ("a" * 32, "b" * 64, "APPROVE ONCE\nPublic data only."))
+
+    def test_permission_summary_keeps_hashes_and_code_out_of_primary_card(self):
+        from assistant_agent.script_permissions import summary
+        db = MagicMock()
+        db.fetch_one.return_value = {
+            "id": 7, "entry": "report.py", "fingerprint": "b" * 64, "reusable": True,
+            "manifest": {"files": [{"path": "report.py", "source": "print(1)"}]},
+        }
+        pending = {"version_id": 7, "kind": "run", "purpose": "Make the daily report.",
+                   "screening": {"summary": "Possible risk: writes files."}, "targets": []}
+        job = {"id": 12, "metadata": {"permission_request": pending}}
+        card, details = summary(db, job).split("\n\nDetails:", 1)
+        self.assertIn("Script run requested\n\nScript: report.py", card)
+        self.assertIn("Possible risk: writes files.", card)
+        self.assertNotIn("b" * 64, card)
+        self.assertNotIn("print(1)", card)
+        self.assertIn("b" * 64, details)
+        self.assertIn("print(1)", details)
+        pending.update(kind="host", targets=["%s.example.com" % index for index in range(10)])
+        card, details = summary(db, job).split("\n\nDetails:", 1)
+        self.assertIn("Website access requested", card)
+        self.assertIn("full list (10 hosts)", card)
+        self.assertIn("9.example.com", details)
+        self.assertLess(len(card), 1800)
+
+    def test_permission_attachment_preserves_full_review_context(self):
+        import json
+        from assistant_agent.script_permissions import send_approval
+        db = MagicMock()
+        db.fetch_one.return_value = {"manifest": {"files": [{"source": "print(1)"}]}, "fingerprint": "b" * 64}
+        pending = {"id": "request", "version_id": 7, "kind": "host", "reusable": True,
+                   "targets": ["%s.example.com" % index for index in range(10)],
+                   "purpose": "Fetch public feeds.", "screening": {"summary": "Review network access."}}
+        job = {"id": 12, "metadata": {"permission_request": pending}}
+        with patch("assistant_agent.script_permissions.summary", return_value="Website access requested"), \
+                patch.object(EmailApprovals, "request") as request:
+            send_approval(db, self.config, job)
+        document = json.loads(request.call_args.kwargs["details_attachment"][1])
+        self.assertEqual(document["requested_hosts"], pending["targets"])
+        self.assertEqual(document["screening"], pending["screening"])
+        self.assertEqual(document["fingerprint"], "b" * 64)
+        self.assertEqual(document["files"][0]["source"], "print(1)")
+
     def test_multiple_or_incomplete_challenges_fail_closed(self):
         for body in (MARKER, self.confirmation + "\nOTP: " + "c" * 32):
             with self.subTest(body=body):

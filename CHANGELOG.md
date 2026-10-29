@@ -10,8 +10,10 @@
   `AGENT_TTS_VOICE`); the agent supplies only text and optional instructions.
   Admin CLI: `python -m assistant_agent.tts voices|test`. Audio is returned even
   when OpenRouter cost reporting lags, with later reconciliation.
-- Telegram offers only `/list` and `/new`; workstream selection from `/list`
-  now opens the workstream. Legacy commands reply with a hint.
+- Telegram offers `/menu`, `/new`, `/tasks`, and admin-only `/permissions`.
+  The main menu shows Conversations, Tasks, and administrator controls;
+  `/list` is removed, with no compatibility alias. Unknown commands reply with
+  a hint. Workstream selection opens the workstream.
 - Sandbox egress is deny-by-default: each command gets a per-run HTTPS proxy
   sidecar (SNI-checked, no private addresses, DNS sink). Agents request hosts
   with `network_access_request`; new approvals use exact hosts, not URL paths
@@ -22,7 +24,7 @@
   policy. Executions use read-only code snapshots; once grants are consumed
   before dispatch and registered scripts are not automatically redispatched.
 - Host grants can cover one execution, one script version, or all approved
-  scripts. Telegram **/list → Permissions**, setup Tools, and the admin CLI
+  scripts. Telegram **/permissions**, setup Tools, and the admin CLI
   expose versions, code/diffs, grants, blocks, and history. Revocation stops
   active sandbox runs. Legacy network rules keep their original scopes.
 - Script screening findings are cached per version/security profile; reusable
@@ -30,6 +32,10 @@
   script permission is not. Malicious findings remain hard-blocked.
 - Upgrading script permissions requires saving setup again and rebuilding/
   recreating services to provision revoke-only credentials and service grants.
+- Permission requests use compact summaries on Telegram and email, with code,
+  hashes, and full review context in Details or the attached manifest. Email
+  choices match the request's available scopes. Successful Telegram decisions
+  no longer include a redundant Permissions navigation button.
 - Telegram voice notes are converted to Ogg/Opus (ffmpeg in the task-agent
   image) so they appear as native voice messages, without a filename caption.
   `telegram_send` text is optional with attachments, and

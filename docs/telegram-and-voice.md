@@ -42,7 +42,7 @@ read the initialization container's original secret mount.
 
 - With no existing selection or association, a standalone message starts a
   workstream. Brief text/file bursts and albums are grouped.
-- `/list` opens **Workstreams | Jobs**, with paginated lists and status cards.
+- `/menu` opens **Conversations | Tasks**, with paginated lists and status cards.
   Viewing a card does not change the selected conversation; **Continue here**
   selects a workstream and confirms the switch in the chat. Ordinary messages continue
   its main conversation until you switch or use `/new`; selection survives
@@ -50,7 +50,7 @@ read the initialization container's original secret mount.
 - Reply to a task message or its status message to continue that task, including after
   completion. Explicit replies take precedence without switching the saved
   selection. Replies to deleted conversations start fresh, with a routing notice;
-  an unavailable saved selection requires `/list` or `/new` rather than silently
+  an unavailable saved selection requires `/menu` or `/new` rather than silently
   redirecting the message.
 - An answer to the only waiting requester clarification resumes it. If several tasks
   need answers, choose a task using the provided buttons.
@@ -58,12 +58,16 @@ read the initialization container's original secret mount.
   request. Its temporary title is **New workstream**. After three user messages
   the runtime requests a concise name; naming retries up to three times on failure,
   and shorter conversations keep the temporary title.
-- `/list` and `/new` are the only commands; the receiver registers them as the
-  bot's command menu at startup. Other commands such as the retired `/tasks`,
-  `/status` and `/cancel` are answered with a hint and open `/list`. Job cards
-  show task status; administrators can cancel tasks from them.
+- `/tasks` opens the task browser directly, including recent history.
+  `/permissions` opens script and website management for administrators only.
+  The receiver registers `/menu`, `/new`, and `/tasks` in the command menu at
+  startup and adds `/permissions` to the verified administrator's private-chat
+  menu. Non-admin users cannot access it, even by typing the command.
+  `/list` is removed, not an alias. Unknown commands such as `/status` and
+  `/cancel` receive a hint and open the main menu. `/start` provides onboarding
+  and opens the menu. Task cards show status; administrators can cancel tasks there.
 - Normal replies contain just the answer, without automatic task-number or completion
-  notifications. Job cards in `/list` show task IDs when needed. Set
+  notifications. Cards in `/tasks` show task IDs when needed. Set
   `agent.telegram.show_task_status: true` in the YAML configuration to restore one
   editable progress message per task. There is no token stream or disclosure of
   internal reasoning.
@@ -185,7 +189,8 @@ script requests offer **Approve once**, **Approve always**, **Deny** and optiona
 feedback. Website requests use **Always...** to choose this script version or all
 approved scripts; broad grants require confirmation. Once means one execution.
 
-Administrators see **Needs attention**, **Archived** and **Permissions** in `/list`.
+Administrators see **Needs attention**, **Archived** and **Permissions** in `/menu`.
+`/permissions` opens the same permissions browser directly.
 Permissions lists scripts, versions, downloadable code/diffs, host grants, legacy
 rules, pending requests and history. Revoke a grant or block a script/host here;
 confirmed permission changes stop active sandbox runs. Job cards offer

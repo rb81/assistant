@@ -238,22 +238,34 @@ def summary(db, job):
     )
     if not version:
         raise ValueError("Script version is no longer available")
+    entry = version["entry"]
+    label = "Inline command" if entry.startswith("inline:") else entry
     lines = [
-        "Script %s permission: job #%s" % (pending["kind"], job["id"]),
-        "Script #%s: %s" % (version["script_id"], version["entry"]),
-        "Version #%s | SHA-256 %s" % (version["id"], version["fingerprint"]),
-        "Purpose: " + pending["purpose"],
+        "Website access requested" if pending["kind"] == "host" else "Script run requested",
+        "",
+        "Script: " + label[:180],
+        "Job #%s | Version #%s" % (job["id"], version["id"]),
+        "",
+        "Why: " + " ".join(pending["purpose"].split())[:360],
     ]
     if pending["kind"] == "host":
-        lines += ["HTTPS hosts: " + ", ".join(pending["targets"]),
-                  "All HTTPS paths on these exact hosts; no implicit subdomains.",
-                  "Once = next execution. Always = this version. All scripts = all approved scripts."]
+        lines += ["", "Hosts:", *["- " + (host if len(host) <= 120 else host[:117] + "...")
+                                  for host in pending["targets"][:3]],
+                  *(["See Details for the full list (%s hosts)." % len(pending["targets"])]
+                    if len(pending["targets"]) > 3 or any(len(host) > 120 for host in pending["targets"]) else []),
+                  "", "Access includes all HTTPS paths on these hosts, not subdomains."]
     else:
-        lines += ["Once = one execution. Always = this version and exact invocation.",
-                  pending["screening"].get("summary", "Screening not configured.")]
+        finding = pending["screening"]
+        if finding.get("summary"):
+            lines += ["", "Screening: " + " ".join(finding["summary"].split())[:240]]
+        lines += ["", "Once: one execution. Always: this unchanged version."]
         if not version["reusable"]:
-            lines.append("Always is unavailable: the executable dependency graph cannot be pinned safely.")
-    lines += ["\nDetails:", json.dumps(version["manifest"], indent=2, sort_keys=True)]
+            lines[-1] = "One-time approval only: executable dependencies cannot be pinned."
+    lines += ["\nDetails:", "SHA-256: " + version["fingerprint"],
+              "Purpose: " + pending["purpose"],
+              "Screening: " + json.dumps(pending["screening"], sort_keys=True),
+              *(["HTTPS hosts: " + ", ".join(pending["targets"])] if pending["kind"] == "host" else []),
+              json.dumps(version["manifest"], indent=2, sort_keys=True)]
     return "\n".join(lines)
 
 
@@ -262,14 +274,19 @@ def send_approval(db, config, job, suffix=""):
     payload = approval_payload(job)
     if not payload:
         raise ValueError("No script permission request is pending")
-    version = db.fetch_one("SELECT manifest FROM sandbox_script_versions WHERE id = %s", (payload["version_id"],))
+    version = db.fetch_one("SELECT manifest, fingerprint FROM sandbox_script_versions WHERE id = %s", (payload["version_id"],))
     if not version:
         raise ValueError("Script version is no longer available")
+    pending = job["metadata"]["permission_request"]
     return EmailApprovals(db, config).request(
         "permission:%s:%s%s" % (job["id"], payload["request_id"], suffix),
         payload, summary(db, job), ttl_minutes=60,
+        email_subject="Assistant approval: " + ("website access" if payload["permission_type"] == "host" else "script run"),
         details_attachment=("script-version-%s.json" % payload["version_id"],
-                            json.dumps(version["manifest"], indent=2, sort_keys=True).encode()),
+                            json.dumps({**version["manifest"], "fingerprint": version["fingerprint"],
+                                        "requested_hosts": pending["targets"], "purpose": pending["purpose"],
+                                        "screening": pending["screening"]},
+                                       indent=2, sort_keys=True).encode()),
     )
 
 

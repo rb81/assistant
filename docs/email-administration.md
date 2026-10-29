@@ -31,12 +31,12 @@ optional feedback follows. Full script manifests are attached for review.
 See
 [network access approvals](sandbox.md#network-access-approvals).
 
-Telegram **/list → Permissions** and setup **Tools → Script and website
+Telegram **/permissions** and setup **Tools → Script and website
 permissions** list registered versions, host grants, legacy rules and approval
 history, and support revocation and blocking. Changes also stop active sandbox
 runs; failures to reach the broker are reported explicitly.
 
-Use `/list` → **Needs attention** for paused tasks and its **Approval inbox** for
+Use `/menu` → **Needs attention** for paused tasks and its **Approval inbox** for
 pending confirmations, including held inbound emails. Expired buttons offer a fresh
 confirmation. Expiry never deletes the job: its status card can request a current
 approval even after the old confirmation is no longer retained.

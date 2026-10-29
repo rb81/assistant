@@ -79,6 +79,21 @@ def test_permission_decision_applies_optional_feedback_without_generic_job_revie
             patch("assistant_agent.script_permissions.apply_decision", return_value="Approved") as apply:
         ui.approval("123", "a" * 24, "once")
     apply.assert_called_once_with(ui.db, pending["payload"], "once", "Public data only.", "telegram-admin")
+    assert ui.client.call.call_args.args[1] == {"chat_id": "123", "text": "Approved"}
+
+
+def test_permission_delivery_keeps_code_in_attachment_not_message_body():
+    db = MagicMock()
+    payload = {"kind": "permission", "job_id": 12, "permission_type": "run", "reusable": True}
+    with patch("assistant_agent.email_approvals.send_admin_email") as email, \
+            patch("assistant_agent.telegram.TelegramClient") as telegram:
+        EmailApprovals(db, config("both")).request(
+            "permission:12", payload, 'Script run requested\n\nScript: report.py\n\nDetails:\n{"source": "print(1)"}',
+            details_attachment=("version.json", b'{"source": "print(1)"}'),
+        )
+    assert "print(1)" not in telegram.return_value.call.call_args.args[1]["text"]
+    assert "print(1)" not in email.call_args.args[2]
+    assert b"print(1)" in email.call_args.kwargs["attachment"][1]
 
 
 def test_permission_management_is_admin_only(ui):
@@ -201,7 +216,7 @@ def test_email_only_approvals_need_no_telegram_admin_mapping():
 def test_home_and_pagination_do_not_switch_selected_conversation(ui):
     ui.home("123")
     keyboard = ui.client.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
-    assert [button["text"] for button in keyboard[0]] == ["Workstreams", "Jobs"]
+    assert [button["text"] for button in keyboard[0]] == ["Conversations", "Tasks"]
     assert any(button["text"] == "Needs attention" for row in keyboard for button in row)
     ui.db.fetch_all.return_value = [{"id": number, "title": "Stream %s" % number} for number in range(20, 11, -1)]
     ui.page("123", "streams")
@@ -335,7 +350,7 @@ def private_message(text, message_id=50):
     }}
 
 
-@pytest.mark.parametrize("text", ["/status", "/tasks", "/cancel 12", "/status@assistant_bot"])
+@pytest.mark.parametrize("text", ["/list", "/status", "/cancel 12", "/status@assistant_bot"])
 def test_legacy_commands_are_not_routed_or_executed(ui, text):
     receiver = ui.receiver
     receiver.db.fetch_one.return_value = None
@@ -344,8 +359,33 @@ def test_legacy_commands_are_not_routed_or_executed(ui, text):
     requests.assert_not_called()
     receiver.db.update_job_status.assert_not_called()
     texts = [call.args[1]["text"] for call in receiver.client.call.call_args_list if call.args[0] == "sendMessage"]
-    assert texts[0] == "Unknown command. Use /list or /new."
+    assert texts[0] == "Unknown command. Use /menu, /tasks or /new."
     assert texts[-1] == "Choose what to manage:"
+
+@pytest.mark.parametrize("command,method,args", [
+    ("/menu", "home", ("123",)),
+    ("/tasks", "page", ("123", "jobs", 0)),
+    ("/permissions", "permissions", ("123",)),
+    ("/tasks@assistant_bot", "page", ("123", "jobs", 0)),
+])
+def test_menu_commands_open_browser_without_starting_agent_job(ui, command, method, args):
+    ui.db.fetch_one.return_value = None
+    with patch.object(TelegramAdmin, method) as browse, \
+            patch("assistant_agent.telegram_ingest.RequestService") as requests:
+        ui.receiver.ingest(private_message(command))
+    browse.assert_called_once_with(*args)
+    requests.assert_not_called()
+
+
+def test_permissions_command_rejects_non_admin_without_starting_job(ui):
+    ui.db.fetch_one.return_value = None
+    message = private_message("/permissions")
+    message["message"]["from"]["id"] = 456
+    message["message"]["chat"]["id"] = 456
+    with patch("assistant_agent.telegram_ingest.RequestService") as requests:
+        ui.receiver.ingest(message)
+    requests.assert_not_called()
+    assert ui.client.call.call_args.args[1]["text"] == "Administrator permission is required"
 
 
 def test_paths_that_look_like_commands_still_reach_the_assistant(ui):
@@ -374,6 +414,12 @@ def test_receiver_registers_only_current_commands():
         client.return_value.call.return_value = {"id": 9}
         TelegramReceiver(MagicMock(), config())
     client.return_value.call.assert_any_call("setMyCommands", {"commands": [
-        {"command": "list", "description": "Browse workstreams and jobs"},
+        {"command": "menu", "description": "Open the main menu"},
         {"command": "new", "description": "Start a new workstream"},
+        {"command": "tasks", "description": "View tasks and recent history"},
     ]})
+    scoped = {call.args[1]["scope"]["chat_id"]: call.args[1]["commands"]
+              for call in client.return_value.call.call_args_list
+              if call.args[0] == "setMyCommands" and "scope" in call.args[1]}
+    assert [item["command"] for item in scoped["123"]] == ["menu", "new", "tasks", "permissions"]
+    assert [item["command"] for item in scoped["456"]] == ["menu", "new", "tasks"]

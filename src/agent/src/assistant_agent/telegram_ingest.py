@@ -18,8 +18,9 @@ from .transcription import transcribe_audio
 
 LOGGER = logging.getLogger("assistant.telegram")
 BOT_COMMANDS = [
-    {"command": "list", "description": "Browse workstreams and jobs"},
+    {"command": "menu", "description": "Open the main menu"},
     {"command": "new", "description": "Start a new workstream"},
+    {"command": "tasks", "description": "View tasks and recent history"},
 ]
 
 
@@ -48,6 +49,15 @@ class TelegramReceiver:
         self.bot_id = str(self.client.call("getMe", {})["id"])
         try:
             self.client.call("setMyCommands", {"commands": BOT_COMMANDS})
+            from .approval_channels import telegram_admins
+            admins = telegram_admins(config)
+            for sender in config.get_list("agent.telegram.allowed_user_ids"):
+                commands = [*BOT_COMMANDS]
+                if sender in admins:
+                    commands.append({"command": "permissions", "description": "Manage script and website permissions"})
+                self.client.call("setMyCommands", {
+                    "scope": {"type": "chat", "chat_id": sender}, "commands": commands,
+                })
         except Exception:
             LOGGER.warning("could not register Telegram bot commands")
 
@@ -201,12 +211,20 @@ class TelegramReceiver:
         body = str(message.get("text") or message.get("caption") or "")
         command, _, command_body = body.strip().partition(" ")
         command = command.split("@", 1)[0]
-        if command in {"/list", "/start"} or (command.startswith("/") and command != "/new"
+        if command in {"/menu", "/tasks", "/permissions", "/start"} or (command.startswith("/") and command != "/new"
                                               and command[1:].replace("_", "").isalnum()):
-            if command != "/list":
-                admin_ui.send(sender, "Connected. Use /list to browse workstreams and jobs, or /new to start a new workstream."
-                              if command == "/start" else "Unknown command. Use /list or /new.")
-            admin_ui.home(sender)
+            if command == "/tasks":
+                admin_ui.page(sender, "jobs", 0)
+            elif command == "/permissions":
+                try:
+                    admin_ui.permissions(sender)
+                except ValueError as exc:
+                    admin_ui.send(sender, str(exc))
+            else:
+                if command != "/menu":
+                    admin_ui.send(sender, "Connected. Use /menu to browse conversations, /tasks for tasks, or /new to start fresh."
+                                  if command == "/start" else "Unknown command. Use /menu, /tasks or /new.")
+                admin_ui.home(sender)
             self.db.set_state("telegram:%s:command:%s" % (self.bot_id, update["update_id"]), True)
             return
         is_new_workstream = command == "/new"
@@ -227,14 +245,14 @@ class TelegramReceiver:
                 )
                 TelegramDelivery(self.db, self.config).send(
                     {"id": None},
-                    "Your selected workstream is no longer available. This message was not routed; use /list or /new.",
+                    "Your selected workstream is no longer available. This message was not routed; use /menu or /new.",
                     destination=sender, purpose="command:" + external,
                 )
                 return
             if not message.get("reply_to_message") and selected and selected["unavailable_workstream_id"] is not None:
                 TelegramDelivery(self.db, self.config).send(
                     {"id": None},
-                    "Your previous workstream is no longer available. This message was not routed; use /list or /new.",
+                    "Your previous workstream is no longer available. This message was not routed; use /menu or /new.",
                     destination=sender, purpose="command:" + external,
                 )
                 return
@@ -311,7 +329,7 @@ class TelegramReceiver:
             })
             self.client.call("sendMessage", {
                 "chat_id": sender,
-                "text": "Now in workstream: %s\nSend a message to continue here, or use /list to switch." % stream["title"],
+                "text": "Now in workstream: %s\nSend a message to continue here, or use /menu to switch." % stream["title"],
             }, sending=True)
             return
         if len(pieces) != 3 or pieces[0] != "task" or not all(piece.isdigit() for piece in pieces[1:]):

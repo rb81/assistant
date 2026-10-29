@@ -142,12 +142,26 @@ NETWORK_EMAIL_INSTRUCTIONS = (
     "  APPROVE ONCE | APPROVE ALWAYS | BLOCK ONCE | BLOCK ALWAYS | CANCEL JOB\n"
     "Optional feedback for the agent can follow on the next lines."
 )
-PERMISSION_EMAIL_INSTRUCTIONS = (
-    "Reply quoting this original message. First line: APPROVE ONCE, APPROVE ALWAYS, or DENY.\n"
-    "For website requests only: APPROVE ALWAYS FOR ALL SCRIPTS is also available.\n"
-    "Always for this script is available only when executable dependencies can be pinned.\n"
-    "Optional feedback follows on subsequent lines. Once means one execution, not one job."
-)
+
+
+def permission_email_body(payload, summary, token, digest, expires, ttl_minutes):
+    choices = ["APPROVE ONCE - one execution"]
+    if payload.get("reusable"):
+        choices.append("APPROVE ALWAYS - this unchanged script version")
+    if payload.get("permission_type") == "host":
+        choices.append("APPROVE ALWAYS FOR ALL SCRIPTS - all approved scripts")
+    choices.append("DENY")
+    return (
+        "%s\n\n%s\n\nYOUR DECISION\n"
+        "Reply with one of these on the first line:\n%s\n\n"
+        "Optional feedback can follow on the next lines.\n"
+        "Keep this original message quoted in your reply.\n"
+        "Expires in %s minutes.\n\n"
+        "Full code and hashes are in the attached version manifest.\n\n"
+        "APPROVAL REFERENCE (keep in your reply)\n"
+        "OTP: %s\nRequest hash: %s\nExpires: %s"
+    ) % (MARKER, summary.split("\n\nDetails:", 1)[0].replace("See Details", "See attachment"), "\n".join(choices),
+         ttl_minutes, token, digest, expires)
 
 
 def permission_keyboard(callback: str, payload: dict) -> list:
@@ -263,16 +277,19 @@ class EmailApprovals:
                     delivery_errors.append(("Telegram", exc))
             if mode in {"email", "both"}:
                 try:
-                    send_admin_email(
-                        self.config, email_subject,
+                    body = (
+                        permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes)
+                        if payload.get("kind") == "permission" else
                         "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n%s\n\n%s" % (
                             MARKER, token, digest, pending["expires"],
-                            PERMISSION_EMAIL_INSTRUCTIONS if payload.get("kind") == "permission" else
                             NETWORK_EMAIL_INSTRUCTIONS if payload.get("kind") == "network" else
                             "Reply with this original message to confirm once. Add guidance above it if needed.\n"
                             "Review the requested action below before confirming.",
                             summary[:20000],
-                        ),
+                        )
+                    )
+                    send_admin_email(
+                        self.config, email_subject, body,
                         **({"attachment": details_attachment} if details_attachment else {}),
                     )
                 except Exception as exc:

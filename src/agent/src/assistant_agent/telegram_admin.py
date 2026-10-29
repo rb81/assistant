@@ -34,7 +34,7 @@ class TelegramAdmin:
         return self.client.call("sendMessage", payload, sending=True)
 
     def home(self, sender):
-        rows = [[("Workstreams", "ui:streams:0"), ("Jobs", "ui:jobs:0")]]
+        rows = [[("Conversations", "ui:streams:0"), ("Tasks", "ui:jobs:0")]]
         if self.is_admin(sender):
             rows.append([("Needs attention", "ui:attention:0"), ("Archived", "ui:archived:0")])
             rows.append([("Permissions", "ui:permissions:0")])
@@ -370,7 +370,7 @@ class TelegramAdmin:
         if not isinstance(pending, dict) or reply_id != pending["message_id"]:
             return False
         if not self.is_admin(sender) or datetime.fromisoformat(pending["expires"]) <= datetime.now(timezone.utc):
-            self.send(sender, "This reply prompt expired. Open /list to try again.")
+            self.send(sender, "This reply prompt expired. Open /menu to try again.")
             return True
         text = str(message.get("text") or "").strip()
         if not text or len(text) > (60 if pending["action"].startswith("rename") else 4000):
@@ -491,7 +491,7 @@ class TelegramAdmin:
                     if script_permissions.approval_payload(job) == payload and job["status"] == "needs_review":
                         script_permissions.send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
                     raise
-                self.send(sender, result, [[("Permissions", "ui:permissions:0")]])
+                self.send(sender, result)
                 self.db.execute("DELETE FROM runtime_state WHERE key = %s",
                                 ("permission-feedback:%s:%s" % (callback_id, sender),))
             else:
