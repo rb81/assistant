@@ -1,10 +1,7 @@
 """Troubleshooting menus and factory reset for an installed Assistant."""
-import json
-import os
 import shlex
-from datetime import datetime
 
-from .setup import AGENT_SERVICES, LONG_RUNNING_SERVICES, OVERRIDES_FILE, DockerCommandError, SetupError, ensure_docker_access
+from .setup import LONG_RUNNING_SERVICES, OVERRIDES_FILE, DockerCommandError, SetupError, ensure_docker_access, parse_environment
 
 
 ADMIN = ["run", "--rm", "--no-deps", "-T", "--entrypoint", "python", "task-agent", "-m", "assistant_agent.admin_commands"]
@@ -204,111 +201,74 @@ def tools_menu(instance, answer, confirm, console):
     Tools(instance, answer, confirm, console).main()
 
 
-RESET = ["run", "--rm", "--no-deps", "-T", "--entrypoint", "python", "downloader", "-m", "assistant_agent.factory_reset"]
-PG_DUMP = ["exec", "-T", "postgres", "pg_dump", "--no-password", "-U", "assistant", "-d", "assistant", "--format=custom"]
-
-
 def custom_database(instance):
     overrides = (instance.data / OVERRIDES_FILE).read_text() if (instance.data / OVERRIDES_FILE).is_file() else ""
-    names = ("AGENT_DATABASE_HOST", "AGENT_DATABASE_NAME", "AGENT_DATABASE_USER")
-    return "DATABASE_URL" in instance.secret_values or any(instance.values.get(name) for name in names) or any(name + "=" in overrides for name in names)
-
-
-def choose_reset_categories(answer, console):
-    import questionary
-    from rich.table import Table
-
-    from .factory_reset import CATEGORIES, expand
-
-    selected = []
-    while True:
-        selected = answer(questionary.checkbox(
-            "Data to delete (Space ticks, a toggles all, Enter confirms)",
-            choices=[questionary.Choice(category.title, value=key, checked=key in selected) for key, category in CATEGORIES.items()]))
-        if not selected:
-            return None
-        categories, added = expand(selected)
-        table = Table(title="Will be deleted")
-        for heading in ("Data", "Contents", "Why"):
-            table.add_column(heading)
-        for key in categories:
-            category = CATEGORIES[key]
-            contents = ", ".join([*category.tables, *category.paths]) or "runtime_state rows"
-            table.add_row(category.title, contents + ("\n" + category.notes if category.notes else ""), added.get(key, "selected"))
-        console.print(table)
-        if added:
-            console.print("Some items were added automatically so the remaining data stays consistent.")
-        choice = answer(questionary.select("Selection", choices=["Continue", "Change selection", "Cancel"]))
-        if choice == "Continue":
-            return categories
-        if choice == "Cancel":
-            return None
-        selected = categories
+    override_values, _ = parse_environment(overrides)
+    names = ("AGENT_DATABASE_HOST", "AGENT_DATABASE_NAME", "AGENT_DATABASE_USER", "AGENT_DATABASE_PORT")
+    configured = any(instance.values.get(name) or override_values.get(name) for name in names)
+    configured = configured or any(instance.defaults.get("agent.database." + key, default) != default
+                                   for key, default in (("host", "postgres"), ("name", "assistant"),
+                                                        ("user", "assistant"), ("port", 5432)))
+    return "DATABASE_URL" in instance.secret_values or configured
 
 
 def factory_reset_menu(instance, answer, confirm, console):
     import questionary
 
-    from .factory_reset import PRESERVED
-
-    console.print("Factory reset permanently deletes the data you select and restarts with a clean slate.\nAlways kept: " + PRESERVED, markup=False)
-    categories = choose_reset_categories(answer, console)
-    if not categories:
-        console.print("Nothing selected; nothing was deleted.")
+    if custom_database(instance):
+        console.print("Factory reset cannot destroy a custom database. Reset the configured database manually.", markup=False)
         return
-    keep_position = True
-    if "emails" in categories or "runtime_state" in categories:
-        keep_position = confirm("Keep the mailbox position, so messages already in the inbox are not downloaded and processed again?", True)
-    backup = confirm("Back up the database and every file being deleted to backups/ first? (strongly recommended)", True)
-    if backup and custom_database(instance):
-        console.print("A custom database is configured; the built-in backup only covers the bundled PostgreSQL. Back it up yourself first.")
-        backup = False
-        if not confirm("Continue WITHOUT a database backup?", False):
-            return
-    if answer(questionary.text("Type RESET to permanently delete the selected data")).strip() != "RESET":
+    postgres_root = instance.data / "postgres"
+    pgdata = postgres_root / "pgdata"
+    if postgres_root.is_symlink() or pgdata.is_symlink() or (pgdata.exists() and not pgdata.is_dir()):
+        console.print("Refusing to reset PostgreSQL: data/postgres/pgdata must be a real directory.", markup=False)
+        return
+    console.print(
+        "Factory reset permanently destroys and rebuilds the bundled PostgreSQL cluster, including all database data, "
+        "indexes, sequences and migration history. It preserves settings, secrets, AGENT.md and files in the workspace. "
+        "No backup will be made.",
+        markup=False,
+    )
+    if answer(questionary.text("Type RESET to destroy and rebuild the database")).strip() != "RESET":
         console.print("Cancelled; nothing was deleted.")
         return
     ensure_docker_access(instance, confirm)
-    run_factory_reset(instance, console, categories, keep_position, backup)
+    run_factory_reset(instance, console)
 
 
-def run_factory_reset(instance, console, categories, keep_position, backup):
+def run_factory_reset(instance, console):
+    if custom_database(instance):
+        raise SetupError("Factory reset cannot destroy a custom database; reset it manually first")
+    postgres_root = instance.data / "postgres"
+    pgdata = postgres_root / "pgdata"
+    if postgres_root.is_symlink() or pgdata.is_symlink() or (pgdata.exists() and not pgdata.is_dir()):
+        raise SetupError("Refusing to reset PostgreSQL: data/postgres/pgdata must be a real directory")
+
     def step(label, arguments, stdout=None):
         console.print(label + "\n$ " + ("sudo " if getattr(instance, "use_sudo", False) else "") + "docker compose --env-file data/.env " + shlex.join(arguments),
                       markup=False, highlight=False, soft_wrap=True)
         if instance.compose_interactive(arguments, stdout=stdout):
             raise SetupError(label + " failed; see the output above")
 
-    selection = ",".join(categories)
-    step("Building the maintenance image (includes the reset tool)", ["build", "downloader"])
-    step("Starting PostgreSQL", ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
-    running = sorted(set(instance.compose(["ps", "--status", "running", "--services"]).split()) & set(AGENT_SERVICES))
-    destination = None
-    if backup:
-        backups = instance.data / "backups"
-        if backups.is_symlink():
-            raise SetupError("backups/ must be a real directory, not a symlink")
-        destination = backups / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-factory-reset")
-        destination.mkdir(mode=0o700, parents=True)
-        for name, arguments in (("database.dump", PG_DUMP), ("files.tar.gz", [*RESET, "archive", "--categories", selection])):
-            with os.fdopen(os.open(destination / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as handle:
-                step("Backing up to " + str(destination / name), arguments, stdout=handle)
-        (destination / "manifest.json").write_text(json.dumps({"categories": categories, "keep_mailbox_position": keep_position,
-                                                               "created": datetime.now().isoformat()}, indent=2))
-        console.print("Backup complete: " + str(destination), markup=False)
+    running = sorted(set(instance.compose(["ps", "--status", "running", "--services"]).split()))
     if running:
-        step("Stopping services that write data", ["stop", *running])
+        step("Stopping services before destroying the database", ["stop", *running])
     try:
-        arguments = [*RESET, "apply", "--categories", selection] + ([] if keep_position else ["--discard-mailbox-position"])
-        step("Deleting the selected data", arguments)
+        step("Destroying the PostgreSQL data directory",
+             ["run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "/bin/rm", "postgres", "-rf",
+              "/var/lib/postgresql/data/pgdata"])
+        step("Rebuilding PostgreSQL and applying the base schema",
+             ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
+        services = sorted((set(running) - {"postgres"}) | {"workspace-indexer"})
+        step("Starting services and reindexing the preserved workspace",
+             ["up", "-d", "--wait", "--wait-timeout", "180", *services])
     finally:
         if running:
             try:
-                step("Restarting the services that were running", ["start", *running])
+                still_running = set(instance.compose(["ps", "--status", "running", "--services"]).split())
+                missing = sorted(set(running) - still_running)
+                if missing:
+                    step("Restoring services that were running before reset", ["up", "-d", *missing])
             except SetupError as exc:
                 console.print(str(exc) + ". Start them with: docker compose --env-file data/.env up -d", markup=False)
-    console.print("Factory reset complete. The workspace index rebuilds automatically; settings, credentials and AGENT.md were not touched.")
-    if destination:
-        console.print("To undo, stop the writer services, then from the repository directory:\n"
-                      "  docker compose --env-file data/.env exec -T postgres pg_restore --clean --if-exists -U assistant -d assistant < " + str(destination / "database.dump") + "\n"
-                      "  tar -xzf " + str(destination / "files.tar.gz") + " -C " + str(instance.root), markup=False, highlight=False, soft_wrap=True)
+    console.print("Factory reset complete. PostgreSQL was rebuilt; settings, secrets, AGENT.md and workspace files were preserved.", markup=False)

@@ -93,7 +93,7 @@ Send a task through your configured channel. For email administration, send `/ad
 | `./setup.sh secrets status` | Check credential configuration |
 | `./setup.sh secrets update OPENROUTER_API_KEY` | Replace a credential |
 | `./setup.sh tools` | Inspect services, logs, jobs, memories, reminders, and workstreams |
-| `./setup.sh reset` | Selectively reset data, with an optional backup and confirmation |
+| `./setup.sh reset` | Destroy and rebuild the bundled PostgreSQL cluster; preserve files, settings, and secrets |
 | `docker compose --env-file data/.env down` | Stop the stack without deleting persistent volumes |
 
 ## A clean home for everything

@@ -262,7 +262,6 @@ class SetupTest(unittest.TestCase):
                     self.assertEqual((Path(root) / "data/.secrets/POSTGRES_PASSWORD").exists(), finish == "save")
 
     def test_factory_reset_preserves_migrated_credentials_and_setup_state(self):
-        from assistant_agent.factory_reset import expand
         from assistant_agent.setup_tools import run_factory_reset
         with tempfile.TemporaryDirectory() as root, self.credential_volume_backend() as records:
             instance = self.saved_configuration(root)
@@ -272,8 +271,10 @@ class SetupTest(unittest.TestCase):
             files = {path: path.read_bytes() for path in
                      (instance.state_path, instance.env_path, Path(root) / "data/.compose-secrets.yaml")}
             with patch.object(instance, "compose", return_value="task-agent\npostgres\n"), patch.object(instance, "compose_interactive", return_value=0) as compose:
-                run_factory_reset(instance, MagicMock(), expand(["workstreams"])[0], False, False)
+                run_factory_reset(instance, MagicMock())
             self.assertFalse(any("down" in call.args[0] or "volume" in call.args[0] for call in compose.call_args_list))
+            self.assertTrue(any("--entrypoint" in call.args[0] and "/var/lib/postgresql/data/pgdata" in call.args[0]
+                                for call in compose.call_args_list))
             self.assertEqual(records, previous)
             for path, content in files.items():
                 self.assertEqual(path.read_bytes(), content)

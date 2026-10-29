@@ -1,8 +1,4 @@
-"""Factory reset: delete selected Assistant data while keeping settings, credentials and instructions.
-
-Runs inside the downloader container, which mounts data/share and data/private/artifacts read-write.
-The category graph is importable without database dependencies so setup can present it on the host.
-"""
+"""Selective deletion utility; setup's factory reset rebuilds PostgreSQL entirely."""
 import argparse
 import json
 import os
@@ -73,11 +69,6 @@ CATEGORIES = {
         reason="workstreams own or retain all task data",
         notes="Also removes all task data; does not delete remote provider objects."),
 }
-
-PRESERVED = ("data/.env, data/overrides.env, data/.secrets/ (including setup state), credential Docker volumes, "
-             "data/.compose-secrets.yaml, data/config/ (agent.yaml, AGENT.md), data/skills, "
-             "TLS certificates, Ollama models, ClamAV signatures and database schema/migration history")
-
 
 def expand(selected):
     """Return (all categories to delete in CATEGORIES order, {added category: reason it was added})."""
@@ -225,7 +216,7 @@ def reset_database(connection, categories, keep_mailbox_position=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Factory reset of selected Assistant data (run by ./scripts/setup.sh reset)")
+    parser = argparse.ArgumentParser(description="Selective data deletion utility; not the full setup factory reset")
     parser.add_argument("action", choices=("archive", "apply"))
     parser.add_argument("--categories", required=True, help="comma-separated category keys")
     parser.add_argument("--discard-mailbox-position", action="store_true")

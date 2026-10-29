@@ -298,9 +298,11 @@ costs and worker crashes leave an unresolved ledger entry that blocks new
 requests within the rolling period. Administrators must reconcile it against
 OpenRouter activity in `model_service_calls` (set the verified `cost_usd` and a
 terminal `status`, never assume zero). `list_presets` reports unresolved count;
-errors identify the request ID where available. Setup factory reset has a
-separate **Model presets and model-tool spending history** category; selecting
-it explicitly clears presets and spending history but not generated files.
+errors identify the request ID where available. `./setup.sh reset` destroys and
+rebuilds the bundled PostgreSQL cluster, clearing presets and spending history
+along with all other database state. It preserves files and starts workspace
+reindexing after the database is rebuilt when workspace indexing is enabled;
+see [factory reset](running-assistant.md#factory-reset).
 
 ## Text-to-speech Tool
 

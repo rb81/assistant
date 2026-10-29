@@ -193,65 +193,70 @@ class ResetOrchestrationTest(unittest.TestCase):
         instance.root = Path(root)
         instance.data = instance.root / "data"
         instance.values, instance.secret_values = {}, {}
+        instance.defaults = AppConfig({})
         instance.use_sudo = False
         instance.compose.return_value = "task-agent\npostgres\ndownloader\n"
         return instance
 
-    def test_backup_precedes_stopping_and_deletion_and_services_restart(self):
+    def test_full_reset_rebuilds_postgres_and_starts_workspace_indexer(self):
         from assistant_agent.setup_tools import run_factory_reset
         with tempfile.TemporaryDirectory() as root:
             instance = self.instance(root)
             instance.compose_interactive.return_value = 0
-            run_factory_reset(instance, MagicMock(), ["memories"], True, True)
+            run_factory_reset(instance, MagicMock())
             steps = [arguments.args[0] for arguments in instance.compose_interactive.call_args_list]
-            self.assertEqual(steps[0], ["build", "downloader"])
-            self.assertEqual(steps[2][:4], ["exec", "-T", "postgres", "pg_dump"])
-            self.assertIn("archive", steps[3])
-            self.assertEqual(steps[4], ["stop", "downloader", "task-agent"])
-            self.assertEqual(steps[5][-3:], ["apply", "--categories", "memories"])
-            self.assertEqual(steps[6], ["start", "downloader", "task-agent"])
-            backup = next((Path(root) / "data/backups").iterdir())
-            self.assertEqual(oct(backup.stat().st_mode & 0o777), "0o700")
-            self.assertEqual(oct((backup / "database.dump").stat().st_mode & 0o777), "0o600")
-            self.assertIn('"memories"', (backup / "manifest.json").read_text())
+            self.assertEqual(steps[0], ["stop", "downloader", "postgres", "task-agent"])
+            self.assertEqual(steps[1][-3:], ["postgres", "-rf", "/var/lib/postgresql/data/pgdata"])
+            self.assertIn("--user", steps[1])
+            self.assertEqual(steps[2], ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
+            self.assertEqual(steps[3], ["up", "-d", "--wait", "--wait-timeout", "180", "downloader", "task-agent", "workspace-indexer"])
+            self.assertFalse((Path(root) / "data/backups").exists())
 
-    def test_failed_backup_deletes_nothing(self):
+    def test_reset_failure_restores_previously_running_services(self):
         from assistant_agent.setup import SetupError
         from assistant_agent.setup_tools import run_factory_reset
         with tempfile.TemporaryDirectory() as root:
             instance = self.instance(root)
-            instance.compose_interactive.side_effect = lambda arguments, stdout=None: 1 if "pg_dump" in arguments else 0
-            with self.assertRaisesRegex(SetupError, "Backing up"):
-                run_factory_reset(instance, MagicMock(), ["emails", "jobs", "reminders"], True, True)
+            instance.compose.side_effect = ["downloader\npostgres\ntask-agent\n", ""]
+            instance.compose_interactive.side_effect = lambda arguments, stdout=None: 1 if "--entrypoint" in arguments else 0
+            with self.assertRaisesRegex(SetupError, "Destroying the PostgreSQL"):
+                run_factory_reset(instance, MagicMock())
             steps = [arguments.args[0] for arguments in instance.compose_interactive.call_args_list]
-            self.assertFalse(any(step[0] == "stop" or "apply" in step for step in steps))
+            self.assertEqual(steps[-1], ["up", "-d", "downloader", "postgres", "task-agent"])
 
     def test_failed_deletion_still_restarts_services(self):
         from assistant_agent.setup import SetupError
         from assistant_agent.setup_tools import run_factory_reset
         with tempfile.TemporaryDirectory() as root:
             instance = self.instance(root)
-            instance.compose_interactive.side_effect = lambda arguments, stdout=None: 1 if "apply" in arguments else 0
-            with self.assertRaisesRegex(SetupError, "Deleting"):
-                run_factory_reset(instance, MagicMock(), ["caches"], False, False)
-            self.assertEqual(instance.compose_interactive.call_args_list[-1], call(["start", "downloader", "task-agent"], stdout=None))
-            self.assertIn("--discard-mailbox-position", instance.compose_interactive.call_args_list[-2].args[0])
+            instance.compose.side_effect = ["downloader\npostgres\ntask-agent\n", ""]
+            instance.compose_interactive.side_effect = lambda arguments, stdout=None: 1 if arguments[-1] == "postgres" and arguments[0] == "up" else 0
+            with self.assertRaisesRegex(SetupError, "Rebuilding PostgreSQL"):
+                run_factory_reset(instance, MagicMock())
+            self.assertEqual(instance.compose_interactive.call_args_list[-1], call(["up", "-d", "downloader", "postgres", "task-agent"], stdout=None))
 
-    def test_menu_requires_typed_confirmation_before_docker(self):
+    def test_menu_requires_typed_confirmation_and_refuses_custom_database(self):
         import questionary
         from assistant_agent.setup_tools import factory_reset_menu
         with tempfile.TemporaryDirectory() as root:
             instance = self.instance(root)
-            responses = iter([["emails"], "Continue", True, True, "reset"])
+            responses = iter(["reset"])
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access") as access, \
-                    patch.object(questionary, "checkbox", wraps=questionary.checkbox):
+                    patch.object(questionary, "text", wraps=questionary.text):
                 factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
             run.assert_not_called()
             access.assert_not_called()
-            responses = iter([["emails"], "Continue", False, True, "RESET"])
+            responses = iter(["RESET"])
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access"):
                 factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
-            run.assert_called_once_with(instance, unittest.mock.ANY, ["jobs", "emails", "reminders"], False, True)
+            run.assert_called_once_with(instance, unittest.mock.ANY)
+            instance.secret_values["DATABASE_URL"] = "postgresql://custom"
+            console = MagicMock()
+            with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access") as access:
+                factory_reset_menu(instance, lambda question: self.fail("custom database must be refused"), lambda label, default=False: False, console)
+            run.assert_not_called()
+            access.assert_not_called()
+            self.assertIn("custom database", str(console.print.call_args).lower())
 
 
 class ToolsMenuTest(unittest.TestCase):

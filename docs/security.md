@@ -141,10 +141,16 @@ any step fails, `data/.secrets` stays authoritative, the volume is kept, and set
 retries removal the next time it opens. Moving back to the
 volume later copies the current host values, including intervening updates.
 
-Factory reset preserves both credential stores and `data/.secrets/state.json`; it
-does not delete Docker volumes. Selecting the runtime-state reset category can
-still clear cached provider tokens and pending approvals in PostgreSQL, as
-described by that category; it does not erase the stored setup credentials.
+Factory reset (`./setup.sh reset`) permanently destroys and rebuilds the bundled
+PostgreSQL cluster at `data/postgres/pgdata`, including all databases, rows,
+indexes, sequences and migration history. It is not selective and makes no
+backup. Configuration and settings, credentials (`data/.secrets/` or the
+optional credential volume), `data/config/AGENT.md`, and all files (including
+`data/share/` and `data/private/`) are preserved. Other persistent service data
+is untouched. After PostgreSQL starts, the workspace indexer starts and, when
+enabled in settings, rebuilds its index from the preserved files in the
+background. A custom `DATABASE_URL` or custom database settings are refused;
+reset that database separately. The reset requires typing `RESET` to confirm.
 
 Back up the credential volume **and** `data/.secrets/state.json`, `data/.env` and
 `data/.compose-secrets.yaml`. Backing up the tracked source tree alone does not include

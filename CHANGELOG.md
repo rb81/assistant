@@ -25,6 +25,10 @@
   voice notes, email for long content) and forbids announcing voice notes.
 - The admin job-card button **Request approval** is now **Resend approval**.
 - Refreshed the README and task-oriented documentation for the current product.
+- `./setup.sh reset` now destroys and rebuilds the bundled PostgreSQL cluster
+  without a backup or selective reset. It preserves settings, secrets, and files,
+  then starts workspace reindexing when enabled; custom database configurations
+  are refused.
 - Canonical `docs/` is mounted read-only for agent tools and sandbox commands.
 - Fresh databases initialize directly from the current schema baseline.
   Unsupported baselines are refused without automatic conversion.
@@ -69,8 +73,7 @@ before starting the current code.
   wizard does not manage, validated at review. It is optional and can also be
   created by hand; it loads after `.env`. `.env.example` is now only a reference
   for wizard-written keys.
-- `setup tools` troubleshooting menus and `setup reset` selective factory reset
-  with dependency-closed selection, backups and preserved settings.
+- `setup tools` troubleshooting menus and factory reset support.
 - `/admin requeue`, `/admin instruct` and `/admin jobs --recent`; local admin CLI `--yes`.
 - Security screening, configured in a new setup wizard section:
   - optional DNS-verified DKIM or SPF authentication for mail claiming the admin address;

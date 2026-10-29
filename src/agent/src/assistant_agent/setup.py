@@ -1076,7 +1076,7 @@ def main():
     secret_parser.add_argument("action", choices=("status", "update", "apply", "recover"))
     secret_parser.add_argument("name", nargs="?")
     commands.add_parser("tools", help="Troubleshooting menus: service status/logs/restarts, jobs, memories, reminders, embeddings")
-    commands.add_parser("reset", help="Factory reset: delete selected data while keeping settings and instructions")
+    commands.add_parser("reset", help="Factory reset: rebuild the database while preserving settings, secrets and files")
     options = parser.parse_args()
     try:
         if options.command == "secrets" and options.action == "status":
@@ -1557,7 +1557,7 @@ def interactive(options):
                 questionary.Choice(credential_storage_label(), value="credential-volume"),
                 questionary.Separator(),
                 questionary.Choice("Tools and troubleshooting", value="tools"),
-                questionary.Choice("Factory reset (delete data, keep settings)", value="reset"),
+                questionary.Choice("Factory reset (rebuild database, keep settings and files)", value="reset"),
                 questionary.Choice("Cancel without saving", value="cancel"),
             ]))
             if selected == "cancel":

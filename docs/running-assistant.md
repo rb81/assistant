@@ -65,6 +65,25 @@ volume separately along with `data/.secrets/state.json`; copying `data/` alone
 does not include those credentials. See [credential storage](security.md#optional-docker-volume-storage).
 Keep backups protected as confidential data.
 
+### Factory reset
+
+Run `./setup.sh reset` to permanently destroy and recreate the bundled PostgreSQL
+cluster under `data/postgres/pgdata`. This deletes all databases and database
+state in that cluster, including rows, indexes, ID sequences, and migration
+history; startup recreates the schema and applies migrations. The reset makes
+no backup and does not offer a selective data reset.
+
+The reset preserves configuration and settings (`data/.env`, `data/overrides.env`,
+`data/config/`), credentials (`data/.secrets/` or the optional credential Docker
+volume), and files, including `data/config/AGENT.md`, `data/share/`, and
+`data/private/`. It also leaves other persistent service data alone. Once
+PostgreSQL is ready, the workspace indexer starts. If workspace indexing is
+enabled in settings, it rebuilds its index from the preserved workspace files
+in the background.
+
+Factory reset refuses installations configured with a custom database; reset
+that database separately. Type `RESET` at the confirmation prompt to proceed.
+
 ## Operations
 
 ```bash
