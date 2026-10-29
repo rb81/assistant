@@ -300,7 +300,7 @@ class Management:
         self.access()
         self.prepare_management()
         self.progress = "Reading application records" if payload.get("kind") != "mutate" else "Applying the confirmed change"
-        args = ["run", "--rm", "--no-deps", "--no-build", "--pull", "never", "-T", "--volume", self.management_source(),
+        args = ["run", "--rm", "--no-deps", "--pull", "never", "-T", "--volume", self.management_source(),
                 "--entrypoint", "python",
                 "task-agent", "-m", "assistant_agent.management_operator"]
         try:
@@ -351,16 +351,26 @@ class Management:
             return
         self.access()
         self.progress = "Checking management runtime"
+        image = self.installation.compose(["config", "--images", "task-agent"]).strip()
+        if not image or len(image.splitlines()) != 1:
+            raise SetupError("Could not identify the task-agent image from saved Compose configuration.")
+        try:
+            self.installation.docker(["image", "inspect", image], timeout=30)
+        except DockerCommandError as error:
+            raise SetupError("The configured task-agent image could not be inspected. "
+                             "If it is missing, use Services > Start app to build it. "
+                             "Otherwise check Docker access. " + str(error)) from None
         try:
             self.installation.compose([
-                "run", "--rm", "--no-deps", "--no-build", "--pull", "never", "-T",
+                "run", "--rm", "--no-deps", "--pull", "never", "-T",
                 "--volume", self.management_source(), "--entrypoint", "python",
                 "task-agent", "-c", "import assistant_agent.management_operator",
             ], timeout=60)
         except DockerCommandError as error:
-            raise SetupError("The management runtime could not start using the existing application image. "
-                             "Use Services > Start app to build or update it, then refresh. "
-                             "Browsing records never builds images. " + str(error)) from None
+            raise SetupError("The management helper failed its startup check. "
+                             "This does not mean the application is stopped; restarting may not resolve it. "
+                             "Check Docker Compose compatibility and the helper's source mount and dependencies, "
+                             "then refresh. " + str(error)) from None
         self.helper_ready = True
 
     def project_request(self, action, payload):
@@ -371,7 +381,7 @@ class Management:
         mount = str(self.root.resolve() / "data/private/artifacts") + ":/data/private/artifacts"
         try:
             output = self.installation.compose([
-                "run", "--rm", "--no-deps", "--no-build", "--pull", "never", "-T", "--volume", mount,
+                "run", "--rm", "--no-deps", "--pull", "never", "-T", "--volume", mount,
                 "--volume", self.management_source(), "--entrypoint", "python",
                 "task-agent", "-m", "assistant_agent.workstream_operator", action,
             ], input_text=json.dumps(payload), timeout=1800)
@@ -511,7 +521,7 @@ class Management:
         self.access()
         self.prepare_management()
         output = self.installation.compose([
-            "run", "--rm", "--no-deps", "--no-build", "--pull", "never", "-T",
+            "run", "--rm", "--no-deps", "--pull", "never", "-T",
             "--volume", self.management_source(), "--entrypoint", "python",
             "task-agent", "-m", "assistant_agent.embedding_maintenance", operation,
         ], timeout=1800)

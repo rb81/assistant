@@ -1,7 +1,9 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -143,17 +145,18 @@ def test_structured_transport_reuses_the_image_and_passes_requests_via_stdin_wit
         backend = management(root)
         response = '{"rows": [{"id": 7, "status": "running"}], "total": 1}'
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", side_effect=["", response, response]
-        ) as compose:
+            backend.installation, "compose", side_effect=["test-image", "", response, response]
+        ) as compose, patch.object(backend.installation, "docker") as docker:
             result = backend.request({"kind": "tasks", "page": 0})
             backend.request({"kind": "tasks", "page": 1})
         assert result["rows"][0]["id"] == 7
-        probe = compose.call_args_list[0].args[0]
+        docker.assert_called_once_with(["image", "inspect", "test-image"], timeout=30)
+        probe = compose.call_args_list[1].args[0]
         assert probe[-3:] == ["task-agent", "-c", "import assistant_agent.management_operator"]
-        assert "--no-build" in probe
+        assert "--no-build" not in probe and "--build" not in probe
         assert probe[probe.index("--pull") + 1] == "never"
-        assert "management_operator" in compose.call_args_list[1].args[0][-1]
-        assert "--no-build" in compose.call_args.args[0]
+        assert "management_operator" in compose.call_args_list[2].args[0][-1]
+        assert "--no-build" not in compose.call_args.args[0]
         assert str(Path(root).resolve() / "src/agent/src") + ":/app/src:ro" in compose.call_args.args[0]
         assert json.loads(compose.call_args.kwargs["input_text"])["page"] == 1
 
@@ -163,12 +166,13 @@ def test_missing_management_image_requires_explicit_start_instead_of_a_hidden_bu
         configured(root)
         backend = management(root)
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", side_effect=DockerCommandError("Image is unavailable.")
-        ) as compose:
+            backend.installation, "compose", return_value="missing-image"
+        ) as compose, patch.object(backend.installation, "docker",
+                                  side_effect=DockerCommandError("Image is unavailable.")):
             with pytest.raises(SetupError, match="Services > Start app"):
                 backend.request({"kind": "memories"})
         assert compose.call_count == 1
-        assert "--no-build" in compose.call_args.args[0]
+        assert compose.call_args.args[0] == ["config", "--images", "task-agent"]
         assert "build" not in compose.call_args.args[0]
         assert not backend.helper_ready
 
@@ -179,12 +183,56 @@ def test_project_transport_reuses_management_preparation_without_building_anothe
         backend = management(root)
         with patch.object(backend, "access"), patch.object(
             backend.installation, "compose",
-            side_effect=["", '{"rows": [], "total": 0}', '{"preview_digest": "reviewed"}'],
-        ) as compose:
+            side_effect=["test-image", "", '{"rows": [], "total": 0}', '{"preview_digest": "reviewed"}'],
+        ) as compose, patch.object(backend.installation, "docker"):
             backend.request({"kind": "memories"})
             assert backend.preview_project(7)["preview_digest"] == "reviewed"
-        assert compose.call_count == 3
-        assert "--no-build" in compose.call_args.args[0]
+        assert compose.call_count == 4
+        assert "--no-build" not in compose.call_args.args[0]
+
+
+def test_management_probe_failure_does_not_claim_the_running_app_needs_starting():
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        with patch.object(backend, "access"), patch.object(backend.installation, "docker"), \
+                patch.object(backend.installation, "compose", side_effect=[
+                    "existing-image", DockerCommandError("Helper import failed")]):
+            with pytest.raises(SetupError, match="does not mean the application is stopped") as failure:
+                backend.prepare_management()
+        assert "Services > Start app" not in str(failure.value)
+        assert not backend.helper_ready
+
+
+@pytest.mark.skipif(os.getenv("ASSISTANT_TEST_DOCKER") != "1", reason="requires disposable Docker helpers")
+def test_management_transports_run_with_real_compose_flags_and_readonly_source_mount():
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        source = Path(root, "src/agent/src/assistant_agent")
+        source.mkdir(parents=True)
+        (source / "__init__.py").write_text("")
+        (source / "management_operator.py").write_text(
+            "import json, sys\n"
+            "if __name__ == '__main__':\n"
+            "    request = json.load(sys.stdin)\n"
+            "    print(json.dumps({'rows': [{'id': 7, 'content': 'Readable memory'}], 'total': 1}))\n")
+        (source / "workstream_operator.py").write_text(
+            "import json, sys\njson.load(sys.stdin)\nprint(json.dumps({'preview_digest': 'verified'}))\n")
+        (source / "embedding_maintenance.py").write_text("print('{\"pending\": 0}')\n")
+        compose_file = Path(root, "management-test.yaml")
+        compose_file.write_text(
+            "services:\n  task-agent:\n    image: python:3.12-slim\n"
+            "    environment:\n      PYTHONPATH: /app/src\n    read_only: true\n")
+        prefix = ["compose", "--project-name", "management-test-" + uuid.uuid4().hex[:12],
+                  "-f", str(compose_file)]
+        with patch.object(backend, "access"), patch.object(backend.installation, "compose_prefix", return_value=prefix):
+            try:
+                assert backend.request({"kind": "memories"})["rows"][0]["content"] == "Readable memory"
+                assert backend.preview_project(7)["preview_digest"] == "verified"
+                assert backend.embeddings("status") == {"pending": 0}
+            finally:
+                backend.installation.compose(["down", "--remove-orphans"])
 
 
 def test_collection_search_and_pagination_use_parameters_not_sql_interpolation():
@@ -366,7 +414,7 @@ def test_search_status_uses_existing_runtime_instead_of_building_an_image():
             backend.installation, "compose", return_value='{"pending": 0}'
         ) as compose:
             assert backend.embeddings("status") == {"pending": 0}
-        assert "--no-build" in compose.call_args.args[0]
+        assert "--no-build" not in compose.call_args.args[0]
         assert compose.call_count == 1
 
 
