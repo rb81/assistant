@@ -151,10 +151,13 @@ Factory reset (`./run.sh reset`) permanently destroys and rebuilds the bundled
 PostgreSQL cluster at `data/postgres/pgdata`, including all databases, rows,
 indexes, sequences and migration history. It is not selective and makes no
 backup. Configuration and settings, credentials (`data/.secrets/` or the
-optional credential volume), `data/config/AGENT.md`, and all files (including
-`data/share/` and `data/private/`) are preserved. Other persistent service data
-is untouched. After PostgreSQL starts, the workspace indexer starts and, when
-enabled in settings, rebuilds its index from the preserved files in the
+optional credential volume) and `data/config/AGENT.md` are always preserved.
+The default database-only reset also preserves all workspace and private files.
+The optional **Clean install (also delete files)** additionally deletes everything
+in `data/share/` and `data/private/artifacts/`, including attachments, generated
+files, caches and trash. TLS certificates and other persistent service data
+are untouched in either mode. After PostgreSQL starts, the workspace indexer
+starts and, when enabled in settings, rebuilds its index from the preserved files in the
 background. A custom `DATABASE_URL` or custom database settings are refused;
 reset that database separately. The reset requires typing `RESET` to confirm.
 

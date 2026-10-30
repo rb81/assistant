@@ -1418,6 +1418,44 @@ def test_new_memory_and_administration_screen_actions_confirm_before_writing():
         asyncio.run(scenario(Path(root)))
 
 
+def test_storage_actions_fit_small_terminals_and_clean_install_requires_confirmation():
+    async def scenario(root):
+        async with running(root) as (ui, pipe):
+            for rows, columns in ((25, 100), (24, 76)):
+                ui.app.output.size = Size(rows=rows, columns=columns)
+                ui.backend.installation.state["previous_credential_volume"] = "old-credentials"
+                ui.go("Storage")
+                await asyncio.sleep(0.08)
+                rendered = "\n".join(snapshot(ui))
+                for label in ("Credentials", "Recovery", "Factory reset", "Finish credential storage change",
+                              "Reset bundled database", "Clean install (also delete files)"):
+                    assert label in rendered
+            with patch.object(ui.backend, "reset", return_value="Clean install complete") as reset, \
+                    patch.object(ui.backend, "services", return_value=[]):
+                selected = next(item for item in ui.actions if item.label == "Clean install (also delete files)")
+                selected.handler()
+                await wait_for(lambda: bool(ui.floats.floats))
+                assert "data/share/" in ui.dialog_topic[1]
+                assert "data/private/artifacts/" in ui.dialog_topic[1]
+                assert "data/config/AGENT.md are preserved" in ui.dialog_topic[1]
+                pipe.send_text("\x1b")
+                await wait_for(lambda: not ui.floats.floats)
+                reset.assert_not_called()
+                selected.handler()
+                await wait_for(lambda: bool(ui.floats.floats))
+                ui.app.layout.current_control.buffer.text = "reset"
+                pipe.send_text("\t\t\r")
+                await asyncio.sleep(0.08)
+                assert ui.floats.floats
+                reset.assert_not_called()
+                ui.app.layout.current_control.buffer.text = "RESET"
+                pipe.send_text("\t\t\r")
+                await wait_for(lambda: reset.called and not ui.busy and not ui.floats.floats)
+                reset.assert_called_once_with(clean_install=True)
+    with tempfile.TemporaryDirectory() as root:
+        asyncio.run(scenario(Path(root)))
+
+
 def test_invalid_search_and_credential_names_stay_in_their_dialog_for_correction():
     async def scenario(root):
         async with running(root) as (ui, pipe):

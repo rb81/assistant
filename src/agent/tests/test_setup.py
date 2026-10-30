@@ -294,7 +294,8 @@ class SetupTest(unittest.TestCase):
             files = {path: path.read_bytes() for path in
                      (instance.state_path, instance.env_path, Path(root) / "data/.compose-secrets.yaml")}
             with patch.object(instance, "compose", return_value="task-agent\npostgres\n"), patch.object(instance, "compose_interactive", return_value=0) as compose:
-                run_factory_reset(instance, MagicMock())
+                for clean_install in (False, True):
+                    run_factory_reset(instance, MagicMock(), clean_install=clean_install)
             self.assertFalse(any("down" in call.args[0] or "volume" in call.args[0] for call in compose.call_args_list))
             self.assertTrue(any("--entrypoint" in call.args[0] and "/var/lib/postgresql/data/pgdata" in call.args[0]
                                 for call in compose.call_args_list))

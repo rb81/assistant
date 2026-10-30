@@ -94,8 +94,9 @@ PAGE_HELP = {
                    "must be activated in affected services. Database passwords use a coordinated rotation instead "
                    "of a simple replacement; save or discard configuration drafts first.",
     "Storage": "Move credentials between protected host files and a private Docker volume, recover interrupted "
-               "operations, or reset the bundled database. Neither storage choice encrypts credentials. Back up "
-               "first; database reset is destructive and does not create a backup.",
+               "operations, or reset the bundled database. Clean install also deletes shared files and private "
+               "attachments while keeping settings and credentials. Neither storage choice encrypts credentials. "
+               "Docker administrators can access them. Back up first; resets do not create a backup.",
     "Pending deletions": "Find previously confirmed project deletions that did not finish. Resume retries their "
                          "cleanup. Writer services deliberately remain stopped when completion cannot be verified.",
     "Project deletion": "Inspect the exact deletion inventory before confirming. Unshared project objects are "
@@ -178,6 +179,11 @@ ACTION_HELP = {
     "Reset bundled database": "Permanently destroy and rebuild all bundled PostgreSQL data: tasks, memories, "
                                "reminders and other database records. Settings, credentials and workspace files "
                                "remain. No backup is made. Custom databases are refused. Requires typing RESET.",
+    "Clean install (also delete files)": "Rebuild the bundled database AND delete everything in data/share/ and "
+                                         "data/private/artifacts/: shared and generated files, attachments, caches "
+                                         "and trash. Settings, credentials, TLS certificates and data/config/AGENT.md "
+                                         "remain. Other service data is untouched. No backup is made. Custom databases "
+                                         "are refused. Requires typing RESET.",
     "Delete previewed project": PAGE_HELP["Project deletion"],
     "Keep project": "Leave this deletion preview without deleting anything. No project data is changed.",
     "Check pending": "Read the inventory of incomplete project deletions without resuming or deleting anything.",

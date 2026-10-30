@@ -3,6 +3,7 @@ import io
 import itertools
 import os
 import re
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -240,16 +241,20 @@ class ResetOrchestrationTest(unittest.TestCase):
         from assistant_agent.setup_tools import factory_reset_menu
         with tempfile.TemporaryDirectory() as root:
             instance = self.instance(root)
-            responses = iter(["reset"])
+            responses = iter([False, "reset"])
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access") as access, \
                     patch.object(questionary, "text", wraps=questionary.text):
                 factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
             run.assert_not_called()
             access.assert_not_called()
-            responses = iter(["RESET"])
+            responses = iter([False, "RESET"])
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access"):
                 factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
-            run.assert_called_once_with(instance, unittest.mock.ANY)
+            run.assert_called_once_with(instance, unittest.mock.ANY, clean_install=False)
+            responses = iter([True, "RESET"])
+            with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access"):
+                factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
+            run.assert_called_once_with(instance, unittest.mock.ANY, clean_install=True)
             instance.secret_values["DATABASE_URL"] = "postgresql://custom"
             console = MagicMock()
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access") as access:
@@ -257,6 +262,81 @@ class ResetOrchestrationTest(unittest.TestCase):
             run.assert_not_called()
             access.assert_not_called()
             self.assertIn("custom database", str(console.print.call_args).lower())
+
+    def test_clean_install_deletes_files_without_following_symlinks_or_deleting_configuration(self):
+        from assistant_agent.setup_tools import run_factory_reset
+        for clean_install in (False, True):
+            with self.subTest(clean_install=clean_install), tempfile.TemporaryDirectory() as root:
+                instance = self.instance(root)
+                instance.compose.return_value = "postgres\ntask-agent\n"
+                files = (
+                    "share/projects/result.txt", "share/.assistant/cache/result.json",
+                    "share/.trash/old.txt", "private/artifacts/email/attachment.pdf",
+                    "private/artifacts/dropbox/staged.txt",
+                )
+                preserved = (
+                    "config/AGENT.md", "config/agent.yaml", ".env", "overrides.env",
+                    ".secrets/POSTGRES_PASSWORD", ".setup-state.json", ".compose-secrets.yaml",
+                    "private/tls/postgres.key", "ollama/models/model", "backups/snapshot",
+                )
+                for name in (*files, *preserved):
+                    path = instance.data / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(name)
+                (instance.data / "share/escape").symlink_to(instance.data / "config", target_is_directory=True)
+                (instance.data / "private/artifacts/escape").symlink_to(instance.data / ".secrets", target_is_directory=True)
+
+                def execute(arguments, stdout=None):
+                    if "--entrypoint" in arguments and arguments[arguments.index("--entrypoint") + 1] == "find":
+                        mounts = dict(arguments[index + 1].rsplit(":", 1)[::-1]
+                                      for index, value in enumerate(arguments) if value == "--volume")
+                        command = ["find", *[mounts.get(value, value) for value in arguments[arguments.index("postgres") + 1:]]]
+                        return subprocess.run(command, check=False).returncode
+                    return 0
+
+                instance.compose_interactive.side_effect = execute
+                report = MagicMock()
+                run_factory_reset(instance, report, clean_install=clean_install)
+                for name in files:
+                    self.assertEqual((instance.data / name).exists(), not clean_install)
+                for name in preserved:
+                    self.assertEqual((instance.data / name).read_text(), name)
+                for name in ("share", "private/artifacts"):
+                    self.assertTrue((instance.data / name).is_dir())
+                    self.assertEqual((instance.data / name / "escape").is_symlink(), not clean_install)
+                    if clean_install:
+                        self.assertEqual(list((instance.data / name).iterdir()), [])
+                if clean_install:
+                    self.assertIn("Clean install complete", report.print.call_args.args[0])
+
+    def test_clean_install_refuses_unsafe_roots_before_stopping_services(self):
+        from assistant_agent.setup import SetupError
+        from assistant_agent.setup_tools import run_factory_reset
+        for name in ("share", "private", "private/artifacts"):
+            for symlink in (False, True):
+                with self.subTest(name=name, symlink=symlink), tempfile.TemporaryDirectory() as root:
+                    instance = self.instance(root)
+                    path = instance.data / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if symlink:
+                        path.symlink_to(instance.root / "outside", target_is_directory=True)
+                    else:
+                        path.write_text("not a directory")
+                    with self.assertRaisesRegex(SetupError, "Refusing clean install"):
+                        run_factory_reset(instance, MagicMock(), clean_install=True)
+                    instance.compose.assert_not_called()
+                    instance.compose_interactive.assert_not_called()
+
+    def test_failed_file_cleanup_is_not_reported_as_success(self):
+        from assistant_agent.setup import SetupError
+        from assistant_agent.setup_tools import run_factory_reset
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.instance(root)
+            instance.compose_interactive.side_effect = lambda arguments, stdout=None: int("find" in arguments)
+            report = MagicMock()
+            with self.assertRaisesRegex(SetupError, "Deleting all shared files"):
+                run_factory_reset(instance, report, clean_install=True)
+            self.assertFalse(any("complete." in str(item) for item in report.print.call_args_list))
 
 
 class ToolsMenuTest(unittest.TestCase):

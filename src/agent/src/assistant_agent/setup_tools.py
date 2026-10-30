@@ -245,24 +245,36 @@ def factory_reset_menu(instance, answer, confirm, console):
         return
     console.print(
         "Factory reset permanently destroys and rebuilds the bundled PostgreSQL cluster, including all database data, "
-        "indexes, sequences and migration history. It preserves settings, secrets, AGENT.md and files in the workspace. "
+        "indexes, sequences and migration history. Settings, secrets and data/config/AGENT.md are always preserved. "
         "No backup will be made.",
         markup=False,
     )
-    if answer(questionary.text("Type RESET to destroy and rebuild the database")).strip() != "RESET":
+    clean_install = confirm("Clean install: also delete ALL shared files and private attachments?", False)
+    console.print(
+        "Also deletes everything in data/share/ and data/private/artifacts/, including generated files, caches and trash."
+        if clean_install else "Workspace files and private attachments will be preserved.",
+        markup=False,
+    )
+    prompt = "Type RESET to destroy the database" + (" AND shared files and attachments" if clean_install else "")
+    if answer(questionary.text(prompt)).strip() != "RESET":
         console.print("Cancelled; nothing was deleted.")
         return
     ensure_docker_access(instance, confirm)
-    run_factory_reset(instance, console)
+    run_factory_reset(instance, console, clean_install=clean_install)
 
 
-def run_factory_reset(instance, console):
+def run_factory_reset(instance, console, *, clean_install=False):
     if custom_database(instance):
         raise SetupError("Factory reset cannot destroy a custom database; reset it manually first")
     postgres_root = instance.data / "postgres"
     pgdata = postgres_root / "pgdata"
     if postgres_root.is_symlink() or pgdata.is_symlink() or (pgdata.exists() and not pgdata.is_dir()):
         raise SetupError("Refusing to reset PostgreSQL: data/postgres/pgdata must be a real directory")
+    file_roots = (instance.data / "share", instance.data / "private/artifacts")
+    if clean_install:
+        for path in (instance.data, instance.data / "private", *file_roots):
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise SetupError(f"Refusing clean install: {path} must be a real directory")
 
     def step(label, arguments, stdout=None):
         console.print(label + "\n$ " + ("sudo " if getattr(instance, "use_sudo", False) else "") + "docker compose --env-file data/.env " + shlex.join(arguments),
@@ -280,10 +292,20 @@ def run_factory_reset(instance, console):
         step("Destroying the PostgreSQL data directory",
              ["run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "/bin/rm", "postgres", "-rf",
               "/var/lib/postgresql/data/pgdata"])
+        if clean_install:
+            mounts = []
+            for path, target in zip(file_roots, ("/reset/share", "/reset/artifacts")):
+                path.mkdir(parents=True, exist_ok=True)
+                mounts += ["--volume", f"{path}:{target}"]
+            step("Deleting all shared files and private attachments",
+                 ["run", "--rm", "--no-deps", "-T", "--user", "0:0", *mounts,
+                  "--entrypoint", "find", "postgres", "/reset/share", "/reset/artifacts",
+                  "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "--", "{}", "+"])
         step("Rebuilding PostgreSQL and applying the base schema",
              ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
         services = sorted((set(running) - {"postgres"}) | {"workspace-indexer"})
-        step("Starting services and reindexing the preserved workspace",
+        step("Starting services and the workspace indexer" if clean_install else
+             "Starting services and reindexing the preserved workspace",
              ["up", "-d", "--wait", "--wait-timeout", "180", *services])
     finally:
         if running:
@@ -294,4 +316,10 @@ def run_factory_reset(instance, console):
                     step("Restoring services that were running before reset", ["up", "-d", *missing])
             except SetupError as exc:
                 console.print(str(exc) + ". Start them with: docker compose --env-file data/.env up -d", markup=False)
-    console.print("Factory reset complete. PostgreSQL was rebuilt; settings, secrets, AGENT.md and workspace files were preserved.", markup=False)
+    console.print(
+        "Clean install complete. PostgreSQL was rebuilt and shared files and private attachments were deleted; "
+        "settings, secrets and data/config/AGENT.md were preserved."
+        if clean_install else
+        "Factory reset complete. PostgreSQL was rebuilt; settings, secrets, AGENT.md and workspace files were preserved.",
+        markup=False,
+    )

@@ -171,9 +171,18 @@ no backup and does not offer a selective data reset.
 
 The reset preserves configuration and settings (`data/.env`, `data/overrides.env`,
 `data/config/`), credentials (`data/.secrets/` or the optional credential Docker
-volume), and files, including `data/config/AGENT.md`, `data/share/`, and
-`data/private/`. It also leaves other persistent service data alone. Once
-PostgreSQL is ready, the workspace indexer starts. If workspace indexing is
+volume), and `data/config/AGENT.md`. By default, workspace files in `data/share/`
+and private attachments in `data/private/artifacts/` are also preserved.
+
+For a clean install, choose **Settings → Storage & recovery → Clean install
+(also delete files)**. In the traditional menu (`./run.sh --plain reset`),
+answer yes to the clean-install option before typing `RESET`. This additionally
+deletes **everything** in `data/share/` and `data/private/artifacts/`, including
+shared and generated files, attachments, caches, archives and trash.
+Configuration, credentials, `AGENT.md`, TLS certificates and other persistent
+service data (such as downloaded models) remain untouched.
+
+Once PostgreSQL is ready, the workspace indexer starts. If workspace indexing is
 enabled in settings, it rebuilds its index from the preserved workspace files
 in the background.
 

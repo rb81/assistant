@@ -836,20 +836,20 @@ class ManagementApp:
     def storage(self):
         volume = bool(self.backend.installation.credential_volume)
         unfinished = bool(self.backend.installation.state.get("previous_credential_volume"))
-        self.put("Storage & recovery", "Deliberate controls for sensitive operations. Back up before making changes.", [
-            text("Credential storage   " + ("Private Docker volume" if volume else "Protected host files")),
-            text("Neither storage option encrypts credentials. Docker administrators can access them.", height=2),
+        self.put("Storage & recovery", "", [
+            text("Credentials", style="class:title"),
+            text("Stored in: " + ("Private Docker volume" if volume else "Protected host files")),
             self.action("Move credentials to " + ("host files" if volume else "a Docker volume"),
-                        partial(self.change_storage, not volume)), text(),
-            *([self.action("Finish credential storage change", partial(self.change_storage, False)),
-               text("The previous volume is retained until its mounts are safely retired.", height=2), text()]
+                        partial(self.change_storage, not volume)),
+            *([self.action("Finish credential storage change", partial(self.change_storage, False))]
               if unfinished else []),
+            text(), text("Recovery", style="class:title"),
             self.action("Recover an interrupted database password rotation", self.recover),
-            text("Recovery restores the previous password and restarts its consumers.", height=2), text(),
-            self.action("Resume an incomplete project deletion", partial(self.go, "Pending deletions")), text(),
+            self.action("Resume an incomplete project deletion", partial(self.go, "Pending deletions")),
+            text(), text("Factory reset", style="class:title"),
+            text("Settings and credentials stay. No backup is made; back up first."),
             self.action("Reset bundled database", self.reset_database, danger=True),
-            text("Permanently deletes database data. Settings, credentials and workspace files remain.\n"
-                 "No backup is made. Custom databases are never reset by this interface.", height=3),
+            self.action("Clean install (also delete files)", partial(self.reset_database, clean_install=True), danger=True),
         ])
 
     def change_storage(self, volume):
@@ -860,14 +860,19 @@ class ManagementApp:
             "Keep a separate backup of a Docker credential volume.",
             "Move", partial(self.backend.storage, volume), lambda result: self.saved())
 
-    def reset_database(self):
+    def reset_database(self, *, clean_install=False):
         def validate(values):
             if values["confirmation"] != "RESET":
                 raise SetupError("Reset cancelled. Type RESET exactly; no data was deleted.")
-        self.confirm_action("Reset bundled database",
-                            "Permanently destroy all bundled PostgreSQL data and rebuild it?\n"
-                            "Settings, credentials and workspace files are preserved. No backup is made.",
-                            "Reset database", lambda values: self.backend.reset(),
+        self.confirm_action("Clean install" if clean_install else "Reset bundled database",
+                            "Permanently destroy all bundled PostgreSQL data and rebuild it?\n" +
+                            ("Also delete ALL files in data/share/ and data/private/artifacts/,\n"
+                             "including generated files, caches, trash and attachments.\n"
+                             "Settings, credentials and data/config/AGENT.md are preserved. No backup is made."
+                             if clean_install else
+                             "Settings, credentials and workspace files are preserved. No backup is made."),
+                            "Delete data and files" if clean_install else "Reset database",
+                            lambda values: self.backend.reset(clean_install=True) if clean_install else self.backend.reset(),
                             fields=(("confirmation", "Type RESET", False, ""),), validate=validate)
 
     def recover(self):

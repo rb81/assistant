@@ -499,7 +499,7 @@ class Management:
         self.installation.apply([name] if name is not None else pending)
         self.load()
 
-    def reset(self):
+    def reset(self, *, clean_install=False):
         from .setup_tools import run_factory_reset
 
         if self.dirty:
@@ -518,7 +518,7 @@ class Management:
                 return 0
 
         report = Report()
-        run_factory_reset(self.installation, report)
+        run_factory_reset(self.installation, report, clean_install=clean_install)
         return report.messages[-1]
 
     def recover(self):
