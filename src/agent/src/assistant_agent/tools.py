@@ -44,6 +44,7 @@ from .tts import TEXT_TO_SPEECH_TOOL, TextToSpeech, configured as tts_configured
 from .zoom_meetings import ZOOM_FUNCTION_TOOLS, ZOOM_TOOL_NAMES, ZoomError, ZoomMeetings
 from .tool_result_cache import ToolResultCache
 from .threading import safe_filename
+from .scheduled_scripts import describe_recurrence
 from .time_utils import local_datetime_iso, parse_datetime, recurrence_anchor_day
 from .transport_security import open_https_request, validate_https_url
 from .validation import calendar_configured, fusion_configured, sandbox_configured, search_configured, shared_root_status, smtp_configured
@@ -154,7 +155,10 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "projects, emails, jobs, or reminders that may need reviewing before or after execution. "
             "Keep tasks specific and comprehensive enough for the future job to execute independently without guessing. "
             "Use a stable idempotency_key per reminder intent. Reuse the same key only when retrying "
-            "the same reminder; use distinct keys for distinct reminders."
+            "the same reminder; use distinct keys for distinct reminders. "
+            "Scripts need administrator approval, and nobody may be available to approve when a reminder runs. "
+            "If a future job will run a sandbox script, build and test it now, then use execution='script': "
+            "the approval happens before the reminder is saved and scheduled runs execute it unchanged."
         ),
     },
     "Calendar": {
@@ -211,6 +215,8 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
     },
 }
 RECURRENCE_UNITS = {"hour", "day", "week", "month"}
+REMINDER_EXECUTIONS = {"notify", "agent_task", "script"}
+RESERVED_REMINDER_METADATA = ("delivery", "execution", "notification_only", "script")
 RECURRENCE_UNIT_ALIASES = {
     "hours": "hour",
     "days": "day",
@@ -1811,6 +1817,8 @@ class ToolRuntime:
         idempotency_key: Optional[str] = None,
         notification_channel: str = "auto",
         notification_only: bool = False,
+        execution: Optional[str] = None,
+        script: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         clean_title = str(title or "").strip()
         clean_task = str(task or "").strip()
@@ -1818,6 +1826,7 @@ class ToolRuntime:
             raise ToolError("reminder title is required")
         if not clean_task:
             raise ToolError("reminder task is required")
+        clean_execution = self._reminder_execution(execution, notification_only, script)
         run_at_utc = parse_datetime(run_at, self.config)
         clean_recurrence_unit, clean_recurrence_interval, clean_recurrence_anchor_day = self._recurrence_for_create(
             run_at_utc,
@@ -1825,16 +1834,16 @@ class ToolRuntime:
             recurrence_interval,
         )
         clean_metadata = metadata if isinstance(metadata, dict) else {}
-        clean_metadata = dict(clean_metadata)
-        clean_metadata.pop("delivery", None)
+        clean_metadata = {key: value for key, value in clean_metadata.items() if key not in RESERVED_REMINDER_METADATA}
+        clean_metadata["execution"] = clean_execution
         try:
             delivery = reminder_delivery(self.config, self.job, notification_channel)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         if delivery:
             clean_metadata["delivery"] = delivery
-            clean_metadata["notification_only"] = self._clean_bool(notification_only)
-        elif notification_only:
+            clean_metadata["notification_only"] = clean_execution == "notify"
+        elif clean_execution == "notify":
             raise ToolError("A simple notification requires a linked Telegram or configured email destination")
         clean_idempotency_key = str(idempotency_key or clean_metadata.get("idempotency_key") or "").strip()
         if clean_idempotency_key:
@@ -1890,6 +1899,12 @@ class ToolRuntime:
                 "idempotent_reuse": True,
                 "idempotency_key": clean_idempotency_key or None,
             }
+        if clean_execution == "script":
+            clean_metadata["script"] = self._bind_scheduled_script(script, {
+                "tool": "reminder_create", "title": clean_title,
+                "run_at": local_datetime_iso(run_at_utc, self.config),
+                "recurrence": describe_recurrence(clean_recurrence_unit, clean_recurrence_interval),
+            })
         row = self.db.fetch_one(
             """
             INSERT INTO reminders(
@@ -1927,6 +1942,37 @@ class ToolRuntime:
         if clean_idempotency_key:
             result["idempotency_key"] = clean_idempotency_key
         return result
+
+    def _reminder_execution(self, execution: Optional[str], notification_only: Any,
+                            script: Optional[dict[str, Any]]) -> str:
+        notify = self._clean_bool(notification_only)
+        if execution is None:
+            if not notify:
+                raise ToolError(
+                    "execution is required: 'notify' (deliver the message only), 'agent_task' (the agent works "
+                    "on the task when due) or 'script' (a sandbox script approved now for unattended runs)"
+                )
+            execution = "notify"
+        clean = str(execution).strip().lower()
+        if clean not in REMINDER_EXECUTIONS:
+            raise ToolError("execution must be notify, agent_task or script")
+        if notify and clean != "notify":
+            raise ToolError("notification_only conflicts with execution=%s" % clean)
+        if clean == "script" and not script:
+            raise ToolError("execution='script' requires script with command, optional workdir and urls; "
+                            "the script must exist now so the administrator can approve it before scheduling")
+        if script and clean != "script":
+            raise ToolError("script is only valid with execution='script'")
+        return clean
+
+    def _bind_scheduled_script(self, script: Any, schedule: dict[str, Any]) -> dict[str, Any]:
+        from . import scheduled_scripts
+        if not sandbox_configured(self.config):
+            raise ToolError("Scheduled scripts require the sandbox to be configured")
+        try:
+            return scheduled_scripts.bind(self, script, schedule)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
 
     def reminder_list(self, status: Optional[str] = None, limit: int = 20) -> dict[str, Any]:
         allowed_statuses = {"scheduled", "queued", "completed", "failed", "cancelled"}
@@ -1968,6 +2014,7 @@ class ToolRuntime:
         recurrence_interval: Optional[int] = None,
         metadata: Optional[dict[str, Any]] = None,
         notification_channel: Optional[str] = None,
+        script: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         has_title = title is not None
         has_task = task is not None
@@ -1975,7 +2022,7 @@ class ToolRuntime:
         has_priority = priority is not None
         has_recurrence_unit = recurrence_unit is not None
         has_recurrence_interval = recurrence_interval is not None
-        has_metadata = metadata is not None or notification_channel is not None
+        has_metadata = metadata is not None or notification_channel is not None or script is not None
         if not any([has_title, has_task, has_run_at, has_priority, has_recurrence_unit, has_recurrence_interval, has_metadata]):
             raise ToolError("at least one reminder field must be provided")
         next_title = str(title).strip() if has_title else None
@@ -1988,11 +2035,15 @@ class ToolRuntime:
         if existing is None:
             raise ToolError("scheduled reminder not found")
 
-        next_metadata = dict(metadata if metadata is not None else existing.get("metadata") or {})
-        if (existing.get("metadata") or {}).get("delivery"):
-            next_metadata["delivery"] = existing["metadata"]["delivery"]
-        else:
-            next_metadata.pop("delivery", None)
+        existing_metadata = existing.get("metadata") or {}
+        next_metadata = {
+            key: value for key, value in dict(metadata if metadata is not None else existing_metadata).items()
+            if key not in RESERVED_REMINDER_METADATA
+        }
+        next_metadata.update({key: existing_metadata[key] for key in RESERVED_REMINDER_METADATA if key in existing_metadata})
+        if script is not None and not existing_metadata.get("script"):
+            raise ToolError("Only reminders created with execution='script' can change their script; "
+                            "cancel this reminder and create a new one to change its execution type")
         if notification_channel is not None:
             try:
                 next_metadata["delivery"] = reminder_delivery(self.config, self.job, notification_channel)
@@ -2023,6 +2074,12 @@ class ToolRuntime:
         elif has_run_at and next_recurrence_unit:
             next_recurrence_anchor_day = recurrence_anchor_day(next_run_at, next_recurrence_unit, self.config)
 
+        if script is not None:
+            next_metadata["script"] = self._bind_scheduled_script(script, {
+                "tool": "reminder_update", "title": next_title if has_title else existing["title"],
+                "run_at": local_datetime_iso(next_run_at, self.config),
+                "recurrence": describe_recurrence(next_recurrence_unit, next_recurrence_interval),
+            })
         row = self.db.fetch_one(
             """
             UPDATE reminders
@@ -2051,6 +2108,8 @@ class ToolRuntime:
                 reminder_id,
             ),
         )
+        if script is not None and row is not None:
+            self.db.execute("DELETE FROM runtime_state WHERE key = %s", ("scheduled-script-check:%s" % reminder_id,))
         return {"reminder": self._reminder_result(row)}
 
     def reminder_cancel(self, reminder_id: int) -> dict[str, Any]:
@@ -2367,6 +2426,10 @@ class ToolRuntime:
                                     minutes: int = 30, max_runs: int = 20,
                                     allow_host_changes: bool = False) -> dict[str, Any]:
         from . import development_sessions, script_permissions
+        if self._job_metadata().get("scheduled_script"):
+            raise ToolError("Development sessions are unavailable in scheduled runs. Run the approved scheduled "
+                            "command unchanged, or call task_failed and ask the administrator to refresh the "
+                            "reminder's script approval.")
         health = self.sandbox_control("GET", "/health")
         version = script_permissions.inspect(self, command, workdir, purpose, health["execution_identity"])
         if version is None:
@@ -2804,6 +2867,19 @@ class ToolRuntime:
             except ValueError as exc:
                 raise ToolError(str(exc)) from exc
         return mapping[name](**arguments)
+
+
+SCHEDULED_SCRIPT_SCHEMA = {
+    "type": "object",
+    "description": "Required with execution='script'. The exact workspace script invocation to approve now and run unchanged when due.",
+    "properties": {
+        "command": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Exact argv, e.g. [\"python3\", \"scripts/report.py\"]."},
+        "workdir": {"type": "string"},
+        "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10, "description": "Complete intended HTTPS hosts or URLs; [] for offline."},
+        "purpose": {"type": "string", "description": "What each scheduled run does, shown to the administrator."},
+    },
+    "required": ["command", "urls"],
+}
 
 
 FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTION_TOOLS + [
@@ -3289,7 +3365,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_create",
-            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution.",
+            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution. Choose execution explicitly. If the future job will run a sandbox script, write and test the script now and use execution='script': the administrator approves it (Always allow) before the reminder is saved, because nobody may be available to approve it when it runs. This call pauses for that approval; after the decision arrives, retry the identical call.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3314,14 +3390,19 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     },
                     "priority": {"type": "integer", "default": 0},
                     "notification_channel": {"type": "string", "enum": ["auto", "email", "telegram"], "default": "auto", "description": "auto prefers the requester's linked Telegram identity, with email fallback. Explicit channels override."},
-                    "notification_only": {"type": "boolean", "default": False, "description": "Use true for a simple reminder notification; false to execute tools or research when due."},
+                    "execution": {
+                        "type": "string",
+                        "enum": ["notify", "agent_task", "script"],
+                        "description": "notify: deliver the task text as a message, with no agent run. agent_task: the agent works on the task when due (no sandbox scripts). script: the agent runs the script given in script, approved now for unattended runs; the task text explains what to do with its output.",
+                    },
+                    "script": SCHEDULED_SCRIPT_SCHEMA,
                     "metadata": {"type": "object"},
                     "idempotency_key": {
                         "type": "string",
                         "description": "Stable key for this reminder intent within the current job. Reuse the same key only when retrying the same reminder; use different keys for distinct reminders.",
                     },
                 },
-                "required": ["title", "task", "run_at"],
+                "required": ["title", "task", "run_at", "execution"],
             },
         },
     },
@@ -3343,7 +3424,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_update",
-            "description": "Update a reminder that has not yet been queued.",
+            "description": "Update a reminder that has not yet been queued. For a script reminder, pass script to change or refresh its approved script (for example after code, sandbox image or policy changes); this pauses for administrator approval, then retry the identical call.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3363,6 +3444,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     },
                     "priority": {"type": "integer"},
                     "notification_channel": {"type": "string", "enum": ["auto", "email", "telegram"]},
+                    "script": SCHEDULED_SCRIPT_SCHEMA,
                     "metadata": {"type": "object"},
                 },
                 "required": ["reminder_id", "expected_version"],
@@ -4054,7 +4136,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "contact_create": "Create a contact record.",
         "contact_update": "Update a contact record.",
         "contact_delete": "Delete a contact by ID.",
-        "reminder_create": "Schedule a future task.",
+        "reminder_create": "Schedule a future notification, agent task or pre-approved script run.",
         "reminder_list": "List reminders.",
         "reminder_update": "Update a scheduled reminder.",
         "reminder_cancel": "Cancel a reminder.",

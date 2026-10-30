@@ -152,6 +152,8 @@ def permission_email_body(payload, summary, token, digest, expires, ttl_minutes,
     permission_type = payload.get("permission_type")
     if permission_type == "development":
         choices = ["APPROVE ONCE - approve development session"]
+    elif payload.get("scheduled"):
+        choices = ["APPROVE ALWAYS - required for scheduled runs of this unchanged version with the listed hosts"]
     elif permission_type == "final":
         choices = ["APPROVE ONCE - one execution with the listed hosts"]
         if payload.get("reusable"):
@@ -179,6 +181,11 @@ def permission_email_body(payload, summary, token, digest, expires, ttl_minutes,
 
 def permission_keyboard(callback: str, payload: dict) -> list:
     permission_type = payload.get("permission_type")
+    details = [{"text": "View script & details", "callback_data": "ap:%s:details" % callback},
+               {"text": "Add feedback", "callback_data": "ap:%s:feedback" % callback}]
+    if payload.get("scheduled"):
+        return [[{"text": "Always allow (scheduled)", "callback_data": "ap:%s:always" % callback},
+                 {"text": "Deny", "callback_data": "ap:%s:deny" % callback}], details]
     once_label = "Approve development session" if permission_type == "development" else (
         "Approve one run" if permission_type == "final" else "Approve once")
     rows = [[{"text": once_label, "callback_data": "ap:%s:once" % callback},
@@ -186,8 +193,7 @@ def permission_keyboard(callback: str, payload: dict) -> list:
     if permission_type != "development" and payload.get("reusable"):
         always_label = "Always allow this version" if permission_type == "final" else "Approve always"
         rows.append([{"text": always_label, "callback_data": "ap:%s:always" % callback}])
-    rows.append([{"text": "View script & details", "callback_data": "ap:%s:details" % callback},
-                 {"text": "Add feedback", "callback_data": "ap:%s:feedback" % callback}])
+    rows.append(details)
     return rows
 
 

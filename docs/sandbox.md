@@ -243,6 +243,33 @@ even when source is unchanged. Request the complete intended hosts again:
 an empty list means offline, not inheritance from an earlier version. Preserve
 the exact approved interpreter, arguments and workdir for scheduled runs.
 
+### Scheduled scripts
+
+Recurring or future script work is scheduled with
+`reminder_create(execution="script", script={command, workdir?, urls, purpose})`.
+The script must already exist and be final: the reminder is not saved until
+the exact version and complete host set have standing (**Always**) approval.
+The approval request is labelled as a scheduled script approval and offers only
+**Always allow** or **Deny**; one-run approval is refused because it would not
+cover future runs. After approval, the agent retries the identical
+`reminder_create` call to save the schedule. Changing the script, argv,
+workdir or hosts of an existing schedule uses `reminder_update(script=...)`,
+which needs the same approval.
+
+The reminder stores the bound version, fingerprint and hosts. Each due run gets
+the exact command to execute and job metadata marking it as a scheduled run:
+
+- Development sessions are unavailable in scheduled runs.
+- Any new approval request raised by a scheduled run is flagged to the admin as
+  drift from the approved schedule.
+- Before queuing, the scheduler checks that the bound grant is still active and
+  hosts are neither revoked nor blocked. A failed check skips the occurrence
+  (recurring reminders advance; one-time reminders fail) and alerts the admin.
+- When idle, the agent re-inspects all scheduled scripts at startup and every
+  `agent.reminders.script_check_interval_minutes` (default 360). Source, helper,
+  image or security-policy changes are recorded and alerted once, and block
+  future occurrences until the schedule is re-approved.
+
 ### Network access approvals
 
 `script_approval_request` includes `urls` (up to ten exact hosts or HTTPS URLs),
@@ -331,6 +358,8 @@ Use a harmless script and non-sensitive data for these checks:
 | Delivery set to both | Either channel resolves the request; the other channel cannot approve it a second time. |
 | Block a host or script | Future matching execution/access is refused; all active sandbox runs are stopped. |
 | Revoke a reusable grant | Future use requires approval again unless another applicable grant remains. |
+| Schedule a script | `reminder_create(execution="script")` requests Always-only approval before saving; Approve once is refused. |
+| Change or revoke a scheduled script | The next occurrence is skipped with an admin alert instead of prompting at run time. |
 
 Always may be unavailable for an uninspectable dependency graph; use once rather
 than treating that as a UI failure. Existing version-bound grants can already
@@ -430,6 +459,7 @@ in `src/config/agent.yaml`:
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
 - `agent.sandbox.network.allowed_hosts` (`AGENT_SANDBOX_ALLOWED_HOSTS`)
+- `agent.reminders.script_check_interval_minutes` (scheduled script re-inspection, default 360)
 
 Compose reads these settings from `data/.env`:
 

@@ -433,6 +433,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
                 run_at="2026-06-08T05:00:00Z",
                 recurrence_unit="day",
                 recurrence_interval=1,
+                execution="agent_task",
             )
             second = runtime.reminder_create(
                 title="Daily summary",
@@ -440,6 +441,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
                 run_at="2026-06-08T05:00:00Z",
                 recurrence_unit="day",
                 recurrence_interval=1,
+                execution="agent_task",
             )
 
             self.assertEqual(first["reminder"]["id"], second["reminder"]["id"])
@@ -453,13 +455,24 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
                 {"id": 12, "thread_id": "thread-1"},
             )
 
-            first = runtime.reminder_create("Summary A", "Send A", "2026-06-08T05:00:00Z", idempotency_key="daily-news")
-            second = runtime.reminder_create("Summary B", "Send B", "2026-06-09T05:00:00Z", idempotency_key="daily-news")
-            third = runtime.reminder_create("Summary B", "Send B", "2026-06-09T05:00:00Z", idempotency_key="daily-news-b")
+            first = runtime.reminder_create("Summary A", "Send A", "2026-06-08T05:00:00Z", idempotency_key="daily-news", execution="agent_task")
+            second = runtime.reminder_create("Summary B", "Send B", "2026-06-09T05:00:00Z", idempotency_key="daily-news", execution="agent_task")
+            third = runtime.reminder_create("Summary B", "Send B", "2026-06-09T05:00:00Z", idempotency_key="daily-news-b", execution="agent_task")
 
             self.assertEqual(first["reminder"]["id"], second["reminder"]["id"])
             self.assertTrue(second["idempotent_reuse"])
             self.assertNotEqual(first["reminder"]["id"], third["reminder"]["id"])
+
+    def test_reminder_create_requires_an_explicit_execution_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = ToolRuntime(FakeReminderDatabase(), search_config(temp_dir), {"id": 12, "thread_id": "thread-1"})  # type: ignore[arg-type]
+            for arguments, message in (
+                ({}, "execution is required"),
+                ({"execution": "script"}, "requires script"),
+                ({"execution": "agent_task", "script": {"command": ["python3", "a.py"], "urls": []}}, "only valid"),
+            ):
+                with self.assertRaisesRegex(ToolError, message):
+                    runtime.reminder_create("Weekly", "Run it", "2026-06-08T05:00:00Z", **arguments)
 
     def test_reminder_cancel_does_not_cancel_its_running_job(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

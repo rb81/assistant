@@ -157,6 +157,16 @@ def host_policy(db, config, version_id, job_id):
     }
 
 
+def standing_approval(db, config, version, hosts):
+    """Whether this exact version may run in any job, unattended, with exactly these hosts."""
+    if run_status(db, version, None) != "approved":
+        return False
+    policy = host_policy(db, config, version["id"], None)
+    if any(network_access.decide(policy, host) == "blocked" for host in hosts):
+        return False
+    return set(policy["allow"]) == set(hosts)
+
+
 def check_blocks(runtime, version, hosts, db=None):
     if not runtime.job or not runtime.job.get("id"):
         raise ValueError("Script permissions require a task job")
@@ -170,13 +180,20 @@ def check_blocks(runtime, version, hosts, db=None):
         raise PermissionDenied("Administrator blocked: %s. Do not request or retry these hosts." % ", ".join(blocked))
 
 
-def final_request(runtime, version, hosts, purpose):
+def final_request(runtime, version, hosts, purpose, scheduled=None):
+    """Request combined approval. ``scheduled`` describes a reminder that needs a standing grant."""
     from . import development_sessions
     from .development_supervisor import SupervisorError, review
 
     check_blocks(runtime, version, hosts)
     if runtime.config.get_bool("agent.security.script_yolo", False):
         return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+    if scheduled and not version["reusable"]:
+        raise PermissionDenied(
+            "This script cannot be scheduled: its executable dependencies cannot be pinned, so it can only "
+            "receive one-time approval. Restructure it (pinned local helpers; no package installs, subprocesses "
+            "or dynamic code execution) and schedule it again."
+        )
     analysis = version["manifest"]["manifest"]
     if not hosts and analysis["risky_calls"].get("network") and analysis["network"]["hosts"]:
         raise PermissionDenied(
@@ -187,7 +204,9 @@ def final_request(runtime, version, hosts, purpose):
     session = development_sessions.current(runtime, version)
     status = run_status(runtime.db, version, runtime.job["id"])
     policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
-    if not session and status == "approved" and set(hosts) == set(policy["allow"]):
+    approved = (standing_approval(runtime.db, runtime.config, version, hosts) if scheduled else
+                status == "approved" and set(hosts) == set(policy["allow"]))
+    if not session and approved:
         return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
     if session:
         # Closing authorization before model review prevents testing while final approval is pending.
@@ -222,6 +241,14 @@ def final_request(runtime, version, hosts, purpose):
         "screening": finding, "reusable": version["reusable"], "supervisor": supervisor,
         "session_id": session["id"] if session else None,
     }
+    if scheduled:
+        pending["scheduled"] = scheduled
+    binding = (runtime.job.get("metadata") or {}).get("scheduled_script")
+    if binding and not scheduled:
+        pending["scheduled_drift"] = {
+            "reminder_id": binding.get("reminder_id"), "version_id": binding.get("version_id"),
+            "hosts": binding.get("hosts") or [],
+        }
     raise PermissionRequired(pending)
 
 
@@ -272,7 +299,7 @@ def approval_payload(job):
         return None
     return {"kind": "permission", "job_id": job["id"], "request_id": pending["id"],
             "permission_type": pending["kind"], "reusable": pending["reusable"],
-            "version_id": pending["version_id"]}
+            "version_id": pending["version_id"], **({"scheduled": True} if pending.get("scheduled") else {})}
 
 
 def summary(db, job):
@@ -285,7 +312,9 @@ def summary(db, job):
         raise ValueError("Script version is no longer available")
     entry = version["entry"]
     label = "Inline command" if entry.startswith("inline:") else entry
+    scheduled = pending.get("scheduled")
     lines = [
+        "Scheduled script approval" if scheduled else
         {"host": "Website access requested", "development": "Development session requested",
          "final": "Script and website access approval"}.get(pending["kind"], "Script run requested"),
         "",
@@ -294,6 +323,15 @@ def summary(db, job):
         "",
         "Why: " + " ".join(pending["purpose"].split())[:360],
     ]
+    if scheduled:
+        lines += ["Schedule: %s; first run %s%s." % (
+            " ".join(str(scheduled.get("title") or "").split())[:120], scheduled.get("run_at") or "unknown",
+            ", " + scheduled["recurrence"] if scheduled.get("recurrence") else " (one time)")]
+    drift = pending.get("scheduled_drift")
+    if drift:
+        lines += ["", "Warning: requested during a scheduled run of reminder #%s, whose approved script is "
+                  "version #%s with hosts: %s. This request differs from what was scheduled." % (
+                      drift.get("reminder_id"), drift.get("version_id"), ", ".join(drift.get("hosts") or []) or "none")]
     if pending["kind"] == "development":
         brief = pending["brief"]
         lines += ["", "Data/files: " + brief["data_access"], "External effects: " + brief["effects"],
@@ -324,10 +362,15 @@ def summary(db, job):
         )
         if screening:
             lines += ["", "Security screening: " + screening]
-        lines += ["", "Approve one run: one execution with the listed hosts.",
-                  "Always allow this version: repeat runs with these hosts, until revoked. Changes need new approval."]
-        if not version["reusable"]:
-            lines[-1] = "One-time approval only: executable dependencies cannot be pinned."
+        if scheduled:
+            lines += ["", "Always allow this version: required so scheduled runs can execute unattended with these "
+                      "hosts, until revoked. Changes need new approval.",
+                      "One-run approval is not offered for scheduled scripts."]
+        else:
+            lines += ["", "Approve one run: one execution with the listed hosts.",
+                      "Always allow this version: repeat runs with these hosts, until revoked. Changes need new approval."]
+            if not version["reusable"]:
+                lines[-1] = "One-time approval only: executable dependencies cannot be pinned."
     lines += ["\nDetails:", "SHA-256: " + version["fingerprint"],
               "Purpose: " + pending["purpose"],
               "Screening: " + json.dumps(pending["screening"], sort_keys=True),
@@ -403,6 +446,8 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
             approve_plan(tx, pending, decision)
         if decision == "always" and not version["reusable"]:
             raise ValueError("This script needs one-time approval because its executable dependencies cannot be pinned.")
+        if decision == "once" and pending.get("scheduled"):
+            raise ValueError("Scheduled scripts need Always allow or Deny; a one-run approval would not cover the schedule.")
         scope = {"once": "once", "always": "script", "deny": "once"}[decision]
         if pending["kind"] == "final":
             tx.execute("DELETE FROM sandbox_permission_grants WHERE version_id = %s AND decision = 'allow'", (version["id"],))
@@ -428,6 +473,8 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
              "Do not repeat or work around this denied request." if decision == "deny" else
              "Continue within the approved development brief; request supervisor review before running each version."
              if pending["kind"] == "development" else
+             "Retry the identical %s call to save the schedule; do not run the script now unless asked."
+             % pending["scheduled"].get("tool", "reminder_create") if pending.get("scheduled") else
              "Execute this unchanged version with its approved hosts.")
         )
         if feedback:

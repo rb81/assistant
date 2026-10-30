@@ -2,6 +2,14 @@
 
 ## Unreleased: Repository and documentation refresh
 
+- Scheduled scripts are approved when scheduled, not when they first run.
+  `reminder_create` requires `execution` (`notify`, `agent_task` or `script`);
+  script reminders need standing (Always) approval for the exact version and hosts
+  before they are saved. Scheduled approval requests offer only Always or Deny.
+  Due runs are checked against the bound approval and skipped with an admin alert
+  if it was revoked or the script, image or policy changed. Scheduled runs cannot
+  open development sessions, and new approval requests from them are flagged as
+  drift. The Python `notification_only=True` argument still maps to `notify`.
 - Application code, scripts, deployment files, and defaults now live under `src/`.
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.

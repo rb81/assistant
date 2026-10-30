@@ -502,6 +502,8 @@ class TelegramAdmin:
                     raise ValueError("Unknown permission action")
                 if action == "always" and not value["payload"].get("reusable"):
                     raise ValueError("Unknown permission action")
+                if action == "once" and value["payload"].get("scheduled"):
+                    raise ValueError("Scheduled scripts need Always allow or Deny.")
                 feedback = self.db.get_state("permission-feedback:%s:%s" % (callback_id, sender)) or {}
                 payload = service.consume_telegram(callback_id, sender)
                 try:

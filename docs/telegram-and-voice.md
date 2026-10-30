@@ -168,8 +168,8 @@ The destination is saved when scheduling, not inferred again from a later active
 Use `notification_channel="email"` or `"telegram"` to override; an explicit Telegram
 selection does not silently fall back to email. Automatic selection can fall back to
 email after a definite Telegram failure. It never does so after an ambiguous timeout.
-Set `notification_only=true` for simple notifications that need no model invocation;
-other reminders execute ordinary jobs and route their final results.
+Use `execution="notify"` for simple notifications that need no model invocation;
+`agent_task` and `script` reminders execute ordinary jobs and route their final results.
 Reminder occurrences and research runs use system threads in their owning
 workstream, not new workstreams. Input requests keep an explicit source-task
 link, so guidance resumes that task rather than repeating completed tool calls.

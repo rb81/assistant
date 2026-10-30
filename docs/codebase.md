@@ -61,6 +61,8 @@ tracking and the transition path for older databases.
 - `embedding_client.py`, `embedding_maintenance.py` — embeddings and resumable rebuilds.
 - `workspace_index.py`, `artifact_processor.py` — file indexing and artifact processing.
 - `deep_research.py`, `reminders.py` — asynchronous research and reminder work.
+- `scheduled_scripts.py` — binds scheduled reminders to approved script versions,
+  checks them before runs and periodically re-inspects them.
 - `calendar/`, `zoom_meetings.py`, `dropbox_files.py` — provider integrations.
 - `sandbox` and `transcription` are separate services, not agent subprocess modules.
 

@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 
 from .config import AppConfig, agent_email, message_id_domain
 from .database import Database, json_safe
+from . import scheduled_scripts
 from .polling import poll_interval_seconds, run_poll_loop
 from .requests import IncomingRequest, RequestService, TransactionDatabase
 from .time_utils import datetime_context_label, next_recurring_run_at
@@ -152,6 +153,7 @@ class ReminderScheduler:
     def queue_due_reminders(self) -> int:
         limit = self.config.get_int("agent.reminders.max_due_per_tick", 25)
         queued = 0
+        alerts = []
         with self.db.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -174,6 +176,11 @@ class ReminderScheduler:
                 )
                 reminders = list(cur.fetchall())
                 for reminder in reminders:
+                    problem = scheduled_scripts.due_problem(TransactionDatabase(conn), self.config, reminder)
+                    if problem:
+                        alerts.append(self.skip_scheduled_script(cur, reminder, problem))
+                        queued += 1
+                        continue
                     job = self.create_job_for_reminder(cur, reminder)
                     cur.execute(
                         """
@@ -194,7 +201,38 @@ class ReminderScheduler:
                         ),
                     )
                     queued += 1
+        for reminder, problem, consequence in alerts:
+            scheduled_scripts.alert(
+                self.db, self.config, "Assistant: scheduled script skipped (reminder #%s)" % reminder["id"],
+                scheduled_scripts.alert_body(reminder, problem, consequence),
+            )
         return queued
+
+    def skip_scheduled_script(self, cur, reminder: dict[str, Any], problem: str) -> tuple:
+        """Never hand an unapproved scheduled script to the agent, which would request approval unattended."""
+        error = "Scheduled script not run: %s" % problem
+        if reminder.get("recurrence_unit"):
+            next_run_at = next_recurring_run_at(
+                reminder["run_at"], reminder["recurrence_unit"], int(reminder.get("recurrence_interval") or 1),
+                self.config, reminder.get("recurrence_anchor_day"),
+            )
+            cur.execute("UPDATE reminders SET run_at = %s, last_error = %s, updated_at = now() WHERE id = %s",
+                        (next_run_at, error, reminder["id"]))
+            consequence = "This occurrence was skipped; the next one is due %s." % datetime_context_label(next_run_at, self.config)
+        else:
+            next_run_at = None
+            cur.execute(
+                """UPDATE reminders SET status = 'failed', completed_at = now(), last_error = %s, updated_at = now()
+                   WHERE id = %s""", (error, reminder["id"]))
+            consequence = "This one-time reminder did not run and is marked failed."
+        cur.execute(
+            "INSERT INTO manual_events(event_type, payload) VALUES (%s, %s)",
+            ("reminder_script_skipped", Jsonb(json_safe({
+                "reminder_id": reminder["id"], "problem": problem, "next_run_at": next_run_at,
+            }))),
+        )
+        LOGGER.warning("reminder %s scheduled script skipped: %s", reminder["id"], problem)
+        return reminder, problem, consequence
 
     def create_job_for_reminder(self, cur, reminder: dict[str, Any]) -> dict[str, Any]:
         if reminder.get("object_id"):
@@ -211,17 +249,23 @@ class ReminderScheduler:
             cur.execute("SELECT set_config('assistant.parent_workstream_id', %s, true)", (str(parent["id"]),))
             cur.execute("SELECT set_config('assistant.thread_role', 'system', true)")
         policy = (reminder.get("metadata") or {}).get("delivery") or {}
+        binding = (reminder.get("metadata") or {}).get("script")
+        task_text = reminder["task"]
+        job_metadata: dict[str, Any] = {}
+        if binding:
+            task_text += "\n\n" + scheduled_scripts.instructions(binding)
+            job_metadata["scheduled_script"] = {**binding, "reminder_id": reminder["id"]}
         if policy.get("primary"):
             database = TransactionDatabase(cur.connection)
             identity = "reminder:%s:%s" % (reminder["id"], reminder["run_at"].isoformat())
             system_thread = "reminder:%s" % reminder["id"]
             RequestService(database).receive_request(IncomingRequest(
                 "reminder", identity, "reminder:%s" % reminder["id"],
-                "reminder:%s" % reminder["id"], system_thread, reminder["task"],
+                "reminder:%s" % reminder["id"], system_thread, task_text,
                 reply_route=policy["primary"], metadata={"reminder_id": reminder["id"]}),
                 summary="Reminder: %s" % reminder["title"])
             database.execute("UPDATE jobs SET priority = %s, metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
-                             (int(reminder.get("priority") or 0), Jsonb({"auto_reply": True,
+                             (int(reminder.get("priority") or 0), Jsonb({**job_metadata, "auto_reply": True,
                               "reply_fallback": policy.get("fallback") or {},
                              "notification_only": bool((reminder.get("metadata") or {}).get("notification_only"))}), system_thread))
             if (reminder.get("metadata") or {}).get("notification_only"):
@@ -251,7 +295,7 @@ class ReminderScheduler:
         ]
         if recurrence:
             body_lines.append(recurrence)
-        body_lines.extend(["", "Task:", reminder["task"]])
+        body_lines.extend(["", "Task:", task_text])
         body = "\n".join(body_lines)
         cur.execute(
             """
@@ -273,14 +317,15 @@ class ReminderScheduler:
         email_row = cur.fetchone()
         cur.execute(
             """
-            INSERT INTO jobs(thread_id, task_summary, priority, run_at)
-            VALUES (%s, %s, %s, now())
+            INSERT INTO jobs(thread_id, task_summary, priority, run_at, metadata)
+            VALUES (%s, %s, %s, now(), %s)
             RETURNING *
             """,
             (
                 system_thread,
                 subject,
                 int(reminder.get("priority") or 0),
+                Jsonb(json_safe(job_metadata)),
             ),
         )
         job_row = cur.fetchone()
