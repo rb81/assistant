@@ -98,7 +98,10 @@ commands run and script approval requests.
 Approval gates are enforced by tools, not by conversation. The agent is told
 to call the gated tool (`development_session_request`,
 `script_approval_request`, `reminder_create(execution="script")`) directly
-rather than asking for a go-ahead first.
+rather than asking for a go-ahead first. For ungated actions that are
+irreversible or affect other people (sending to third parties, deleting data,
+replying on someone's behalf), it asks first if the request did not clearly
+cover them.
 
 `task_failed` marks the job `failed` and notifies the admin; it does not requeue it.
 Unhandled processing exceptions requeue while attempts remain, otherwise move

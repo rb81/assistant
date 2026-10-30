@@ -22,7 +22,8 @@
   with new replies and instructions appended. Prior-action context now lists
   questions, admin guidance, commands and script approval requests.
 - The agent is instructed to call approval-gated tools directly, never to ask
-  for a go-ahead; one script reminder per scheduled task; inside a development
+  for a go-ahead (it still checks in before irreversible ungated actions that
+  the request did not clearly cover); one script reminder per scheduled task; inside a development
   session, `reminder_create(execution="script")` is the final approval.
 - Admin sender authentication (DKIM/SPF) is recommended and now on by default.
   Turn it off in `./run.sh` → Security only if your mail provider cannot pass it.
