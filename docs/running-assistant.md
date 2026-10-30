@@ -148,11 +148,11 @@ If you move the checkout, rerun setup to refresh its absolute deployment paths.
 - `data/config/agent.yaml` — runtime defaults, initialized from `src/config/agent.yaml`.
 - `data/config/AGENT.md` — operator-maintained runtime instructions.
 
-Tracked templates and defaults are under `src/config/`. Host documentation is
-mounted read-only into the runtime at `/data/share/.assistant/docs`; it is not
-copied into the shared workspace. The agent can use it for tool and environment
-diagnostics but cannot use it to inspect host secrets, host source files, or
-restart services.
+Tracked templates and defaults are under `src/config/`. Documentation is bundled
+with the application image and retrieved using `help_search` and `help_topic`;
+it is not mounted from the host or copied into the shared workspace.
+`runtime_capabilities` reports live settings and limits. Help does not grant
+access to host secrets, host source files or service controls.
 
 Back up the database, shared files, private files, and local configuration and
 credentials. Stop the stack before taking filesystem copies that must be

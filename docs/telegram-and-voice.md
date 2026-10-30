@@ -5,6 +5,9 @@ All requests enter `RequestService.receive_request`; channel-specific code does 
 separate agent or bypass tool permissions. `ReplyRouter` delivers normal answers and
 clarifications. New email requests use the same router; historical email jobs retain
 their original completion requirements.
+An explicit sent email or Telegram message to the requester satisfies final delivery:
+task completion records its response without sending a second "I sent it" receipt.
+Messages sent only to third parties do not suppress the requester's final answer.
 
 ## Setup
 
@@ -47,6 +50,11 @@ read the initialization container's original secret mount.
   selects a workstream and confirms the switch in the chat. Ordinary messages continue
   its main conversation until you switch or use `/new`; selection survives
   receiver restarts. Email-created workstreams are selectable too.
+- Outbound task messages and approval cards automatically select their associated
+  workstream for the recipient. Quoted replies to approval cards resolve back to
+  that task, including tasks originally received by email. Administrative input
+  prompts accept the next plain-text message without forcing Telegram's quote UI;
+  explicit replies remain supported. Text guidance does not grant script approval.
 - Reply to a task message or its status message to continue that task, including after
   completion. Explicit replies take precedence without switching the saved
   selection. Replies to deleted conversations start fresh, with a routing notice;

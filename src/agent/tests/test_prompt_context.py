@@ -38,16 +38,16 @@ class EnsurePromptFilesTest(unittest.TestCase):
             self.assertTrue(root.is_dir())
             self.assertFalse((root / ".assistant/docs").exists())
 
-    def test_existing_documentation_is_never_rewritten(self) -> None:
+    def test_existing_workspace_files_are_never_rewritten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = prompt_config(temp_dir)
-            doc_path = root / ".assistant/docs/SANDBOX_CAPABILITIES.md"
+            doc_path = root / "notes/reference.md"
             doc_path.parent.mkdir(parents=True)
-            doc_path.write_text("Mounted reference", encoding="utf-8")
-            with patch.object(Path, "write_bytes", side_effect=AssertionError("read-only docs")):
+            doc_path.write_text("User reference", encoding="utf-8")
+            with patch.object(Path, "write_bytes", side_effect=AssertionError("existing file")):
                 ensure_prompt_files(config)
-            self.assertEqual(doc_path.read_text(encoding="utf-8"), "Mounted reference")
+            self.assertEqual(doc_path.read_text(encoding="utf-8"), "User reference")
 
 
 class AgentPromptPathTest(unittest.TestCase):
@@ -256,7 +256,10 @@ class BuildPromptContextTest(unittest.TestCase):
         self.assertIn("Admin name: Alice", context)
         self.assertIn("Admin email: alice@test.com", context)
         self.assertIn("Organization: TestOrg", context)
-        self.assertIn(".assistant/docs/", context)
+        self.assertIn("use help_search first", context)
+        self.assertIn("help_topic with a returned topic_id and revision", context)
+        self.assertIn("tool usage (including the sandbox)", context)
+        self.assertNotIn(".assistant/docs", context)
 
     def test_omits_admin_name_when_not_configured(self) -> None:
         config = AppConfig({

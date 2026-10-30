@@ -38,7 +38,7 @@ class SetupTest(unittest.TestCase):
                              (path / "src/config/agent.yaml").read_bytes())
             self.assertEqual((path / "data/config/AGENT.md").read_bytes(),
                              (path / "src/config/AGENT.md.example").read_bytes())
-            self.assertEqual(instance.values["SANDBOX_DOCS_ROOT_HOST"], str(path / "docs"))
+            self.assertNotIn("SANDBOX_DOCS_ROOT_HOST", instance.values)
             self.assertEqual(instance.compose_prefix(), [
                 "compose", "--project-directory", str(path / "src"),
                 "--env-file", str(path / "data/.env"),
@@ -47,9 +47,12 @@ class SetupTest(unittest.TestCase):
             ])
             custom = b"agent:\n  limits:\n    max_iterations_per_task: 7\n"
             (path / "data/config/agent.yaml").write_bytes(custom)
+            with (path / "data/.env").open("a") as environment:
+                environment.write("\nSANDBOX_DOCS_ROOT_HOST=/old/docs\n")
             reopened = Installation(root)
             self.assertEqual(reopened.defaults.get("agent.limits.max_iterations_per_task"), 7)
             reopened.save()
+            self.assertNotIn("SANDBOX_DOCS_ROOT_HOST", (path / "data/.env").read_text())
             self.assertEqual((path / "data/config/agent.yaml").read_bytes(), custom)
 
     def test_root_launcher_forwards_arguments_from_another_working_directory(self):
@@ -88,17 +91,16 @@ class SetupTest(unittest.TestCase):
             self.assertIn("--plain", result.stdout)
             self.assertNotIn("install its dependencies", result.stdout)
 
-    def test_every_workspace_service_mounts_canonical_documentation_read_only(self):
+    def test_services_do_not_mount_host_documentation(self):
         repository = Path(__file__).resolve().parents[2]
         services = yaml.safe_load((repository / "docker-compose.yml").read_text())["services"]
         for name, service in services.items():
             mounts = service.get("volumes", [])
-            if any(isinstance(mount, str) and ":/data/share" in mount for mount in mounts):
-                docs = [mount for mount in mounts if isinstance(mount, dict)
-                        and mount.get("target") == "/data/share/.assistant/docs"]
-                self.assertEqual(len(docs), 1, name)
-                self.assertEqual(docs[0]["source"], "../docs", name)
-                self.assertTrue(docs[0]["read_only"], name)
+            self.assertFalse(any(
+                (isinstance(mount, dict) and mount.get("source") == "../docs")
+                or "/.assistant/docs" in str(mount) for mount in mounts
+            ), name)
+        self.assertNotIn("SANDBOX_DOCS_ROOT_HOST", services["sandbox"]["environment"])
 
     @contextmanager
     def credential_volume_backend(self):

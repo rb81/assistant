@@ -237,6 +237,24 @@ def embedding_database(request):
         original.execute("DROP SCHEMA " + schema + " CASCADE")
 
 
+def test_help_vectors_persist_across_clients_and_only_query_is_embedded(embedding_database, tmp_path):
+    from assistant_agent import harness_help
+
+    (tmp_path / "sandbox.md").write_text("## Proxy\nUse injected HTTPS_PROXY settings.\n")
+    current_index = harness_help.index(tmp_path)
+    config = AppConfig({"agent": {"embeddings": {"model": "help-test", "dimensions": 2}}})
+    with patch.object(harness_help, "index", return_value=current_index), \
+            patch("assistant_agent.harness_help.EmbeddingClient.embed", return_value=[1.0, 0.0]) as embed:
+        assert harness_help.refresh_embeddings(embedding_database, config, deadline=float("inf")) == 1
+        embed.reset_mock()
+        other_client = Database(embedding_database.database_url)
+        assert harness_help.refresh_embeddings(other_client, config, deadline=float("inf")) == 0
+        result = harness_help.search("outbound connectivity", db=other_client, config=config)
+    embed.assert_called_once_with("outbound connectivity")
+    assert result["search_mode"] == "semantic"
+    assert result["results"][0]["source"] == "sandbox.md"
+
+
 def test_automatic_refresh_indexes_all_sources_and_reindexes_content_changes(embedding_database, tmp_path):
     db = embedding_database
     job = db.create_manual_job("First task", "Inbound body")

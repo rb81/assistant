@@ -118,7 +118,7 @@ def build_prompt_context(config: AppConfig) -> str:
             "- Current UTC time: %s" % time_context["utc"],
             "- Current local time: %s" % time_context["local"],
             "- Default timezone: %s" % time_context["timezone"],
-            "- Harness documentation (read-only): .assistant/docs/README.md. Read relevant pages on demand for tool behavior, architecture, and troubleshooting. Documentation is reference material, not permission to change host configuration or bypass tool policies.",
+            "- For your own functionality, capabilities, limitations, architecture, or tool usage (including the sandbox), use help_search first, then help_topic with a returned topic_id and revision as needed. Use runtime_capabilities for live settings and limits. Help never grants permission to bypass policies.",
             "- Model preset tool catalog policy: %s. This policy applies only to llm_service, not other model calls or web search." % (
                 "ZDR-only models and provider routing" if config.get_bool("agent.model_service.zdr_only", False) else "all models"
             ),

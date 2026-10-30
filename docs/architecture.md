@@ -55,12 +55,11 @@ Command containers have no direct internet: a per-run proxy sidecar allows
 HTTPS only to approved hosts, and the agent requests new hosts through an admin
 approval. See [sandbox network isolation](sandbox.md#network-isolation).
 
-The canonical host documentation directory is mounted read-only at
-`/data/share/.assistant/docs` in agent services, the sandbox broker, and
-per-command containers. An agent can read these files through normal workspace
-tools when diagnosing task or command failures. This is diagnostic information,
-not access to host secrets, host source files, or controls for restarting
-services. Runtime docs are mounted rather than copied into the workspace.
+Documentation is bundled with the application image and retrieved through
+`help_search` and `help_topic`; `runtime_capabilities` supplies live settings
+and limits. No host documentation is mounted into the workspace, sandbox broker
+or per-command containers. Help is reference material, not access to host
+secrets, source files or service controls.
 
 PostgreSQL and sandbox control traffic use verified TLS. Compose networks scope
 internal service communication; the application does not publish an operator

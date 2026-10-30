@@ -107,13 +107,15 @@ def review_version(runtime, version, hosts, final=False):
            WHERE session_id = %s AND version_id = %s AND final = %s""",
         (session["id"], version["id"], final),
     )
-    if previous and previous["hosts"] == hosts and previous["review"]["decision"] == "approve":
+    if previous and previous["hosts"] == hosts:
         return session, previous["review"]
     finding = permissions.screen(runtime, version)
     if finding.get("level") == "malicious":
         raise permissions.PermissionDenied("Security screening classified this version as malicious.")
     try:
-        result = review(runtime.config, session["brief"], version, hosts, final=final)
+        context = getattr(runtime, "sandbox_review_context", None)
+        result = review(runtime.config, session["brief"], version, hosts, final=final,
+                        **({"sandbox_context": context} if context is not None else {}))
     except SupervisorError as exc:
         permissions.audit(runtime.db, "supervisor", "development-error", {"session_id": session["id"], "error": str(exc)})
         raise permissions.PermissionDenied("Supervisor unavailable; execution paused: %s" % exc) from exc

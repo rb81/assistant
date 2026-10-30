@@ -20,6 +20,8 @@ This document describes how Assistant executes shell commands safely.
    Direct requests without a development session also receive a tool-free
    supervisor assessment, without treating the agent's purpose as an approved brief.
 3. `ToolRuntime.command_execute` validates input, authorization and shared-root workdir.
+   Missing approval returns an explicit error directing the agent to the development
+   or final approval tool; execution cannot generate an incomplete implicit approval.
 4. Request is sent to sandbox broker `POST /execute`.
 5. Broker starts a fresh run container. Approved code is copied into a private
    read-only volume at `/approved-code`; script arguments reference that snapshot.
@@ -38,9 +40,43 @@ This document describes how Assistant executes shell commands safely.
 - Broker container is hardened (`read_only`, dropped caps, `no-new-privileges`).
 - Broker requests use HTTPS with hostname verification and a service-scoped bearer token.
 - Run containers execute as root by default and mount the writable shared
-  workspace plus read-only documentation at `.assistant/docs` (no app
+  workspace (no host documentation, app
   credential mounts or Docker socket). Other container-local paths remain
   accessible; do not put secrets in workspace files.
+
+## Runtime help and command environment
+
+For functionality, capabilities, limitations, architecture and tool usage, use
+`help_search` first. Use `help_topic` with a returned `topic_id` and documentation
+revision to retrieve a section. `runtime_capabilities` reports enabled tools,
+live sandbox modes and resource limits without exposing credentials.
+Help is chunked from documentation bundled with the running application image;
+idle indexing caches vectors using the configured embedding service. Retrieval
+uses semantic similarity, with an explicit keyword fallback if embeddings are
+disabled, pending or unavailable. Rebuilding updates the help content.
+Host documentation is not mounted
+into the workspace, broker or command containers. Help is reference material,
+not permission to change host configuration or bypass tool policies.
+
+The default image is defined by `src/sandbox/Dockerfile` and
+`src/sandbox/requirements.txt`; custom images may differ. It includes:
+
+- Commands: `python` / `python3`, `curl`, `wget`, `git`, `jq`, `file`, `unzip`,
+  `dig` / `nslookup` and `ping` (subject to dropped `NET_RAW` capability).
+- Python libraries: `requests`, `httpx`, `beautifulsoup4` (`bs4`), `lxml`,
+  `html5lib`, `trafilatura`, `readability-lxml`, `markdownify`, `python-dateutil`.
+
+Each command starts a fresh container. Packages installed in its writable layer
+do not persist; install and use them in the same call or use a workspace-local
+environment. Only workspace changes persist. Default limits are 2 CPUs, 2 GiB
+memory, 512 processes and 300 seconds. The default image has no browser automation
+stack such as Playwright or Selenium.
+
+Application credentials are unavailable to scripts. Use dedicated integration
+tools, including `llm_service`, `text_to_speech` and channel delivery tools,
+rather than searching for secrets or recreating authenticated integrations.
+Prefer `deep_research_request` for substantial research and `command_execute`
+for custom scripts, direct URL checks, downloads and focused diagnostics.
 
 ## Calling the tool
 
@@ -112,6 +148,13 @@ judgment are best effort, not proof of behavior or a filesystem-access boundary.
 Commands still have access to the writable shared workspace; use test data and
 dedicated test accounts rather than assuming development creates a private copy.
 
+The supervisor reviews authorization, not QA, performance or feature completeness.
+Intermediate implementations and small technical fixes may remain within the brief.
+Trusted broker modes are supplied separately from source so the supervisor does
+not require scripts to duplicate enforced proxy controls or disable the required
+proxy. Scope expansion, new recipients and unauthorized effects remain grounds
+for rejection or escalation. Identical reviews (including rejections) are reused.
+
 Each approved executable fingerprint and exact host set may run repeatedly
 within that job's session. Changes require review. Runs consume budget atomically,
 including failed attempts; dispatch is never automatically retried. The broker
@@ -145,6 +188,11 @@ is clearly labeled, not presented as supervisor approval. Email includes the ful
 code in the body and attachment. Telegram offers **Review Script**. Final approval
 is bound to the executable fingerprint and selected hosts; a denial grants no
 ongoing permission and cannot undo development-time effects.
+Task completion is refused while development is pending, active or finalizing;
+submit the final approval or explicitly fail the task rather than silently leaving
+development without a final decision. Networking scripts with detected destinations
+cannot submit an empty final host list. No hosts are automatically granted from
+source-code URL mentions.
 
 ## Network Isolation
 
@@ -173,6 +221,27 @@ ongoing permission and cannot undo development-time effects.
 - The proxy checks host names (CONNECT and SNI), not encrypted HTTP content. An
   approved host on a shared CDN could in principle relay to other sites behind
   the same CDN (domain fronting). Approve hosts you trust, not just URLs.
+
+### Proxy-compatible scripts and troubleshooting
+
+Keep the injected `HTTPS_PROXY` / `HTTP_PROXY` settings enabled. In Python
+`requests`, `Session.trust_env = False` disables them unless you explicitly
+configure the proxy. Direct DNS lookups, IP pinning and direct TLS sockets fail
+in default proxy mode; `dig` / `nslookup` failures do not mean a site is down.
+For certificate inspections, use a proxy-compatible CONNECT client. The proxy
+enforces public-address restrictions; scripts need not duplicate those guards.
+
+Inspect stdout, stderr, HTTP status and the command's network summary. A script
+returning zero when every request failed has not passed testing. Use timeouts,
+a descriptive User-Agent and redirects only to authorized hosts. HTTP 403/406,
+authentication, JavaScript requirements and anti-bot controls are not necessarily
+fixed by browser-like headers. Never use mirrors, IP addresses, DNS tricks or
+other tools to circumvent a denial.
+
+Runtime/image and security-policy changes invalidate prior version approvals
+even when source is unchanged. Request the complete intended hosts again:
+an empty list means offline, not inheritance from an earlier version. Preserve
+the exact approved interpreter, arguments and workdir for scheduled runs.
 
 ### Network access approvals
 
@@ -367,7 +436,7 @@ Compose reads these settings from `data/.env`:
 - `SANDBOX_IMAGE` (used for both broker and run image)
 - `SANDBOX_ISOLATION_MODE`, `SANDBOX_RUN_NETWORK_MODE`, `SANDBOX_EGRESS_MODE`, `SANDBOX_RUN_CAP_DROP`
 - `SANDBOX_RUN_CPUS`, `SANDBOX_RUN_MEMORY_BYTES`, `SANDBOX_RUN_PIDS_LIMIT`
-- `SANDBOX_SHARED_ROOT_HOST`, `SANDBOX_DOCS_ROOT_HOST` (generated by setup)
+- `SANDBOX_SHARED_ROOT_HOST` (generated by setup)
 
 The broker also supports `SANDBOX_RUN_RUNTIME` (for example `runsc`),
 `SANDBOX_RUN_USER`, `SANDBOX_RUN_NETWORK` and timeout overrides. The supplied
@@ -379,5 +448,4 @@ alone does not increase the broker maximum.
 
 ## Operational Note
 
-See [sandbox capabilities](SANDBOX_CAPABILITIES.md) for installed tools and
-[security](security.md#sandbox-docker-socket) for Docker-daemon trust limits.
+See [security](security.md#sandbox-docker-socket) for Docker-daemon trust limits.

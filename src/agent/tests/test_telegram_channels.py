@@ -141,7 +141,7 @@ def test_uncertain_send_is_not_replayed():
 ])
 def test_native_voice_delivery_is_explicit_and_uses_existing_delivery_log(voice_note, method, field, mime, data):
     database = MagicMock()
-    database.fetch_one.return_value = {"id": 1, "status": "pending", "provider_message_ids": []}
+    database.fetch_one.return_value = {"id": 1, "status": "pending", "provider_message_ids": [], "workstream_id": 1}
     delivery = TelegramDelivery(database, config())
     delivery.client = MagicMock()
     delivery.client.call.return_value = {"message_id": 81}
@@ -166,9 +166,12 @@ def test_native_voice_delivery_is_explicit_and_uses_existing_delivery_log(voice_
     else:
         assert upload == data and payload["caption"] == "speech"
     assert json.loads(delivery.client.call.call_args.args[1]["reply_parameters"])["message_id"] == 17
-    metadata = database.fetch_one.call_args.args[1][-1].obj[0]
+    insert = next(call for call in database.fetch_one.call_args_list
+                  if "INSERT INTO channel_deliveries" in call.args[0])
+    metadata = insert.args[1][-1].obj[0]
     assert metadata.get("voice_note", False) is voice_note
-    assert "UPDATE channel_deliveries SET status = 'sent'" in database.execute.call_args.args[0]
+    assert any("UPDATE channel_deliveries SET status = 'sent'" in call.args[0]
+               for call in database.execute.call_args_list)
 
 
 @pytest.mark.parametrize("voice_note,mime,data", [
@@ -297,8 +300,7 @@ def test_hardened_compose_configuration():
             data = Path(directory) / "data"
             data.mkdir()
             environment = data / ".env"
-            environment.write_text("SANDBOX_SHARED_ROOT_HOST=" + str(data / "share") + "\n"
-                                   "SANDBOX_DOCS_ROOT_HOST=" + str(Path(directory) / "docs") + "\n")
+            environment.write_text("SANDBOX_SHARED_ROOT_HOST=" + str(data / "share") + "\n")
             result = subprocess.run(["docker", "compose", "--project-directory", str(source),
                 "--env-file", str(environment),
                 "-f", str(root / "docker-compose.yml"), "--profile", "voice", "--profile", "telegram",
@@ -513,6 +515,81 @@ def test_already_delivered_completion_requires_and_skips_a_prior_send(database):
         assert call.call_count == 1
     current = database.fetch_one("SELECT * FROM jobs WHERE id = %s", (job["id"],))
     assert current["status"] == "completed" and current["metadata"]["final_response"] == "Voice note saying hi"
+
+
+@pytest.mark.parametrize("channel", ["email", "telegram"])
+def test_completion_automatically_suppresses_receipt_after_requester_delivery(database, channel):
+    migrate(database)
+    route = ({"channel": "telegram", "chat_id": "123"} if channel == "telegram"
+             else {"channel": "email", "to": "user@example.com"})
+    RequestService(database).receive_request(IncomingRequest(
+        "telegram", "delivered", "9:123", "123", "delivered-task", "send report", reply_route=route,
+    ))
+    job = database.claim_job("test-worker")
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config, agent.locked_by = database, config(), "test-worker"
+    agent.memory_steward = MagicMock()
+    runtime = ToolRuntime(database, agent.config, job)
+    if channel == "email":
+        database.execute(
+            """INSERT INTO outbound_email_logs(job_id, to_addresses, subject, body_text, status)
+               VALUES (%s, ARRAY['User <user@example.com>'], 'Report', 'The report', 'sent')""", (job["id"],),
+        )
+    else:
+        with patch("assistant_agent.telegram.TelegramClient.call", return_value={"message_id": 77}):
+            TelegramDelivery(database, agent.config).send(job, "The report", destination="123")
+    with patch("assistant_agent.task_agent.ReplyRouter") as router:
+        assert agent.handle_tool_call(job, [], runtime, "call", "task_complete",
+                                      {"response": "I sent the report", "summary": "Delivered"}, set())
+    router.assert_not_called()
+    assert database.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))["status"] == "completed"
+
+
+def test_third_party_delivery_does_not_suppress_requester_answer(database):
+    migrate(database)
+    job = database.create_manual_job("Report", "Send someone else a report")
+    job["metadata"]["reply_route"] = {"channel": "email", "to": "user@example.com"}
+    database.execute(
+        """INSERT INTO outbound_email_logs(job_id, to_addresses, subject, body_text, status)
+           VALUES (%s, ARRAY['other@example.com'], 'Report', 'The report', 'sent')""", (job["id"],),
+    )
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config = database, config()
+    assert agent.delivered_since_request(job)
+    assert not agent.delivered_since_request(job, requester_only=True)
+
+
+def test_direct_approval_message_selects_and_routes_its_workstream(database):
+    from assistant_agent.telegram import record_task_message
+    migrate(database)
+    values = config()
+    values.values["agent"]["telegram"]["bot_token"] = "9:test"
+    job = database.create_manual_job("Development", "Test a script")
+    record_task_message(database, values, job["id"], "123", 312)
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id = database, values, "9"
+    assert receiver.selected_workstream("123")["workstream_id"] == job["workstream_id"]
+    assert receiver.task_thread({
+        "chat": {"id": 123}, "message_id": 313, "reply_to_message": {"message_id": 312},
+    }, "9:123", "123") == (job["thread_id"], [])
+    # A different recipient cannot use another recipient's direct-message mapping.
+    assert receiver.task_thread({
+        "chat": {"id": 456}, "message_id": 313, "reply_to_message": {"message_id": 312},
+    }, "9:456", "456") != (job["thread_id"], [])
+
+
+def test_unrecognized_quote_is_not_reported_as_deleted_conversation(database):
+    migrate(database)
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, config(), "9", MagicMock()
+    receiver.ingest({"update_id": 313, "message": {
+        "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+        "message_id": 313, "date": 1_700_000_000, "text": "Continue",
+        "reply_to_message": {"message_id": 312},
+    }})
+    row = database.fetch_one("SELECT metadata FROM request_messages WHERE external_id = '9:123:313'")
+    assert row["metadata"]["unrecognized_reply"] is True
+    assert "new_conversation_after_deleted_reply" not in row["metadata"]
 
 
 def test_followup_during_consolidation_is_not_lost(database):

@@ -1,0 +1,13 @@
+*
+!src/
+src/*
+!src/agent/
+src/agent/*
+!src/agent/Dockerfile
+!src/agent/requirements.txt
+!src/agent/src/
+!src/agent/src/**
+!docs/
+!docs/**
+**/__pycache__/
+**/.DS_Store

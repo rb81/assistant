@@ -100,11 +100,10 @@ Compose keeps host state under `data/`, including:
 Setup preserves an existing `data/config/agent.yaml`; rebuilding images does
 not refresh it from `src/config/agent.yaml`.
 
-The host `docs/` directory is mounted read-only at
-`/data/share/.assistant/docs` for task-agent, sandbox broker, and per-command
-containers. It is not copied into workspace storage. The agent may read
-reference documentation for diagnostics, but this does not expose host source,
-credentials, or service controls.
+Documentation is bundled in the application image at `/app/docs` for the
+`help_search` and `help_topic` tools. It is not mounted from the host or copied
+into workspace storage, the sandbox broker or per-command containers.
+Rebuild the application image to update help content.
 
 By default, credential source files are protected plaintext files in
 `data/.secrets/`; the generated `data/.compose-secrets.yaml` grants read-only

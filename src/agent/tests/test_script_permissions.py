@@ -184,6 +184,34 @@ def test_direct_final_supervisor_failure_is_explicit_and_never_grants_execution(
     assert permissions.run_status(runtime.db, item, runtime.job["id"]) == "not_approved"
 
 
+def test_networking_renewal_cannot_request_empty_hosts_or_inherit_old_grants(runtime):
+    (runtime.shared_root / "report.py").write_text("import requests\nrequests.get('https://api.example.com')\n")
+    original = version(runtime)
+    approve(runtime, original, "host", ["api.example.com"])
+    changed = version(runtime, image="image-v2")
+    assert permissions.host_policy(runtime.db, runtime.config, changed["id"], runtime.job["id"])["allow"] == []
+    with patch("assistant_agent.development_supervisor.review") as review:
+        with pytest.raises(permissions.PermissionDenied, match="host list is empty"):
+            permissions.final_request(runtime, changed, [], "Renew report")
+        review.assert_not_called()
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.final_request(runtime, changed, ["api.example.com"], "Renew report")
+    assert raised.value.request["targets"] == ["api.example.com"]
+    assert permissions.run_status(runtime.db, changed, runtime.job["id"]) == "not_approved"
+
+
+def test_execution_requires_explicit_approval_tool_instead_of_opening_implicit_requests(runtime):
+    with patch.object(ToolRuntime, "sandbox_control", return_value={"execution_identity": "image-v1"}), \
+            patch("assistant_agent.tools.read_secret", return_value="token"), \
+            patch("assistant_agent.tools.ssl.create_default_context"), \
+            patch.object(permissions, "final_request") as request, \
+            patch("assistant_agent.tools.open_https_request") as dispatch:
+        with pytest.raises(permissions.PermissionDenied, match="cannot open implicit approval"):
+            runtime.command_execute(["python3", "report.py"])
+    request.assert_not_called()
+    dispatch.assert_not_called()
+
+
 def test_direct_final_review_can_serialize_stored_versions_with_database_timestamps(runtime):
     item = version(runtime)
     assert item["created_at"] is not None
@@ -307,7 +335,7 @@ def test_agent_tool_pauses_email_approval_resumes_and_exact_execution_consumes_g
             patch.object(agent, "pause_for_review", return_value=True):
         assert agent.handle_tool_call(
             runtime.job, [], runtime, "call1", "script_approval_request",
-            {"command": ["python3", "report.py"], "purpose": "Daily report"}, {"script_approval_request"},
+            {"command": ["python3", "report.py"], "purpose": "Daily report", "urls": []}, {"script_approval_request"},
         )
     job = runtime.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (runtime.job["id"],))
     runtime.db.update_job_status(job["id"], "needs_review")

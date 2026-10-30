@@ -125,6 +125,18 @@ class TelegramReceiver:
     def task_thread(self, message: dict[str, Any], conversation: str, sender: str) -> tuple[str, list[dict[str, Any]]]:
         reply = message.get("reply_to_message") or {}
         if reply.get("message_id"):
+            mapping = self.db.get_state("telegram-task-message:%s:%s:%s" % (
+                self.bot_id, sender, reply["message_id"],
+            ))
+            if isinstance(mapping, dict) and mapping.get("job_id"):
+                mapped = self.db.fetch_one(
+                    """SELECT j.thread_id FROM jobs j
+                       JOIN workstreams w ON w.id = j.workstream_id AND w.status = 'active'
+                       WHERE j.id = %s AND j.workstream_id = %s""",
+                    (mapping["job_id"], mapping["workstream_id"]),
+                )
+                if mapped:
+                    return mapped["thread_id"], []
             reference = "%s:%s:%s" % (self.bot_id, message["chat"]["id"], reply["message_id"])
             row = self.db.fetch_one(
                 """SELECT r.thread_id FROM request_messages r
@@ -269,10 +281,12 @@ class TelegramReceiver:
             and thread == "telegram:%s:%s" % (conversation, message["message_id"])
         )
         if reply_starts_new_conversation:
-            metadata["new_conversation_after_deleted_reply"] = True
             deleted_workstream_id = self.deleted_reply_workstream_id(message)
             if deleted_workstream_id is not None:
+                metadata["new_conversation_after_deleted_reply"] = True
                 metadata["deleted_workstream_id"] = deleted_workstream_id
+            else:
+                metadata["unrecognized_reply"] = True
         if selection:
             metadata["selection"] = [job["id"] for job in selection]
         if is_new_workstream and not body and not message_files(message):

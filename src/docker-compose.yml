@@ -42,14 +42,6 @@ x-agent-config-volume: &agent-config-volume
   bind:
     create_host_path: false
 
-x-docs-volume: &docs-volume
-  type: bind
-  source: ../docs
-  target: /data/share/.assistant/docs
-  read_only: true
-  bind:
-    create_host_path: false
-
 x-postgres-tls-volume: &postgres-tls-volume
   type: bind
   source: ../data/private/tls/postgres.crt
@@ -67,7 +59,9 @@ x-sandbox-tls-volume: &sandbox-tls-volume
     create_host_path: false
 
 x-agent-common: &agent-common
-  build: ./agent
+  build:
+    context: ..
+    dockerfile: src/agent/Dockerfile
   restart: unless-stopped
   read_only: true
   tmpfs:
@@ -86,7 +80,6 @@ x-agent-common: &agent-common
     AGENT_CONFIG: /app/config/agent.yaml
   volumes:
     - *agent-config-volume
-    - *docs-volume
     - *postgres-tls-volume
     - *sandbox-tls-volume
   networks:
@@ -164,7 +157,6 @@ services:
       AGENT_ROLE: downloader
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - ../data/private/artifacts:/data/private/artifacts
       - *postgres-tls-volume
       - *sandbox-tls-volume
@@ -191,7 +183,6 @@ services:
       AGENT_ROLE: task-agent
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - ../data/private/artifacts/dropbox:/data/private/artifacts/dropbox
       - *postgres-tls-volume
       - *sandbox-tls-volume
@@ -218,7 +209,6 @@ services:
       AGENT_ROLE: workspace-indexer
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - *postgres-tls-volume
       - *sandbox-tls-volume
       - *agent-config-volume
@@ -267,7 +257,6 @@ services:
       AGENT_ROLE: request-preprocessor
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - ../data/private/artifacts:/data/private/artifacts
       - *postgres-tls-volume
       - *sandbox-tls-volume
@@ -343,7 +332,6 @@ services:
       AGENT_ROLE: deep-research-agent
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - *postgres-tls-volume
       - *sandbox-tls-volume
       - *agent-config-volume
@@ -467,7 +455,6 @@ services:
     environment:
       SANDBOX_SHARED_ROOT: /data/share
       SANDBOX_SHARED_ROOT_HOST: ${SANDBOX_SHARED_ROOT_HOST:?Run ./run.sh first}
-      SANDBOX_DOCS_ROOT_HOST: ${SANDBOX_DOCS_ROOT_HOST:?Run ./run.sh first}
       SANDBOX_TLS_CERT_FILE: /run/assistant/runtime/current/sandbox.crt
       SANDBOX_TLS_KEY_FILE: /run/assistant/runtime/current/sandbox.key
       SANDBOX_API_TOKEN_FILE: /run/assistant/runtime/current/SANDBOX_API_TOKEN
@@ -501,7 +488,6 @@ services:
     cpus: 2
     volumes:
       - ../data/share:/data/share
-      - *docs-volume
       - sandbox-runtime:/run/assistant/runtime:ro
       # The Docker socket is required so the sandbox broker can create and
       # destroy ephemeral per-command containers for isolated execution.

@@ -118,8 +118,7 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
         "text": (
             "Never access files outside the configured shared workspace root. "
             "When a user asks what files you can access, use file_list with recursive=true on the shared workspace root. "
-            "Read .assistant/docs/README.md for harness documentation and troubleshooting. "
-            "The entire .assistant/docs/ tree is read-only, including in command_execute."
+            "Use help_search and help_topic for harness documentation and troubleshooting. "
         ),
     },
     "Memory": {
@@ -184,8 +183,7 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "that failed; ask the administrator instead. "
             "Application credentials are not available here. Never search environment variables or secret files "
             "for API keys, or recreate authenticated integrations; use their dedicated tools. "
-            "Read .assistant/docs/SANDBOX_CAPABILITIES.md for available tools, installed packages, "
-            "networking details, and resource limits."
+            "Use runtime_capabilities for live modes and help_search for sandbox restrictions and packages."
         ),
     },
 
@@ -2216,8 +2214,14 @@ class ToolRuntime:
         if version:
             from . import development_sessions
             if not self.config.get_bool("agent.security.script_yolo", False) and not development_sessions.current(self, version):
-                policy = script_permissions.host_policy(self.db, self.config, version["id"], self.job["id"])
-                script_permissions.final_request(self, version, policy["allow"], version["purpose"])
+                script_permissions.check_blocks(self, version, [])
+                if script_permissions.run_status(self.db, version, self.job["id"]) != "approved":
+                    raise script_permissions.PermissionDenied(
+                        "No approval matches this exact code, invocation and sandbox runtime. "
+                        "Use the identical approved command/workdir, or call development_session_request "
+                        "for iterative testing or script_approval_request with the complete intended urls "
+                        "for final approval. command_execute cannot open implicit approval requests."
+                    )
             bundle, network_policy = script_permissions.execution(self, version)
             # A lost response must never execute a one-use action twice.
             max_attempts = 1
@@ -2261,6 +2265,12 @@ class ToolRuntime:
                         )
                         if network:
                             result["network"] = network
+                            if network.get("blocked"):
+                                result["status"] = "network_blocked"
+                                result["error"] = (
+                                    "Required network access was denied. Exit code alone does not establish "
+                                    "task success; inspect the blocked hosts and results."
+                                )
                         result["attempts"] = attempt
                         if attempt_errors:
                             result["retry_errors"] = attempt_errors
@@ -2301,7 +2311,12 @@ class ToolRuntime:
         )
         try:
             with open_https_request(request, timeout=30, context=context) as response:
-                return json.loads(response.read().decode("utf-8"))
+                result = json.loads(response.read().decode("utf-8"))
+                if method == "GET" and path == "/health":
+                    self.sandbox_review_context = {
+                        key: result.get(key) for key in ("isolation_mode", "run_network_mode", "egress")
+                    }
+                return result
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise ToolError("Sandbox control request failed: %s" % exc) from exc
 
@@ -2310,6 +2325,8 @@ class ToolRuntime:
         from . import script_permissions
         if not str(purpose or "").strip():
             raise ValueError("purpose is required")
+        if urls is None:
+            raise ValueError("urls is required: supply the complete intended HTTPS host list, or [] for offline scripts.")
         health = self.sandbox_control("GET", "/health")
         version = script_permissions.inspect(
             self, command, workdir, purpose, health["execution_identity"],
@@ -2318,6 +2335,32 @@ class ToolRuntime:
             raise ValueError("This command is not an inspectable script. Use a workspace script or explicit interpreter.")
         hosts = script_permissions.requested_hosts(urls if urls is not None else [])
         return script_permissions.final_request(self, version, hosts, purpose)
+
+    def help_search(self, query: str, limit: int = 5) -> dict[str, Any]:
+        from .harness_help import search
+        return search(query, limit, db=self.db, config=self.config)
+
+    def help_topic(self, topic_id: str, revision: str) -> dict[str, Any]:
+        from .harness_help import topic
+        return topic(topic_id, revision)
+
+    def runtime_capabilities(self) -> dict[str, Any]:
+        from .harness_help import index
+        result = {
+            "documentation_revision": index()[0],
+            "available_tools": sorted(available_function_names(self.config, self.job)),
+            "shared_root": str(self.shared_root),
+            "script_yolo": self.config.get_bool("agent.security.script_yolo", False),
+            "development_max_minutes": self.config.get_int("agent.security.development.max_minutes", 30),
+            "development_max_runs": self.config.get_int("agent.security.development.max_runs", 20),
+        }
+        if sandbox_configured(self.config):
+            health = self.sandbox_control("GET", "/health")
+            result["sandbox"] = {key: health[key] for key in (
+                "isolation_mode", "run_network_mode", "egress", "execution_identity",
+                "max_timeout_seconds", "memory_bytes", "cpus", "pids_limit",
+            ) if key in health}
+        return result
 
     def development_session_request(self, command: list[str], purpose: str, data_access: str, effects: str,
                                     urls: Optional[list[str]] = None, workdir: Optional[str] = None,
@@ -2698,6 +2741,9 @@ class ToolRuntime:
             "deep_research_request": self.deep_research_request,
             "deep_research_status": self.deep_research_status,
             "command_execute": self.command_execute,
+            "help_search": self.help_search,
+            "help_topic": self.help_topic,
+            "runtime_capabilities": self.runtime_capabilities,
             "network_access_request": self.network_access_request,
             "script_approval_request": self.script_approval_request,
             "development_session_request": self.development_session_request,
@@ -3462,7 +3508,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     "purpose": {"type": "string"},
                     "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
                 },
-                "required": ["command", "purpose"],
+                "required": ["command", "purpose", "urls"],
             },
         },
     },
@@ -3784,6 +3830,27 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
 
 FUNCTION_TOOLS.append(MODEL_SERVICE_TOOL)
 FUNCTION_TOOLS.append(TEXT_TO_SPEECH_TOOL)
+FUNCTION_TOOLS.extend([
+    {"type": "function", "function": {
+        "name": "help_search",
+        "description": "Search documentation bundled with this running build. Returns bounded sections with topic IDs and a revision. Use for architecture, tools, approvals and sandbox restrictions instead of reading documentation files.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "help_topic",
+        "description": "Retrieve a documentation section using a topic_id and documentation revision returned by help_search.",
+        "parameters": {"type": "object", "properties": {
+            "topic_id": {"type": "string"}, "revision": {"type": "string"},
+        }, "required": ["topic_id", "revision"]},
+    }},
+    {"type": "function", "function": {
+        "name": "runtime_capabilities",
+        "description": "Read live sandbox modes and limits, enabled tool names, development limits and bundled documentation revision. Does not expose credentials or grant permissions.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+])
 
 
 FILE_TOOL_NAMES = {
@@ -3822,8 +3889,10 @@ ASYNC_REQUEST_TOOL_NAMES = DEEP_RESEARCH_REQUEST_TOOL_NAMES
 TERMINAL_TOOL_NAMES = {"task_complete", "task_failed", "request_input"}
 CORE_TOOL_NAMES = TERMINAL_TOOL_NAMES | {"email_send"}
 META_TOOL_NAMES = {"get_tool_specs"}
+HELP_TOOL_NAMES = {"help_search", "help_topic", "runtime_capabilities"}
 LOADABLE_TOOL_NAMES = (
     FILE_TOOL_NAMES
+    | HELP_TOOL_NAMES
     | {"llm_service", "text_to_speech"}
     | {"email_search", "email_read", "telegram_send"}
     | WEB_SEARCH_TOOL_NAMES
@@ -3873,6 +3942,7 @@ def job_metadata(job: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 def available_function_names(config: AppConfig, job: Optional[dict[str, Any]] = None) -> set[str]:
     names = set(TERMINAL_TOOL_NAMES)
+    names.update(HELP_TOOL_NAMES)
     names.update({"email_search", "email_read"})
     names.update(MEMORY_TOOL_NAMES)
     names.update(CONTACT_TOOL_NAMES)
@@ -3993,6 +4063,9 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "deep_research_request": "Start a guided iterative research run.",
         "deep_research_status": "Inspect linked deep research progress/results.",
         "command_execute": "Run a command in the sandbox container (network via approval proxy).",
+        "help_search": "Search documentation for the running build, including sandbox restrictions.",
+        "help_topic": "Read a help section by topic ID and documentation revision.",
+        "runtime_capabilities": "Inspect enabled tools and live sandbox modes and limits without credentials.",
         "network_access_request": "Ask the administrator to allow sandbox commands to reach specific hosts.",
         "script_approval_request": "Request permission to run an exact script version.",
         "development_session_request": "Request a time-bound supervised script development session.",

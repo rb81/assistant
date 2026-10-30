@@ -538,8 +538,38 @@ class TaskAgent:
                 return True
         return False
 
-    def delivered_since_request(self, job: dict[str, Any]) -> bool:
+    def delivered_since_request(self, job: dict[str, Any], *, requester_only: bool = False) -> bool:
         request_id = (job.get("metadata") or {}).get("reply_request_id")
+        route = (job.get("metadata") or {}).get("reply_route") or {}
+        email = self.normalized_email_address(route.get("to") or "") if route.get("channel") == "email" else ""
+        chat = str(route.get("chat_id") or "") if route.get("channel") == "telegram" else ""
+        if chat:
+            from .telegram import telegram_identities
+            email = next((address for address, identifier in telegram_identities(self.config).items()
+                          if str(identifier) == chat), "")
+        if requester_only and not (email or chat):
+            return False
+        if requester_only:
+            rows = self.db.fetch_all(
+                """WITH since AS (
+                     SELECT COALESCE((SELECT created_at FROM request_messages WHERE id = %s),
+                                     '-infinity'::timestamptz) AS at
+                   )
+                   SELECT d.channel, d.destination FROM channel_deliveries d, since
+                   WHERE d.job_id = %s AND d.status = 'sent' AND d.purpose = 'message'
+                     AND d.created_at >= since.at
+                   UNION ALL
+                   SELECT 'email', unnest(o.to_addresses || o.cc_addresses)
+                   FROM outbound_email_logs o, since
+                   WHERE o.job_id = %s AND o.status = 'sent' AND o.created_at >= since.at""",
+                (int(request_id) if str(request_id or "").isdigit() else None, job["id"], job["id"]),
+            )
+            return any(
+                (row["channel"] == "telegram" and chat and row["destination"] == chat)
+                or (row["channel"] == "email" and email
+                    and self.normalized_email_address(row["destination"]) == email)
+                for row in rows
+            )
         row = self.db.fetch_one(
             """WITH since AS (
                  SELECT COALESCE((SELECT created_at FROM request_messages WHERE id = %s), '-infinity'::timestamptz) AS at
@@ -1443,6 +1473,19 @@ class TaskAgent:
         if name == "task_complete":
             summary = str(arguments.get("summary", "Task completed.")).strip() or "Task completed."
             response = str(arguments.get("response") or "").strip()
+            session = self.db.fetch_one(
+                """SELECT id FROM sandbox_development_sessions
+                   WHERE job_id = %s AND status IN ('pending', 'active', 'finalizing') LIMIT 1""",
+                (job["id"],),
+            )
+            if session:
+                result = {"error": "Cannot complete with an unfinished development session. Submit "
+                          "script_approval_request with the final exact command and complete hosts, "
+                          "then wait for the administrator's decision. Use task_failed if development cannot finish."}
+                self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name,
+                                 "content": compact_json(result)})
+                return False
             if (job.get("metadata") or {}).get("auto_reply"):
                 current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
                 if current and current["has_new_context"]:
@@ -1451,10 +1494,14 @@ class TaskAgent:
                     return False
             metadata = job.get("metadata") or {}
             already_delivered = arguments.get("already_delivered") is True
-            if already_delivered and not self.delivered_since_request(job):
+            if already_delivered and not self.delivered_since_request(
+                job, requester_only=(metadata.get("reply_route") or {}).get("channel") in {"email", "telegram"},
+            ):
                 result = {"error": "already_delivered=true requires a reply sent with telegram_send or email_send for the current request. Send it first or omit already_delivered."}
                 messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                 return False
+            # A substantive delivery to the requester is the answer, not a reason to send a receipt.
+            already_delivered = already_delivered or self.delivered_since_request(job, requester_only=True)
             if response and not already_delivered and ((metadata.get("reply_route") or {}).get("channel") == "telegram" or metadata.get("auto_reply")):
                 try:
                     delivery = ReplyRouter(tool_runtime).send(response)

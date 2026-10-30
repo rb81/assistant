@@ -46,7 +46,6 @@ RUN_SECURITY_OPT = [
     if item.strip()
 ]
 SHARED_ROOT_HOST = os.getenv("SANDBOX_SHARED_ROOT_HOST", "").strip()
-DOCS_ROOT_HOST = os.getenv("SANDBOX_DOCS_ROOT_HOST", "").strip()
 SHARED_VOLUME_NAME = os.getenv("SANDBOX_SHARED_VOLUME_NAME", "").strip()
 RUN_CONTAINER_PREFIX = os.getenv("SANDBOX_RUN_CONTAINER_PREFIX", "assistant-sandbox-run").strip()
 RUN_NETWORK_PREFIX = os.getenv("SANDBOX_RUN_NETWORK_PREFIX", "assistant-sandbox-net").strip()
@@ -198,17 +197,11 @@ def command_with_umask(command: list[str]) -> list[str]:
 
 
 def run_mounts() -> tuple[list[str], list[dict[str, Any]]]:
-    if not DOCS_ROOT_HOST or not Path(DOCS_ROOT_HOST).is_absolute():
-        raise RuntimeError("SANDBOX_DOCS_ROOT_HOST must be an absolute host documentation path")
-    docs = {
-        "Type": "bind", "Source": DOCS_ROOT_HOST,
-        "Target": str(RUN_SHARED_ROOT / ".assistant/docs"), "ReadOnly": True,
-    }
     if SHARED_VOLUME_NAME:
-        return [], [{"Type": "volume", "Source": SHARED_VOLUME_NAME, "Target": str(RUN_SHARED_ROOT)}, docs]
+        return [], [{"Type": "volume", "Source": SHARED_VOLUME_NAME, "Target": str(RUN_SHARED_ROOT)}]
     if not SHARED_ROOT_HOST:
         raise RuntimeError("SANDBOX_SHARED_ROOT_HOST or SANDBOX_SHARED_VOLUME_NAME is required for container isolation")
-    return ["%s:%s:rw" % (SHARED_ROOT_HOST, RUN_SHARED_ROOT)], [docs]
+    return ["%s:%s:rw" % (SHARED_ROOT_HOST, RUN_SHARED_ROOT)], []
 
 
 def proxy_enabled() -> bool:
@@ -579,7 +572,7 @@ def remove_network(client: DockerClient, network_name: Optional[str]) -> None:
 
 
 @app.get("/health")
-def health(authorization: str = Header(default="")) -> dict[str, str]:
+def health(authorization: str = Header(default="")) -> dict[str, Any]:
     require_api_token(authorization)
     identity = execution_identity(DockerClient(DOCKER_SOCKET, timeout=30)) if ISOLATION_MODE == "container" else "process"
     return {
@@ -590,6 +583,10 @@ def health(authorization: str = Header(default="")) -> dict[str, str]:
         "egress": "proxy" if proxy_enabled() else "open",
         "execution_identity": identity,
         "permission_epoch": _permission_epoch,
+        "max_timeout_seconds": MAX_TIMEOUT_SECONDS,
+        "memory_bytes": RUN_MEMORY_BYTES,
+        "cpus": RUN_NANO_CPUS / 1_000_000_000,
+        "pids_limit": RUN_PIDS_LIMIT,
     }
 
 

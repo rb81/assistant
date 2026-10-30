@@ -329,7 +329,7 @@ class EmailApprovals:
             prepared = True
             delivery_errors = []
             if mode in {"telegram", "both"}:
-                from .telegram import TelegramClient
+                from .telegram import TelegramClient, record_task_message
                 try:
                     client = TelegramClient(self.config)
                     callback = pending["callback_id"]
@@ -342,7 +342,7 @@ class EmailApprovals:
                     if payload.get("kind") == "permission":
                         keyboard = permission_keyboard(callback, payload)
                     for identifier in admins:
-                        client.call("sendMessage", {
+                        sent = client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
                             "reply_markup": {"inline_keyboard": keyboard or [
                                 [{"text": "Confirm & start" if payload.get("kind") == "email" else
@@ -354,6 +354,8 @@ class EmailApprovals:
                             ] + ([[{"text": "Add reply", "callback_data": "ui:guidance:%s" % payload["job_id"]}]]
                                  if payload.get("kind") == "input" else [])},
                         }, sending=True)
+                        if payload.get("job_id"):
+                            record_task_message(self.db, self.config, payload["job_id"], identifier, sent["message_id"])
                 except Exception as exc:
                     delivery_errors.append(("Telegram", exc))
                     LOGGER.warning("Telegram approval delivery failed or is uncertain (%s); attempting email fallback",

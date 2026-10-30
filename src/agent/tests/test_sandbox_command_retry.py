@@ -92,6 +92,23 @@ class SandboxCommandRetryTest(unittest.TestCase):
     def runtime(self, shared_root: str) -> ToolRuntime:
         return ToolRuntime(None, retry_config(shared_root), {"id": 57, "thread_id": "thread-1"})  # type: ignore[arg-type]
 
+    def test_denied_network_is_not_presented_as_success_despite_zero_exit_code(self):
+        response = FakeResponse({
+            "exit_code": 0, "stdout": "Sources OK: 0", "stderr": "",
+            "egress": "proxy", "network_events": [
+                {"host": "feed.example", "decision": "blocked", "reason": "not_approved"},
+            ],
+        })
+        with tempfile.TemporaryDirectory() as root, \
+                patch("assistant_agent.tools.read_secret", return_value="token"), \
+                patch("assistant_agent.tools.ssl.create_default_context"), \
+                patch("assistant_agent.tools.open_https_request", return_value=response):
+            result = self.runtime(root).command_execute(["python3", "--version"])
+        self.assertEqual(result["status"], "network_blocked")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("Exit code alone", result["error"])
+        self.assertEqual(result["network"]["blocked"][0]["host"], "feed.example")
+
     def test_retries_transient_http_error_then_returns_attempt_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             calls = 0

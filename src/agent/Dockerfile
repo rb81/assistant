@@ -10,9 +10,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg pandoc weasyprint \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY src/agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src ./src
+COPY src/agent/src ./src
+COPY docs ./docs
 
 CMD ["python", "-m", "assistant_agent.main"]

@@ -16,6 +16,28 @@ terminal/meta tools are handled by `TaskAgent` in `task_agent.py`.
 
 Availability is computed by `available_function_names(...)` from runtime config and job context.
 
+## Harness help
+
+`help_search(query, limit=5)` searches heading-based chunks of Markdown bundled
+with the running image. Results contain bounded content, source line references,
+topic IDs and a documentation revision. `help_topic(topic_id, revision)` retrieves
+one chunk, rejecting stale revisions. With `agent.embeddings.enabled`, help uses
+the configured embedding service and cosine-similarity vector retrieval.
+The workspace-indexer prepares embeddings while idle, independently of workspace
+file indexing. Vectors are cached in runtime state by content, endpoint, model
+and dimensions, so changed documentation or model settings refresh automatically
+without re-embedding unchanged chunks. Help searches embed only the query.
+While the index is pending, embeddings are disabled, the run is keyword-only,
+or the embedding service fails, help falls back to keyword retrieval. Results
+report `search_mode` and, on fallback, `fallback_reason`; service failures are
+also logged. No user-workspace records are mixed into help results.
+Missing documentation is an explicit rebuild error.
+
+`runtime_capabilities()` reports enabled tool names, development limits, the help
+revision, and safe live broker settings (network/isolation modes, runtime identity
+and resource limits). It does not expose credentials or grant authorization.
+The bundle updates together with application code when images are rebuilt.
+
 ## Workstream relationships
 
 `workstream_list(before_id, limit)` lists workstream titles/IDs with bounded

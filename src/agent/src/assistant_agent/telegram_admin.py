@@ -25,13 +25,17 @@ class TelegramAdmin:
     def is_admin(self, sender):
         return sender in telegram_admins(self.config)
 
-    def send(self, sender, text, rows=None):
+    def send(self, sender, text, rows=None, *, job_id=None):
         payload = {"chat_id": sender, "text": text[:3900]}
         if rows:
             payload["reply_markup"] = {"inline_keyboard": [
                 [{"text": label, "callback_data": data} for label, data in row] for row in rows
             ]}
-        return self.client.call("sendMessage", payload, sending=True)
+        response = self.client.call("sendMessage", payload, sending=True)
+        if job_id is not None:
+            from .telegram import record_task_message
+            record_task_message(self.db, self.config, job_id, sender, response["message_id"])
+        return response
 
     def home(self, sender):
         rows = [[("Conversations", "ui:streams:0"), ("Tasks", "ui:jobs:0")]]
@@ -152,7 +156,7 @@ class TelegramAdmin:
             response = self.client.call("sendMessage", {
                 "chat_id": sender, "text": "Reply with an exact hostname to block (e.g. api.example.com). "
                 "Use *.example.com only if you intend to block all its subdomains.",
-                "reply_markup": {"force_reply": True, "selective": True},
+                "reply_markup": {"remove_keyboard": True},
             }, sending=True)
             self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
                 "action": "permission-block-host", "message_id": response["message_id"],
@@ -351,10 +355,13 @@ class TelegramAdmin:
         if not row:
             raise ValueError("Item no longer available")
         response = self.client.call("sendMessage", {
-            "chat_id": sender, "text": "Reply to this message with " + (
+            "chat_id": sender, "text": "Send your next message with " + (
                 "a short new name." if action.startswith("rename") else "your guidance. This does not approve any held action."),
-            "reply_markup": {"force_reply": True, "selective": True},
+            "reply_markup": {"remove_keyboard": True},
         }, sending=True)
+        if action != "renamestream":
+            from .telegram import record_task_message
+            record_task_message(self.db, self.config, row["id"], sender, response["message_id"])
         self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
             "action": action, "id": identifier, "message_id": response["message_id"],
             "version": str(row.get("updated_at") or row["status"]),
@@ -366,16 +373,22 @@ class TelegramAdmin:
     def input_reply(self, message):
         sender = str(message["from"]["id"])
         reply_id = (message.get("reply_to_message") or {}).get("message_id")
-        receipt_key = "telegram-admin-reply:%s:%s:%s" % (self.receiver.bot_id, sender, reply_id)
-        if reply_id:
+        reference = reply_id or "message:%s" % message.get("message_id")
+        receipt_key = "telegram-admin-reply:%s:%s:%s" % (self.receiver.bot_id, sender, reference)
+        if reply_id or message.get("message_id"):
             receipt = self.db.get_state(receipt_key)
             if isinstance(receipt, dict) and receipt.get("handled") is True:
                 return True
         key = "telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender)
         pending = self.db.get_state(key)
-        if not isinstance(pending, dict) or reply_id != pending["message_id"]:
+        if not isinstance(pending, dict) or (reply_id and reply_id != pending["message_id"]):
+            return False
+        if not reply_id and str(message.get("text") or "").startswith("/"):
             return False
         if not self.is_admin(sender) or datetime.fromisoformat(pending["expires"]) <= datetime.now(timezone.utc):
+            self.db.execute("DELETE FROM runtime_state WHERE key = %s", (key,))
+            if not reply_id:
+                return False
             self.send(sender, "This reply prompt expired. Open /menu to try again.")
             return True
         text = str(message.get("text") or "").strip()
@@ -470,8 +483,8 @@ class TelegramAdmin:
                 self.send(sender, "Fresh approval sent.")
             elif action == "feedback":
                 response = self.client.call("sendMessage", {
-                    "chat_id": sender, "text": "Reply with optional feedback, then choose your decision.",
-                    "reply_markup": {"force_reply": True, "selective": True},
+                    "chat_id": sender, "text": "Send optional feedback in your next message, then choose your decision.",
+                    "reply_markup": {"remove_keyboard": True},
                 }, sending=True)
                 self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
                     "action": "permission-feedback", "callback": callback_id,
@@ -481,7 +494,8 @@ class TelegramAdmin:
             elif action == "review":
                 keyboard = permission_keyboard(callback_id, value["payload"])
                 self.send(sender, telegram_permission_summary(value["summary"]),
-                          [[(button["text"], button["callback_data"]) for button in row] for row in keyboard])
+                          [[(button["text"], button["callback_data"]) for button in row] for row in keyboard],
+                          job_id=value["payload"]["job_id"])
             elif action in {"once", "always", "deny"}:
                 permission_type = value["payload"].get("permission_type")
                 if permission_type == "development" and action == "always":
@@ -497,7 +511,7 @@ class TelegramAdmin:
                     if script_permissions.approval_payload(job) == payload and job["status"] == "needs_review":
                         script_permissions.send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
                     raise
-                self.send(sender, result)
+                self.send(sender, result, job_id=payload["job_id"])
                 self.db.execute("DELETE FROM runtime_state WHERE key = %s",
                                 ("permission-feedback:%s:%s" % (callback_id, sender),))
             else:

@@ -576,6 +576,26 @@ def test_reply_to_admin_question_resumes_without_permission_override(ui):
     assert "without changing permissions" in ui.client.call.call_args.args[1]["text"]
 
 
+def test_admin_prompt_does_not_force_quote_and_accepts_plain_guidance(ui):
+    ui.client.call.return_value = {"message_id": 80}
+    job = {"id": 12, "status": "needs_review", "updated_at": "version"}
+    with patch.object(ui, "job", return_value=job), \
+            patch("assistant_agent.telegram.record_task_message") as record:
+        ui.prompt("123", "guidance", 12)
+    record.assert_called_once_with(ui.db, ui.config, 12, "123", 80)
+    assert ui.client.call.call_args.args[1]["reply_markup"] == {"remove_keyboard": True}
+    pending = ui.db.set_state.call_args.args[1]
+    ui.db.get_state.return_value = pending
+    with patch("assistant_agent.telegram_admin.TransactionDatabase") as database, \
+            patch("assistant_agent.telegram_admin.apply_approval") as approve:
+        assert ui.input_reply({"from": {"id": 123}, "message_id": 81, "text": "Keep the approved scope"})
+    approve.assert_not_called()
+    assert any(call.args[0] == "telegram-admin-reply:9:123:message:81"
+               for call in database.return_value.set_state.call_args_list)
+    ui.db.get_state.return_value = {"handled": True}
+    assert ui.input_reply({"from": {"id": 123}, "message_id": 81, "text": "Keep the approved scope"})
+
+
 def test_handled_admin_reply_cannot_be_routed_as_a_new_task_on_delivery_retry(ui):
     ui.db.get_state.return_value = {"handled": True}
     assert ui.input_reply({"from": {"id": 123}, "text": "Use saved audio",

@@ -199,6 +199,7 @@ class WorkspaceIndex:
 
     def hidden_roots(self) -> list[Path]:
         paths = [
+            self.shared_root / ".assistant" / "docs",
             self.shared_root / ".cache" / "docs",
             self.shared_root / ".trash",
             self.normalizer.archive_root(),
@@ -535,7 +536,7 @@ class WorkspaceIndex:
         for row in rows:
             relative = str(row["relative_path"])
             path = (self.shared_root / relative).resolve()
-            if relative not in seen and not path.exists():
+            if self.should_skip_path(path) or (relative not in seen and not path.exists()):
                 self.mark_deleted(path)
         return count
 
@@ -543,6 +544,10 @@ class WorkspaceIndex:
         result = self.embedding_maintenance.refresh_pending(deadline=time.monotonic() + 5)
         if any(result.values()):
             LOGGER.info("automatic embedding refresh: %s", result)
+        from .harness_help import refresh_embeddings
+        refreshed = refresh_embeddings(self.db, self.config, deadline=time.monotonic() + 5)
+        if refreshed:
+            LOGGER.info("automatic help embedding refresh: %s", refreshed)
 
     def run_idle_once(self, scan=True) -> int:
         scheduler = EmbeddingScheduler(self.db, self.config)

@@ -264,7 +264,7 @@ containers. Anyone controlling that socket can control the daemon and potentiall
 mount host files or other containers' secrets. Read-only broker filesystems,
 dropped capabilities, `no-new-privileges`, private broker networking and resource
 limits do not eliminate this privilege. Run containers mount the writable shared
-workspace and read-only harness documentation, not the socket or provider
+workspace, not host documentation, the socket or provider
 credential mounts. Workspace contents are accessible to commands, so never
 store secrets there. Run containers execute as root
 to support package installation; their writable layer is ephemeral, but workspace

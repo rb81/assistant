@@ -384,37 +384,33 @@ class FakeDockerClient:
 
 
 class RunContainerConfigTest(unittest.TestCase):
-    def setUp(self):
-        from unittest.mock import patch
-        self.docs = patch.object(server, "DOCS_ROOT_HOST", "/installation/docs")
-        self.docs.start()
-        self.addCleanup(self.docs.stop)
-
     def open_egress(self):
         from unittest.mock import patch
         egress = patch.object(server, "EGRESS_MODE", "open")
         egress.start()
         self.addCleanup(egress.stop)
 
-    def test_docs_mount_is_read_only_for_bind_and_volume_workspaces(self):
+    def test_run_mounts_include_only_bind_or_volume_workspace(self):
         from unittest.mock import patch
         for volume in ("", "assistant-test-share"):
             with self.subTest(volume=volume), patch.object(server, "SHARED_VOLUME_NAME", volume), patch.object(server, "SHARED_ROOT_HOST", "/installation/data/share"):
-                _, mounts = server.run_mounts()
-                docs = next(mount for mount in mounts if mount["Target"].endswith("/.assistant/docs"))
-                self.assertEqual(docs["Source"], "/installation/docs")
-                self.assertTrue(docs["ReadOnly"])
-                self.assertEqual(docs["Type"], "bind")
+                binds, mounts = server.run_mounts()
+                if volume:
+                    self.assertEqual(binds, [])
+                    self.assertEqual(mounts, [{"Type": "volume", "Source": volume,
+                                              "Target": str(server.RUN_SHARED_ROOT)}])
+                else:
+                    self.assertEqual(binds, ["/installation/data/share:%s:rw" % server.RUN_SHARED_ROOT])
+                    self.assertEqual(mounts, [])
 
-    def test_missing_or_relative_documentation_source_fails_explicitly(self):
+    def test_missing_workspace_source_fails_explicitly(self):
         from unittest.mock import patch
-        for source in ("", "docs"):
-            with self.subTest(source=source), patch.object(server, "DOCS_ROOT_HOST", source):
-                with self.assertRaisesRegex(RuntimeError, "absolute host documentation path"):
-                    server.run_mounts()
+        with patch.object(server, "SHARED_VOLUME_NAME", ""), patch.object(server, "SHARED_ROOT_HOST", ""):
+            with self.assertRaisesRegex(RuntimeError, "required for container isolation"):
+                server.run_mounts()
 
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and os.getenv("ASSISTANT_TEST_SANDBOX_IMAGE"), "requires disposable Docker test image")
-    def test_real_command_container_reads_canonical_docs_but_cannot_write_them(self):
+    def test_real_command_container_has_workspace_without_host_documentation(self):
         import subprocess
         import tempfile
         import textwrap
@@ -424,23 +420,14 @@ class RunContainerConfigTest(unittest.TestCase):
             root = Path(directory)
             share, docs = root / "share", root / "docs"
             share.mkdir()
-            (share / ".assistant/docs").mkdir(parents=True)
             docs.mkdir()
             reference = docs / "README.md"
             reference.write_text("Canonical harness reference")
             probe = textwrap.dedent("""\
-                import errno
                 from pathlib import Path
-                path = Path('/data/share/.assistant/docs/README.md')
-                assert path.read_text() == 'Canonical harness reference'
-                try:
-                    path.write_text('must not change')
-                except OSError as exc:
-                    assert exc.errno == errno.EROFS, exc
-                else:
-                    raise AssertionError('documentation is writable')
+                assert not Path('/data/share/.assistant/docs').exists()
                 Path('/data/share/result.txt').write_text('workspace remains writable')
-                print('read-only docs verified')
+                print('workspace-only mount verified')
             """)
             driver = (
                 "import time, server; "
@@ -453,14 +440,12 @@ class RunContainerConfigTest(unittest.TestCase):
                 "-e", "SANDBOX_RUN_IMAGE=" + image,
                 "-e", "SANDBOX_RUN_NETWORK_MODE=none",
                 "-e", "SANDBOX_SHARED_ROOT_HOST=" + str(share),
-                "-e", "SANDBOX_DOCS_ROOT_HOST=" + str(docs),
                 "-v", "/var/run/docker.sock:/var/run/docker.sock",
                 "-v", str(share) + ":/data/share",
-                "-v", str(docs) + ":/data/share/.assistant/docs:ro",
                 "--entrypoint", "python", image, "-c", driver,
             ], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("read-only docs verified", result.stdout)
+            self.assertIn("workspace-only mount verified", result.stdout)
             self.assertEqual(reference.read_text(), "Canonical harness reference")
             self.assertEqual((share / "result.txt").read_text(), "workspace remains writable")
 
@@ -542,8 +527,7 @@ class EgressProxyBrokerTest(unittest.TestCase):
         client = ProxyDockerClient()
         request = server.CommandRequest(command=["curl", "https://example.com"], timeout_seconds=5,
                                         workdir=str(server.SHARED_ROOT), network_policy=policy)
-        with patch.object(server, "DOCS_ROOT_HOST", "/installation/docs"), \
-                patch.object(server, "SHARED_VOLUME_NAME", "assistant-test-share"), \
+        with patch.object(server, "SHARED_VOLUME_NAME", "assistant-test-share"), \
                 patch.object(server, "RUN_NETWORK_MODE", "per_run_bridge"), \
                 patch.object(server, "EGRESS_MODE", "proxy"), \
                 patch.object(server, "DockerClient", lambda *args, **kwargs: client), \

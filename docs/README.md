@@ -5,18 +5,18 @@ Use it as a task index; verify implementation details against the current source
 when contributing. For project overview and quick start, see the
 [root README](https://github.com/rb81/assistant#readme).
 
-Source paths in contributor guides refer to a repository checkout. Runtime
-containers receive this documentation, not the host source tree.
+Source paths in contributor guides refer to a repository checkout. The application
+image bundles this documentation for help retrieval, not the host source tree.
 
 ## For agents
 
 1. Read the task-relevant guide below.
 2. Read [tool reference](tools-reference.md) before using or describing tools.
-3. Use `.assistant/docs/README.md` in the shared workspace for runtime
-   environment and diagnostic guidance. It does not grant access to host files,
-   secrets, or service controls.
-4. See [sandbox capabilities](SANDBOX_CAPABILITIES.md) for command environment
-   and diagnostic limits.
+3. Use `help_search`, then `help_topic` with a returned topic ID and revision,
+   for your own functionality, capabilities, limitations and tool usage.
+   Use `runtime_capabilities` for live settings and limits. Help never grants
+   access to host files, secrets or service controls.
+4. See [sandbox execution](sandbox.md) for command environment and diagnostic limits.
 
 ## For operators
 

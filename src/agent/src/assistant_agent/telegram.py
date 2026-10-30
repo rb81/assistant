@@ -21,6 +21,27 @@ from .requests import TransactionDatabase
 from .telegram_config import TelegramError, telegram_configured, telegram_identities
 
 
+def record_task_message(db, config, job_id, destination, message_id):
+    """Associate direct API messages as well as routed deliveries with their task."""
+    job = db.fetch_one(
+        """SELECT j.id, j.workstream_id FROM jobs j
+           JOIN workstreams w ON w.id = j.workstream_id AND w.status = 'active'
+           WHERE j.id = %s""", (job_id,),
+    )
+    if not job:
+        return
+    bot_id = str(config.get("agent.telegram.bot_token") or "").split(":", 1)[0]
+    db.set_state("telegram-task-message:%s:%s:%s" % (bot_id, destination, message_id),
+                 {"job_id": job_id, "workstream_id": job["workstream_id"]})
+    db.execute(
+        """INSERT INTO telegram_workstream_selections(bot_id, sender_id, workstream_id, unavailable_workstream_id)
+           VALUES (%s, %s, %s, NULL)
+           ON CONFLICT (bot_id, sender_id) DO UPDATE SET workstream_id = EXCLUDED.workstream_id,
+           unavailable_workstream_id = NULL, updated_at = now()""",
+        (bot_id, str(destination), job["workstream_id"]),
+    )
+
+
 def method_field(voice):
     return "sendVoice" if voice else "sendDocument"
 
@@ -350,6 +371,7 @@ class TelegramDelivery:
                 """UPDATE channel_deliveries SET status = 'sent', provider_message_ids = %s,
                    sent_at = now(), error = NULL WHERE id = %s""", (Jsonb([message_id]), row["id"]),
             )
+            record_task_message(self.db, self.config, job["id"], destination, message_id)
             sent_ids.append(message_id)
         return {"status": "sent", "message_ids": sent_ids, "destination": destination,
                 "delivery": "telegram_accepted"}

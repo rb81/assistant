@@ -736,11 +736,11 @@ class Installation:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
         original_values, _ = parse_environment(self.env_text)
+        self.values.pop("SANDBOX_DOCS_ROOT_HOST", None)
         updates = {key: value for key, value in self.values.items()
                if not is_secret_name(key.removesuffix("_FILE")) and original_values.get(key) != value}
         updates["COMPOSE_FILE"] = str(self.source / "docker-compose.yml") + os.pathsep + str(self.data / ".compose-secrets.yaml")
         updates["SANDBOX_SHARED_ROOT_HOST"] = str(self.root / "data/share")
-        updates["SANDBOX_DOCS_ROOT_HOST"] = str(self.root / "docs")
         removed = {key for key in original_values if key not in self.values or is_secret_name(key.removesuffix("_FILE"))}
         deleted_secrets = {name for name, snapshot in self.snapshots.items() if snapshot is not None and name not in self.secret_values}
         deleted_secrets |= self.migrated - self.secret_values.keys()

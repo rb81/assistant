@@ -177,6 +177,13 @@ def final_request(runtime, version, hosts, purpose):
     check_blocks(runtime, version, hosts)
     if runtime.config.get_bool("agent.security.script_yolo", False):
         return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+    analysis = version["manifest"]["manifest"]
+    if not hosts and analysis["risky_calls"].get("network") and analysis["network"]["hosts"]:
+        raise PermissionDenied(
+            "This script uses networking but the approval host list is empty. "
+            "Call script_approval_request with the complete intended HTTPS hosts in urls; "
+            "static URL mentions are evidence, not automatically authorized destinations."
+        )
     session = development_sessions.current(runtime, version)
     status = run_status(runtime.db, version, runtime.job["id"])
     policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
@@ -201,7 +208,9 @@ def final_request(runtime, version, hosts, purpose):
             supervisor = {"decision": "escalate", "comments": str(exc)}
     else:
         try:
-            supervisor = review(runtime.config, None, {**version, "purpose": purpose}, hosts, final=True)
+            context = getattr(runtime, "sandbox_review_context", None)
+            supervisor = review(runtime.config, None, {**version, "purpose": purpose}, hosts, final=True,
+                                **({"sandbox_context": context} if context is not None else {}))
         except SupervisorError as exc:
             supervisor = {"decision": "unavailable", "comments": str(exc)}
         audit(runtime.db, "supervisor", "final-review", {

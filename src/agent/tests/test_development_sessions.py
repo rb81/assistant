@@ -109,11 +109,26 @@ def test_host_changes_need_explicit_delegation_and_exact_review(runtime):
 @pytest.mark.parametrize("decision", ["reject", "escalate"])
 def test_supervisor_rejection_never_authorizes_execution(runtime, decision):
     item, _ = begin(runtime)
-    with patch("assistant_agent.development_supervisor.review", return_value={"decision": decision, "comments": "Outside objective"}):
-        with pytest.raises(permissions.PermissionDenied, match="Outside objective"):
-            sessions.authorize(runtime, item, [])
+    with patch("assistant_agent.development_supervisor.review", return_value={"decision": decision, "comments": "Outside objective"}) as review:
+        for _ in range(2):
+            with pytest.raises(permissions.PermissionDenied, match="Outside objective"):
+                sessions.authorize(runtime, item, [])
+        assert review.call_count == 1
     with pytest.raises(permissions.PermissionDenied, match="supervisor approval"):
         permissions.execution(runtime, item)
+
+
+def test_completion_requires_final_development_decision_before_sending_receipt(runtime):
+    from assistant_agent.task_agent import TaskAgent
+    begin(runtime)
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config = runtime.db, runtime.config
+    history = []
+    with patch("assistant_agent.task_agent.ReplyRouter") as router:
+        assert not agent.handle_tool_call(runtime.job, history, runtime, "call", "task_complete",
+                                          {"response": "Finished", "summary": "Done"}, set())
+    router.assert_not_called()
+    assert "script_approval_request" in history[-1]["content"]
 
 
 def test_supervisor_outage_does_not_authorize_or_cache_success(runtime):
