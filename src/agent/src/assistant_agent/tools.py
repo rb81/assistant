@@ -36,6 +36,7 @@ from .llm_client import LlmClient
 from .memory_store import MemoryStore
 from .model_service import MODEL_SERVICE_TOOL, ModelService, configured as model_service_configured
 from .replies import reminder_delivery
+from .requests import TransactionDatabase
 from .secret_store import read_secret
 from .script_analysis import ScriptAnalyzer
 from .security_screening import MALICIOUS, NOT_MALICIOUS, SecurityScreener, action_fingerprint, notify_admin
@@ -158,7 +159,8 @@ TOOL_GUARDRAILS: dict[str, dict[str, Any]] = {
             "the same reminder; use distinct keys for distinct reminders. "
             "Scripts need administrator approval, and nobody may be available to approve when a reminder runs. "
             "If a future job will run a sandbox script, build and test it now, then use execution='script': "
-            "the approval happens before the reminder is saved and scheduled runs execute it unchanged."
+            "approval happens before saving: a reserved one-run grant for a one-off reminder, "
+            "or standing approval for recurring runs. Scheduled runs execute it unchanged."
         ),
     },
     "Calendar": {
@@ -1899,44 +1901,46 @@ class ToolRuntime:
                 "idempotent_reuse": True,
                 "idempotency_key": clean_idempotency_key or None,
             }
-        if clean_execution == "script":
-            clean_metadata["script"] = self._bind_scheduled_script(script, {
-                "tool": "reminder_create", "title": clean_title,
-                "run_at": local_datetime_iso(run_at_utc, self.config),
-                "recurrence": describe_recurrence(clean_recurrence_unit, clean_recurrence_interval),
-            })
-        row = self.db.fetch_one(
-            """
-            INSERT INTO reminders(
-              title,
-              task,
-              run_at,
-              priority,
-              recurrence_unit,
-              recurrence_interval,
-              recurrence_anchor_day,
-              created_by,
-              created_by_job_id,
-              metadata
+        with self.db.connect() as conn:
+            db = TransactionDatabase(conn)
+            if clean_execution == "script":
+                clean_metadata["script"] = self._bind_scheduled_script(script, {
+                    "tool": "reminder_create", "title": clean_title,
+                    "run_at": local_datetime_iso(run_at_utc, self.config),
+                    "recurrence": describe_recurrence(clean_recurrence_unit, clean_recurrence_interval),
+                }, db)
+            row = db.fetch_one(
+                """
+                INSERT INTO reminders(
+                  title,
+                  task,
+                  run_at,
+                  priority,
+                  recurrence_unit,
+                  recurrence_interval,
+                  recurrence_anchor_day,
+                  created_by,
+                  created_by_job_id,
+                  metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    clean_title,
+                    clean_task,
+                    run_at_utc,
+                    int(priority or 0),
+                    clean_recurrence_unit,
+                    clean_recurrence_interval,
+                    clean_recurrence_anchor_day,
+                    "agent",
+                    self.job["id"],
+                    Jsonb(json_safe(clean_metadata)),
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING *
-            """,
-            (
-                clean_title,
-                clean_task,
-                run_at_utc,
-                int(priority or 0),
-                clean_recurrence_unit,
-                clean_recurrence_interval,
-                clean_recurrence_anchor_day,
-                "agent",
-                self.job["id"],
-                Jsonb(json_safe(clean_metadata)),
-            ),
-        )
-        if row is None:
-            raise ToolError("scheduled reminder not found")
+            if row is None:
+                raise ToolError("scheduled reminder not found")
         # Auto-link reminder to high-level entities
         result = {"reminder": self._reminder_result(row)}
         if clean_idempotency_key:
@@ -1965,12 +1969,13 @@ class ToolRuntime:
             raise ToolError("script is only valid with execution='script'")
         return clean
 
-    def _bind_scheduled_script(self, script: Any, schedule: dict[str, Any]) -> dict[str, Any]:
+    def _bind_scheduled_script(self, script: Any, schedule: dict[str, Any],
+                                db: TransactionDatabase) -> dict[str, Any]:
         from . import scheduled_scripts
         if not sandbox_configured(self.config):
             raise ToolError("Scheduled scripts require the sandbox to be configured")
         try:
-            return scheduled_scripts.bind(self, script, schedule)
+            return scheduled_scripts.bind(self, script, schedule, db)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
 
@@ -2074,42 +2079,53 @@ class ToolRuntime:
         elif has_run_at and next_recurrence_unit:
             next_recurrence_anchor_day = recurrence_anchor_day(next_run_at, next_recurrence_unit, self.config)
 
-        if script is not None:
-            next_metadata["script"] = self._bind_scheduled_script(script, {
-                "tool": "reminder_update", "title": next_title if has_title else existing["title"],
-                "run_at": local_datetime_iso(next_run_at, self.config),
-                "recurrence": describe_recurrence(next_recurrence_unit, next_recurrence_interval),
-            })
-        row = self.db.fetch_one(
-            """
-            UPDATE reminders
-            SET title = %s,
-                task = %s,
-                run_at = %s,
-                priority = %s,
-                recurrence_unit = %s,
-                recurrence_interval = %s,
-                recurrence_anchor_day = %s,
-                metadata = %s,
-                updated_at = now()
-            WHERE id = %s
-              AND status = 'scheduled'
-            RETURNING *
-            """,
-            (
-                next_title if has_title else existing["title"],
-                next_task if has_task else existing["task"],
-                next_run_at,
-                int(priority) if has_priority else existing["priority"],
-                next_recurrence_unit,
-                next_recurrence_interval,
-                next_recurrence_anchor_day,
-                Jsonb(json_safe(next_metadata)),
-                reminder_id,
-            ),
-        )
-        if script is not None and row is not None:
-            self.db.execute("DELETE FROM runtime_state WHERE key = %s", ("scheduled-script-check:%s" % reminder_id,))
+        rebind_script = script is not None or (existing_metadata.get("script") and
+                                               next_recurrence_unit != existing.get("recurrence_unit"))
+        with self.db.connect() as conn:
+            db = TransactionDatabase(conn)
+            if rebind_script:
+                bound = existing_metadata.get("script") or {}
+                next_metadata["script"] = self._bind_scheduled_script(script if script is not None else {
+                    "command": bound["command"], "workdir": bound.get("workdir"),
+                    "urls": bound.get("hosts") or [], "purpose": bound.get("purpose"),
+                }, {
+                    "tool": "reminder_update", "title": next_title if has_title else existing["title"],
+                    "reminder_id": reminder_id,
+                    "run_at": local_datetime_iso(next_run_at, self.config),
+                    "recurrence": describe_recurrence(next_recurrence_unit, next_recurrence_interval),
+                }, db)
+            row = db.fetch_one(
+                """
+                UPDATE reminders
+                SET title = %s,
+                    task = %s,
+                    run_at = %s,
+                    priority = %s,
+                    recurrence_unit = %s,
+                    recurrence_interval = %s,
+                    recurrence_anchor_day = %s,
+                    metadata = %s,
+                    updated_at = now()
+                WHERE id = %s
+                  AND status = 'scheduled'
+                RETURNING *
+                """,
+                (
+                    next_title if has_title else existing["title"],
+                    next_task if has_task else existing["task"],
+                    next_run_at,
+                    int(priority) if has_priority else existing["priority"],
+                    next_recurrence_unit,
+                    next_recurrence_interval,
+                    next_recurrence_anchor_day,
+                    Jsonb(json_safe(next_metadata)),
+                    reminder_id,
+                ),
+            )
+            if row is None:
+                raise ToolError("scheduled reminder not found")
+            if rebind_script:
+                db.execute("DELETE FROM runtime_state WHERE key = %s", ("scheduled-script-check:%s" % reminder_id,))
         return {"reminder": self._reminder_result(row)}
 
     def reminder_cancel(self, reminder_id: int) -> dict[str, Any]:
@@ -3365,7 +3381,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_create",
-            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution. Choose execution explicitly. If the future job will run a sandbox script, write and test the script now and use execution='script': the administrator approves it (Always allow) before the reminder is saved, because nobody may be available to approve it when it runs. This call pauses for that approval; after the decision arrives, retry the identical call.",
+            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution. Choose execution explicitly. If the future job will run a sandbox script, write and test it now and use execution='script': before saving, the system reserves one execution for a one-off reminder or requires standing approval for recurring runs. This call requests the appropriate approval directly; no separate script_approval_request is needed. After approval, retry the identical call. Never schedule known script work as agent_task to defer approval.",
             "parameters": {
                 "type": "object",
                 "properties": {

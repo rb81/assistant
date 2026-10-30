@@ -1,11 +1,12 @@
 """Scheduled scripts: approved when scheduled, re-verified before every unattended run.
 
 A reminder with ``execution: script`` stores a binding to one exact script version and
-host set. The binding is only a pointer; execution still requires the version's
-standing ("Always allow") grant, which the sandbox enforces at run time.
+host set. Execution requires a standing grant or a one-run grant reserved for
+this one-off reminder, which the sandbox enforces at run time.
 """
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from . import script_permissions as permissions
@@ -40,8 +41,8 @@ def normalize(script):
             "purpose": str(script.get("purpose") or "").strip()}
 
 
-def bind(runtime, script, schedule):
-    """Return a binding for an approved version, or raise PermissionRequired for a standing approval."""
+def bind(runtime, script, schedule, db):
+    """Bind standing permission, or exclusively reserve a one-off execution."""
     spec = normalize(script)
     purpose = spec["purpose"] or "Scheduled run: %s" % schedule.get("title", "reminder")
     health = runtime.sandbox_control("GET", "/health")
@@ -50,12 +51,42 @@ def bind(runtime, script, schedule):
         raise ValueError("Scheduled scripts must be workspace scripts or explicit interpreter invocations that can be inspected.")
     hosts = permissions.requested_hosts(spec["urls"])
     result = permissions.final_request(runtime, version, hosts, purpose, scheduled=schedule)
+    if not schedule.get("recurrence") and not result.get("mode"):
+        db.execute("SELECT id FROM sandbox_scripts WHERE id = %s FOR UPDATE", (version["script_id"],))
+        if not permissions.standing_approval(db, runtime.config, version, hosts):
+            permissions.check_blocks(runtime, version, hosts, db=db)
+            if (permissions.run_status(db, version, runtime.job["id"]) != "approved"
+                    or set(permissions.host_policy(db, runtime.config, version["id"],
+                                                   runtime.job["id"])["allow"]) != set(hosts)):
+                raise permissions.PermissionDenied("One-run approval is missing or was consumed; request approval again.")
+            reservation_id = uuid.uuid4().hex
+            rows = permissions.grants(db, version["id"], runtime.job["id"])
+            ids = [row["id"] for row in rows if row["scope"] == "once" and row["decision"] == "allow"]
+            db.execute("UPDATE sandbox_permission_grants SET reservation_id = %s WHERE id = ANY(%s)",
+                       (reservation_id, ids))
+            permissions.audit(db, "runtime", "reserve-scheduled-run",
+                              {"version_id": version["id"], "job_id": runtime.job["id"],
+                               "reservation_id": reservation_id, "grants": ids})
+            result["reservation_id"] = reservation_id
     return {
         "command": spec["command"], "workdir": spec["workdir"], "hosts": hosts, "purpose": purpose,
         "version_id": version["id"], "script_id": version["script_id"], "fingerprint": version["fingerprint"],
         "approved_at": datetime.now(timezone.utc).isoformat(),
         **({"mode": result["mode"]} if result.get("mode") else {}),
+        **({"reservation_id": result["reservation_id"]} if result.get("reservation_id") else {}),
     }
+
+
+def reservation_approval(db, config, version, hosts, reservation_id):
+    if permissions.run_status(db, version, None, reservation_id) != "approved":
+        return False
+    rows = permissions.grants(db, version["id"], None, reservation_id)
+    if not any(row["reservation_id"] == reservation_id and row["kind"] == "run" for row in rows):
+        return False
+    policy = permissions.host_policy(db, config, version["id"], None, reservation_id)
+    return set(policy["allow"]) == set(hosts) and not any(
+        permissions.network_access.decide(policy, host) == "blocked" for host in hosts
+    )
 
 
 def grant_problem(db, config, binding):
@@ -70,7 +101,11 @@ def grant_problem(db, config, binding):
         return "the approved script version no longer exists"
     if version["blocked"]:
         return "the script is blocked"
-    if not permissions.standing_approval(db, config, version, binding.get("hosts") or []):
+    hosts = binding.get("hosts") or []
+    if binding.get("reservation_id"):
+        if not reservation_approval(db, config, version, hosts, binding["reservation_id"]):
+            return "its reserved one-run approval was consumed, revoked or denied, or its hosts changed or were blocked"
+    elif not permissions.standing_approval(db, config, version, hosts):
         return "its standing approval was revoked or denied, or its approved hosts changed or were blocked"
     return None
 
@@ -119,7 +154,7 @@ def instructions(binding):
         "- HTTPS hosts: " + (", ".join(binding.get("hosts") or []) or "none (offline)"),
         "Run exactly this with command_execute, using the same command and workdir. Do not edit the script, "
         "its helpers, the command or the workdir, and do not start a development session: any change "
-        "invalidates the standing approval. If execution is refused, call task_failed with the reason and "
+        "invalidates the approval. If execution is refused, call task_failed with the reason and "
         "ask the administrator to refresh this reminder's script approval; do not request new script "
         "approvals from this scheduled run.",
     ])

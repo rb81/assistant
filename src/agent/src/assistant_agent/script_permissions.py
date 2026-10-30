@@ -130,27 +130,33 @@ def inspect(runtime, command, workdir=None, purpose="Script execution", environm
     return {**version, "entry": entry, "blocked": script["blocked"]}
 
 
-def grants(db, version_id, job_id):
+def grants(db, version_id, job_id, reservation_id=None):
+    if job_id is not None and reservation_id is None:
+        job = db.fetch_one("SELECT metadata FROM jobs WHERE id = %s", (job_id,))
+        reservation_id = ((job or {}).get("metadata") or {}).get("scheduled_script", {}).get("reservation_id")
     return db.fetch_all(
         """SELECT * FROM sandbox_permission_grants WHERE consumed_at IS NULL
            AND (version_id = %s OR scope = 'global')
-           AND (scope <> 'once' OR job_id = %s) ORDER BY id""", (version_id, job_id),
+           AND (scope <> 'once' OR (reservation_id IS NULL AND job_id = %s)
+                OR reservation_id = %s)
+           AND (reservation_id IS NULL OR reservation_id = %s) ORDER BY id""",
+        (version_id, job_id, reservation_id, reservation_id),
     )
 
 
-def run_status(db, version, job_id):
+def run_status(db, version, job_id, reservation_id=None):
     script = db.fetch_one("SELECT blocked FROM sandbox_scripts WHERE id = %s", (version["script_id"],))
     if not script or script["blocked"]:
         return "blocked"
-    rows = [row for row in grants(db, version["id"], job_id) if row["kind"] == "run"]
+    rows = [row for row in grants(db, version["id"], job_id, reservation_id) if row["kind"] == "run"]
     if any(row["decision"] == "block" for row in rows):
         return "denied"
     return "approved" if any(row["decision"] == "allow" for row in rows) else "not_approved"
 
 
-def host_policy(db, config, version_id, job_id):
+def host_policy(db, config, version_id, job_id, reservation_id=None):
     legacy = network_access.policy(db, config, job_id)
-    rows = [row for row in grants(db, version_id, job_id) if row["kind"] == "host"]
+    rows = [row for row in grants(db, version_id, job_id, reservation_id) if row["kind"] == "host"]
     return {
         "allow": sorted({row["target"] for row in rows if row["decision"] == "allow" and row["version_id"] == version_id}),
         "block": sorted(set(legacy["block"] + [row["target"] for row in rows if row["decision"] == "block"])),
@@ -181,16 +187,17 @@ def check_blocks(runtime, version, hosts, db=None):
 
 
 def final_request(runtime, version, hosts, purpose, scheduled=None):
-    """Request combined approval. ``scheduled`` describes a reminder that needs a standing grant."""
+    """Request combined approval, using the reminder's recurrence to choose its scope."""
     from . import development_sessions
     from .development_supervisor import SupervisorError, review
 
     check_blocks(runtime, version, hosts)
     if runtime.config.get_bool("agent.security.script_yolo", False):
         return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
-    if scheduled and not version["reusable"]:
+    recurring = scheduled and bool(scheduled.get("recurrence"))
+    if recurring and not version["reusable"]:
         raise PermissionDenied(
-            "This script cannot be scheduled: its executable dependencies cannot be pinned, so it can only "
+            "This script cannot be scheduled recurrently: its executable dependencies cannot be pinned, so it can only "
             "receive one-time approval. Restructure it (pinned local helpers; no package installs, subprocesses "
             "or dynamic code execution) and schedule it again."
         )
@@ -204,7 +211,7 @@ def final_request(runtime, version, hosts, purpose, scheduled=None):
     session = development_sessions.current(runtime, version)
     status = run_status(runtime.db, version, runtime.job["id"])
     policy = host_policy(runtime.db, runtime.config, version["id"], runtime.job["id"])
-    approved = (standing_approval(runtime.db, runtime.config, version, hosts) if scheduled else
+    approved = (standing_approval(runtime.db, runtime.config, version, hosts) if recurring else
                 status == "approved" and set(hosts) == set(policy["allow"]))
     if not session and approved:
         return {"status": "approved", "version_id": version["id"], "fingerprint": version["fingerprint"]}
@@ -299,7 +306,9 @@ def approval_payload(job):
         return None
     return {"kind": "permission", "job_id": job["id"], "request_id": pending["id"],
             "permission_type": pending["kind"], "reusable": pending["reusable"],
-            "version_id": pending["version_id"], **({"scheduled": True} if pending.get("scheduled") else {})}
+            "version_id": pending["version_id"],
+            **({"scheduled": True, "recurring": bool(pending["scheduled"].get("recurrence"))}
+               if pending.get("scheduled") else {})}
 
 
 def summary(db, job):
@@ -362,10 +371,13 @@ def summary(db, job):
         )
         if screening:
             lines += ["", "Security screening: " + screening]
-        if scheduled:
+        if scheduled and scheduled.get("recurrence"):
             lines += ["", "Always allow this version: required so scheduled runs can execute unattended with these "
                       "hosts, until revoked. Changes need new approval.",
                       "One-run approval is not offered for scheduled scripts."]
+        elif scheduled:
+            lines += ["", "Approve this scheduled run: one execution reserved for this reminder, with these hosts. "
+                      "Other runs cannot consume it. Changes need new approval."]
         else:
             lines += ["", "Approve one run: one execution with the listed hosts.",
                       "Always allow this version: repeat runs with these hosts, until revoked. Changes need new approval."]
@@ -446,11 +458,16 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
             approve_plan(tx, pending, decision)
         if decision == "always" and not version["reusable"]:
             raise ValueError("This script needs one-time approval because its executable dependencies cannot be pinned.")
-        if decision == "once" and pending.get("scheduled"):
+        if decision == "once" and (pending.get("scheduled") or {}).get("recurrence"):
             raise ValueError("Scheduled scripts need Always allow or Deny; a one-run approval would not cover the schedule.")
+        if decision == "always" and pending.get("scheduled") and not pending["scheduled"].get("recurrence"):
+            raise ValueError("One-off schedules need Approve once or Deny, not standing approval.")
         scope = {"once": "once", "always": "script", "deny": "once"}[decision]
         if pending["kind"] == "final":
-            tx.execute("DELETE FROM sandbox_permission_grants WHERE version_id = %s AND decision = 'allow'", (version["id"],))
+            tx.execute(
+                """DELETE FROM sandbox_permission_grants WHERE version_id = %s AND decision = 'allow'
+                   AND reservation_id IS NULL""", (version["id"],),
+            )
         targets = (
             [("run", ""), *[("host", host) for host in pending["targets"]]]
             if pending["kind"] == "final" else

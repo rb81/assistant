@@ -161,7 +161,8 @@ Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
 - `agent_task` — run an ordinary agent job at the due time.
 - `script` — run a sandbox script. Requires `script` (`command`, optional
   `workdir`, `urls`, `purpose`). The script must exist now; the reminder is saved
-  only after the admin grants standing (Always) approval for that exact version
+  only after reserving a one-run approval for a one-off reminder or obtaining
+  standing (Always) approval for recurring runs of that exact version
   and host set. `reminder_update(script=...)` rebinds an existing script reminder.
   See [Scheduled scripts](sandbox.md#scheduled-scripts).
 

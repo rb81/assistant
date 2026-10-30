@@ -86,6 +86,17 @@ class FakeReminderDatabase:
         self.reminders: list[dict[str, Any]] = []
         self.next_id = 1
 
+    def connect(self):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        def execute(sql, params=()):
+            cursor.fetchone.return_value = self.fetch_one(sql, params)
+
+        cursor.execute.side_effect = execute
+        return connection
+
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
         if "metadata->>'idempotency_key'" in sql:
             job_id, key = params

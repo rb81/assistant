@@ -248,13 +248,18 @@ the exact approved interpreter, arguments and workdir for scheduled runs.
 Recurring or future script work is scheduled with
 `reminder_create(execution="script", script={command, workdir?, urls, purpose})`.
 The script must already exist and be final: the reminder is not saved until
-the exact version and complete host set have standing (**Always**) approval.
-The approval request is labelled as a scheduled script approval and offers only
-**Always allow** or **Deny**; one-run approval is refused because it would not
-cover future runs. After approval, the agent retries the identical
+the exact version and complete host set have suitable approval.
+For recurring reminders, the request offers **Allow recurring runs of this
+version** or **Deny**; one-run approval is refused because it would not cover
+future runs. For one-off reminders, it offers **Approve this scheduled run**
+or **Deny**. The one-run grant is reserved exclusively for that reminder:
+neither the creating job nor another reminder can consume it. Existing standing
+approval can cover either kind of reminder without another prompt.
+After approval, the agent retries the identical
 `reminder_create` call to save the schedule. Changing the script, argv,
 workdir or hosts of an existing schedule uses `reminder_update(script=...)`,
-which needs the same approval.
+which needs the same approval. Converting a one-off reminder to recurring
+also checks for standing approval, even when the script is unchanged.
 
 Use one script reminder per scheduled task: its task text runs the approved
 script and then does any follow-up (searches, summaries, emails). Inside a
@@ -269,7 +274,7 @@ the exact command to execute and job metadata marking it as a scheduled run:
 - Development sessions are unavailable in scheduled runs.
 - Any new approval request raised by a scheduled run is flagged to the admin as
   drift from the approved schedule.
-- Before queuing, the scheduler checks that the bound grant is still active and
+- Before queuing, the scheduler checks that the standing or reserved grant is still active and
   hosts are neither revoked nor blocked. A failed check skips the occurrence
   (recurring reminders advance; one-time reminders fail) and alerts the admin.
 - When idle, the agent re-inspects all scheduled scripts at startup and every
@@ -365,7 +370,8 @@ Use a harmless script and non-sensitive data for these checks:
 | Delivery set to both | Either channel resolves the request; the other channel cannot approve it a second time. |
 | Block a host or script | Future matching execution/access is refused; all active sandbox runs are stopped. |
 | Revoke a reusable grant | Future use requires approval again unless another applicable grant remains. |
-| Schedule a script | `reminder_create(execution="script")` requests Always-only approval before saving; Approve once is refused. |
+| Schedule a recurring script | `reminder_create(execution="script")` requires standing approval before saving; Approve once is refused. |
+| Schedule a one-off script | One execution is reserved for that reminder and consumed on dispatch, even if execution fails. |
 | Change or revoke a scheduled script | The next occurrence is skipped with an admin alert instead of prompting at run time. |
 
 Always may be unavailable for an uninspectable dependency graph; use once rather

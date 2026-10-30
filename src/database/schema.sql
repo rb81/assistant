@@ -2188,6 +2188,7 @@ CREATE TABLE sandbox_permission_grants (
     created_by text NOT NULL,
     note text NOT NULL DEFAULT '',
     consumed_at timestamptz,
+    reservation_id text,
     created_at timestamptz NOT NULL DEFAULT now(),
     CHECK (scope <> 'once' OR (job_id IS NOT NULL AND version_id IS NOT NULL)),
     CHECK (scope <> 'script' OR version_id IS NOT NULL),
