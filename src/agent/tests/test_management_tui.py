@@ -1411,9 +1411,12 @@ def test_new_memory_and_administration_screen_actions_confirm_before_writing():
                         await wait_for(lambda: bool(ui.floats.floats))
                         if text is not None:
                             ui.app.layout.current_control.buffer.text = text
-                        pipe.send_text("\t\t\r" if text is not None else "\t\r")
+                        pipe.send_text(("\t\t\t\r" if method == "reset" else "\t\t\r") if text is not None else "\t\r")
                         await wait_for(lambda: operation.called and not ui.busy and not ui.floats.floats)
-                        operation.assert_called_once_with(*arguments)
+                        if method == "reset":
+                            operation.assert_called_once_with(clean_install=False, keep_mailbox_position=True)
+                        else:
+                            operation.assert_called_once_with(*arguments)
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -1444,14 +1447,21 @@ def test_storage_actions_fit_small_terminals_and_clean_install_requires_confirma
                 selected.handler()
                 await wait_for(lambda: bool(ui.floats.floats))
                 ui.app.layout.current_control.buffer.text = "reset"
-                pipe.send_text("\t\t\r")
+                pipe.send_text("\t\t\t\r")
                 await asyncio.sleep(0.08)
                 assert ui.floats.floats
                 reset.assert_not_called()
                 ui.app.layout.current_control.buffer.text = "RESET"
-                pipe.send_text("\t\t\r")
+                pipe.send_text("\t\t\t\r")
                 await wait_for(lambda: reset.called and not ui.busy and not ui.floats.floats)
-                reset.assert_called_once_with(clean_install=True)
+                reset.assert_called_once_with(clean_install=True, keep_mailbox_position=True)
+                reset.reset_mock()
+                selected.handler()
+                await wait_for(lambda: bool(ui.floats.floats))
+                ui.app.layout.current_control.buffer.text = "RESET"
+                pipe.send_text("\t \t\t\r")
+                await wait_for(lambda: reset.called and not ui.busy and not ui.floats.floats)
+                reset.assert_called_once_with(clean_install=True, keep_mailbox_position=False)
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 

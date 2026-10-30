@@ -370,7 +370,17 @@ class TelegramReceiver:
                     return 0
                 try:
                     self.activate_text_requests()
-                    offset = int(self.db.get_state(key, 0))
+                    checkpoint = self.db.get_state(key)
+                    if checkpoint is None and self.db.get_state("ingress_reset", False) is True:
+                        updates = self.client.call("getUpdates", {
+                            "offset": -1, "limit": 1, "timeout": 0,
+                            "allowed_updates": ["message", "callback_query"],
+                        })
+                        offset = max((int(update["update_id"]) + 1 for update in updates), default=0)
+                        self.db.set_state(key, offset)
+                        LOGGER.info("Initialized post-reset Telegram checkpoint; queued updates will not be replayed")
+                        return 0
+                    offset = int(checkpoint or 0)
                     pending_text = self.db.fetch_one("SELECT id FROM request_messages WHERE channel = 'telegram' AND status = 'pending' AND attachments = '[]'::jsonb LIMIT 1")
                     updates = self.client.call("getUpdates", {"offset": offset, "timeout": 2 if pending_text else 20,
                                                              "allowed_updates": ["message", "callback_query"]})

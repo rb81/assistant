@@ -190,6 +190,8 @@ class FakeIMAP:
             return "OK", [(b"RFC822", FakeIMAP.raw_by_uid[args[0]])]
         if command == "MOVE":
             return FakeIMAP.move_status, [b""]
+        if command == "STORE":
+            return "OK", [b""]
         raise AssertionError("unexpected IMAP UID command: %s" % command)
 
     def append(self, *args: Any) -> tuple[str, list[bytes]]:
@@ -446,6 +448,44 @@ class MailboxHandlingTest(unittest.TestCase):
         self.assertEqual(mailbox.selected, "INBOX")
         self.assertEqual(move_calls, [("MOVE", (b"10", '"Processed Mail"')), ("MOVE", (b"12", "Quarantine"))])
         self.assertEqual(db.state["imap:imap.local:INBOX:last_uid"], 12)
+
+    def test_preserved_mailbox_position_skips_processed_mail_but_accepts_pending_mail(self) -> None:
+        db = FakeStateDatabase()
+        key = "imap:imap.local:INBOX:last_uid"
+        db.state.update({"ingress_reset": True, key: 11})
+        downloader = FakeDownloader(db, mail_config({
+            "imap_host": "imap.local", "imap_username": "agent@example.com",
+            "imap_password": "secret", "imap_folder": "INBOX",
+        }), [IngestResult(inserted=True, queued=False, message_id="<new@example.com>")])
+        FakeIMAP.uids = [b"10", b"11"]
+        FakeIMAP.raw_by_uid = {b"10": b"old", b"11": b"old approval"}
+        with patch("assistant_agent.email_ingest.imaplib.IMAP4_SSL", FakeIMAP):
+            self.assertEqual(downloader.sync_once(), 0)
+            self.assertEqual(downloader.ingested, [])
+            self.assertEqual(db.state[key], 11)
+            FakeIMAP.uids.append(b"12")
+            FakeIMAP.raw_by_uid[b"12"] = b"new"
+            self.assertEqual(downloader.sync_once(), 1)
+            self.assertEqual(downloader.ingested, [(b"new", "INBOX")])
+            self.assertEqual(db.state[key], 12)
+            self.assertIn(("STORE", (b"12", "+FLAGS.SILENT", r"(\Seen)")), FakeIMAP.instances[-1].uid_calls)
+            self.assertIn(("fetch", (b"12", "(BODY.PEEK[])")), FakeIMAP.instances[-1].uid_calls)
+
+    def test_failed_seen_flag_does_not_advance_mailbox_position(self) -> None:
+        db = FakeStateDatabase()
+        downloader = FakeDownloader(db, mail_config({
+            "imap_host": "imap.local", "imap_username": "agent@example.com", "imap_password": "secret",
+        }), [IngestResult(inserted=True, queued=True, message_id="<mail@example.com>")])
+        FakeIMAP.uids = [b"12"]
+        FakeIMAP.raw_by_uid = {b"12": b"mail"}
+        original_uid = FakeIMAP.uid
+        def uid(mailbox, command, *args):
+            return ("NO", [b"denied"]) if command == "STORE" else original_uid(mailbox, command, *args)
+        with patch("assistant_agent.email_ingest.imaplib.IMAP4_SSL", FakeIMAP), patch.object(FakeIMAP, "uid", uid):
+            with self.assertRaisesRegex(RuntimeError, "seen flag failed"):
+                downloader.sync_once()
+        self.assertNotIn("imap:imap.local:INBOX:last_uid", db.state)
+        self.assertFalse(any(command == "MOVE" for command, args in FakeIMAP.instances[-1].uid_calls))
 
     def test_sync_archives_duplicate_actionable_messages_without_counting_insert(self) -> None:
         FakeIMAP.uids = [b"12"]

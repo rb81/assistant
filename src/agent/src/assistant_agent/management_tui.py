@@ -513,7 +513,7 @@ class ManagementApp:
                 self.app.layout.focus(replacement.window)
         self.app.invalidate()
 
-    async def confirm_dialog(self, title, message, label="Confirm", *, fields=(), validate=None, details=False):
+    async def confirm_dialog(self, title, message, label="Confirm", *, fields=(), validate=None, details=False, checks=()):
         if self.dialog_future is not None:
             return False
         self.dialog_focus = self.app.layout.current_control
@@ -533,10 +533,16 @@ class ManagementApp:
                 " This input is masked; Assistant does not display saved credentials." if password else
                 " Enter the requested value, then move to the confirmation button. Cancel leaves it unchanged."))
             content.extend([text(name), widget, text()])
+        for key, name, checked in checks:
+            widget = checkbox_field(name, checked)
+            widgets[key] = widget
+            self.dialog_topics[widget.control] = (name, message)
+            content.append(widget)
         validation_error = ""
         def accept_values():
             nonlocal validation_error
-            values = {key: widget.text for key, widget in widgets.items()} if widgets else True
+            values = {key: widget.checked if isinstance(widget, Checkbox) else widget.text
+                      for key, widget in widgets.items()} if widgets else True
             try:
                 if validate is not None:
                     validate(values)
@@ -565,16 +571,16 @@ class ManagementApp:
         finally:
             self.dialog_future = None
 
-    def confirm_action(self, title, message, label, operation, done=None, fields=(), validate=None):
+    def confirm_action(self, title, message, label, operation, done=None, fields=(), validate=None, checks=()):
         if self.busy or self.floats.floats:
             if self.busy:
                 self.busy_notice = "Wait for the current operation before starting another action."
             return
 
         async def confirm():
-            result = await self.confirm_dialog(title, message, label, fields=fields, validate=validate)
+            result = await self.confirm_dialog(title, message, label, fields=fields, validate=validate, checks=checks)
             if result is not False:
-                self.task(title, partial(operation, result) if fields else operation,
+                self.task(title, partial(operation, result) if fields or checks else operation,
                           done or (lambda value: self.refresh_after_action()), mutating=True)
         self.app.create_background_task(confirm())
 
@@ -865,15 +871,18 @@ class ManagementApp:
             if values["confirmation"] != "RESET":
                 raise SetupError("Reset cancelled. Type RESET exactly; no data was deleted.")
         self.confirm_action("Clean install" if clean_install else "Reset bundled database",
-                            "Permanently destroy all bundled PostgreSQL data and rebuild it?\n" +
+                            "Permanently destroy all bundled PostgreSQL data and rebuild it?\n"
+                            "Uncheck Keep mailbox position to re-read old mailbox messages.\n" +
                             ("Also delete ALL files in data/share/ and data/private/artifacts/,\n"
                              "including generated files, caches, trash and attachments.\n"
                              "Settings, credentials and data/config/AGENT.md are preserved. No backup is made."
                              if clean_install else
                              "Settings, credentials and workspace files are preserved. No backup is made."),
                             "Delete data and files" if clean_install else "Reset database",
-                            lambda values: self.backend.reset(clean_install=True) if clean_install else self.backend.reset(),
-                            fields=(("confirmation", "Type RESET", False, ""),), validate=validate)
+                            lambda values: self.backend.reset(clean_install=clean_install,
+                                                              keep_mailbox_position=values["keep_mailbox_position"]),
+                            fields=(("confirmation", "Type RESET", False, ""),), validate=validate,
+                            checks=(("keep_mailbox_position", "Keep mailbox position (recommended)", True),))
 
     def recover(self):
         def recovered(result):

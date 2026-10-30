@@ -178,11 +178,15 @@ ACTION_HELP = {
                                                          "your draft first; recovery may interrupt running services.",
     "Reset bundled database": "Permanently destroy and rebuild all bundled PostgreSQL data: tasks, memories, "
                                "reminders and other database records. Settings, credentials and workspace files "
-                               "remain. No backup is made. Custom databases are refused. Requires typing RESET.",
+                               "remain. Keep mailbox position is enabled by default to avoid reprocessing handled "
+                               "emails; disable it to re-read the mailbox. Queued Telegram updates are skipped. "
+                               "No backup is made. Custom databases are refused. Requires typing RESET.",
     "Clean install (also delete files)": "Rebuild the bundled database AND delete everything in data/share/ and "
                                          "data/private/artifacts/: shared and generated files, attachments, caches "
                                          "and trash. Settings, credentials, TLS certificates and data/config/AGENT.md "
-                                         "remain. Other service data is untouched. No backup is made. Custom databases "
+                                         "remain. Keep mailbox position is enabled by default; disable it to re-read "
+                                         "the mailbox. Queued Telegram updates are skipped. "
+                                         "Other service data is untouched. No backup is made. Custom databases "
                                          "are refused. Requires typing RESET.",
     "Delete previewed project": PAGE_HELP["Project deletion"],
     "Keep project": "Leave this deletion preview without deleting anything. No project data is changed.",

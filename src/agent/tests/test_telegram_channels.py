@@ -62,6 +62,59 @@ def test_unknown_sender_never_reaches_intake():
     receiver.db.fetch_one.assert_not_called()
 
 
+@pytest.mark.parametrize("backlog", [[], [{"update_id": 41, "callback_query": {"data": "old-approval"}}]])
+def test_post_reset_poll_skips_provider_backlog_then_accepts_new_updates(backlog):
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.bot_id = "123"
+    receiver.db, receiver.client = MagicMock(), MagicMock()
+    receiver.ingest, receiver.activate_text_requests = MagicMock(), MagicMock()
+    state = {"ingress_reset": True}
+    key = "telegram:123:offset"
+    receiver.db.get_state.side_effect = lambda name, default=None: state.get(name, default)
+    receiver.db.set_state.side_effect = lambda name, value: state.update({name: value})
+    expected_offset = 42 if backlog else 0
+    fresh = {"update_id": max(expected_offset, 43), "message": {"text": "new request"}}
+    receiver.client.call.side_effect = [backlog, [fresh]]
+    assert receiver.poll_once() == 0
+    receiver.ingest.assert_not_called()
+    assert state[key] == expected_offset
+    receiver.client.call.assert_called_once_with("getUpdates", {
+        "offset": -1, "limit": 1, "timeout": 0, "allowed_updates": ["message", "callback_query"],
+    })
+    assert receiver.poll_once() == 1
+    receiver.ingest.assert_called_once_with(fresh)
+    assert receiver.client.call.call_args.args[1]["offset"] == expected_offset
+    assert state[key] == fresh["update_id"] + 1
+
+
+@pytest.mark.parametrize("state", [{}, {"ingress_reset": True, "telegram:123:offset": 0},
+                                   {"ingress_reset": True, "telegram:123:offset": 19}])
+def test_normal_telegram_poll_and_existing_checkpoints_do_not_discard_updates(state):
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.bot_id = "123"
+    receiver.db, receiver.client = MagicMock(), MagicMock()
+    receiver.ingest, receiver.activate_text_requests = MagicMock(), MagicMock()
+    receiver.db.get_state.side_effect = lambda name, default=None: state.get(name, default)
+    update = {"update_id": 20, "message": {"text": "request"}}
+    receiver.client.call.return_value = [update]
+    assert receiver.poll_once() == 1
+    assert receiver.client.call.call_args.args[1]["offset"] == state.get("telegram:123:offset", 0)
+    receiver.ingest.assert_called_once_with(update)
+
+
+def test_failed_post_reset_telegram_initialization_does_not_accept_old_updates():
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.bot_id = "123"
+    receiver.db, receiver.client = MagicMock(), MagicMock()
+    receiver.ingest, receiver.activate_text_requests = MagicMock(), MagicMock()
+    receiver.db.get_state.side_effect = lambda name, default=None: True if name == "ingress_reset" else default
+    receiver.client.call.side_effect = TelegramError("unavailable")
+    with pytest.raises(TelegramError):
+        receiver.poll_once()
+    receiver.ingest.assert_not_called()
+    receiver.db.set_state.assert_not_called()
+
+
 def test_forwarded_group_task_selector_is_rejected():
     receiver = TelegramReceiver.__new__(TelegramReceiver)
     receiver.config, receiver.db = config(), MagicMock()

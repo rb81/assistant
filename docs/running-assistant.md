@@ -189,6 +189,23 @@ in the background.
 Factory reset refuses installations configured with a custom database; reset
 that database separately. Type `RESET` at the confirmation prompt to proceed.
 
+Both reset modes offer **Keep mailbox position (recommended)**, enabled by
+default. This preserves only the email UID checkpoints, not emails, tasks or
+approvals. Already handled emails are not downloaded again; messages beyond
+the checkpoint still arrive normally. Uncheck it to deliberately re-read the
+configured mailbox. The traditional menu asks the same question. If a previous
+reset already erased the checkpoint, it cannot be recovered by this option.
+
+Successfully handled emails are explicitly marked `\Seen` before being archived
+or quarantined. Intake uses UID checkpoints, not the read/unread flag; manually
+reading an email does not prevent the assistant from processing it.
+
+Telegram skips queued updates on its first post-reset poll. Remote email and
+Telegram chat history are not deleted. Rebuild the agent images when upgrading
+so receivers use this behavior. If reset cannot restore mailbox checkpoints or
+install its replay-prevention marker, application services remain stopped;
+resolve the error and rerun reset.
+
 ## Operations
 
 ```bash

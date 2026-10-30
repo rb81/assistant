@@ -39,19 +39,20 @@ def management(root):
 
 
 @pytest.mark.parametrize("clean_install", [False, True])
-def test_reset_passes_selected_file_scope_to_factory_reset(clean_install):
+@pytest.mark.parametrize("keep_mailbox_position", [False, True])
+def test_reset_passes_selected_file_scope_to_factory_reset(clean_install, keep_mailbox_position):
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
 
-        def reset(instance, report, *, clean_install):
+        def reset(instance, report, *, clean_install, keep_mailbox_position):
             report.print("Reset complete")
 
         with patch.object(backend, "access"), \
                 patch("assistant_agent.setup_tools.run_factory_reset", side_effect=reset) as operation:
-            assert backend.reset(clean_install=clean_install) == "Reset complete"
+            assert backend.reset(clean_install=clean_install, keep_mailbox_position=keep_mailbox_position) == "Reset complete"
         assert operation.call_args.args[0] is backend.installation
-        assert operation.call_args.kwargs == {"clean_install": clean_install}
+        assert operation.call_args.kwargs == {"clean_install": clean_install, "keep_mailbox_position": keep_mailbox_position}
 
 
 def test_native_forms_save_reviewed_configuration_without_mutating_the_live_snapshot():

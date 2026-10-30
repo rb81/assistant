@@ -189,7 +189,9 @@ class EmailDownloader:
         timeout = self.config.get_int("agent.email.imap_timeout_seconds", 60)
         with imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context(), timeout=timeout) as mailbox:
             mailbox.login(username, password)
-            mailbox.select(imap_mailbox_arg(folder))
+            status, _ = mailbox.select(imap_mailbox_arg(folder))
+            if not imap_status_ok(status):
+                raise RuntimeError("IMAP mailbox selection failed: %s" % status)
             status, data = mailbox.uid("search", None, "UID", "%s:*" % (last_uid + 1))
             if not imap_status_ok(status):
                 raise RuntimeError("IMAP UID search failed: %s" % status)
@@ -198,7 +200,7 @@ class EmailDownloader:
                 uid = int(uid_bytes)
                 if uid <= last_uid:
                     continue
-                status, fetched = mailbox.uid("fetch", uid_bytes, "(RFC822)")
+                status, fetched = mailbox.uid("fetch", uid_bytes, "(BODY.PEEK[])")
                 if not imap_status_ok(status) or not fetched:
                     LOGGER.warning("failed to fetch UID %s", uid)
                     continue
@@ -210,6 +212,9 @@ class EmailDownloader:
                 if raw is None:
                     continue
                 result = self.ingest_raw(raw, folder)
+                status, _ = mailbox.uid("STORE", uid_bytes, "+FLAGS.SILENT", r"(\Seen)")
+                if not imap_status_ok(status):
+                    raise RuntimeError("IMAP UID STORE seen flag failed for UID %s: %s" % (uid, status))
                 if result.inserted:
                     inserted += 1
                 if result.queued:

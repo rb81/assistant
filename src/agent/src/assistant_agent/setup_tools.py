@@ -1,4 +1,5 @@
 """Troubleshooting menus and factory reset for an installed Assistant."""
+import json
 import shlex
 
 from .setup import LONG_RUNNING_SERVICES, OVERRIDES_FILE, DockerCommandError, SetupError, ensure_docker_access, parse_environment
@@ -246,10 +247,11 @@ def factory_reset_menu(instance, answer, confirm, console):
     console.print(
         "Factory reset permanently destroys and rebuilds the bundled PostgreSQL cluster, including all database data, "
         "indexes, sequences and migration history. Settings, secrets and data/config/AGENT.md are always preserved. "
-        "No backup will be made.",
+        "You can preserve mailbox progress to avoid reprocessing handled emails. No backup will be made.",
         markup=False,
     )
     clean_install = confirm("Clean install: also delete ALL shared files and private attachments?", False)
+    keep_mailbox_position = confirm("Keep mailbox position so previously handled emails are not reprocessed?", True)
     console.print(
         "Also deletes everything in data/share/ and data/private/artifacts/, including generated files, caches and trash."
         if clean_install else "Workspace files and private attachments will be preserved.",
@@ -260,10 +262,10 @@ def factory_reset_menu(instance, answer, confirm, console):
         console.print("Cancelled; nothing was deleted.")
         return
     ensure_docker_access(instance, confirm)
-    run_factory_reset(instance, console, clean_install=clean_install)
+    run_factory_reset(instance, console, clean_install=clean_install, keep_mailbox_position=keep_mailbox_position)
 
 
-def run_factory_reset(instance, console, *, clean_install=False):
+def run_factory_reset(instance, console, *, clean_install=False, keep_mailbox_position=True):
     if custom_database(instance):
         raise SetupError("Factory reset cannot destroy a custom database; reset it manually first")
     postgres_root = instance.data / "postgres"
@@ -286,12 +288,39 @@ def run_factory_reset(instance, console, *, clean_install=False):
             raise SetupError(label + " failed; see the output above")
 
     running = sorted(set(instance.compose(["ps", "--status", "running", "--services"]).split()))
-    if running:
-        step("Stopping services before destroying the database", ["stop", *running])
+    writers = sorted(set(running) - {"postgres"})
+    if writers:
+        step("Stopping services before destroying the database", ["stop", *writers])
+    resume_services = True
     try:
+        mailbox_positions = []
+        if keep_mailbox_position and pgdata.exists():
+            step("Starting PostgreSQL to preserve mailbox position",
+                 ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
+            console.print("Saving mailbox position before reset", markup=False)
+            saved = instance.compose([
+                "exec", "-T", "postgres", "psql", "-U", "assistant", "-d", "assistant",
+                "-v", "ON_ERROR_STOP=1", "-Atc",
+                "SELECT coalesce(json_agg(json_build_object('key', key, 'value', value)), '[]'::json) "
+                "FROM runtime_state WHERE key LIKE 'imap:%:last_uid'",
+            ])
+            try:
+                mailbox_positions = json.loads(saved)
+            except (TypeError, ValueError) as error:
+                raise SetupError("Could not read mailbox position; reset cancelled before deleting data") from error
+            if not isinstance(mailbox_positions, list) or any(
+                not isinstance(row, dict) or set(row) != {"key", "value"}
+                or not isinstance(row["key"], str) or not row["key"].startswith("imap:")
+                or not row["key"].endswith(":last_uid") or type(row["value"]) is not int or row["value"] < 0
+                for row in mailbox_positions
+            ):
+                raise SetupError("Invalid mailbox position; reset cancelled before deleting data")
+        if "postgres" in running or (keep_mailbox_position and pgdata.exists()):
+            step("Stopping PostgreSQL before destroying the database", ["stop", "postgres"])
         step("Destroying the PostgreSQL data directory",
              ["run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "/bin/rm", "postgres", "-rf",
               "/var/lib/postgresql/data/pgdata"])
+        resume_services = False
         if clean_install:
             mounts = []
             for path, target in zip(file_roots, ("/reset/share", "/reset/artifacts")):
@@ -303,12 +332,31 @@ def run_factory_reset(instance, console, *, clean_install=False):
                   "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "--", "{}", "+"])
         step("Rebuilding PostgreSQL and applying the base schema",
              ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"])
+        if mailbox_positions:
+            values = ", ".join(
+                "('%s', '%s'::jsonb)" % (row["key"].replace("'", "''"), row["value"])
+                for row in mailbox_positions
+            )
+            step("Restoring mailbox position",
+                 ["exec", "-T", "postgres", "psql", "-U", "assistant", "-d", "assistant",
+                  "-v", "ON_ERROR_STOP=1", "-c",
+                  "INSERT INTO runtime_state(key, value) VALUES " + values +
+                  " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"])
+        step("Preventing queued Telegram requests from replaying after reset",
+             ["exec", "-T", "postgres", "psql", "-U", "assistant", "-d", "assistant",
+              "-v", "ON_ERROR_STOP=1", "-c",
+              "INSERT INTO runtime_state(key, value) VALUES ('ingress_reset', 'true'::jsonb) "
+              "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"])
+        resume_services = True
         services = sorted((set(running) - {"postgres"}) | {"workspace-indexer"})
         step("Starting services and the workspace indexer" if clean_install else
              "Starting services and reindexing the preserved workspace",
              ["up", "-d", "--wait", "--wait-timeout", "180", *services])
     finally:
-        if running:
+        if not resume_services:
+            console.print("Reset is incomplete. Application services remain stopped to prevent old requests from replaying. "
+                          "Resolve the error and rerun reset before starting them.", markup=False)
+        elif running:
             try:
                 still_running = set(instance.compose(["ps", "--status", "running", "--services"]).split())
                 missing = sorted(set(running) - still_running)
