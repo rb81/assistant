@@ -255,8 +255,11 @@ future runs. For one-off reminders, it offers **Approve this scheduled run**
 or **Deny**. The one-run grant is reserved exclusively for that reminder:
 neither the creating job nor another reminder can consume it. Existing standing
 approval can cover either kind of reminder without another prompt.
-After approval, the agent retries the identical
-`reminder_create` call to save the schedule. Changing the script, argv,
+After approval, the system saves the schedule by replaying the original
+`reminder_create` (or `reminder_update`) call exactly as submitted; the agent
+does not re-type it. Within the same task, a later request for an
+already-approved version with a different host list is refused with the
+approved hosts instead of sending the administrator a new request. Changing the script, argv,
 workdir or hosts of an existing schedule uses `reminder_update(script=...)`,
 which needs the same approval. Converting a one-off reminder to recurring
 also checks for standing approval, even when the script is unchanged.

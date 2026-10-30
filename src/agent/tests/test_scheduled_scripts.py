@@ -85,6 +85,57 @@ def test_script_reminder_needs_standing_approval_before_it_is_saved(scheduling):
     assert create(runtime)["idempotent_reuse"]
 
 
+def test_approval_saves_the_original_call_without_the_model_retyping_it(scheduling):
+    from unittest.mock import MagicMock
+    from assistant_agent.task_agent import TaskAgent
+    runtime = scheduling
+    arguments = {
+        "title": "Weekly report", "task": "Email me the report output.", "run_at": "2030-01-07T09:00:00Z",
+        "recurrence_unit": "week", "recurrence_interval": 1, "execution": "script", "script": SCRIPT,
+    }
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        runtime.reminder_create(**arguments)
+    pending = {**raised.value.request, "replay": {"tool": "reminder_create", "arguments": arguments}}
+    permissions.apply_decision(runtime.db, pause(runtime, pending), "always")
+    job = runtime.db.fetch_one("SELECT metadata FROM jobs WHERE id = %s", (runtime.job["id"],))
+    assert job["metadata"]["replay_tool_call"]["arguments"] == arguments
+    assert job["metadata"]["approved_script"] == {"version_id": pending["version_id"], "hosts": ["api.example.com"]}
+    instruction = runtime.db.fetch_one("SELECT instruction FROM supervisor_instructions WHERE job_id = %s",
+                                       (runtime.job["id"],))["instruction"]
+    assert "system is saving the schedule" in instruction and "Retry" not in instruction
+    audit = runtime.db.fetch_one("SELECT details FROM sandbox_permission_history WHERE action = 'always'")
+    assert "replay" not in audit["details"]
+
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db = runtime.db
+    agent.tool_result_cache = MagicMock(cache_result=lambda job_id, name, result: result,
+                                        redact_result=lambda name, result: result)
+    runtime.job["metadata"] = job["metadata"]
+    history = []
+    agent.replay_approved_call(runtime.job, runtime, history)
+    reminder = runtime.db.fetch_one("SELECT * FROM reminders")
+    assert reminder["metadata"]["script"]["hosts"] == ["api.example.com"]
+    assert "schedule is saved" in history[0]["content"]
+    assert "replay_tool_call" not in runtime.db.fetch_one(
+        "SELECT metadata FROM jobs WHERE id = %s", (runtime.job["id"],))["metadata"]
+    agent.replay_approved_call(runtime.job, runtime, history)
+    assert len(history) == 1 and len(runtime.db.fetch_all("SELECT id FROM reminders")) == 1
+
+
+def test_approved_version_with_changed_hosts_is_refused_not_re_requested(scheduling):
+    runtime = scheduling
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        create(runtime)
+    version_id = raised.value.request["version_id"]
+    permissions.apply_decision(runtime.db, pause(runtime, raised.value.request), "always")
+    runtime.job["metadata"] = runtime.db.fetch_one("SELECT metadata FROM jobs WHERE id = %s",
+                                                   (runtime.job["id"],))["metadata"]
+    with pytest.raises(ToolError, match="just approved in this task with exactly these hosts: api.example.com"):
+        create(runtime, script={**SCRIPT, "urls": ["https://api.example.com", "https://extra.example.com"]})
+    assert not runtime.db.fetch_all("SELECT id FROM reminders")
+    assert create(runtime)["reminder"]["metadata"]["script"]["version_id"] == version_id
+
+
 def test_once_approval_from_another_job_does_not_satisfy_a_schedule(scheduling):
     runtime = scheduling
     item = permissions.inspect(runtime, SCRIPT["command"], purpose="Weekly report", environment="image-v1")

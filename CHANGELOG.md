@@ -25,6 +25,11 @@
   for a go-ahead (it still checks in before irreversible ungated actions that
   the request did not clearly cover); one script reminder per scheduled task; inside a development
   session, `reminder_create(execution="script")` is the final approval.
+- Approved script schedules are saved by the system from the original
+  `reminder_create`/`reminder_update` call instead of asking the agent to retry
+  it, which could drop or add hosts and trigger repeated approval requests.
+  Re-requesting an approved version with different hosts in the same task is
+  refused with the approved host list.
 - Admin sender authentication (DKIM/SPF) is recommended and now on by default.
   Turn it off in `./run.sh` → Security only if your mail provider cannot pass it.
 - Application code, scripts, deployment files, and defaults now live under `src/`.

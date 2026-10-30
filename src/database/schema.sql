@@ -2242,6 +2242,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('013_sandbox_network_rules.sql'),
   ('014_automatic_embeddings.sql'),
   ('015_script_permissions.sql'),
-  ('016_development_sessions.sql');
+  ('016_development_sessions.sql'),
+  ('017_scheduled_run_reservations.sql');
 
 SET check_function_bodies = true;

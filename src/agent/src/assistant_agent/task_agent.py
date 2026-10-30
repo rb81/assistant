@@ -236,6 +236,7 @@ class TaskAgent:
             enabled_tool_names |= set(resume_tools) & available_function_names(self.config, job)
         job["_enabled_tool_names"] = enabled_tool_names
         tool_runtime = ToolRuntime(self.db, self.config, job)
+        self.replay_approved_call(job, tool_runtime, history)
         max_iterations, max_tokens = self.task_limits(job)
         history_window = self.config.get_int("agent.limits.message_history_window", 8)
         total_tokens = 0
@@ -1620,6 +1621,9 @@ class TaskAgent:
             duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         except script_permissions.PermissionRequired as exc:
             pending = exc.request
+            if pending.get("scheduled") and name in {"reminder_create", "reminder_update"}:
+                # Saved so approval can complete the schedule without the model re-typing the call.
+                pending = {**pending, "replay": {"tool": name, "arguments": arguments}}
             metadata = {"permission_request": pending}
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE id = %s", (Jsonb(metadata), job["id"]))
             job["metadata"] = {**(job.get("metadata") or {}), **metadata}
@@ -1687,6 +1691,37 @@ class TaskAgent:
             self.pause_for_async_request(job, messages, tool_runtime, name, result)
             return True
         return False
+
+    def replay_approved_call(self, job: dict[str, Any], tool_runtime: Any, history: list[dict[str, Any]]) -> None:
+        """Complete an approved scheduling call exactly as originally requested."""
+        replay = (job.get("metadata") or {}).get("replay_tool_call")
+        if not replay:
+            return
+        claimed = self.db.fetch_one(
+            """UPDATE jobs SET metadata = metadata - 'replay_tool_call'
+               WHERE id = %s AND metadata ? 'replay_tool_call' RETURNING id""", (job["id"],),
+        )
+        job["metadata"] = {key: value for key, value in (job.get("metadata") or {}).items() if key != "replay_tool_call"}
+        if not claimed:
+            return
+        name, arguments = replay["tool"], replay["arguments"]
+        try:
+            result = tool_runtime.run(name, arguments)
+        except script_permissions.PermissionRequired:
+            note = ("The approved %s call could not be saved automatically: the script or its environment changed "
+                    "after approval, so it needs new approval. Check the script, then call %s again." % (name, name))
+            self.db.log_event(job["id"], "error", tool_name=name, input_data=arguments,
+                              output_data={"error": "approval no longer matches"})
+        except (ToolError, TypeError, ValueError) as exc:
+            note = "The approved %s call could not be saved automatically: %s" % (name, exc)
+            self.db.log_event(job["id"], "error", tool_name=name, input_data=arguments, output_data={"error": str(exc)})
+        else:
+            result = self.prepare_tool_result_for_model(job["id"], name, result)
+            self.db.log_event(job["id"], "tool_result", tool_name=name, input_data=arguments,
+                              output_data=self.redact_tool_result_for_storage(name, result))
+            note = ("After the administrator's approval, the system ran your original %s call unchanged. Result: %s\n"
+                    "The schedule is saved. Do not call %s again for it." % (name, compact_json(result), name))
+        history.append({"role": "user", "content": note})
 
     def handle_request_input(
         self,

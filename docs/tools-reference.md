@@ -163,7 +163,8 @@ Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
   `workdir`, `urls`, `purpose`). The script must exist now; the reminder is saved
   only after reserving a one-run approval for a one-off reminder or obtaining
   standing (Always) approval for recurring runs of that exact version
-  and host set. `reminder_update(script=...)` rebinds an existing script reminder.
+  and host set. After approval the system saves the original call itself.
+  `reminder_update(script=...)` rebinds an existing script reminder.
   See [Scheduled scripts](sandbox.md#scheduled-scripts).
 
 ## Deep Research Tools

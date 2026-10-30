@@ -194,6 +194,14 @@ def final_request(runtime, version, hosts, purpose, scheduled=None):
     check_blocks(runtime, version, hosts)
     if runtime.config.get_bool("agent.security.script_yolo", False):
         return {"status": "approved", "mode": "script_yolo", "version_id": version["id"]}
+    approved_here = (runtime.job.get("metadata") or {}).get("approved_script") or {}
+    if approved_here.get("version_id") == version["id"] and sorted(approved_here.get("hosts") or []) != hosts:
+        # Models re-typing an approved call can drop or add hosts; never turn that into a new admin request.
+        raise PermissionDenied(
+            "Version #%s was just approved in this task with exactly these hosts: %s. Repeat the call with exactly "
+            "that host list. If the script truly needs different hosts, change the script (which creates a new "
+            "version) and request approval again." % (version["id"], ", ".join(approved_here.get("hosts") or []) or "none")
+        )
     recurring = scheduled and bool(scheduled.get("recurrence"))
     if recurring and not version["reusable"]:
         raise PermissionDenied(
@@ -484,12 +492,15 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
             )
         if pending["kind"] == "final" and pending.get("session_id"):
             tx.execute("UPDATE sandbox_development_sessions SET status = 'closed' WHERE id = %s", (pending["session_id"],))
+        replay = pending.get("replay") if decision != "deny" and pending.get("scheduled") else None
         instruction = (
             "Administrator %s for script version #%s (%s). %s" %
             (DECISIONS[decision], version["id"], pending["fingerprint"],
              "Do not repeat or work around this denied request." if decision == "deny" else
              "Continue within the approved development brief; request supervisor review before running each version."
              if pending["kind"] == "development" else
+             "The system is saving the schedule from your original %s call; its result follows. Do not repeat "
+             "that call, and do not run the script now unless asked." % replay["tool"] if replay else
              "Retry the identical %s call to save the schedule; do not run the script now unless asked."
              % pending["scheduled"].get("tool", "reminder_create") if pending.get("scheduled") else
              "Execute this unchanged version with its approved hosts.")
@@ -498,12 +509,18 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
             instruction += "\nAdministrator feedback: " + feedback
         tx.execute("INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",
                    (job["id"], instruction, actor))
+        resume = {}
+        if pending["kind"] == "final" and decision != "deny":
+            resume["approved_script"] = {"version_id": version["id"], "hosts": sorted(pending["targets"])}
+        if replay:
+            resume["replay_tool_call"] = replay
         tx.execute(
             """UPDATE jobs SET status = 'queued', run_at = now(), has_new_context = true,
-               metadata = metadata - 'permission_request', locked_at = NULL, locked_by = NULL,
-               last_error = NULL, updated_at = now() WHERE id = %s""", (job["id"],),
+               metadata = (metadata - 'permission_request') || %s, locked_at = NULL, locked_by = NULL,
+               last_error = NULL, updated_at = now() WHERE id = %s""", (Jsonb(resume), job["id"]),
         )
-        audit(tx, actor, decision, {**pending, "job_id": job["id"], "feedback": feedback})
+        audit(tx, actor, decision, {**{key: value for key, value in pending.items() if key != "replay"},
+                                    "job_id": job["id"], "feedback": feedback})
     return "%s. Job #%s resumed; execution limits unchanged." % (DECISIONS[decision], payload["job_id"])
 
 

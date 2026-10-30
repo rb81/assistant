@@ -3381,7 +3381,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_create",
-            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution. Choose execution explicitly. If the future job will run a sandbox script, write and test it now and use execution='script': before saving, the system reserves one execution for a one-off reminder or requires standing approval for recurring runs. This call requests the appropriate approval directly; no separate script_approval_request is needed. After approval, retry the identical call. Never schedule known script work as agent_task to defer approval.",
+            "description": "Schedule a future task with comprehensive context. The reminder scheduler queues it as a normal job when due; do not wait inside the current job. Include detailed notes and references to enable effective execution. Choose execution explicitly. If the future job will run a sandbox script, write and test it now and use execution='script': before saving, the system reserves one execution for a one-off reminder or requires standing approval for recurring runs. This call requests the appropriate approval directly; no separate script_approval_request is needed. After approval the system saves the schedule from this exact call; do not call it again. Never schedule known script work as agent_task to defer approval.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3440,7 +3440,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_update",
-            "description": "Update a reminder that has not yet been queued. For a script reminder, pass script to change or refresh its approved script (for example after code, sandbox image or policy changes); this pauses for administrator approval, then retry the identical call.",
+            "description": "Update a reminder that has not yet been queued. For a script reminder, pass script to change or refresh its approved script (for example after code, sandbox image or policy changes); this pauses for administrator approval, after which the system applies this exact call; do not call it again.",
             "parameters": {
                 "type": "object",
                 "properties": {
