@@ -190,7 +190,9 @@ Command:
   Supply exact `command` argv, `purpose`, complete `urls` (empty for offline),
   and optional workspace `workdir`. This stops further development execution and
   includes the supervisor's final comments, if a session exists.
-  Approval is bound to the code/dependency hashes, invocation and sandbox image.
+  Approval is bound to the code/dependency hashes, invocation, workdir and
+  explicit approval-policy revision. Routine image rebuilds do not revoke it;
+  each execution is separately authorized against the current sandbox.
   Once means one execution; always is offered only for pinnable dependency graphs.
 - `command_execute` — pass `command` as an argv array, with optional
   `timeout_seconds` and an existing workspace `workdir`. Shell syntax requires

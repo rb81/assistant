@@ -7,7 +7,7 @@
   script reminders need standing (Always) approval for the exact version and hosts
   before they are saved. Scheduled approval requests offer only Always or Deny.
   Due runs are checked against the bound approval and skipped with an admin alert
-  if it was revoked or the script, image or policy changed. Scheduled runs cannot
+  if it was revoked or the script, invocation or approval-policy revision changed. Scheduled runs cannot
   open development sessions, and new approval requests from them are flagged as
   drift. The Python `notification_only=True` argument still maps to `notify`.
 - Agent questions are ordinary messages, not approvals. `request_input` no
@@ -30,6 +30,13 @@
   it, which could drop or add hosts and trigger repeated approval requests.
   Re-requesting an approved version with different hosts in the same task is
   refused with the approved host list.
+- Persistent script approvals survive routine image rebuilds and configuration
+  changes; code, invocation, workdir, exact host permissions and an explicit
+  approval-policy revision still gate execution. Each run remains bound to
+  the current sandbox identity and revocation epoch. Legacy approvals are
+  adopted in place without copying grants, reviving revocations or changing
+  reminder bindings; conflicting legacy histories require administrator
+  reconciliation. Successful schedule checks clear old image-drift warnings.
 - Admin sender authentication (DKIM/SPF) is recommended and now on by default.
   Turn it off in `./run.sh` → Security only if your mail provider cannot pass it.
 - Application code, scripts, deployment files, and defaults now live under `src/`.

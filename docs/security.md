@@ -407,11 +407,20 @@ malicious:
 - `sensitive_path_access`;
 - `host_not_allowed`, only when `scripts.allowed_domains` is set.
 
-The approval fingerprint includes every analysed code file, argv, workdir,
-sandbox image/runtime identity and security policy. Code changes require fresh
+The persistent approval identity includes every analysed code file, argv,
+workdir and an explicit approval-policy revision, not the Docker image ID or
+the entire security configuration. Routine administrator-installed upgrades
+are trusted maintenance and preserve unchanged approvals. Each execution is
+separately bound to the current sandbox image/runtime identity and revocation
+epoch; stale execution authorizations are rejected. Current blocks and runtime
+restrictions remain enforced. Code changes require fresh
 run approval and script-scoped host grants, or a fresh supervisor review within
 an admin-approved development session. Execution uses a read-only code
 snapshot outside the writable workspace; data inputs remain mutable.
+Legacy approvals are adopted in place only for identical code and invocation;
+permissions and denials are not merged across versions. Ambiguous legacy
+history requires administrator reconciliation. See [sandbox approvals](sandbox.md)
+for upgrade behaviour and the explicit approval-policy revision.
 Always approval is withheld for unsupported or uninspectable dependency graphs.
 Successful screening findings are cached with a per-version lock to prevent
 duplicate concurrent checks. Provider outages are not cached as successful checks.

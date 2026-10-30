@@ -109,10 +109,11 @@ opens these documents. Email replies still use `APPROVE ONCE`, `APPROVE ALWAYS`,
 `DENY`. A supervisor outage is shown explicitly and requires manual administrator
 review; a model recommendation never grants execution permission by itself.
 
-Versions include SHA-256 hashes of the entry file and analysed local code
-dependencies, exact command arguments, workdir, sandbox image/runtime identity,
-and security policy. Changes require new approval or a fresh supervisor review
-inside an active development session. Final host grants are version-bound.
+Persistent approval identities include SHA-256 hashes of the entry file and
+analysed local code dependencies, exact command arguments, workdir, and an
+explicit approval-policy revision. Changes require new approval or a fresh
+supervisor review inside an active development session. Final host grants are
+version-bound and apply only to the exact approved host set.
 Do not use symlinks for code paths.
 
 Always approval is available only for dependency graphs that can be pinned.
@@ -238,10 +239,28 @@ authentication, JavaScript requirements and anti-bot controls are not necessaril
 fixed by browser-like headers. Never use mirrors, IP addresses, DNS tricks or
 other tools to circumvent a denial.
 
-Runtime/image and security-policy changes invalidate prior version approvals
-even when source is unchanged. Request the complete intended hosts again:
-an empty list means offline, not inheritance from an earlier version. Preserve
-the exact approved interpreter, arguments and workdir for scheduled runs.
+Routine image rebuilds, system upgrades and configuration changes do not
+invalidate unchanged script approvals. Administrator-installed runtime and
+dependency updates are trusted maintenance; they can change script behaviour
+without another approval. Each execution is separately authorized against the
+current sandbox image and isolation settings; a change between authorization
+and dispatch is rejected. Current blocks, revocations and runtime restrictions
+still apply. Incompatible approval semantics require an explicit bump to
+`APPROVAL_REVISION` in `script_permissions.py`.
+
+Request the complete intended hosts: an empty list means offline, not
+inheritance from an earlier version. Preserve the exact approved interpreter,
+arguments and workdir for scheduled runs.
+
+On upgrade, legacy versions are adopted lazily after inspecting the current
+code, invocation and workdir. The existing version ID, approval hash, grants,
+denials, one-run reservations and reminder bindings are retained; permissions
+are never copied or merged. Unapproved duplicate versions from earlier rebuild
+checks do not displace the approved version. If multiple identical legacy
+versions have permission or reference history, automatic adoption stops and
+requires administrator reconciliation. A changed script is never adopted as
+an older approved version. The stored legacy manifest's environment remains
+historical evidence, not the identity used to authorize the next execution.
 
 ### Scheduled scripts
 
@@ -282,8 +301,10 @@ the exact command to execute and job metadata marking it as a scheduled run:
   (recurring reminders advance; one-time reminders fail) and alerts the admin.
 - When idle, the agent re-inspects all scheduled scripts at startup and every
   `agent.reminders.script_check_interval_minutes` (default 360). Source, helper,
-  image or security-policy changes are recorded and alerted once, and block
-  future occurrences until the schedule is re-approved.
+  invocation or approval-policy revision changes are recorded and alerted once,
+  and block future occurrences until the schedule is re-approved. Routine
+  rebuilds do not trigger alerts. A successful check also clears an older
+  image-drift warning without deleting approval history.
 
 ### Network access approvals
 

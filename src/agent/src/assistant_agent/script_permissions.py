@@ -31,6 +31,18 @@ UNSTABLE_SIGNALS = {
     "binary_executable", "unparseable_code",
 }
 
+# Bump only when existing script approvals need a new administrator decision.
+APPROVAL_REVISION = 1
+
+
+def approval_material(state):
+    return {
+        "command": state["command"],
+        "files": {item["path"]: item["sha256"] for item in state["files"]},
+        "workdir": state["workdir"],
+        "approval_revision": state.get("approval_revision", 1),
+    }
+
 
 class PermissionRevocationIncomplete(ValueError):
     pass
@@ -93,10 +105,8 @@ def inspect(runtime, command, workdir=None, purpose="Script execution", environm
                 state["code_arguments"][str(index)] = manifest.entry
                 break
     relative_workdir = str(directory.relative_to(runtime.shared_root))
-    fingerprint = digest({
-        **manifest.fingerprint_material(), "workdir": relative_workdir, "environment": environment,
-        "security_policy": runtime.config.get("agent.security", {}),
-    })
+    state.update(workdir=relative_workdir, environment=environment, approval_revision=APPROVAL_REVISION)
+    identity = digest(approval_material(state))
     entry = manifest.entry or "inline:" + digest({"command": command, "workdir": relative_workdir})
     # Unknown dependency graphs never earn a reusable grant.
     reusable = (
@@ -120,12 +130,50 @@ def inspect(runtime, command, workdir=None, purpose="Script execution", environm
             """INSERT INTO sandbox_scripts(entry) VALUES (%s)
                ON CONFLICT (entry) DO UPDATE SET entry = EXCLUDED.entry RETURNING *""", (entry,),
         )
+        db.execute("SELECT id FROM sandbox_scripts WHERE id = %s FOR UPDATE", (script["id"],))
         version = db.fetch_one(
-            """INSERT INTO sandbox_script_versions(script_id, fingerprint, manifest, purpose, reusable)
-               VALUES (%s, %s, %s, %s, %s)
+            "SELECT * FROM sandbox_script_versions WHERE script_id = %s AND approval_identity = %s",
+            (script["id"], identity),
+        )
+        if version:
+            return {**version, "entry": entry, "blocked": script["blocked"]}
+        # Adopt one legacy version in place: keep its grants, denials, reservations,
+        # pending approval hashes and reminder bindings rather than combining them.
+        legacy = db.fetch_all(
+            """SELECT v.*,
+                 (EXISTS (SELECT 1 FROM sandbox_permission_grants g WHERE g.version_id = v.id)
+                  OR EXISTS (SELECT 1 FROM reminders r WHERE r.metadata->'script'->>'version_id' = v.id::text)
+                  OR EXISTS (SELECT 1 FROM jobs j
+                             WHERE j.metadata->'permission_request'->>'version_id' = v.id::text)
+                  OR EXISTS (SELECT 1 FROM sandbox_development_sessions d
+                             WHERE d.initial_version_id = v.id AND d.status IN ('pending', 'active', 'finalizing'))
+                  OR EXISTS (SELECT 1 FROM sandbox_development_reviews d WHERE d.version_id = v.id))
+                 AS referenced
+               FROM sandbox_script_versions v WHERE script_id = %s AND approval_identity IS NULL
+               ORDER BY id DESC""", (script["id"],),
+        )
+        matches = [row for row in legacy if approval_material(row["manifest"]) == approval_material(state)
+                   and row["reusable"] == reusable]
+        referenced = [row for row in matches if row["referenced"]]
+        if len(referenced) > 1:
+            raise PermissionDenied(
+                "Multiple legacy versions of this unchanged script have permission or schedule history. "
+                "Administrator reconciliation is required; permissions will not be merged automatically."
+            )
+        if referenced or matches:
+            version = (referenced or matches)[0]
+            version = db.fetch_one(
+                "UPDATE sandbox_script_versions SET approval_identity = %s WHERE id = %s RETURNING *",
+                (identity, version["id"]),
+            )
+            audit(db, "runtime", "adopt-stable-approval",
+                  {"version_id": version["id"], "approval_identity": identity})
+            return {**version, "entry": entry, "blocked": script["blocked"]}
+        version = db.fetch_one(
+            """INSERT INTO sandbox_script_versions(script_id, fingerprint, manifest, purpose, reusable, approval_identity)
+               VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (fingerprint) DO UPDATE SET fingerprint = EXCLUDED.fingerprint RETURNING *""",
-            (script["id"], fingerprint, Jsonb({**state, "workdir": relative_workdir, "environment": environment}),
-             str(purpose).strip()[:1000], reusable),
+            (script["id"], identity, Jsonb(state), str(purpose).strip()[:1000], reusable, identity),
         )
     return {**version, "entry": entry, "blocked": script["blocked"]}
 

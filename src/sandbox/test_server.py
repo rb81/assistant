@@ -52,6 +52,22 @@ import bootstrap
 
 
 class DevelopmentDeadlineTest(unittest.TestCase):
+    def test_image_change_after_authorization_is_rejected_before_starting_container(self):
+        from unittest.mock import patch
+
+        request = server.CommandRequest(
+            command=["python3", "report.py"], permission_epoch=server._permission_epoch,
+            execution_identity="old-image", authorization_expires_at=None, network_policy=None,
+        )
+        with patch.object(server, "RUN_IMAGE", "test-image"), \
+                patch.object(server, "DockerClient"), \
+                patch.object(server, "execution_identity", return_value="rebuilt-image"), \
+                patch.object(server, "create_run_container") as create:
+            with self.assertRaises(FakeHTTPException) as raised:
+                server.execute_container(request, server.SHARED_ROOT, 10, 0)
+        self.assertEqual(raised.exception.status_code, 409)
+        create.assert_not_called()
+
     def test_expired_and_naive_authorizations_are_refused(self):
         for expires, status in (
             (datetime.now(timezone.utc) - timedelta(seconds=1), 409),

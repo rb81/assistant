@@ -2171,6 +2171,7 @@ CREATE TABLE sandbox_script_versions (
     id bigserial PRIMARY KEY,
     script_id bigint NOT NULL REFERENCES sandbox_scripts(id) ON DELETE CASCADE,
     fingerprint text NOT NULL UNIQUE,
+    approval_identity text UNIQUE,
     manifest jsonb NOT NULL,
     purpose text NOT NULL,
     reusable boolean NOT NULL,
@@ -2243,6 +2244,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('014_automatic_embeddings.sql'),
   ('015_script_permissions.sql'),
   ('016_development_sessions.sql'),
-  ('017_scheduled_run_reservations.sql');
+  ('017_scheduled_run_reservations.sql'),
+  ('018_stable_script_approvals.sql');
 
 SET check_function_bodies = true;

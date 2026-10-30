@@ -47,13 +47,98 @@ def approve(runtime, item, kind="run", targets=None, decision="always"):
     return payload
 
 
-def test_new_versions_include_helpers_arguments_workdir_and_image(runtime):
+def test_new_versions_include_helpers_arguments_workdir_but_not_image_or_config(runtime):
     original = version(runtime)
     assert version(runtime)["id"] == original["id"]
     assert version(runtime, ["python3", "report.py", "--delete"])["id"] != original["id"]
-    assert version(runtime, image="image-v2")["id"] != original["id"]
+    assert version(runtime, image="image-v2")["id"] == original["id"]
+    runtime.config.values["agent"]["security"] = {"email_authentication": {"enabled": True}}
+    assert version(runtime)["id"] == original["id"]
+    (runtime.shared_root / "subdir").mkdir()
+    assert permissions.inspect(runtime, ["python3", "../report.py"], workdir="subdir")["id"] != original["id"]
+    with patch.object(permissions, "APPROVAL_REVISION", 2):
+        assert version(runtime)["id"] != original["id"]
     (runtime.shared_root / "helper.py").write_text("value = 2\n")
     assert version(runtime)["id"] != original["id"]
+
+
+def make_legacy(runtime, item):
+    state = {key: value for key, value in item["manifest"].items() if key != "approval_revision"}
+    fingerprint = permissions.digest({
+        "command": state["command"], "files": {file["path"]: file["sha256"] for file in state["files"]},
+        "workdir": state["workdir"], "environment": state["environment"],
+        "security_policy": runtime.config.get("agent.security", {}),
+    })
+    runtime.db.execute(
+        "UPDATE sandbox_script_versions SET approval_identity = NULL, fingerprint = %s, manifest = %s WHERE id = %s",
+        (fingerprint, permissions.Jsonb(state), item["id"]),
+    )
+    return runtime.db.fetch_one("SELECT * FROM sandbox_script_versions WHERE id = %s", (item["id"],))
+
+
+@pytest.mark.parametrize("decision", ["always", "once", "deny", "consumed", "revoked"])
+def test_legacy_adoption_preserves_permissions_without_regranting(runtime, decision):
+    item = make_legacy(runtime, version(runtime))
+    approve(runtime, item, targets=["api.example.com"],
+            decision=decision if decision in {"always", "once", "deny"} else "once")
+    if decision == "consumed":
+        permissions.execution(runtime, item)
+    if decision == "revoked":
+        runtime.db.execute("DELETE FROM sandbox_permission_grants WHERE version_id = %s", (item["id"],))
+    before = runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        adopted = list(pool.map(lambda _: version(runtime, image="rebuilt-image"), range(2)))
+    assert all(row["id"] == item["id"] and row["fingerprint"] == item["fingerprint"] for row in adopted)
+    assert runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id") == before
+    expected = "denied" if decision == "deny" else "not_approved" if decision in {"consumed", "revoked"} else "approved"
+    assert permissions.run_status(runtime.db, adopted[0], runtime.job["id"]) == expected
+
+
+def test_legacy_adoption_does_not_merge_conflicting_version_permissions(runtime):
+    first = make_legacy(runtime, version(runtime))
+    approve(runtime, first)
+    second = runtime.db.fetch_one(
+        """INSERT INTO sandbox_script_versions(script_id, fingerprint, manifest, purpose, reusable)
+           VALUES (%s, %s, %s, %s, true) RETURNING *""",
+        (first["script_id"], "second-legacy-fingerprint", permissions.Jsonb(first["manifest"]), "Other environment"),
+    )
+    runtime.db.execute(
+        """INSERT INTO sandbox_permission_grants(version_id, kind, scope, decision, created_by)
+           VALUES (%s, 'run', 'script', 'block', 'test')""", (second["id"],),
+    )
+    with pytest.raises(permissions.PermissionDenied, match="reconciliation is required"):
+        version(runtime, image="rebuilt-image")
+    assert runtime.db.fetch_one("SELECT count(*) AS n FROM sandbox_permission_grants")["n"] == 2
+    assert not runtime.db.fetch_all("SELECT id FROM sandbox_script_versions WHERE approval_identity IS NOT NULL")
+
+
+def test_legacy_pending_approval_stays_valid_and_never_covers_changed_code(runtime):
+    item = make_legacy(runtime, version(runtime))
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.final_request(runtime, item, [], "Report")
+    pending = raised.value.request
+    runtime.db.execute("UPDATE jobs SET status = 'needs_review', metadata = %s WHERE id = %s",
+                       (permissions.Jsonb({"permission_request": pending}), runtime.job["id"]))
+    runtime.job["metadata"] = {"permission_request": pending}
+    adopted = version(runtime, image="rebuilt-image")
+    assert adopted["id"] == item["id"] and adopted["fingerprint"] == pending["fingerprint"]
+    permissions.apply_decision(runtime.db, permissions.approval_payload(runtime.job), "always")
+    (runtime.shared_root / "helper.py").write_text("value = 99\n")
+    changed = version(runtime, image="rebuilt-image")
+    assert changed["id"] != adopted["id"]
+    assert permissions.run_status(runtime.db, changed, runtime.job["id"]) == "not_approved"
+
+
+def test_stable_approval_migration_preserves_rows_and_is_idempotent(runtime):
+    item = version(runtime)
+    approve(runtime, item)
+    before = runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id")
+    runtime.db.execute("ALTER TABLE sandbox_script_versions DROP COLUMN approval_identity")
+    runtime.db.execute("DELETE FROM schema_migrations WHERE filename = '018_stable_script_approvals.sql'")
+    assert runtime.db.run_migrations() == ["018_stable_script_approvals.sql"]
+    assert runtime.db.run_migrations() == []
+    assert runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id") == before
+    assert version(runtime, image="rebuilt-image")["id"] == item["id"]
 
 
 def test_once_grant_is_atomic_and_does_not_increase_limits(runtime):
@@ -188,6 +273,7 @@ def test_networking_renewal_cannot_request_empty_hosts_or_inherit_old_grants(run
     (runtime.shared_root / "report.py").write_text("import requests\nrequests.get('https://api.example.com')\n")
     original = version(runtime)
     approve(runtime, original, "host", ["api.example.com"])
+    (runtime.shared_root / "report.py").write_text("import requests\nrequests.get('https://api.example.com/v2')\n")
     changed = version(runtime, image="image-v2")
     assert permissions.host_policy(runtime.db, runtime.config, changed["id"], runtime.job["id"])["allow"] == []
     with patch("assistant_agent.development_supervisor.review") as review:
@@ -273,6 +359,25 @@ def test_uncertain_dispatch_does_not_retry_or_replenish_a_once_grant(runtime):
         assert permissions.run_status(runtime.db, item, runtime.job["id"]) == "not_approved"
 
 
+def test_execution_uses_current_image_authorization_after_rebuild(runtime):
+    item = version(runtime, image="old-image")
+    approve(runtime, item)
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps(
+        {"exit_code": 0, "stdout": "", "stderr": "", "egress": "none"}).encode()
+    with patch.object(ToolRuntime, "sandbox_control", return_value={
+        "permission_epoch": "current-epoch", "execution_identity": "rebuilt-image",
+    }), patch("assistant_agent.tools.read_secret", return_value="token"), \
+            patch("assistant_agent.tools.ssl.create_default_context"), \
+            patch("assistant_agent.tools.open_https_request", return_value=response) as send:
+        runtime.command_execute(["python3", "report.py"])
+    payload = json.loads(send.call_args.args[0].data)
+    assert payload["execution_identity"] == "rebuilt-image"
+    assert payload["permission_epoch"] == "current-epoch"
+    assert payload["approved_files"]["report.py"]
+    assert permissions.run_status(runtime.db, item, runtime.job["id"]) == "approved"
+
+
 def test_screening_outage_is_not_cached_as_a_success(runtime):
     runtime.config.values["agent"]["security"] = {
         "decision_model": {"enabled": True, "screen": {"scripts": True}},
@@ -313,8 +418,10 @@ def test_javascript_local_dependency_changes_invalidate_approval(runtime):
 def test_upgrade_preserves_existing_network_rules(db):
     db.execute("INSERT INTO sandbox_network_rules(host, decision) VALUES ('legacy.example.com', 'allow')")
     db.execute("DROP TABLE sandbox_development_reviews, sandbox_development_sessions, sandbox_permission_history, sandbox_permission_grants, sandbox_script_versions, sandbox_scripts")
-    db.execute("DELETE FROM schema_migrations WHERE filename IN ('015_script_permissions.sql', '016_development_sessions.sql')")
-    assert db.run_migrations() == ["015_script_permissions.sql", "016_development_sessions.sql"]
+    db.execute("DELETE FROM schema_migrations WHERE filename IN "
+               "('015_script_permissions.sql', '016_development_sessions.sql', '018_stable_script_approvals.sql')")
+    assert db.run_migrations() == ["015_script_permissions.sql", "016_development_sessions.sql",
+                                   "018_stable_script_approvals.sql"]
     assert db.fetch_one("SELECT host FROM sandbox_network_rules")["host"] == "legacy.example.com"
     assert db.run_migrations() == []
 

@@ -11,7 +11,7 @@ from assistant_agent.reminders import ReminderScheduler
 from assistant_agent.requests import TransactionDatabase
 from assistant_agent.tools import ToolError, ToolRuntime
 from test_network_access import db  # noqa: F401
-from test_script_permissions import runtime  # noqa: F401
+from test_script_permissions import make_legacy, runtime  # noqa: F401
 
 
 HEALTH = {"permission_epoch": "epoch", "execution_identity": "image-v1"}
@@ -339,6 +339,34 @@ def test_due_reminder_carries_binding_and_skips_after_revocation(scheduling):
     assert skipped["status"] == "scheduled" and skipped["job_id"] is None
     assert skipped["run_at"] > datetime.now(timezone.utc) and "revoked" in skipped["last_error"]
     assert "skipped" in alert.call_args.args[3]
+
+
+@pytest.mark.parametrize("one_off", [False, True])
+def test_legacy_schedule_survives_rebuild_without_regranting_or_alerts(scheduling, one_off):
+    runtime = scheduling
+    reminder = schedule_once(runtime) if one_off else schedule_approved(runtime)
+    binding = reminder["metadata"]["script"]
+    item = runtime.db.fetch_one("SELECT * FROM sandbox_script_versions WHERE id = %s", (binding["version_id"],))
+    legacy = make_legacy(runtime, item)
+    runtime.db.fetch_one(
+        """INSERT INTO sandbox_script_versions(script_id, fingerprint, manifest, purpose, reusable)
+           VALUES (%s, %s, %s, %s, true) RETURNING *""",
+        (legacy["script_id"], "unapproved-rebuild", permissions.Jsonb(legacy["manifest"]), "Rebuilt image"),
+    )
+    before = runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id")
+    runtime.db.set_state(scheduled_scripts.CHECK_STATE % reminder["id"],
+                         {"problem": "old image drift", "version_id": binding["version_id"]})
+    runtime.config.values["agent"]["security"] = {"email_authentication": {"enabled": True}}
+    with patch.object(ToolRuntime, "sandbox_control", return_value={**HEALTH, "execution_identity": "rebuilt-image"}), \
+            patch.object(scheduled_scripts, "alert") as alert:
+        assert scheduled_scripts.sweep(runtime.db, runtime.config, force=True) == 1
+        assert scheduled_scripts.verify(runtime, binding) is None
+        alert.assert_not_called()
+    assert scheduled_scripts.recorded_problem(runtime.db, reminder) is None
+    assert runtime.db.fetch_all("SELECT * FROM sandbox_permission_grants ORDER BY id") == before
+    assert runtime.db.fetch_one("SELECT metadata FROM reminders WHERE id = %s", (reminder["id"],))["metadata"] == reminder["metadata"]
+    runtime.db.execute("DELETE FROM sandbox_permission_grants WHERE version_id = %s", (legacy["id"],))
+    assert "revoked" in scheduled_scripts.verify(runtime, binding)
 
 
 def test_sweep_detects_code_changes_once_and_blocks_the_due_run(scheduling):

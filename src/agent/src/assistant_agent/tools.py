@@ -2292,7 +2292,7 @@ class ToolRuntime:
                 script_permissions.check_blocks(self, version, [])
                 if script_permissions.run_status(self.db, version, self.job["id"]) != "approved":
                     raise script_permissions.PermissionDenied(
-                        "No approval matches this exact code, invocation and sandbox runtime. "
+                        "No approval matches this exact code, invocation and approval-policy revision. "
                         "Use the identical approved command/workdir, or call development_session_request "
                         "for iterative testing or script_approval_request with the complete intended urls "
                         "for final approval. command_execute cannot open implicit approval requests."
@@ -3440,7 +3440,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_update",
-            "description": "Update a reminder that has not yet been queued. For a script reminder, pass script to change or refresh its approved script (for example after code, sandbox image or policy changes); this pauses for administrator approval, after which the system applies this exact call; do not call it again.",
+            "description": "Update a reminder that has not yet been queued. For a script reminder, pass script to change or refresh its approved script (for example after code, invocation or approval-policy revision changes); this pauses for administrator approval, after which the system applies this exact call; do not call it again. Routine image rebuilds do not need approval refresh.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3597,7 +3597,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "script_approval_request",
-            "description": "Submit a finished script and its complete HTTPS host list for one combined admin approval. Closes development authorization and includes the supervisor's final comments if a session exists. Supply exact command/workdir, purpose and urls (empty for offline). Admin approves once, always for this exact executable fingerprint, or denies with feedback. Code/dependency, invocation, image or policy changes invalidate approval. Denials must not be bypassed.",
+            "description": "Submit a finished script and its complete HTTPS host list for one combined admin approval. Closes development authorization and includes the supervisor's final comments if a session exists. Supply exact command/workdir, purpose and urls (empty for offline). Admin approves once, always for this exact executable fingerprint, or denies with feedback. Code/dependency, invocation or approval-policy revision changes invalidate approval; routine image rebuilds and configuration updates do not. Current blocks and runtime restrictions still apply. Denials must not be bypassed.",
             "parameters": {
                 "type": "object",
                 "properties": {

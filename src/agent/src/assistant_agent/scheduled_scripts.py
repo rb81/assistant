@@ -111,7 +111,7 @@ def grant_problem(db, config, binding):
 
 
 def verify(runtime, binding):
-    """Full check: grants plus a fresh fingerprint of code, invocation, sandbox image and policy.
+    """Full check: grants plus a fresh approval identity for code and invocation.
 
     Raises ToolError when the sandbox cannot be reached, so callers can retry later.
     """
@@ -127,7 +127,7 @@ def verify(runtime, binding):
     if version is None:
         return "the command is no longer an inspectable script"
     if version["id"] != binding["version_id"]:
-        return "the script, its helpers, the sandbox image or the security policy changed since approval"
+        return "the script, its helpers, its invocation or the approval-policy revision changed since approval"
     return None
 
 
