@@ -477,7 +477,7 @@ def test_email_only_approvals_need_no_telegram_admin_mapping():
     with patch("assistant_agent.email_approvals.send_admin_email") as send, patch(
         "assistant_agent.telegram.TelegramClient"
     ) as telegram:
-        EmailApprovals(MagicMock(), values).request("input:12", {"kind": "input", "job_id": 12}, "Your reply is needed.")
+        EmailApprovals(MagicMock(), values).request("review:12", {"kind": "review", "job_id": 12}, "Task needs attention.")
     send.assert_called_once()
     telegram.assert_not_called()
 
@@ -553,27 +553,24 @@ def test_guidance_reply_is_scoped_to_prompt_and_cannot_approve_security_action(u
         "assistant_agent.telegram_admin.apply_approval"
     ) as approve:
         assert ui.input_reply(message)
-    updates = [call.args[0] for call in database.return_value.fetch_one.call_args_list]
-    assert any("CASE WHEN status = 'waiting' THEN 'queued' ELSE status END" in sql for sql in updates)
+    database.return_value.add_job_instruction.assert_called_once_with(12, "Use a different voice", "telegram-admin")
     approve.assert_not_called()
     message["reply_to_message"]["message_id"] = 81
     assert not ui.input_reply(message)
 
 
-def test_reply_to_admin_question_resumes_without_permission_override(ui):
-    ui.db.get_state.return_value = {
-        "id": 12, "action": "guidance", "answer_only": True, "message_id": 80, "version": "version",
-        "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
-    }
+def test_reply_to_agent_question_message_becomes_guidance_without_approval(ui):
+    ui.db.get_state.side_effect = lambda key, default=None: (
+        {"job_id": 12} if key == "telegram-admin-question:9:123:80" else None)
     with patch("assistant_agent.telegram_admin.TransactionDatabase") as database, patch(
-        "assistant_agent.approval_actions.answer_admin_input"
-    ) as answer, patch("assistant_agent.telegram_admin.apply_approval") as approve:
-        assert ui.input_reply({"from": {"id": 123}, "text": "Continue with the saved audio",
+        "assistant_agent.telegram_admin.apply_approval"
+    ) as approve:
+        database.return_value.add_job_instruction.return_value = "requeued"
+        assert ui.input_reply({"from": {"id": 123}, "text": "Use the work account",
                                "reply_to_message": {"message_id": 80}})
-    answer.assert_called_once_with(database.return_value, {"job_id": 12, "version": "version"},
-                                   "Continue with the saved audio")
+    database.return_value.add_job_instruction.assert_called_once_with(12, "Use the work account", "telegram-admin")
     approve.assert_not_called()
-    assert "without changing permissions" in ui.client.call.call_args.args[1]["text"]
+    assert "Job #12 is continuing" in ui.client.call.call_args.args[1]["text"]
 
 
 def test_admin_prompt_does_not_force_quote_and_accepts_plain_guidance(ui):

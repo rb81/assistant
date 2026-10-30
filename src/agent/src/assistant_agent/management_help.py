@@ -355,8 +355,10 @@ FIELD_HELP = {
                                   "supports 128, 256, 512 or 768. Other models must support the requested size.",
     "AGENT_EMBEDDINGS_TIMEOUT_SECONDS": "Positive time limit in seconds for an embedding request. Raise it if "
                                        "your local model is too slow; it is not a limit on the whole reindex operation.",
-    "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "Require supported email-authentication checks for privileged admin "
-                                         "email. Do not assume a matching From address alone proves ownership.",
+    "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "Recommended; on by default. Email claiming your admin address must pass "
+                                         "an aligned DKIM signature or SPF check, or it is quarantined. A matching From "
+                                         "address alone does not prove ownership. Turn off only if your mail provider "
+                                         "cannot pass either check.",
     "AGENT_SECURITY_DECISION_ENABLED": "Send configured content to the screening provider for a safety decision. "
                                        "This may share sensitive text and incur charges. It does not replace approvals.",
     "AGENT_SECURITY_DECISION_PROVIDER": "Screening adapter to use: openrouter, perplexity, jev, clef, openai or custom. "

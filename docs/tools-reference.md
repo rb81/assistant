@@ -426,7 +426,7 @@ Terminal:
 
 - `task_complete` (`already_delivered: true` records the response without re-sending it when the reply, e.g. a voice note, was already sent via `telegram_send`/`email_send` for the current request)
 - `task_failed`
-- `request_input`
+- `request_input` (asks the requester or admin for missing information as an ordinary message and pauses until the reply; never used for approvals, which the gated tools request themselves)
 
 Meta:
 

@@ -72,11 +72,10 @@ def notify_admin_job_failure(
                     "email_status": result["status"],
                 })
                 return
-            kind = "input" if metadata.get("awaiting_admin_input") and not metadata.get("security_pending_action") else "review"
             review_job = {**job, "metadata": metadata}
             sent = EmailApprovals(db, config).request(
                 "review:%s:%s" % (job_id, current["updated_at"]),
-                {"kind": kind, "job_id": job_id, "version": str(current["updated_at"])},
+                {"kind": "review", "job_id": job_id, "version": str(current["updated_at"])},
                 review_summary(review_job, _body(db, config, review_job, clean_status, clean_reason, clean_source)),
             )
             result = {"status": "sent" if sent else "already_requested"}
@@ -192,15 +191,12 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
             ),
         ])
 
-    metadata = job.get("metadata") or {}
-    answer_only = metadata.get("awaiting_admin_input") and not metadata.get("security_pending_action")
     lines.extend([
         "",
         "─── Remote Approval ────────────────────────────",
         "Use the confirmation in this notification: Telegram buttons, or an email reply retaining its OTP/hash.",
         "  • Your reply body will be passed to the agent as an instruction.",
-        ("  • Replying to this question does not change permissions or limits." if answer_only
-         else "  • Both limits will be increased by %s%%." % increase_pct),
+        "  • Both limits will be increased by %s%%." % increase_pct,
         "  • Keep the original confirmation quoted; add no text to approve without instructions.",
         "  • If it expires, request a fresh confirmation from /menu or send /admin review %s." % job["id"],
     ])

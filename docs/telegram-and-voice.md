@@ -209,10 +209,13 @@ finished, failed, or cancelled jobs and warns that external actions may repeat.
 Cancellation cannot undo completed actions. Changes use one-use confirmations and
 reject stale task versions.
 
-**Add reply** to an administrative question resumes only that question's task
-without changing permissions or limits. Guidance on a safety-held task leaves it
-paused and requires a separate approval. Reply to the bot's specific reply prompt,
-not an unrelated message; prompts expire after fifteen minutes.
+Agent questions arrive as plain messages with **Reply** and **Open task**
+buttons, not as approvals. Reply directly to the question message, or tap
+**Reply** and send your answer; the task resumes with it as guidance, without
+changing permissions or limits. **Guidance** on any job card works the same
+way. Guidance on a safety-held task leaves it paused and requires a separate
+approval. Reply to the bot's specific reply prompt, not an unrelated message;
+**Reply**/guidance prompts expire after fifteen minutes.
 
 Idle workstreams can be archived and restored without deleting data. Active tasks,
 child workstreams, scheduled reminders, pending intake, and unresolved deliveries or

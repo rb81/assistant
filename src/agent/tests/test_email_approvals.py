@@ -26,7 +26,9 @@ def reply(body, sender="admin@example.com", html=False):
 
 class ApprovalReplyTest(unittest.TestCase):
     def setUp(self):
-        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}}})
+        # Sender authentication (on by default) has its own tests; these emails are unsigned fixtures.
+        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"},
+                                           "security": {"email_authentication": {"enabled": False}}}})
         self.confirmation = "%s\nOTP: %s\nRequest hash: %s\n" % (MARKER, "a" * 32, "b" * 64)
 
     def test_extracts_only_new_guidance_from_plain_and_html_replies(self):
@@ -370,8 +372,7 @@ class ApprovalReplyTest(unittest.TestCase):
 
     def test_missing_approval_credentials_never_start_another_challenge(self):
         from assistant_agent.email_ingest import EmailDownloader
-        for subject in ("Re: Assistant approval required", "Re: Re: Assistant approval required",
-                        "Re: Salma admin input required for job #12"):
+        for subject in ("Re: Assistant approval required", "Re: Re: Assistant approval required"):
             with self.subTest(subject=subject):
                 downloader = EmailDownloader.__new__(EmailDownloader)
                 downloader.config = self.config
@@ -389,66 +390,57 @@ class ApprovalReplyTest(unittest.TestCase):
                 consume.assert_not_called()
                 receive.assert_not_called()
 
-    def test_admin_input_email_contains_usable_one_step_input_confirmation(self):
+    def test_agent_question_email_is_plain_and_reply_becomes_confirmed_instruction(self):
+        from assistant_agent.config import agent_name
         from assistant_agent.email_ingest import EmailDownloader
         from assistant_agent.task_agent import TaskAgent
         agent = TaskAgent.__new__(TaskAgent)
         agent.config, agent.db = self.config, MagicMock()
-        version = "2026-10-28T17:00:00+00:00"
-        agent.db.fetch_one.return_value = {"updated_at": version}
-        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
-            "assistant_agent.task_agent.smtp_configured", return_value=True
-        ), patch("assistant_agent.task_agent.latest_request_context", return_value={}), patch(
+        with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch(
             "assistant_agent.email_approvals.send_admin_email"
-        ) as send:
-            agent.email_admin_for_input({"id": 12}, MagicMock(), "May I continue?")
-        body = send.call_args.args[2]
-        self.assertTrue(body.startswith(MARKER + "\nOTP: "))
-        self.assertIsNotNone(approval_reply(reply(body)))
-        self.assertIn("May I continue?", body)
-        pending = agent.db.set_state.call_args_list[0].args[1]["payload"]
-        self.assertEqual(pending, {"kind": "input", "job_id": 12, "version": version})
+        ) as send, patch("assistant_agent.email_approvals.EmailApprovals.request") as approval:
+            self.assertTrue(agent.message_admin({"id": 12, "metadata": {}}, "Which account?"))
+        approval.assert_not_called()
+        subject, body = send.call_args.args[1:3]
+        self.assertEqual(subject, "%s question for job #12" % agent_name(self.config))
+        self.assertIn("Which account?", body)
+        self.assertIn("/admin instruct 12", body)
+        self.assertNotIn(MARKER, body)
+        self.assertIsNone(approval_reply(reply(body)))
+
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config, downloader.db = self.config, MagicMock()
-        job = {"id": 12, "updated_at": version, "metadata": {}, "last_error": "May I continue?"}
-        downloader.db.fetch_one.side_effect = [None, job, {"id": 12}]
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=pending), patch(
-            "assistant_agent.email_approvals.EmailApprovals.request"
-        ) as another_request, patch("assistant_agent.admin_commands.send_admin_email") as acknowledgment, patch(
-            "assistant_agent.approval_actions.TransactionDatabase"
-        ) as transaction:
-            result = downloader.ingest_raw(reply("Continue.\n\n" + body).as_bytes())
+        downloader.db.fetch_one.return_value = None
+        message = reply("Use the work account.")
+        message.replace_header("Subject", "Re: " + subject)
+        with patch("assistant_agent.admin_commands.AdminCommands.handle", return_value=True) as handle, patch(
+            "assistant_agent.email_ingest.RequestService.receive_request"
+        ) as receive:
+            result = downloader.ingest_raw(message.as_bytes())
         self.assertFalse(result.queued)
-        self.assertIn("status = 'queued'", transaction.return_value.fetch_one.call_args.args[0])
-        self.assertNotIn("admin_review_override", transaction.return_value.fetch_one.call_args.args[0])
-        another_request.assert_not_called()
-        acknowledgment.assert_not_called()
+        self.assertEqual(handle.call_args.args[1], "/admin instruct 12")
+        self.assertIn("Use the work account.", handle.call_args.args[2])
+        receive.assert_not_called()
 
-    def test_admin_input_confirmation_in_both_mode_uses_same_email_and_telegram_record(self):
+    def test_agent_question_on_telegram_is_plain_message_with_reply_buttons(self):
         from assistant_agent.task_agent import TaskAgent
         agent = TaskAgent.__new__(TaskAgent)
         agent.config, agent.db = self.config, MagicMock()
         self.config.values["agent"].update({
-            "approvals": {"channel": "both"},
-            "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+            "approvals": {"channel": "telegram"},
+            "telegram": {"bot_token": "99:secret", "allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
         })
-        agent.db.fetch_one.return_value = {"updated_at": "version"}
-        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
-            "assistant_agent.task_agent.latest_request_context", return_value={}
-        ), patch("assistant_agent.email_approvals.send_admin_email") as send, patch(
+        with patch("assistant_agent.telegram_config.telegram_configured", return_value=True), patch(
             "assistant_agent.telegram.TelegramClient"
-        ) as telegram:
-            agent.email_admin_for_input({"id": 12}, MagicMock(), "May I continue?")
-        body = send.call_args.args[2]
-        token, digest, guidance = approval_reply(reply("Continue with the saved audio.\n\n" + body))
-        record = agent.db.set_state.call_args_list[0]
-        self.assertEqual(record.args[0], "email-approval:" + digest)
-        self.assertEqual(record.args[1]["payload"], {"kind": "input", "job_id": 12, "version": "version"})
-        self.assertEqual(record.args[1]["telegram_admin_ids"], ["123"])
-        self.assertEqual(guidance, "Continue with the saved audio.")
-        self.assertEqual(len(token), 32)
-        keyboard = telegram.return_value.call.call_args.args[1]["reply_markup"]["inline_keyboard"]
-        self.assertIn(record.args[1]["callback_id"], keyboard[0][0]["callback_data"])
+        ) as telegram, patch("assistant_agent.email_approvals.send_admin_email") as email:
+            telegram.return_value.call.return_value = {"message_id": 77}
+            self.assertTrue(agent.message_admin({"id": 12, "metadata": {}}, "Which account?"))
+        email.assert_not_called()
+        sent = telegram.return_value.call.call_args.args[1]
+        self.assertIn("Which account?", sent["text"])
+        self.assertEqual([button["callback_data"] for button in sent["reply_markup"]["inline_keyboard"][0]],
+                         ["ui:guidance:12", "ui:job:12"])
+        agent.db.set_state.assert_called_once_with("telegram-admin-question:99:123:77", {"job_id": 12})
 
     def test_job_review_approval_resumes_and_logs_without_acknowledgment_email(self):
         from assistant_agent.email_ingest import EmailDownloader
@@ -525,7 +517,9 @@ class ApprovalDatabaseTest(unittest.TestCase):
 
     def setUp(self):
         self.db.execute("TRUNCATE runtime_state")
-        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}}})
+        # Sender authentication (on by default) has its own tests; these emails are unsigned fixtures.
+        self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"},
+                                           "security": {"email_authentication": {"enabled": False}}}})
         self.service = EmailApprovals(self.db, self.config)
         self.payload = {"kind": "command", "subject": "/admin cancel 7", "body": ""}
 

@@ -51,9 +51,10 @@ approval even after the old confirmation is no longer retained.
 
 Run `./run.sh` to configure the dedicated assistant mailbox and
 `ADMIN_EMAIL`. Signing keys are no longer used, and Authentication-Results never
-authorize an action. The optional [admin sender authentication](security.md#admin-sender-authentication-spfdkim)
-check quarantines mail that claims your address but fails both DKIM and SPF. It can
-only reject mail; it never replaces the OTP.
+authorize an action. The recommended [admin sender authentication](security.md#admin-sender-authentication-spfdkim)
+check is on by default and quarantines mail that claims your address but fails
+both DKIM and SPF. It can only reject mail; it never replaces the OTP. Turn it
+off in `./run.sh` → **Security** only if your provider cannot pass either check.
 
 An `/admin` request or actionable task email from the configured admin is held
 pending approval. The address is recognized, but confirmation is still required
@@ -138,7 +139,10 @@ action; inspect state using the CLI before sending a fresh request.
 Put memory text, review instructions or `instruct` instructions in the message
 body (plain text preferred). `requeue` retries a failed, cancelled, waiting,
 needs-review or completed job; `instruct` adds a supervisor instruction and
-requeues a finished job. Memory `approve` accepts a suggested new fact; use
+requeues a finished job or one waiting on a question. Agent questions emailed to
+you (subject "<agent> question for job #N") are plain messages: answer with
+`/admin instruct N`, or reply to the question email, which is treated the same
+way and confirmed like any command. Memory `approve` accepts a suggested new fact; use
 `update` to correct an existing fact.
 
 Every emailed command requires the OTP approval described above, including

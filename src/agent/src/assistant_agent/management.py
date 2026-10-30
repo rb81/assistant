@@ -109,7 +109,7 @@ GROUPS = {
         field("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID (blank = agent model)"),
         field("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
         field("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "Maximum development session runs", "20"),
-        field("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Authenticate admin email", "false"),
+        field("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Authenticate admin email (DKIM/SPF, recommended)", "true"),
         field("AGENT_SECURITY_DECISION_ENABLED", "Enable content screening", "false"),
         field("AGENT_SECURITY_DECISION_PROVIDER", "Screening provider", "openrouter"),
         field("AGENT_SECURITY_DECISION_URL", "Screening API URL (blank uses provider default)"),

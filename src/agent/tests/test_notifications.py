@@ -69,29 +69,6 @@ class NotificationDedupeTest(unittest.TestCase):
         self.assertIn("Review diagnostics", approval.call_args.args[2])
         ordinary_email.assert_not_called()
 
-    def test_admin_input_email_requests_reply_without_retired_dashboard(self) -> None:
-        from assistant_agent.task_agent import TaskAgent
-
-        agent = TaskAgent.__new__(TaskAgent)
-        agent.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "app": {"base_url": "https://localhost:8000"}}})
-        agent.db = MagicMock()
-        agent.db.fetch_one.side_effect = [{"updated_at": "2026-10-28T17:00:00+00:00"}, None]
-        agent.db.latest_thread_emails.return_value = [{"message_id": "<request@example.com>"}]
-        runtime = MagicMock()
-        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
-            "assistant_agent.task_agent.smtp_configured", return_value=True
-        ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval:
-            agent.email_admin_for_input({"id": 11, "thread_id": "thread-1"}, runtime, "May I proceed?")
-
-        sent = approval.call_args
-        self.assertEqual(sent.args[1], {"kind": "input", "job_id": 11, "version": "2026-10-28T17:00:00+00:00"})
-        self.assertIn("May I proceed?", sent.args[2])
-        self.assertIn("reply with the original email confirmation to continue", sent.args[2])
-        self.assertNotIn("dashboard", sent.args[2].lower())
-        self.assertNotIn("localhost", sent.args[2])
-        self.assertIn("admin input required for job #11", sent.kwargs["email_subject"])
-        runtime.email_send.assert_not_called()
-
     def test_review_email_preserves_reply_approval_without_retired_dashboard(self) -> None:
         config = AppConfig({"agent": {"app": {"base_url": "https://localhost:8000"}}})
         diagnostics = {
@@ -158,18 +135,6 @@ class NotificationDedupeTest(unittest.TestCase):
         ):
             body = _body(db, config, job, "needs_review", "Security review", "task-agent")
         self.assertIn("Requester: telegram:123456", body)
-
-        agent = TaskAgent.__new__(TaskAgent)
-        agent.db, agent.config = db, config
-        runtime = MagicMock()
-        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
-            "assistant_agent.task_agent.smtp_configured", return_value=True
-        ), patch("assistant_agent.email_approvals.EmailApprovals.request", return_value=True) as approval:
-            db.fetch_one.side_effect = [{"updated_at": "2026-10-28T17:00:00+00:00"},
-                                       {"channel": "telegram", "sender_id": "123456", "reply_route": {}}]
-            agent.email_admin_for_input(job, runtime, "May I proceed?")
-        self.assertIn("Requester: telegram:123456", approval.call_args.args[2])
-        runtime.email_send.assert_not_called()
 
     def test_fingerprint_ignores_notification_source(self) -> None:
         self.assertEqual(

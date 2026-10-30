@@ -74,10 +74,31 @@ Automatically routed completion also checks for new requester context before
 delivery and before the final status update. New context keeps the job active;
 already completed side effects must not be repeated.
 
-`request_input` sends clarification to the requester or admin. Requester input
-on an automatically routed job moves it to `waiting` with
-`metadata.waiting_for_input=true`; other input requests move it to `needs_review`.
-Requester questions use the job's reply route when available.
+`request_input` asks for missing information as an ordinary message; it is
+never an approval. Requester questions use the job's reply route (including
+when the requester is the admin) and set `metadata.waiting_for_input=true`.
+Admin questions, or requester questions that cannot be delivered, go to the
+admin as a plain Telegram message (reply to it or tap **Reply**) and/or email
+(answer with `/admin instruct JOB_ID`, or reply to the question email) and set
+`metadata.waiting_for_admin=true`. Either way the job moves to `waiting`; the
+answer resumes it as a supervisor instruction without changing permissions or
+limits. If no admin channel can deliver the question, the job moves to
+`needs_review`.
+
+Pauses keep the agent's working memory. When a job pauses for a question or
+for review (script, development or scheduled-script approval, security hold,
+limit request), the runtime saves a checkpoint of the conversation and the
+tools it had loaded (`metadata.resume_checkpoint_id`, `resume_tools`). On
+resume, the agent continues from that conversation with any new replies and
+admin instructions appended, instead of replanning from scratch. Guidance that
+arrives while a job is running is injected into the conversation at the next
+step. Prior-action context also lists questions asked, admin guidance,
+commands run and script approval requests.
+
+Approval gates are enforced by tools, not by conversation. The agent is told
+to call the gated tool (`development_session_request`,
+`script_approval_request`, `reminder_create(execution="script")`) directly
+rather than asking for a go-ahead first.
 
 `task_failed` marks the job `failed` and notifies the admin; it does not requeue it.
 Unhandled processing exceptions requeue while attempts remain, otherwise move

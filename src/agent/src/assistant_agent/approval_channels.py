@@ -52,9 +52,6 @@ def review_summary(job, reason):
         return ("%s\n\nA safety check paused an action. Approve only after reviewing Details. "
                 "Approval permits the exact held action once without increasing execution limits.\n"
                 "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))
-    if metadata.get("awaiting_admin_input"):
-        return ("%s\n\nYour reply is needed. Continuing does not grant extra permissions or increase limits.\n"
-                "Job #%s\n\nQuestion:\n%s\n\nDetails:\n%s" % (title, job["id"], reason[:1200], reason))
     return ("%s\n\nThis task needs your attention. Resume continues existing work with additional "
             "execution allowance; it does not undo actions already completed.\n"
             "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))

@@ -351,14 +351,12 @@ class EmailApprovals:
                         sent = client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
                             "reply_markup": {"inline_keyboard": keyboard or [
-                                [{"text": "Confirm & start" if payload.get("kind") == "email" else
-                                          "Review reply" if payload.get("kind") == "input" else "Review & approve",
+                                [{"text": "Confirm & start" if payload.get("kind") == "email" else "Review & approve",
                                   "callback_data": "ap:%s:%s" % (
                                       callback, "ok" if payload.get("kind") == "email" else "review")},
                                  {"text": "Not now", "callback_data": "ap:%s:later" % callback}],
                                 [{"text": "Details", "callback_data": "ap:%s:details" % callback}],
-                            ] + ([[{"text": "Add reply", "callback_data": "ui:guidance:%s" % payload["job_id"]}]]
-                                 if payload.get("kind") == "input" else [])},
+                            ]},
                         }, sending=True)
                         if payload.get("job_id"):
                             record_task_message(self.db, self.config, payload["job_id"], identifier, sent["message_id"])

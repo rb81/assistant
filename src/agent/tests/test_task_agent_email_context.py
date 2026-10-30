@@ -45,6 +45,10 @@ from assistant_agent.database import Database
 from assistant_agent.task_agent import TaskAgent
 
 
+def raw(value):
+    return getattr(value, "obj", value)
+
+
 class TaskAgentEmailContextTest(unittest.TestCase):
     def test_idle_task_poll_does_not_run_indexing(self):
         agent = self.agent()
@@ -79,49 +83,59 @@ class TaskAgentEmailContextTest(unittest.TestCase):
                                        "retrieval": "keyword_only", "wait_seconds": 60},
         )
 
-    def test_requester_fallback_pauses_before_sending_usable_admin_confirmation(self):
+    def test_unreachable_requester_question_goes_to_admin_as_plain_message_after_pausing(self):
         agent = self.agent()
         agent.db = MagicMock()
         agent.db.latest_thread_emails.return_value = []
         job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
         agent.record_system_task_notification = MagicMock()
         with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
-            agent, "email_admin_for_input"
+            agent, "message_admin", return_value=True
         ) as send:
             def paused(*args):
-                updates = [call.args[0] for call in agent.db.execute.call_args_list]
-                self.assertTrue(any("status = 'needs_review'" in sql for sql in updates))
-                self.assertTrue(any("awaiting_admin_input" in sql for sql in updates))
+                updates = [call.args[0] for call in agent.db.fetch_one.call_args_list]
+                self.assertTrue(any("status = 'waiting'" in sql for sql in updates))
+                return True
             send.side_effect = paused
             self.assertTrue(agent.handle_request_input(
                 job, [], MagicMock(), "request_input",
                 {"recipient": "requester", "question": "Which voice?"}, "call-12",
             ))
-        send.assert_called_once()
+        send.assert_called_once_with(job, "Which voice?")
+        pause = next(call for call in agent.db.fetch_one.call_args_list if "status = 'waiting'" in call.args[0])
+        self.assertTrue(raw(pause.args[1][2])["waiting_for_admin"])
+        agent.db.update_job_status.assert_not_called()
 
-    def test_requester_clarification_to_admin_uses_confirmation_not_plain_email(self):
-        for route in ({}, {"channel": "email", "to": "Admin <admin@example.com>"}):
+    def test_admin_requester_questions_are_ordinary_replies_not_confirmations(self):
+        for route in ({"channel": "email", "to": "Admin <admin@example.com>"}, {"channel": "telegram", "chat_id": 42}):
             with self.subTest(route=route):
                 agent = self.agent()
                 agent.config.values["agent"]["admin"] = {"email": "admin@example.com"}
                 agent.db = MagicMock()
-                agent.db.latest_thread_emails.return_value = [{"from_address": "Admin <admin@example.com>"}]
                 job = {"id": 12, "thread_id": "thread-12", "metadata": {"reply_route": route, "auto_reply": True}}
-                runtime = MagicMock()
                 agent.defer_stale_tool_calls = MagicMock(return_value=False)
                 agent.record_system_task_notification = MagicMock()
-                with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
-                    agent, "email_admin_for_input"
-                ) as send, patch("assistant_agent.task_agent.ReplyRouter") as router:
+                with patch.object(agent, "message_admin") as admin, patch.object(
+                    agent, "requester_is_admin", return_value=True
+                ), patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    router.return_value.send.return_value = {"status": "sent"}
                     self.assertTrue(agent.handle_request_input(
-                        job, [], runtime, "request_input",
-                        {"recipient": "requester", "question": "Which voice?"}, "call-12",
+                        job, [], MagicMock(), "request_input",
+                        {"recipient": "admin", "question": "Which voice?"}, "call-12",
                     ))
-                send.assert_called_once_with(job, runtime, "Which voice?")
-                runtime.email_send.assert_not_called()
-                router.assert_not_called()
-                self.assertTrue(any("status = 'needs_review'" in call.args[0]
-                                    for call in agent.db.execute.call_args_list))
+                router.return_value.send.assert_called_once_with("Which voice?", purpose="clarification")
+                admin.assert_not_called()
+                pause = next(call for call in agent.db.fetch_one.call_args_list if "status = 'waiting'" in call.args[0])
+                self.assertTrue(raw(pause.args[1][2])["waiting_for_input"])
+
+    def test_requester_is_admin_matches_email_and_telegram_routes(self):
+        agent = self.agent()
+        agent.config.values["agent"]["admin"] = {"email": "admin@example.com"}
+        self.assertTrue(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "email", "to": "Admin <ADMIN@example.com>"}}}))
+        self.assertFalse(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "email", "to": "other@example.com"}}}))
+        with patch("assistant_agent.approval_channels.telegram_admins", return_value=["42"]):
+            self.assertTrue(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "telegram", "chat_id": 42}}}))
+            self.assertFalse(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "telegram", "chat_id": 7}}}))
 
     def test_external_requester_clarification_remains_an_ordinary_email(self):
         agent = self.agent()
@@ -133,13 +147,10 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
         runtime = MagicMock()
         runtime.email_send.return_value = {"status": "sent"}
-        with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch.object(
-            agent, "email_admin_for_input"
-        ) as admin:
+        with patch("assistant_agent.task_agent.smtp_configured", return_value=True):
             self.assertTrue(agent.email_original_sender_for_input(job, runtime, "Which voice?"))
         self.assertEqual(runtime.email_send.call_args.kwargs["to"], ["Requester <requester@example.com>"])
         self.assertEqual(runtime.email_send.call_args.kwargs["body"], "Which voice?")
-        admin.assert_not_called()
 
     def test_requester_clarification_delivery_failures_fall_back_to_admin(self):
         for route, result in (
@@ -164,20 +175,19 @@ class TaskAgentEmailContextTest(unittest.TestCase):
                         runtime, "Which voice?",
                     ))
 
-    def test_delivery_failure_keeps_paused_job_version_and_delivered_approvals_valid(self):
-        from assistant_agent.email_approvals import ApprovalDeliveryError
+    def test_undeliverable_admin_question_moves_job_to_review(self):
         agent = self.agent()
         agent.db = MagicMock()
-        agent.db.fetch_one.return_value = {"updated_at": "version"}
+        agent.record_system_task_notification = MagicMock()
         job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
-        with patch("assistant_agent.task_agent.approvals_configured", return_value=True), patch(
-            "assistant_agent.task_agent.latest_request_context", return_value={}
-        ), patch("assistant_agent.email_approvals.EmailApprovals.request",
-                 side_effect=ApprovalDeliveryError("Telegram sent, email delivery uncertain")):
-            agent.email_admin_for_input(job, MagicMock(), "May I continue?")
-        agent.db.update_job_status.assert_not_called()
-        agent.db.execute.assert_not_called()
-        self.assertEqual(agent.db.log_event.call_args.kwargs["output_data"]["sent"], False)
+        with patch.object(agent, "message_admin", return_value=False), patch(
+            "assistant_agent.task_agent.notify_admin_job_failure"
+        ) as notify:
+            self.assertTrue(agent.handle_request_input(
+                job, [], MagicMock(), "request_input", {"recipient": "admin", "question": "Which account?"}, "call-12",
+            ))
+        self.assertEqual(agent.db.update_job_status.call_args.args[:2], (12, "needs_review"))
+        notify.assert_called_once()
 
     def test_job_naming_uses_cheap_model_without_changing_task(self):
         agent = self.agent()
@@ -218,24 +228,54 @@ class TaskAgentEmailContextTest(unittest.TestCase):
                 client.chat([], [])
         chat.assert_called_once_with("example/cheap", [], [])
 
-    def test_admin_input_is_paused_before_version_bound_confirmation_is_sent(self):
+    def test_admin_question_pauses_with_resume_checkpoint_before_message_is_sent(self):
         agent = self.agent()
         agent.db = MagicMock()
+        agent.db.fetch_one.return_value = {"id": 55}
         agent.record_system_task_notification = MagicMock()
-        job = {"id": 12, "thread_id": "thread-12", "metadata": {}}
+        job = {"id": 12, "thread_id": "thread-12", "metadata": {}, "_enabled_tool_names": {"task_complete", "reminder_create"}}
+        messages = [{"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call-12", "function": {"name": "request_input"}},
+            {"id": "call-13", "function": {"name": "reminder_create"}},
+        ]}]
 
-        def send_input(job, runtime, question):
-            updates = [call.args[0] for call in agent.db.execute.call_args_list]
-            self.assertTrue(any("status = 'needs_review'" in sql for sql in updates))
-            self.assertEqual(question, "May I continue?")
+        def send(job, question):
+            self.assertTrue(any("status = 'waiting'" in call.args[0] for call in agent.db.fetch_one.call_args_list))
+            self.assertEqual(question, "Which account?")
+            return True
 
-        with patch.object(agent, "email_admin_for_input", side_effect=send_input) as send:
+        with patch.object(agent, "message_admin", side_effect=send) as message:
             stopped = agent.handle_request_input(
-                job, [], MagicMock(), "request_input",
-                {"recipient": "admin", "question": "May I continue?"}, "call-12",
+                job, messages, MagicMock(), "request_input",
+                {"recipient": "admin", "question": "Which account?"}, "call-12",
             )
         self.assertTrue(stopped)
-        send.assert_called_once()
+        message.assert_called_once()
+        saved = next(call for call in agent.db.fetch_one.call_args_list if "agent_checkpoints" in call.args[0])
+        history = raw(saved.args[1][1])
+        self.assertEqual([item.get("tool_call_id") for item in history if item["role"] == "tool"], ["call-12", "call-13"])
+        self.assertIn("not_executed", history[-1]["content"])
+        pause = next(call for call in agent.db.fetch_one.call_args_list if "status = 'waiting'" in call.args[0])
+        self.assertEqual(raw(pause.args[1][2])["resume_checkpoint_id"], 55)
+        self.assertEqual(raw(pause.args[1][2])["resume_tools"], ["reminder_create", "task_complete"])
+
+    def test_resume_history_restores_checkpoint_with_new_replies_and_guidance(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        saved = [{"role": "assistant", "content": "Planning the tracker"}]
+        agent.db.fetch_one.return_value = {"message_history": saved, "reason": "resume: admin input requested: Which account?",
+                                           "created_at": "2025-01-01"}
+        agent.db.fetch_all.side_effect = [
+            [{"channel": "telegram", "sender_id": "42", "body_text": "Use the work account"}],
+            [{"instruction": "Send the report on Mondays", "created_by": "telegram-admin"}],
+        ]
+        history = agent.resume_history({"id": 12, "thread_id": "thread-12", "metadata": {"resume_checkpoint_id": 55}})
+        self.assertEqual(history[0], saved[0])
+        self.assertIn("Use the work account", history[-1]["content"])
+        self.assertIn("Send the report on Mondays", history[-1]["content"])
+        self.assertIn("Do not repeat completed steps", history[-1]["content"])
+        self.assertIn("resume_checkpoint_id", agent.db.execute.call_args.args[0])
+        self.assertEqual(agent.resume_history({"id": 12, "metadata": {}}), [])
 
     def test_model_and_sandbox_tools_explain_internal_authentication(self):
         agent = self.agent()
@@ -321,6 +361,9 @@ class TaskAgentEmailContextTest(unittest.TestCase):
                 }
             }
         )
+        from assistant_agent.tool_result_cache import ToolResultCache
+        agent.tool_result_cache = ToolResultCache(agent.config)
+        agent.locked_by = "test-worker"
         return agent
 
     def email(self, email_id: int, body: str) -> dict[str, Any]:

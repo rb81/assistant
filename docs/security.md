@@ -317,7 +317,11 @@ preserved reliably.
 
 ### Admin sender authentication (SPF/DKIM)
 
-With `agent.security.email_authentication.enabled`, only email whose From
+This check is recommended and **on by default**
+(`agent.security.email_authentication.enabled: true`, or
+`AGENT_SECURITY_EMAIL_AUTH_ENABLED`). Turn it off in `./run.sh` under
+**Security** only if your admin mail provider cannot pass DKIM or SPF for your
+address. When enabled, only email whose From
 includes `ADMIN_EMAIL`, including OTP approval replies, must pass sender
 authentication. The downloader checks it itself through DNS. It does not trust
 `Authentication-Results` headers. The email passes if either check below passes
@@ -334,8 +338,8 @@ Requiring both would reject legitimate mail. Forwarding breaks SPF, and some
 providers sign with their own domain. Missing, misaligned or unverifiable
 results, including DNS errors, fail. The containers need outbound DNS. At
 startup the downloader warns if the admin domain publishes no SPF or DMARC
-record. Before you enable this, make sure your admin mail provider signs with
-DKIM for your domain.
+record. Make sure your admin mail provider signs with DKIM for your domain or
+sends from SPF-authorized servers; otherwise your own email is quarantined.
 
 A failure is quarantined before any OTP is issued, and the admin is notified.
 Notices are rate limited by `notify_max_per_hour` and never contain an OTP.

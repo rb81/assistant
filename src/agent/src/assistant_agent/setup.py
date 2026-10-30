@@ -2014,6 +2014,7 @@ def security_value(instance, name, default=None):
     if default is None:
         default = {
             "AGENT_SECURITY_SCRIPT_YOLO": False,
+            "AGENT_SECURITY_EMAIL_AUTH_ENABLED": True,
             "AGENT_SECURITY_DEVELOPMENT_MODEL": "",
             "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": 30,
             "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": 20,
@@ -2051,8 +2052,8 @@ def prompt_security(instance, answer, confirm, console):
         DEFAULT_PROVIDER, OPENROUTER_SECRET_NAME, PROVIDERS, SECRET_NAME, DecisionError, test_connection,
     )
 
-    def toggle(name, label):
-        enabled = confirm(label, security_value(instance, name, False) == "true")
+    def toggle(name, label, default=False):
+        enabled = confirm(label, security_value(instance, name, default) == "true")
         instance.values[name] = str(enabled).lower()
         return enabled
 
@@ -2063,8 +2064,9 @@ def prompt_security(instance, answer, confirm, console):
 
     console.print("Admin email authentication verifies, via DNS, the DKIM signature or SPF authorization of email "
                   "that claims to come from your admin address. Either must pass for your admin domain. Failures are "
-                  "quarantined and you are notified. Other senders are unaffected.")
-    toggle("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Require DKIM or SPF on admin email?")
+                  "quarantined and you are notified. Other senders are unaffected. Recommended and on by default; "
+                  "turn it off only if your mail provider cannot pass DKIM or SPF.")
+    toggle("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Require DKIM or SPF on admin email? (recommended)", True)
 
     console.print("A decision model rates content as not malicious, possibly malicious or malicious. "
                   "When configured, every accepted inbound email is screened; this cannot be turned off. "
@@ -2461,7 +2463,7 @@ def draft_problems(instance):
     if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL", "").strip():
         required.setdefault("OPENROUTER_API_KEY", "security")
     from .security_screening import PROVIDER_CHOICES
-    if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", False) not in {"true", "false"}:
+    if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", True) not in {"true", "false"}:
         problem("security", "AGENT_SECURITY_EMAIL_AUTH_ENABLED must be true or false")
     if values.get("AGENT_SECURITY_DECISION_ENABLED", "false") == "true":
         provider = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter"

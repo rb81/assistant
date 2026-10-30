@@ -335,7 +335,8 @@ agent:
     email_authentication:
       # Applies only to email whose From is the admin address (tasks, /admin commands, OTP replies).
       # Verified via DNS: an aligned DKIM signature or an aligned SPF pass is required.
-      enabled: false
+      # Recommended; disable only if your admin mail provider cannot pass DKIM or SPF.
+      enabled: true
     decision_model:
       # When enabled, all accepted non-admin inbound email is always screened.
       enabled: false

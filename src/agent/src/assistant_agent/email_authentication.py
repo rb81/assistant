@@ -43,7 +43,7 @@ class AuthenticationVerdict:
 
 
 def authentication_enabled(config: AppConfig) -> bool:
-    return config.get_bool("agent.security.email_authentication.enabled", False)
+    return config.get_bool("agent.security.email_authentication.enabled", True)
 
 
 def _domain(value: str) -> str:

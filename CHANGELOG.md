@@ -10,6 +10,22 @@
   if it was revoked or the script, image or policy changed. Scheduled runs cannot
   open development sessions, and new approval requests from them are flagged as
   drift. The Python `notification_only=True` argument still maps to `notify`.
+- Agent questions are ordinary messages, not approvals. `request_input` no
+  longer sends one-time-code confirmations or "Review reply"/"Continue task"
+  buttons; the `input` approval kind is removed. Admin questions arrive as plain
+  Telegram messages (reply or tap **Reply**) or email (reply, or
+  `/admin instruct JOB_ID`); requester questions go to the requester, including
+  when the requester is the admin. Answers resume the job as guidance and never
+  grant permissions. Guidance sent while a job runs is injected at its next step.
+- Paused jobs keep their working memory: question and review pauses checkpoint
+  the conversation and loaded tools, and the job resumes from that checkpoint
+  with new replies and instructions appended. Prior-action context now lists
+  questions, admin guidance, commands and script approval requests.
+- The agent is instructed to call approval-gated tools directly, never to ask
+  for a go-ahead; one script reminder per scheduled task; inside a development
+  session, `reminder_create(execution="script")` is the final approval.
+- Admin sender authentication (DKIM/SPF) is recommended and now on by default.
+  Turn it off in `./run.sh` → Security only if your mail provider cannot pass it.
 - Application code, scripts, deployment files, and defaults now live under `src/`.
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.

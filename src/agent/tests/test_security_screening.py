@@ -282,7 +282,7 @@ class InboundIngestTest(unittest.TestCase):
         self.assertTrue(result.quarantine)
 
     def test_admin_mail_and_approved_reingest_skip_screening(self):
-        downloader = self.downloader({"decision_model": {"enabled": True}})
+        downloader = self.downloader({"decision_model": {"enabled": True}, "email_authentication": {"enabled": False}})
         with patch("assistant_agent.email_approvals.admin_sender", return_value=True):
             _, screen, _, request = self.ingest(downloader, message(sender=ADMIN).as_bytes(), MALICIOUS)
         screen.assert_not_called()

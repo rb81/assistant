@@ -3846,14 +3846,14 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "request_input",
-            "description": "Contact the original requester for clarification, or pause and send the configured admin a one-use confirmation through the configured approval channels. Use this, not email_send, for admin questions or approval/safety guidance; the runtime creates credentials.",
+            "description": "Ask for information you cannot proceed without. Sends an ordinary message and pauses the job until the reply arrives; the reply resumes the job as guidance. Never use this for approvals or to confirm a plan: permission-gated tools request approval themselves.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "recipient": {
                         "type": "string",
                         "enum": ["requester", "admin"],
-                        "description": "Use requester for clarification from the original sender; use admin for approval, safety guidance, or escalation.",
+                        "description": "Use requester for the original sender; use admin only when the requester cannot answer or for safety/configuration questions.",
                     },
                     "question": {"type": "string"},
                 },

@@ -611,7 +611,8 @@ def test_system_task_admin_input_is_available_from_main_workstream(store):
 
     from assistant_agent.task_agent import TaskAgent
     agent = TaskAgent(store.db, store.config)
-    with patch.object(agent, "email_admin_for_input"), patch.object(agent.memory_steward, "consolidate"):
+    store.db.execute("UPDATE jobs SET locked_by = %s WHERE id = %s", (agent.locked_by, system_job["id"]))
+    with patch.object(agent, "message_admin", return_value=True), patch.object(agent.memory_steward, "consolidate"):
         agent.handle_request_input(
             system_job, [], None, "request_admin_input",
             {"question": "Approve the proposed source?"}, "call-admin",
@@ -627,6 +628,21 @@ def test_system_task_admin_input_is_available_from_main_workstream(store):
         "content": "Approve the proposed source?",
         "source_thread_id": system_thread,
     }
+    waiting = store.db.fetch_one("SELECT status, metadata FROM jobs WHERE id = %s", (system_job["id"],))
+    assert waiting["status"] == "waiting" and waiting["metadata"]["waiting_for_admin"] is True
+    assert waiting["metadata"]["resume_checkpoint_id"]
+
+    assert store.db.add_job_instruction(system_job["id"], "Use the primary source only.", "telegram-admin") == "requeued"
+    resumed = store.db.fetch_one("SELECT status, has_new_context, metadata FROM jobs WHERE id = %s", (system_job["id"],))
+    assert resumed["status"] == "queued" and resumed["has_new_context"]
+    assert "waiting_for_admin" not in resumed["metadata"]
+    history = agent.resume_history({**system_job, "metadata": resumed["metadata"]})
+    assert "Use the primary source only." in history[-1]["content"]
+    assert "resume_checkpoint_id" not in store.db.fetch_one(
+        "SELECT metadata FROM jobs WHERE id = %s", (system_job["id"],))["metadata"]
+    summary = agent.prior_action_summary(system_job["id"])
+    assert "Asked the admin: Approve the proposed source?" in summary
+    assert "Administrator guidance (telegram-admin): Use the primary source only." in summary
 
 
 @pytest.mark.parametrize("channel", ["email", "telegram"])

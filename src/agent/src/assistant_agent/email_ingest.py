@@ -368,10 +368,6 @@ class EmailDownloader:
                                 response = str(exc)
                         AdminCommands(self.db, self.config).reply(parsed, response)
                         return IngestResult(inserted=True, queued=False, message_id=message_id)
-                    if payload["kind"] == "input":
-                        from .approval_actions import answer_admin_input
-                        answer_admin_input(self.db, payload, instruction)
-                        return IngestResult(inserted=True, queued=False, message_id=message_id)
                     if payload["kind"] == "review":
                         job = self.db.fetch_one(
                             "SELECT * FROM jobs WHERE id = %s AND status = 'needs_review' AND updated_at = %s",
@@ -402,12 +398,16 @@ class EmailDownloader:
                 LOGGER.warning("admin approval rejected for %s: %s", message_id, exc)
                 return IngestResult(inserted=True, queued=False, message_id=message_id)
             normalized = normalize_subject(subject)
-            input_prefix = "%s admin input required for job #" % agent_name(self.config).lower()
-            if normalized == "assistant approval required" or (
-                normalized.startswith(input_prefix) and normalized[len(input_prefix):].isdigit()
-            ):
+            if normalized == "assistant approval required":
                 LOGGER.warning("approval reply %s has no OTP/hash; quarantined without creating another approval", message_id)
                 return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
+            question_prefix = "%s question for job #" % agent_name(self.config).lower()
+            if normalized.startswith(question_prefix) and normalized[len(question_prefix):].isdigit():
+                # A reply to an agent question is ordinary guidance, confirmed like /admin instruct.
+                handled = AdminCommands(self.db, self.config).handle(
+                    parsed, "/admin instruct %s" % normalized[len(question_prefix):], reply_text(parsed),
+                )
+                return IngestResult(inserted=handled, queued=False, message_id=message_id)
         if is_admin_subject(subject):
             handled = AdminCommands(self.db, self.config).handle(parsed, subject, reply_text(parsed))
             return IngestResult(inserted=handled, queued=False, message_id=message_id)

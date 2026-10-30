@@ -365,8 +365,6 @@ class TelegramAdmin:
         self.db.set_state("telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender), {
             "action": action, "id": identifier, "message_id": response["message_id"],
             "version": str(row.get("updated_at") or row["status"]),
-            "answer_only": bool((row.get("metadata") or {}).get("awaiting_admin_input")
-                                and not (row.get("metadata") or {}).get("security_pending_action")),
             "expires": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
         })
 
@@ -379,6 +377,8 @@ class TelegramAdmin:
             receipt = self.db.get_state(receipt_key)
             if isinstance(receipt, dict) and receipt.get("handled") is True:
                 return True
+        if reply_id and self.question_reply(message, sender, reply_id, receipt_key):
+            return True
         key = "telegram-admin-input:%s:%s" % (self.receiver.bot_id, sender)
         pending = self.db.get_state(key)
         if not isinstance(pending, dict) or (reply_id and reply_id != pending["message_id"]):
@@ -421,30 +421,39 @@ class TelegramAdmin:
                     """UPDATE jobs SET metadata = metadata || %s WHERE id = %s AND updated_at = %s RETURNING id""",
                     (Jsonb({"title": text, "title_manual": True}), pending["id"], pending["version"]),
                 )
-            elif pending.get("answer_only"):
-                from .approval_actions import answer_admin_input
-                answer_admin_input(db, {"job_id": pending["id"], "version": pending["version"]}, text)
-                changed = True
             else:
-                changed = db.fetch_one(
-                    """UPDATE jobs SET status = CASE WHEN status = 'waiting' THEN 'queued' ELSE status END,
-                       has_new_context = true, run_at = now(), updated_at = now()
-                       WHERE id = %s AND updated_at = %s RETURNING id""", (pending["id"], pending["version"]),
-                )
+                changed = db.fetch_one("SELECT id FROM jobs WHERE id = %s", (pending["id"],))
                 if changed:
-                    db.execute("INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",
-                               (pending["id"], text, "telegram-admin"))
-                    db.log_event(pending["id"], "supervisor_note",
-                                 output_data={"instruction": text, "created_by": "telegram-admin"})
+                    db.add_job_instruction(pending["id"], text, "telegram-admin")
             if not changed:
                 raise ValueError("This item changed. Open its current status and try again.")
             db.set_state(receipt_key, {"handled": True})
         if pending["action"] == "permission-feedback":
             self.approval(sender, pending["callback"], "review")
             return True
-        self.send(sender, "Reply saved. Task resumed without changing permissions or limits."
-                  if pending.get("answer_only") and pending["action"] == "guidance"
-                  else "Saved. Held actions still require approval.", [[("Back", "ui:home:0")]])
+        self.send(sender, "Saved. Held actions still require approval.", [[("Back", "ui:home:0")]])
+        return True
+
+    def question_reply(self, message, sender, reply_id, receipt_key):
+        """A reply to an agent question is plain guidance for that job, never an approval."""
+        key = "telegram-admin-question:%s:%s:%s" % (self.receiver.bot_id, sender, reply_id)
+        question = self.db.get_state(key)
+        if not isinstance(question, dict) or "job_id" not in question or not self.is_admin(sender):
+            return False
+        text = str(message.get("text") or "").strip()
+        if not text or len(text) > 4000:
+            self.send(sender, "Please reply with text within 4000 characters.")
+            return True
+        with self.db.connect() as conn:
+            db = TransactionDatabase(conn)
+            if not db.fetch_one("SELECT id FROM jobs WHERE id = %s", (question["job_id"],)):
+                self.send(sender, "That task no longer exists.")
+                return True
+            status = db.add_job_instruction(question["job_id"], text, "telegram-admin")
+            db.set_state(receipt_key, {"handled": True})
+        self.send(sender, "Got it. Job #%s %s." % (
+            question["job_id"], "is continuing" if status == "requeued" else "will see this"),
+            [[("Open task", "ui:job:%s" % question["job_id"])]])
         return True
 
     def approval(self, sender, callback_id, action):
@@ -529,7 +538,7 @@ class TelegramAdmin:
                 send_approval(self.db, self.config, job, ":renew:" + secrets.token_hex(12))
                 self.send(sender, "Fresh approval sent.")
                 return
-            if payload["kind"] in {"review", "input"}:
+            if payload["kind"] == "review":
                 job = self.job(sender, payload["job_id"])
                 if job["status"] != "needs_review" or str(job["updated_at"]) != payload["version"]:
                     raise ValueError("Task changed. Open its status to request a current approval.")
@@ -559,13 +568,10 @@ class TelegramAdmin:
         elif action == "review":
             text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
             self.send(sender, text + "\n\nConfirm this exact request?",
-                      [[("Confirm & start" if value["payload"]["kind"] == "email" else
-                         "Continue task" if value["payload"]["kind"] == "input" else "Approve once",
+                      [[("Confirm & start" if value["payload"]["kind"] == "email" else "Approve once",
                          "ap:%s:ok" % callback_id),
                         ("Not now", "ap:%s:later" % callback_id)],
-                       [("Details", "ap:%s:details" % callback_id)]] +
-                      ([[("Add reply", "ui:guidance:%s" % value["payload"]["job_id"])]]
-                       if value["payload"]["kind"] == "input" else []))
+                       [("Details", "ap:%s:details" % callback_id)]])
         elif action == "ok" and not network:
             payload = service.consume_telegram(callback_id, sender)
             result = apply_approval(self.db, self.config, payload)
@@ -655,9 +661,7 @@ class TelegramAdmin:
                         else:
                             EmailApprovals(self.db, self.config).request(
                                 "menu-review:" + secrets.token_hex(12),
-                                {"kind": "input" if metadata.get("awaiting_admin_input")
-                                 and not metadata.get("security_pending_action") else "review",
-                                 "job_id": identifier, "version": str(job["updated_at"])},
+                                {"kind": "review", "job_id": identifier, "version": str(job["updated_at"])},
                                 review_summary(job, job.get("last_error") or "Task paused"),
                             )
                         self.send(sender, "A fresh confirmation has been sent through your configured approval channels.",

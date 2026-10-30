@@ -332,14 +332,30 @@ class Database:
         return row is not None
 
     def add_job_instruction(self, job_id: int, instruction: str, created_by: str) -> str:
-        """Record an instruction; terminal jobs are requeued so it gets processed. Returns created/requeued."""
+        """Record guidance; jobs waiting on a question, or already finished, are requeued to act on it.
+
+        Returns created/requeued. Guidance never approves held actions or changes limits.
+        """
         self.execute(
             "INSERT INTO supervisor_instructions(job_id, instruction, created_by) VALUES (%s, %s, %s)",
             (job_id, instruction, created_by),
         )
         self.log_event(job_id, "supervisor_note", output_data={"instruction": instruction, "created_by": created_by})
+        resumed = self.fetch_one(
+            """UPDATE jobs SET status = 'queued', run_at = now(), locked_at = NULL, locked_by = NULL,
+               last_error = NULL, has_new_context = true, updated_at = now(),
+               metadata = metadata - 'waiting_for_admin' - 'waiting_for_input'
+               WHERE id = %s AND status = 'waiting'
+               AND (metadata->>'waiting_for_admin' = 'true' OR metadata->>'waiting_for_input' = 'true')
+               RETURNING id""",
+            (job_id,),
+        )
+        if resumed:
+            self.log_event(job_id, "status_change", output_data={"status": "queued", "reason": "admin guidance received"})
+            return "requeued"
         if self.requeue_job(job_id, "requeued by admin instruction", ("completed", "failed", "cancelled")):
             return "requeued"
+        self.execute("UPDATE jobs SET has_new_context = true WHERE id = %s AND status IN ('queued', 'running')", (job_id,))
         return "created"
 
     def create_manual_job(

@@ -256,6 +256,13 @@ cover future runs. After approval, the agent retries the identical
 workdir or hosts of an existing schedule uses `reminder_update(script=...)`,
 which needs the same approval.
 
+Use one script reminder per scheduled task: its task text runs the approved
+script and then does any follow-up (searches, summaries, emails). Inside a
+development session, `reminder_create(execution="script")` is itself the final
+approval request, so no separate `script_approval_request` is needed. The agent
+should go straight to the gated tool; approval is never requested in
+conversation.
+
 The reminder stores the bound version, fingerprint and hosts. Each due run gets
 the exact command to execute and job metadata marking it as a scheduled run:
 

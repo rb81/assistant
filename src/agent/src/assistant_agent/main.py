@@ -78,7 +78,7 @@ def run_role(role: str) -> None:
             LOGGER.error("configuration error: %s", error)
         raise SystemExit(78)
 
-    if role in ("downloader", "all") and config.get_bool("agent.security.email_authentication.enabled", False):
+    if role in ("downloader", "all") and config.get_bool("agent.security.email_authentication.enabled", True):
         from .email_authentication import admin_domain_warning
         warning = admin_domain_warning(config)
         if warning:
