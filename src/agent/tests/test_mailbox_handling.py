@@ -391,7 +391,7 @@ class MailboxHandlingTest(unittest.TestCase):
 
         self.assertEqual(thread_id, "<new@example.com>")
 
-    def test_resolve_thread_id_legacy_subject_fallback_can_be_enabled(self) -> None:
+    def test_resolve_thread_id_ignores_retired_subject_fallback(self) -> None:
         downloader = self.thread_downloader(
             FakeThreadDatabase(
                 emails=[
@@ -414,7 +414,7 @@ class MailboxHandlingTest(unittest.TestCase):
             ["user@example.com"],
         )
 
-        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(thread_id, "<new@example.com>")
 
     def test_sync_archives_queued_and_quarantines_flagged_messages(self) -> None:
         FakeIMAP.uids = [b"10", b"11", b"12"]

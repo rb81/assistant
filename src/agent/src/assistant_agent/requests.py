@@ -62,7 +62,8 @@ class RequestService:
                 """INSERT INTO request_messages(channel, external_id, conversation_id, sender_id, thread_id,
                    email_id, body_text, reply_route, attachments, metadata, status, received_at)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (channel, external_id) DO UPDATE SET external_id = EXCLUDED.external_id
+                   ON CONFLICT (channel, external_id) DO UPDATE SET external_id = EXCLUDED.external_id,
+                     metadata = EXCLUDED.metadata || request_messages.metadata
                    RETURNING *""",
                 (request.channel, request.external_id, request.conversation_id, request.sender_id,
                  request.thread_id, request.email_id, sanitize_json_value(request.body), Jsonb(json_safe(request.reply_route)),

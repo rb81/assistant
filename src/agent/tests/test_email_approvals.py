@@ -701,7 +701,8 @@ class ApprovalDatabaseTest(unittest.TestCase):
                 self.assertEqual(Path(attachments[0]["path"]).read_bytes(), b"report")
         self.assertTrue(result.queued)
         request = receive.call_args.args[0]
-        self.assertEqual(request.thread_id, "original-thread")
+        self.assertEqual(request.thread_id, "<reply@example.com>")
+        self.assertTrue(request.metadata["routing"]["fallback"])
         self.assertEqual(request.body, "Summarize the attached report.\n\nAdmin instruction:\nUse bullet points.")
         self.assertTrue(receive.call_args.kwargs["admin_authenticated"])
         self.assertNotIn("OTP:", request.body)

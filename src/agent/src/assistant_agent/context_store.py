@@ -7,6 +7,7 @@ with source type and ID for drill-down via existing tools.
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -54,6 +55,60 @@ class ContextStore:
     def search_for_steward(self, query: str, max_candidates: int = 15) -> list[dict[str, Any]]:
         """Search all sources for the memory steward's recall phase."""
         return self.search(query, limit=max_candidates)
+
+    def search_workstreams(self, query: str, workstreams: list[dict[str, Any]],
+                           limit: int = 8) -> list[dict[str, Any]]:
+        """Rank permitted conversations, rather than returning unscoped source snippets."""
+        terms = set(re.findall(r"\w{3,}", query.lower()))
+        if not query.strip() or not workstreams:
+            return []
+        ids = [row["id"] for row in workstreams]
+        patterns = ["%%%s%%" % term for term in sorted(terms)]
+        matches = self.db.fetch_all(
+            """SELECT workstream_id, body_text AS text FROM request_messages
+               WHERE workstream_id = ANY(%s) AND body_text ILIKE ANY(%s)
+               UNION ALL
+               SELECT workstream_id, subject || ' ' || COALESCE(body_text, '') FROM emails
+               WHERE workstream_id = ANY(%s)
+                 AND (subject ILIKE ANY(%s) OR body_text ILIKE ANY(%s))
+               UNION ALL
+               SELECT j.workstream_id, o.subject || ' ' || COALESCE(o.body_text, '')
+               FROM outbound_email_logs o JOIN jobs j ON j.id = o.job_id
+               WHERE j.workstream_id = ANY(%s) AND o.status = 'sent'
+                 AND (o.subject ILIKE ANY(%s) OR o.body_text ILIKE ANY(%s))
+               UNION ALL
+               SELECT workstream_id, task_summary FROM jobs
+               WHERE workstream_id = ANY(%s) AND task_summary ILIKE ANY(%s)""",
+            (ids, patterns, ids, patterns, patterns, ids, patterns, patterns, ids, patterns),
+        )
+        scores = {}
+        for row in [*matches, *({"workstream_id": w["id"], "text": w["title"]} for w in workstreams)]:
+            text = str(row.get("text") or "").lower()
+            score = sum(term in text for term in terms) / len(terms) if terms else 0.0
+            scores[row["workstream_id"]] = max(scores.get(row["workstream_id"], 0.0), score)
+        vector = self._embed_query(query)
+        if vector is not None:
+            rows = self.db.fetch_all(
+                """SELECT workstream_id, embedding, embedding_model, embedding_dimensions FROM jobs
+                   WHERE workstream_id = ANY(%s) AND embedding_model = %s AND embedding_dimensions = %s
+                   UNION ALL
+                   SELECT workstream_id, embedding, embedding_model, embedding_dimensions FROM emails
+                   WHERE workstream_id = ANY(%s) AND embedding_model = %s AND embedding_dimensions = %s
+                   UNION ALL
+                   SELECT j.workstream_id, o.embedding, o.embedding_model, o.embedding_dimensions
+                   FROM outbound_email_logs o JOIN jobs j ON j.id = o.job_id
+                   WHERE j.workstream_id = ANY(%s) AND o.status = 'sent'
+                     AND o.embedding_model = %s AND o.embedding_dimensions = %s""",
+                (ids, self.embedding_client.model, len(vector), ids, self.embedding_client.model, len(vector),
+                 ids, self.embedding_client.model, len(vector)),
+            )
+            for row in rows:
+                if self.embedding_client.compatible(row, len(vector)):
+                    score = cosine_similarity(vector, row["embedding"])
+                    if score is not None and score >= self.config.get_float("agent.context.min_score", 0.20):
+                        scores[row["workstream_id"]] = max(scores.get(row["workstream_id"], 0.0), score)
+        ranked = sorted(workstreams, key=lambda row: scores.get(row["id"], 0.0), reverse=True)
+        return [{**row, "score": scores[row["id"]]} for row in ranked if scores.get(row["id"], 0.0) > 0][:limit]
 
     def _embed_query(self, text: str) -> Optional[list[float]]:
         if not self.embedding_client.enabled:

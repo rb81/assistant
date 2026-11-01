@@ -47,25 +47,36 @@ This removes the autonomous-agent disclosure sentence/block added to outbound ex
 
 ## Thread resolution
 
-Transport thread IDs route conversations; a channel-neutral **workstream** owns
-their main conversation, system threads and data. Recognized email replies and
-Telegram selection/reply routing reuse that owner across channels. A new
-unassociated email or an explicit fresh-workstream action creates a new owner;
-completing an execution does not end the conversation.
+Transport thread IDs identify conversations; a channel-neutral **workstream** owns
+their main conversation, system threads and data. A shared router selects a new
+or existing workstream by intent, including across email and Telegram. Completing
+an execution does not end the conversation.
 See [workstream ownership](data-model.md#conversations-and-work-ownership).
 
-Thread assignment order:
+Routing happens after sender admission, approvals and security screening, before
+storing actionable email and assigning workstream ownership. The router has one
+read-only `context_search` tool. It searches permitted workstreams semantically
+(with keyword fallback), returning conversation summaries, recent exchanges and
+open tasks. It must search before returning a structured new/continue decision.
+Subjects are context, not a thread-matching rule.
 
-1. Parse candidate IDs from `In-Reply-To`, then `References`.
-2. For each candidate, check stored inbound emails (`emails.message_id`), then
-   sent logs (`outbound_email_logs.provider_message_id`), reusing the matching
-   conversation's `thread_id`.
-3. Optionally (only if enabled) use subject fallback with overlapping participants.
-4. Otherwise, start a new thread using current message `Message-ID`.
+Email `In-Reply-To` and `References` identify a reply candidate via stored inbound
+messages or sent logs. A recognized reply supplies its conversation and recent
+exchanges to the router with extra weight, not an obligation to continue. Standalone
+requests contain no absent-thread or absent-workstream hints. Search is scoped to
+the sender's conversations, configured linked Telegram identity and any known
+active reply target already resolved by the channel's intake checks; verified
+administrators can search all active workstreams. Routing grants no permissions
+and preserves the incoming message, attachments and response destination.
 
-Subject fallback is disabled by default and controlled by `agent.email.subject_threading_fallback`.
-Telegram-origin workstreams can be reused by email only after they have sent
-email. A reply associated with a deleted workstream starts a new conversation.
+`agent.routing.model` defaults to `openai/gpt-4.1-mini`; the whole routing decision
+has a deadline of `agent.routing.timeout_seconds` (default 20). If unavailable,
+busy, timed out or invalid, deterministic fallback continues a known active reply
+thread, otherwise starts a new workstream using the message's `Message-ID`.
+The retired subject-fallback setting is ignored. The decision and rationale,
+including fallback use, are stored in request metadata; late model responses
+cannot change ownership. Deleted or unknown reply associations cannot be continued,
+but the router may find a different relevant active workstream.
 
 ## Actionability rules
 

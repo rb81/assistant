@@ -48,6 +48,8 @@ tracking and the transition path for older databases.
   `telegram_config.py` holds dependency-free settings helpers used by setup.
 - `workstreams.py`, `workstream_files.py`, `workstream_operator.py` — ownership,
   file retention, and local workstream administration.
+- `request_router.py` — shared intent routing, reply-context weighting and deterministic
+  outage fallback before incoming requests are assigned to workstreams.
 - `model_service.py` — configured secondary-model calls through `llm_service`,
   including usage and cost accounting.
 - `tts.py` — admin-configured speech synthesis, charge reconciliation and the `voices`/`test` admin CLI.

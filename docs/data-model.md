@@ -54,7 +54,8 @@ erasing owned records and eligible derived files.
 - `emails` and `outbound_email_logs` — inbound and outbound message records.
 - `request_messages` and `channel_deliveries` — channel-neutral requests,
   preprocessing state, reply routing, and delivery attempts.
-- `telegram_workstream_selections` — each Telegram sender's selected workstream.
+- `telegram_workstream_selections` — each Telegram sender's browser selection;
+  ordinary messages are routed by intent, not this saved selection.
 - `jobs`, `task_logs`, and `agent_checkpoints` — queued work, execution history,
   and resumable context.
 - `supervisor_instructions` and `workstream_task_notifications` — pending job

@@ -24,6 +24,32 @@ class ContextSearchTest(unittest.TestCase):
         })
         self.store = ContextStore(self.db, self.config)
 
+    def test_workstream_search_combines_keywords_and_compatible_vectors_with_scope(self):
+        streams = [{"id": 1, "title": "Trip", "main_thread_id": "trip"},
+                   {"id": 2, "title": "Budget", "main_thread_id": "budget"}]
+        self.db.fetch_all.side_effect = [
+            [{"workstream_id": 1, "text": "Trip dates"}],
+            [{"workstream_id": 2, "embedding": [1.0, 0.0], "embedding_model": "embeddinggemma",
+              "embedding_dimensions": 2},
+             {"workstream_id": 1, "embedding": [1.0, 0.0], "embedding_model": "old-model",
+              "embedding_dimensions": 2}],
+        ]
+        with patch.object(self.store, "_embed_query", return_value=[1.0, 0.0]):
+            results = self.store.search_workstreams("travel dates", streams)
+        self.assertEqual([row["id"] for row in results], [2, 1])
+        for call in self.db.fetch_all.call_args_list:
+            self.assertIn("workstream_id = ANY(%s)", call.args[0])
+            self.assertEqual(call.args[1][0], [1, 2])
+
+    def test_short_workstream_queries_can_still_use_semantic_search(self):
+        self.db.fetch_all.side_effect = [[], [
+            {"workstream_id": 1, "embedding": [1.0, 0.0], "embedding_model": "embeddinggemma",
+             "embedding_dimensions": 2},
+        ]]
+        with patch.object(self.store, "_embed_query", return_value=[1.0, 0.0]):
+            results = self.store.search_workstreams("go", [{"id": 1, "title": "Travel"}])
+        self.assertEqual([row["id"] for row in results], [1])
+
     def test_equal_dimension_vectors_from_other_or_unknown_models_are_not_scored(self):
         current = {"id": 1, "content": "current", "embedding": [1.0, 0.0],
                    "embedding_model": "embeddinggemma", "embedding_dimensions": 2}

@@ -43,32 +43,38 @@ read the initialization container's original secret mount.
 
 ## Conversations and Files
 
-- With no existing selection or association, a standalone message starts a
-  workstream. Brief text/file bursts and albums are grouped.
+- Incoming messages use the shared intent router to choose a new or existing
+  workstream, including conversations started by email. Reply text and its recent
+  conversation receive extra weight, not automatic continuation. Standalone
+  messages contain no absent-thread hints. Albums share their first message's
+  routing decision; unrelated messages are not grouped just because they arrive
+  close together.
 - `/menu` opens **Conversations | Tasks**, with paginated lists and status cards.
   Viewing a card does not change the selected conversation; **Continue here**
-  selects a workstream and confirms the switch in the chat. Ordinary messages continue
-  its main conversation until you switch or use `/new`; selection survives
-  receiver restarts. Email-created workstreams are selectable too.
-- Outbound task messages and approval cards automatically select their associated
+  sends a reply prompt associated with that conversation. Quote that prompt to
+  supply context to the router. Saved browser selections do not route ordinary
+  messages. Email-created workstreams are browsable too.
+- Outbound task messages and approval cards retain their associated
   workstream for the recipient. Quoted replies to approval cards resolve back to
   that task, including tasks originally received by email. Administrative input
   prompts accept the next plain-text message without forcing Telegram's quote UI;
   explicit replies remain supported. Text guidance does not grant script approval.
-- Reply to a task message or its status message to continue that task, including after
-  completion. Explicit replies take precedence without switching the saved
-  selection. Replies to deleted conversations start fresh, with a routing notice;
-  an unavailable saved selection requires `/menu` or `/new` rather than silently
-  redirecting the message.
-- An answer to the only waiting requester clarification resumes it. If several tasks
-  need answers, choose a task using the provided buttons.
-- `/new` creates and selects a fresh workstream, with or without an initial
-  request. Its temporary title is **New workstream**. After three user messages
+- Reply to a task message or its status message to provide that task's context,
+  including after completion. If routing is unavailable, busy, invalid or times out,
+  known active replies continue their thread; non-replies and unknown/deleted replies
+  start new workstreams. Fallback is logged and persisted; late responses cannot
+  move a message after routing. See [email routing](email-and-artifacts.md#thread-resolution)
+  for model and deadline settings.
+- Voice/audio is scanned and transcribed before routing; the same transcript is
+  reused during artifact processing. If audio context is unavailable, deterministic
+  routing is used and normal preprocessing retries/error reporting still apply.
+- `/new` is removed. Say "start a separate workstream" in an ordinary message instead.
+  A new Telegram conversation's temporary title is **New workstream**. After three user messages
   the runtime requests a concise name; naming retries up to three times on failure,
   and shorter conversations keep the temporary title.
 - `/tasks` opens the task browser directly, including recent history.
   `/permissions` opens script and website management for administrators only.
-  The receiver registers `/menu`, `/new`, and `/tasks` in the command menu at
+  The receiver registers `/menu` and `/tasks` in the command menu at
   startup and adds `/permissions` to the verified administrator's private-chat
   menu. Non-admin users cannot access it, even by typing the command.
   `/list` is removed, not an alias. Unknown commands such as `/status` and

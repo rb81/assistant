@@ -637,7 +637,7 @@ def private_message(text, message_id=50):
     }}
 
 
-@pytest.mark.parametrize("text", ["/list", "/status", "/cancel 12", "/status@assistant_bot"])
+@pytest.mark.parametrize("text", ["/new", "/new Plan dinner", "/list", "/status", "/cancel 12", "/status@assistant_bot"])
 def test_legacy_commands_are_not_routed_or_executed(ui, text):
     receiver = ui.receiver
     receiver.db.fetch_one.return_value = None
@@ -646,7 +646,7 @@ def test_legacy_commands_are_not_routed_or_executed(ui, text):
     requests.assert_not_called()
     receiver.db.update_job_status.assert_not_called()
     texts = [call.args[1]["text"] for call in receiver.client.call.call_args_list if call.args[0] == "sendMessage"]
-    assert texts[0] == "Unknown command. Use /menu, /tasks or /new."
+    assert texts[0] == "Unknown command. Use /menu or /tasks."
     assert texts[-1] == "Choose what to manage:"
 
 @pytest.mark.parametrize("command,method,args", [
@@ -687,13 +687,18 @@ def test_paths_that_look_like_commands_still_reach_the_assistant(ui):
 
 def test_selecting_a_workstream_confirms_in_the_chat(ui):
     receiver = ui.receiver
-    receiver.db.fetch_one.return_value = {"id": 7, "title": "Trip planning"}
+    receiver.db.fetch_one.return_value = {"id": 7, "title": "Trip planning", "main_thread_id": "trip"}
+    receiver.client.call.return_value = {"message_id": 51}
     receiver.select_task({"id": "cb", "from": {"id": 123}, "data": "ws:7",
                           "message": {"chat": {"type": "private", "id": 123}}})
     receiver.db.execute.assert_called_once()
     method, payload = receiver.client.call.call_args.args
     assert method == "sendMessage" and payload["chat_id"] == "123"
     assert "Trip planning" in payload["text"]
+    assert payload["reply_markup"]["force_reply"] is True
+    receiver.db.set_state.assert_called_once_with(
+        "telegram-task-message:9:123:51", {"thread_id": "trip", "workstream_id": 7},
+    )
 
 
 def test_receiver_registers_only_current_commands():
@@ -702,11 +707,10 @@ def test_receiver_registers_only_current_commands():
         TelegramReceiver(MagicMock(), config())
     client.return_value.call.assert_any_call("setMyCommands", {"commands": [
         {"command": "menu", "description": "Open the main menu"},
-        {"command": "new", "description": "Start a new workstream"},
         {"command": "tasks", "description": "View tasks and recent history"},
     ]})
     scoped = {call.args[1]["scope"]["chat_id"]: call.args[1]["commands"]
               for call in client.return_value.call.call_args_list
               if call.args[0] == "setMyCommands" and "scope" in call.args[1]}
-    assert [item["command"] for item in scoped["123"]] == ["menu", "new", "tasks", "permissions"]
-    assert [item["command"] for item in scoped["456"]] == ["menu", "new", "tasks"]
+    assert [item["command"] for item in scoped["123"]] == ["menu", "tasks", "permissions"]
+    assert [item["command"] for item in scoped["456"]] == ["menu", "tasks"]

@@ -24,6 +24,7 @@ from .email_disclosure import strip_disclosure_html, strip_disclosure_text
 from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .polling import poll_interval_seconds, run_poll_loop
 from .requests import IncomingRequest, RequestService
+from .request_router import RequestRouter
 from .security_screening import NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin
 from .threading import normalize_subject, parse_addresses, parse_reference_header, safe_filename, safe_message_segment
 
@@ -467,6 +468,22 @@ class EmailDownloader:
         elif security_approved:
             body_text = (body_text + "\n\nAdmin note (security review):\n" + security_approved).strip()
 
+        routing_metadata = {}
+        if actionable:
+            reply_thread = thread_id if thread_id != message_id and (in_reply_to or references) else None
+            decision = RequestRouter(self.db, self.config).route(
+                IncomingRequest(
+                    "email", message_id, message_id, from_addresses[0] if from_addresses else "unknown",
+                    message_id, body_text, attachments=attachments, metadata={"subject": subject},
+                ),
+                reply_thread_id=reply_thread,
+                reply_context={"in_reply_to": in_reply_to, "references": references}
+                if in_reply_to or references else None,
+                admin_authenticated=approved_instruction is not None,
+            )
+            thread_id = decision.thread_id
+            routing_metadata = decision.metadata()
+
         row = self.db.fetch_one(
             """
             INSERT INTO emails(
@@ -521,16 +538,16 @@ class EmailDownloader:
                     thread_id=thread_id, body=body_text, email_id=row["id"],
                     reply_route={"channel": "email", "to": from_addresses[0] if from_addresses else "",
                                  "in_reply_to": message_id, "subject": subject or "Reply"},
-                    metadata={"new_conversation_after_deleted_reply": True}
-                    if deleted_reply_workstream is not None else {},
+                    metadata={**routing_metadata, **({"new_conversation_after_deleted_reply": True}
+                              if deleted_reply_workstream is not None and decision.action == "new" else {})},
                 ),
                 summary=subject, admin_authenticated=verified_admin,
                 resume_research=self.resume_waiting_deep_research_for_thread,
                 review_override=(
                     lambda _job, email_id, body: self.apply_email_review_override(approved_review, email_id, body)
-                ) if approved_review is not None else None,
+                ) if approved_review is not None and approved_review["thread_id"] == thread_id else None,
             )
-            if deleted_reply_workstream is not None:
+            if deleted_reply_workstream is not None and decision.action == "new":
                 self.db.execute(
                     "UPDATE jobs SET metadata = metadata || %s WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
                     (Jsonb({"new_conversation_after_deleted_reply": True,
@@ -639,27 +656,17 @@ class EmailDownloader:
             if row and self.email_thread_compatible(row["thread_id"]):
                 return row["thread_id"]
 
-        if self.config.get_bool("agent.email.subject_threading_fallback", False):
-            thread_id = self.resolve_thread_id_by_subject(message_id, subject, from_addresses)
-            if self.email_thread_compatible(thread_id):
-                return thread_id
-
         return message_id
 
     def email_thread_compatible(self, thread_id: str) -> bool:
         row = self.db.fetch_one(
-            """SELECT w.origin_channel,
-                      EXISTS (
-                        SELECT 1 FROM jobs j
-                        JOIN outbound_email_logs o ON o.job_id = j.id AND o.status = 'sent'
-                        WHERE j.workstream_id = w.id
-                      ) AS email_enabled
+            """SELECT w.status
                FROM workstream_threads t
                JOIN workstreams w ON w.id = t.workstream_id
                WHERE t.thread_id = %s""",
             (thread_id,),
         )
-        return not row or row["origin_channel"] != "telegram" or row["email_enabled"]
+        return not row or row["status"] == "active"
 
     def thread_candidate_message_ids(self, in_reply_to: Optional[str], references: list[str]) -> list[str]:
         candidates = []
@@ -675,27 +682,6 @@ class EmailDownloader:
             seen.add(clean)
             result.append(clean)
         return result
-
-    def resolve_thread_id_by_subject(self, message_id: str, subject: str, from_addresses: list[str]) -> str:
-        normalized = normalize_subject(subject)
-        if normalized and from_addresses:
-            recent = self.db.fetch_all(
-                """
-                SELECT thread_id, subject, from_address
-                FROM emails
-                WHERE received_at > now() - interval '30 days'
-                ORDER BY received_at DESC
-                LIMIT 200
-                """
-            )
-            sender_set = set(from_addresses)
-            for row in recent:
-                if normalize_subject(row["subject"]) != normalized:
-                    continue
-                if row["from_address"] in sender_set:
-                    return row["thread_id"]
-
-        return message_id
 
     def is_managed_calendar_notification(self, message: Message) -> bool:
         uids = calendar_event_uids(message)

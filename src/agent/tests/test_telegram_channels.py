@@ -15,6 +15,7 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
 from assistant_agent.requests import IncomingRequest, RequestService
+from assistant_agent.request_router import RequestRouter, RoutingDecision
 from assistant_agent.telegram import TelegramClient, TelegramDelivery, TelegramError, TelegramURLFilter, telegram_destination, telegram_message_parts
 from assistant_agent.telegram_ingest import RequestPreprocessor, TelegramReceiver, message_files
 from assistant_agent.tools import ToolError, ToolRuntime, available_function_names
@@ -380,6 +381,145 @@ def migrate(database):
     assert database.run_migrations() == []
 
 
+def router_llm(action, workstream_id=None):
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "search", "type": "function", "function": {
+                "name": "context_search", "arguments": '{"query":"trip"}',
+            }},
+        ]}}]},
+        {"choices": [{"message": {"role": "assistant", "content": json.dumps({
+            "action": action, "reason": "Same trip" if action == "continue" else "Separate request",
+            **({"workstream_id": workstream_id} if workstream_id is not None else {}),
+        })}}]},
+    ]
+    return llm
+
+
+def test_router_continues_linked_email_workstream_from_standalone_telegram(database):
+    values = config()
+    values.values["agent"]["embeddings"] = {"enabled": False}
+    source = RequestService(database).receive_request(IncomingRequest(
+        "email", "trip-email", "trip", "user@example.com", "trip", "Plan the trip",
+        reply_route={"channel": "email", "to": "user@example.com"},
+    ))
+    other = RequestService(database).receive_request(IncomingRequest(
+        "email", "secret", "secret", "stranger@example.com", "secret", "A private trip",
+    ))
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, values, "9", MagicMock()
+    permitted = RequestRouter(database, values).permitted_workstreams(
+        database, IncomingRequest("telegram", "test", "9:123", "123", "fresh", "trip"), False,
+    )
+    assert source["workstream_id"] in {row["id"] for row in permitted}
+    assert other["workstream_id"] not in {row["id"] for row in permitted}
+    with patch("assistant_agent.request_router.LlmClient", return_value=router_llm("continue", source["workstream_id"])):
+        receiver.ingest({"update_id": 32, "message": {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+            "message_id": 32, "date": 1_700_000_000, "text": "Use November",
+        }})
+    request = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '9:123:32'")
+    assert request["workstream_id"] == source["workstream_id"]
+    assert request["body_text"] == "Use November"
+    assert not request["metadata"]["routing"]["fallback"]
+    assert request["reply_route"]["channel"] == "telegram"
+    database.execute("UPDATE request_messages SET available_at = now() WHERE id = %s", (request["id"],))
+    receiver.activate_text_requests()
+    job = database.fetch_one("SELECT * FROM jobs WHERE thread_id = 'trip'")
+    assert job["has_new_context"]
+    assert job["metadata"]["reply_route"]["channel"] == "telegram"
+
+
+def test_email_router_can_continue_telegram_before_any_outbound_email(database, tmp_path):
+    from email.message import EmailMessage
+    from assistant_agent.email_ingest import EmailDownloader
+    values = config()
+    values.values["agent"].update({"embeddings": {"enabled": False},
+                                  "email": {"actionable_senders": ["user@example.com"]}})
+    source = RequestService(database).receive_request(IncomingRequest(
+        "telegram", "9:123:1", "9:123", "123", "trip", "Plan the trip",
+        reply_route={"channel": "telegram", "chat_id": "123"},
+    ))
+    downloader = EmailDownloader.__new__(EmailDownloader)
+    downloader.db, downloader.config, downloader.attachment_root = database, values, tmp_path
+    downloader.process_artifacts = MagicMock()
+    message = EmailMessage()
+    message["From"], message["To"] = "user@example.com", "assistant@example.com"
+    message["Subject"], message["Message-ID"] = "Trip dates", "<trip-dates@example.com>"
+    message.set_content("Use November")
+    with patch("assistant_agent.request_router.LlmClient", return_value=router_llm("continue", source["workstream_id"])):
+        result = downloader.ingest_raw(message.as_bytes())
+    assert result.queued
+    stored = database.fetch_one("SELECT * FROM emails WHERE message_id = '<trip-dates@example.com>'")
+    request = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '<trip-dates@example.com>'")
+    assert stored["workstream_id"] == request["workstream_id"] == source["workstream_id"]
+    assert stored["thread_id"] == "trip" and request["reply_route"]["channel"] == "email"
+    assert request["reply_route"]["in_reply_to"] == "<trip-dates@example.com>"
+    assert "Use November" in request["body_text"]
+    assert not request["metadata"]["routing"]["fallback"]
+    RequestService(database).receive_request(IncomingRequest(
+        "email", request["external_id"], "trip", "user@example.com", "trip", "Replayed",
+        metadata={"routing": {"action": "new", "fallback": True}},
+    ))
+    replay = database.fetch_one("SELECT * FROM request_messages WHERE id = %s", (request["id"],))
+    assert replay["metadata"]["routing"] == request["metadata"]["routing"]
+    assert replay["body_text"] == request["body_text"]
+
+
+def test_reply_can_start_separately_and_album_uses_first_decision(database):
+    values = config()
+    values.values["agent"]["embeddings"] = {"enabled": False}
+    source = RequestService(database).receive_request(IncomingRequest(
+        "telegram", "9:123:1", "9:123", "123", "trip", "Plan the trip",
+    ))
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, values, "9", MagicMock()
+    with patch("assistant_agent.request_router.LlmClient", return_value=router_llm("new")):
+        receiver.ingest({"update_id": 2, "message": {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+            "message_id": 2, "date": 1_700_000_000, "text": "Start a separate budget workstream",
+            "reply_to_message": {"message_id": 1, "text": "Plan the trip"},
+        }})
+    separate = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '9:123:2'")
+    assert separate["workstream_id"] != source["workstream_id"]
+    with patch("assistant_agent.request_router.LlmClient", side_effect=RuntimeError("offline")) as llm:
+        for identifier in (3, 4):
+            receiver.ingest({"update_id": identifier, "message": {
+                "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+                "message_id": identifier, "date": 1_700_000_000, "text": "Album caption",
+                "media_group_id": "album",
+            }})
+        assert llm.call_count == 1
+    album = database.fetch_all("SELECT workstream_id FROM request_messages WHERE metadata->>'media_group_id' = 'album'")
+    assert len(album) == 2 and album[0]["workstream_id"] == album[1]["workstream_id"]
+
+
+def test_voice_routing_uses_transcript_without_changing_original_message(database, tmp_path):
+    values = config()
+    values.values["agent"]["artifacts"] = {"raw_root": str(tmp_path)}
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, values, "9", MagicMock()
+    receiver.client.download.side_effect = lambda _file, path: path.write_bytes(b"audio")
+    with patch("assistant_agent.telegram_ingest.transcribe_audio", return_value={"text": "Plan a trip"}) as transcribe, patch(
+        "assistant_agent.telegram_ingest.ArtifactProcessor"
+    ) as processor, patch("assistant_agent.telegram_ingest.RequestRouter.route",
+                         return_value=RoutingDecision("telegram:9:123:5", "new", "Trip request")) as route:
+        processor.return_value.scan_file.return_value = {"status": "clean"}
+        receiver.ingest({"update_id": 5, "message": {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+            "message_id": 5, "date": 1_700_000_000, "voice": {"file_id": "voice"},
+        }})
+        assert "Plan a trip" in route.call_args.args[0].body
+        request = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '9:123:5'")
+        assert request["body_text"] == ""
+        preprocessor = RequestPreprocessor(database, values)
+        preprocessor.process(request)
+        transcribe.assert_called_once()
+        receiver.client.download.assert_called_once()
+    assert "Plan a trip" in database.fetch_one("SELECT body_text FROM request_messages WHERE id = %s",
+                                               (request["id"],))["body_text"]
+
 
 
 def test_request_replay_and_explicit_followup(database):
@@ -677,13 +817,14 @@ def test_task_thread_handles_optional_media_group(database, media_group):
         "telegram", "9:123:1", "9:123", "123", "existing-task", "first",
         reply_route={"channel": "telegram", "chat_id": "123"},
         metadata={"media_group_id": media_group}), queue=False)
-    assert receiver.task_thread(message, "9:123", "123") == ("existing-task", [])
+    expected = "existing-task" if media_group is not None else "telegram:9:123:2"
+    assert receiver.task_thread(message, "9:123", "123") == (expected, [])
     database.execute("UPDATE request_messages SET created_at = now() - interval '1 minute'")
     expected = "existing-task" if media_group is not None else "telegram:9:123:2"
     assert receiver.task_thread(message, "9:123", "123") == (expected, [])
 
 
-def test_telegram_selection_persists_and_explicit_replies_do_not_switch_it(database):
+def test_telegram_selection_does_not_route_non_replies_and_quotes_keep_their_association(database):
     migrate(database)
     service = RequestService(database)
     route = {"channel": "telegram", "chat_id": "123"}
@@ -703,7 +844,7 @@ def test_telegram_selection_persists_and_explicit_replies_do_not_switch_it(datab
     restarted_receiver.db, restarted_receiver.config, restarted_receiver.bot_id = database, config(), "9"
     assert restarted_receiver.task_thread(
         {"chat": {"id": 123}, "message_id": 21}, "9:123", "123",
-    ) == ("stream-two", [])
+    ) == ("telegram:9:123:21", [])
     assert restarted_receiver.task_thread({
         "chat": {"id": 123}, "message_id": 22,
         "reply_to_message": {"message_id": 10},
@@ -711,6 +852,7 @@ def test_telegram_selection_persists_and_explicit_replies_do_not_switch_it(datab
     assert restarted_receiver.selected_workstream("123")["workstream_id"] == second["workstream_id"]
 
     receiver.client = MagicMock()
+    receiver.client.call.return_value = {"message_id": 25}
     receiver.select_task({
         "id": "callback", "from": {"id": 123}, "data": "ws:%s" % first["workstream_id"],
         "message": {"chat": {"type": "private", "id": 123}},
@@ -729,7 +871,7 @@ def test_new_telegram_workstream_uses_temporary_title_and_persists_selection(dat
     receiver.ingest({
         "update_id": 1,
         "message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"},
-                    "message_id": 30, "date": 1_700_000_000, "text": "/new Plan dinner"},
+                    "message_id": 30, "date": 1_700_000_000, "text": "Plan dinner"},
     })
     request = database.fetch_one("SELECT * FROM request_messages WHERE external_id = '9:123:30'")
     stream = database.fetch_one("SELECT * FROM workstreams WHERE id = %s", (request["workstream_id"],))
@@ -763,12 +905,15 @@ def test_clarification_resumes_the_matching_task(database):
     agent = TaskAgent.__new__(TaskAgent)
     agent.db, agent.config, agent.locked_by = database, config(), "test-worker"
     agent.memory_steward = MagicMock()
+    agent.save_resume_point = MagicMock(return_value=None)
     with patch("assistant_agent.telegram.TelegramClient.call", return_value={"message_id": 77}):
         assert agent.handle_request_input(job, [], ToolRuntime(database, agent.config, job), "request_input",
                                          {"recipient": "requester", "question": "Which date?"}, "call")
     receiver = TelegramReceiver.__new__(TelegramReceiver)
     receiver.db, receiver.config, receiver.bot_id = database, config(), "9"
-    thread, choices = receiver.task_thread({"chat": {"id": 123}, "message_id": 2}, "9:123", "123")
+    thread, choices = receiver.task_thread({
+        "chat": {"id": 123}, "message_id": 2, "reply_to_message": {"message_id": 77},
+    }, "9:123", "123")
     assert thread == "question-task" and choices == []
     service.receive_request(IncomingRequest("telegram", "answer", "9:123", "123", thread, "Tomorrow", reply_route=route))
     assert database.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))["status"] == "queued"

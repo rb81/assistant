@@ -166,7 +166,6 @@ ENV_OVERRIDES: list[tuple[str, str, Optional[type]]] = [
         ("AGENT_EMAIL_INITIAL_CONTEXT_PRIOR_FULL_BODY_CHAR_LIMIT", "agent.email.initial_context_prior_full_body_char_limit", int),
         ("AGENT_EMAIL_MAX_INITIAL_CONTEXT_BODY_CHARS", "agent.email.max_initial_context_body_chars", int),
         ("EMAIL_ACTIONABLE_SENDERS", "agent.email.actionable_senders", list),
-        ("AGENT_EMAIL_SUBJECT_THREADING_FALLBACK", "agent.email.subject_threading_fallback", bool),
         
         # Supervisor
         ("AGENT_SUPERVISOR_STALL_THRESHOLD_MINUTES", "agent.supervisor.stall_threshold_minutes", int),

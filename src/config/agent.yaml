@@ -72,6 +72,10 @@ agent:
   naming:
     model: openai/gpt-4.1-mini
 
+  routing:
+    model: openai/gpt-4.1-mini
+    timeout_seconds: 20
+
   limits:
     max_iterations_per_task: 50
     max_tokens_per_task: 1000000
@@ -116,7 +120,6 @@ agent:
     initial_context_prior_full_body_char_limit: 1200
     max_initial_context_body_chars: 20000
     actionable_senders: []
-    subject_threading_fallback: false
 
   dropbox:
     enabled: false

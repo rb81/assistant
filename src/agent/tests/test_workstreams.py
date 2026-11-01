@@ -698,7 +698,7 @@ def test_research_system_thread_routes_guidance_and_returns_only_outcomes(store,
         receiver.set_selection("123", source["workstream_id"])
         assert receiver.task_thread(
             {"message_id": 2, "chat": {"id": 123}, "text": "November"}, "bot:123", "123",
-        ) == (execution["thread_id"], [])
+        ) == ("telegram:bot:123:2", [])
     reply_thread = execution["thread_id"] if system_reply else source["thread_id"]
     if channel == "email":
         store.db.execute(
@@ -923,7 +923,7 @@ def test_uncertain_research_guidance_stays_paused_until_explicit_admin_requeue(s
     )["content"] == "Cancelled by administrator"
 
 
-def test_workstreams_remain_bound_to_their_originating_channel(store):
+def test_workstreams_preserve_origin_metadata_when_continued_across_channels(store):
     from assistant_agent.email_ingest import EmailDownloader
     from assistant_agent.telegram_ingest import TelegramReceiver
 
@@ -957,7 +957,7 @@ def test_workstreams_remain_bound_to_their_originating_channel(store):
     assert receiver.task_thread(
         {"message_id": 25, "chat": {"id": "sender"}, "text": "Continue this workstream"},
         "bot:sender", "sender",
-    )[0] == email_request["thread_id"]
+    )[0] == "telegram:bot:sender:25"
 
     store.db.execute(
         """INSERT INTO emails(message_id, thread_id, from_address, to_addresses, subject, body_text, received_at)
@@ -969,7 +969,7 @@ def test_workstreams_remain_bound_to_their_originating_channel(store):
     assert ingestor.resolve_thread_id(
         "<email-reply@example.com>", "<telegram-sent@example.com>", [],
         "Re: Telegram workstream message", ["sender@example.com"],
-    ) == "<email-reply@example.com>"
+    ) == "telegram:main"
 
     outbound_job = store.db.fetch_one(
         "INSERT INTO jobs(thread_id, task_summary) VALUES ('telegram:main', 'Send the requested email') RETURNING id",
