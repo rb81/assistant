@@ -302,8 +302,9 @@ can reach it.
 
 ### Mail quarantine
 
-Fresh mail from a sender that is not accepted (not in `EMAIL_ACTIONABLE_SENDERS`
-and not replying on an open job's thread) is moved to the quarantine folder
+Fresh mail from a sender that is not accepted (not in `EMAIL_ACTIONABLE_SENDERS`,
+not replying on an open job's thread, and not a recipient of mail the assistant
+sent on that thread) is moved to the quarantine folder
 without storing an email record. The folder is `IMAP_QUARANTINE_FOLDER`
 (default `Quarantine`, created if missing). Rejected and held mail goes there
 too. The task agent does not receive
@@ -355,7 +356,7 @@ question plus two yes/no risk flags.
 
 | Target | Setting | What is screened |
 |---|---|---|
-| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders and replies on open threads. Covers selected headers, text, HTML and attachment names and types. |
+| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders, replies on open threads and replies from recipients of assistant-sent mail. Covers selected headers, text, HTML and attachment names and types. |
 | Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
 | Scripts | `screen.scripts` (off) | Registered script versions before run approval; cached per version/policy. |
 
@@ -453,9 +454,9 @@ not an arbitrary chat model; the configured default is
 `perplexity/pplx-decider-v1.2`. Check current provider availability with
 `GET https://openrouter.ai/api/v1/models?output_modalities=decisions`. Pin a
 version rather than a `~...-latest` alias so thresholds stay calibrated. This
-route reuses `OPENROUTER_API_KEY`. Setup grants that key to the downloader only
-while screening uses OpenRouter, for both `data/.secrets` files and the credential
-volume.
+route reuses `OPENROUTER_API_KEY`. Setup already grants the model keys to the
+downloader and Telegram receiver for intent routing, for both `data/.secrets`
+files and the credential volume.
 
 Direct provider APIs are optional and use the `SECURITY_DECISION_API_KEY`
 credential:

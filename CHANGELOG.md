@@ -2,6 +2,21 @@
 
 ## Unreleased: Repository and documentation refresh
 
+- The request router now works at intake. `downloader` and `telegram-receiver`
+  receive the OpenRouter/OpenAI key; before this, every routing call failed and
+  each message started a new workstream. Re-save setup, activate pending
+  credentials, and apply settings for both services.
+- Replies from anyone the assistant emailed on a thread are accepted after the
+  job completes. Before, they were quarantined unless the sender was listed in
+  `actionable_senders`.
+- Routing is less likely to lose context. The router sees the sender's recent
+  conversations. When it is unavailable, a Telegram message that isn't a reply
+  continues the sender's conversation from the last
+  `agent.routing.fallback_continue_minutes` (default 180) instead of starting
+  a new one.
+- `email_search` also returns emails the assistant sent (`sent_emails`).
+- The agent writes to third parties as itself: the admin's circumstances are
+  stated in the third person, never as "I".
 - Scheduled scripts are approved when scheduled, not when they first run.
   `reminder_create` requires `execution` (`notify`, `agent_task` or `script`);
   script reminders need standing (Always) approval for the exact version and hosts

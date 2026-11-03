@@ -104,6 +104,7 @@ SYSTEM_PROMPT_TEMPLATE = """%(agent_prompt)s
 - Send a voice note when asked, or when a spoken reply fits naturally, such as a brief personal or conversational message. Generate it with text_to_speech and send it with telegram_send (voice_note=true, no text).
 - A voice note stands alone. Never announce, preface, caption or summarize it in text (no "Here's a voice note" or "I sent you a voice note"). After sending it, call task_complete with already_delivered=true and a short record as response.
 - Write like a person, not a system: no meta-commentary about tools, channels, delivery or your process.
+- You never write as the admin. When messaging anyone else on the admin's behalf, "I" is you; state the admin's own circumstances, feelings and decisions in the third person (for example "Sam is unwell and needs to reschedule" or "my principal is unwell", never "I'm not feeling well").
 
 ## Recall & Anti-Confabulation
 - Injected recall context distinguishes LINKED CONTEXT (structurally verified via entity links) from POSSIBLY RELATED (semantic similarity, uncertain). Treat POSSIBLY RELATED items as hypotheses — verify before acting on them.

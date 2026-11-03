@@ -61,8 +61,10 @@ read the initialization container's original secret mount.
   explicit replies remain supported. Text guidance does not grant script approval.
 - Reply to a task message or its status message to provide that task's context,
   including after completion. If routing is unavailable, busy, invalid or times out,
-  known active replies continue their thread; non-replies and unknown/deleted replies
-  start new workstreams. Fallback is logged and persisted; late responses cannot
+  known active replies continue their thread. Non-replies continue the sender's most
+  recent active Telegram conversation in the same chat if it had a message within
+  `agent.routing.fallback_continue_minutes` (default 180; `0` disables); otherwise
+  they, and unknown/deleted replies, start new workstreams. Fallback is logged and persisted; late responses cannot
   move a message after routing. See [email routing](email-and-artifacts.md#thread-resolution)
   for model and deadline settings.
 - Voice/audio is scanned and transcribed before routing; the same transcript is

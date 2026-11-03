@@ -75,6 +75,7 @@ agent:
   routing:
     model: openai/gpt-4.1-mini
     timeout_seconds: 20
+    fallback_continue_minutes: 180
 
   limits:
     max_iterations_per_task: 50

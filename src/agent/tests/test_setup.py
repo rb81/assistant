@@ -1258,28 +1258,22 @@ with tempfile.TemporaryDirectory() as root:
             instance.secret_values["OPENROUTER_API_KEY"] = "review-model-key"
             self.assertEqual(draft_problems(instance), [])
 
-    def test_openrouter_key_reaches_downloader_only_while_screening_uses_openrouter(self):
+    def test_routing_intake_services_receive_the_model_key(self):
         with tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
             instance = self.saved_configuration(root)
             instance.use_credential_volume = True
             instance.save()
-            instance.state["pending"] = []
             grants = instance.credential_volume.record["grants"]
-            self.assertNotIn("OPENROUTER_API_KEY", grants.get("downloader", []))
-            instance.values.update({"AGENT_SECURITY_DECISION_ENABLED": "true", "AGENT_SECURITY_DECISION_PROVIDER": "openrouter"})
-            instance.save()
-            self.assertIn("OPENROUTER_API_KEY", instance.credential_volume.record["grants"]["downloader"])
-            self.assertIn("OPENROUTER_API_KEY", instance.state["pending"])
+            self.assertIn("OPENROUTER_API_KEY", grants["downloader"])
             reopened = Installation(root)
-            self.assertEqual(reopened.overlay()["services"]["downloader"]["environment"]["OPENROUTER_API_KEY_FILE"], "/run/secrets/OPENROUTER_API_KEY")
-            reopened.values["AGENT_SECURITY_DECISION_PROVIDER"] = "perplexity"
-            reopened.save()
-            self.assertNotIn("OPENROUTER_API_KEY", reopened.credential_volume.record["grants"].get("downloader", []))
             reopened.use_credential_volume = False
-            reopened.values["AGENT_SECURITY_DECISION_PROVIDER"] = "openrouter"
             reopened.save()
-            self.assertIn("OPENROUTER_API_KEY", reopened.overlay()["services"]["downloader"]["secrets"])
-            self.assertEqual((Path(root) / "data/.secrets/OPENROUTER_API_KEY").read_text(), "model-key")
+            services = reopened.overlay()["services"]
+            for service in ("downloader", "telegram-receiver"):
+                with self.subTest(service=service):
+                    self.assertIn("OPENROUTER_API_KEY", services[service]["secrets"])
+                    self.assertEqual(services[service]["environment"]["OPENROUTER_API_KEY_FILE"],
+                                     "/run/secrets/OPENROUTER_API_KEY")
 
     def test_overrides_problems_block_save_until_fixed(self):
         import questionary

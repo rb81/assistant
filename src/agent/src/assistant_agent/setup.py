@@ -36,6 +36,8 @@ AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
                   "telegram-receiver", "request-preprocessor")
 MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat")
 TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat")
+# Intake services call the routing model before a request is assigned to a workstream.
+ROUTING_SERVICES = ("downloader", "telegram-receiver")
 LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox", "transcription"}
 GENERATED_SECRETS = {"POSTGRES_PASSWORD", "SANDBOX_API_TOKEN", "SANDBOX_REVOKE_TOKEN", "TRANSCRIPTION_API_TOKEN"}
 SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
@@ -318,11 +320,8 @@ def secret_services(name):
         return ("postgres", *AGENT_SERVICES)
     if name == "DATABASE_URL":
         return AGENT_SERVICES
-    if name == "OPENROUTER_API_KEY":
-        # The downloader receives it only while inbound screening uses OpenRouter (see Installation.grants_secret).
-        return (*MODEL_SERVICES, "downloader")
-    if name == "OPENAI_API_KEY":
-        return MODEL_SERVICES
+    if name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        return (*MODEL_SERVICES, *ROUTING_SERVICES)
     if name == "IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
     if name == "SMTP_PASSWORD":
@@ -572,9 +571,6 @@ class Installation:
         return read_regular(self.directory / name)
 
     def grants_secret(self, name, service):
-        if name == "OPENROUTER_API_KEY" and service == "downloader":
-            return (security_value(self, "AGENT_SECURITY_DECISION_ENABLED", False) == "true"
-                    and (security_value(self, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter") == "openrouter")
         return True
 
     def credential_grants(self):

@@ -704,7 +704,16 @@ class EmailDownloader:
         allowed = [item.lower() for item in self.config.get_list("agent.email.actionable_senders")]
         if "*" in allowed:
             return True
-        return any(address.lower() in allowed for address in from_addresses)
+        if any(address.lower() in allowed for address in from_addresses):
+            return True
+        # A recipient answering mail the assistant sent on this thread is expected, even after the job finished.
+        return bool(self.db.fetch_one(
+            """SELECT 1 FROM outbound_email_logs o JOIN jobs j ON j.id = o.job_id
+               WHERE j.thread_id = %s AND o.status = 'sent'
+                 AND EXISTS (SELECT 1 FROM unnest(o.to_addresses || o.cc_addresses) a WHERE lower(a) = ANY(%s))
+               LIMIT 1""",
+            (thread_id, [address.lower() for address in from_addresses]),
+        ))
 
     def is_admin_sender(self, from_addresses: list[str]) -> bool:
         """Return True if any sender in from_addresses matches the configured admin email."""

@@ -4,7 +4,7 @@ import unittest
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 
@@ -50,6 +50,7 @@ from assistant_agent.config import AppConfig
 from assistant_agent.email_disclosure import append_disclosure_html, strip_disclosure_html, strip_disclosure_text
 from assistant_agent.email_ingest import EmailDownloader, IngestResult
 from assistant_agent.imap_utils import imap_mailbox_arg, imap_status_ok
+from assistant_agent.request_router import RoutingDecision
 from assistant_agent.tools import ToolRuntime
 
 
@@ -615,6 +616,18 @@ class MailboxHandlingTest(unittest.TestCase):
         runtime.config.values["agent"]["limits"] = {"max_emails_per_hour": 0}
         self.assertEqual(runtime._send_block_reason(["person@example.com"]), "email rate limit exceeded")
 
+    def test_email_search_includes_sent_mail(self) -> None:
+        db = MagicMock()
+        db.fetch_all.side_effect = [[], [{"outbound_log_id": 5, "job_id": 22, "to_addresses": ["person@example.com"]}]]
+        runtime = ToolRuntime(db=db, config=AppConfig({}), job={"id": 1})  # type: ignore[arg-type]
+        result = runtime.email_search("person@example.com")
+        self.assertEqual(result["emails"], [])
+        self.assertEqual(result["sent_emails"][0]["job_id"], 22)
+        sql, params = db.fetch_all.call_args.args
+        self.assertIn("outbound_email_logs", sql)
+        self.assertIn("status = 'sent'", sql)
+        self.assertEqual(params[3], "%person@example.com%")
+
     def test_outbound_recipient_explicit_domains_still_restrict_delivery(self) -> None:
         runtime = ToolRuntime(
             db=FakeOutboundEmailDatabase(),  # type: ignore[arg-type]
@@ -709,6 +722,47 @@ class MailboxHandlingTest(unittest.TestCase):
             self.assertEqual(result.queued, expected_queued)
             self.assertEqual(db.uid_queries, [[uid]])
             self.assertEqual(db.inserted[0][-1], expected_queued)
+
+    def test_reply_from_recipient_of_sent_email_is_accepted_after_job_completes(self) -> None:
+        class ReplyIngestDatabase(FakeIngestDatabase):
+            def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
+                if any(table in sql for table in ("FROM workstream_threads", "FROM calendar_managed_events",
+                                                  "FROM deleted_thread_references")):
+                    return None
+                if "SELECT thread_id FROM emails" in sql:
+                    return None
+                if "SELECT j.thread_id" in sql and "provider_message_id" in sql:
+                    return {"thread_id": "reschedule"} if params == ("<sent@agent.example>",) else None
+                if "FROM outbound_email_logs o JOIN jobs j" in sql:
+                    return {"?column?": 1} if params == ("reschedule", ["partner@vendor.example"]) else None
+                return super().fetch_one(sql, params)
+
+        def reply(sender: str) -> bytes:
+            message = EmailMessage()
+            message["From"] = sender
+            message["To"] = "agent@acme.example"
+            message["Subject"] = "Re: Rescheduling our meeting"
+            message["Message-ID"] = "<reply-%s>" % sender
+            message["In-Reply-To"] = "<sent@agent.example>"
+            message.set_content("Tuesday at noon works.")
+            return message.as_bytes()
+
+        for sender, expected in (("Partner@Vendor.example", True), ("stranger@vendor.example", False)):
+            with self.subTest(sender=sender):
+                db = ReplyIngestDatabase()
+                db.execute = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+                downloader = EmailDownloader.__new__(EmailDownloader)
+                downloader.db = db  # type: ignore[assignment]
+                downloader.config = AppConfig({"agent": {"email": {"actionable_senders": ["admin@acme.example"]}}})
+                downloader.attachment_root = Path("/tmp/assistant-test-artifacts/attachments")
+                downloader.artifact_processor = FakeArtifactProcessor()
+                decision = RoutingDecision("reschedule", "continue", "Reply", workstream_id=10)
+                with patch("assistant_agent.email_ingest.RequestRouter.route", return_value=decision), patch(
+                    "assistant_agent.email_ingest.RequestService.receive_request", return_value={}
+                ) as receive:
+                    result = downloader.ingest_raw(reply(sender))
+                self.assertEqual((result.queued, result.quarantine), (expected, not expected))
+                self.assertEqual(receive.called, expected)
 
     def test_email_send_formats_from_header_with_agent_display_name(self) -> None:
         runtime = ToolRuntime(

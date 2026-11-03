@@ -929,7 +929,20 @@ class ToolRuntime:
             """,
             (query, like_query, like_query, like_query, min(limit, 50)),
         )
-        return {"emails": rows}
+        sent = self.db.fetch_all(
+            """
+            SELECT id AS outbound_log_id, job_id, to_addresses, cc_addresses, subject, sent_at,
+                   provider_message_id, left(body_text, 500) AS body_preview
+            FROM outbound_email_logs
+            WHERE status = 'sent'
+              AND (%s = '' OR subject ILIKE %s OR body_text ILIKE %s
+                   OR array_to_string(to_addresses || cc_addresses, ' ') ILIKE %s)
+            ORDER BY sent_at DESC NULLS LAST, id DESC
+            LIMIT %s
+            """,
+            (query, like_query, like_query, like_query, min(limit, 50)),
+        )
+        return {"emails": rows, "sent_emails": sent}
 
     def email_read(
         self,
@@ -3129,7 +3142,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "email_search",
-            "description": "Search stored email records.",
+            "description": "Search received emails (emails) and emails the assistant sent (sent_emails) by plain substring of subject, body or address. Use a name, address or keyword, not search operators. email_read reads received emails; job_read shows a sent email's job.",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}},
@@ -4135,7 +4148,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "web_search": "Search the live web for current/source-backed information.",
         "llm_service": "Discover models; manage presets; generate text, JSON, images or audio with optional workspace files.",
         "text_to_speech": "Synthesize text into an audio file with the admin-configured speech model and voice.",
-        "email_search": "Search stored email records.",
+        "email_search": "Search received and sent email records.",
         "telegram_send": "Send text, documents or native voice-note attachments to a linked Telegram identity.",
         "email_read": "Read a stored email by ID, with optional body paging.",
         "memory_remember": "Store a durable memory explicitly requested by the user.",

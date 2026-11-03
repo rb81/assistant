@@ -69,10 +69,15 @@ active reply target already resolved by the channel's intake checks; verified
 administrators can search all active workstreams. Routing grants no permissions
 and preserves the incoming message, attachments and response destination.
 
-`agent.routing.model` defaults to `openai/gpt-4.1-mini`; the whole routing decision
+`agent.routing.model` defaults to `openai/gpt-4.1-mini` and runs in the downloader
+and Telegram receiver, which therefore receive the model API keys; the whole routing decision
 has a deadline of `agent.routing.timeout_seconds` (default 20). If unavailable,
 busy, timed out or invalid, deterministic fallback continues a known active reply
-thread, otherwise starts a new workstream using the message's `Message-ID`.
+thread, otherwise starts a new workstream using the message's `Message-ID`
+(Telegram non-replies first try the sender's recent conversation; see
+[Telegram](telegram-and-voice.md)). The router is also given the sender's three
+most recently active conversations from the last three days, so follow-ups that
+mention their people, meetings or tasks can continue them.
 The retired subject-fallback setting is ignored. The decision and rationale,
 including fallback use, are stored in request metadata; late model responses
 cannot change ownership. Deleted or unknown reply associations cannot be continued,
@@ -80,10 +85,13 @@ but the router may find a different relevant active workstream.
 
 ## Actionability rules
 
-An inbound email is actionable when either:
+An inbound email is actionable when any of these apply:
 
-- there is already an open job on the same thread (`queued|running|waiting|needs_review`), or
-- sender matches `agent.email.actionable_senders`.
+- there is already an open job on the same thread (`queued|running|waiting|needs_review`),
+- sender matches `agent.email.actionable_senders`, or
+- the email replies (via `In-Reply-To`/`References`) to mail the assistant sent on
+  that thread, and the sender was a To/Cc recipient of that mail. This holds after
+  the original job completes, so an external contact's answer is not quarantined.
 
 If `actionable_senders` contains `*`, all senders can create new jobs.
 Notifications for assistant-managed calendar events are stored as context

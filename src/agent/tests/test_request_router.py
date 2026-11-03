@@ -37,7 +37,7 @@ def router():
     db.fetch_one.return_value = {**STREAM, "workstream_id": 7}
     db.fetch_all.return_value = []
     db.latest_thread_messages.return_value = [{"body_text": "Which dates?", "direction": "outbound"}]
-    return RequestRouter(db, AppConfig({}))
+    return RequestRouter(db, AppConfig({"agent": {"routing": {"fallback_continue_minutes": 0}}}))
 
 
 def decide(router, action, **kwargs):
@@ -94,12 +94,12 @@ def test_invalid_decisions_are_not_applied(router, decision):
     ("email", "trip", True, "trip"),
     ("telegram", "trip", True, "trip"),
     ("email", None, True, "fresh"),
-    ("telegram", None, True, "fresh"),
+    ("telegram", None, False, "fresh"),
     ("email", "trip", False, "fresh"),
     ("telegram", "trip", False, "fresh"),
 ])
 def test_unavailable_router_uses_only_known_reply_associations(router, channel, reply, available, expected):
-    router.db.fetch_one.return_value = {"workstream_id": 7} if available else None
+    router.db.fetch_one.return_value = {"workstream_id": 7, "thread_id": "trip"} if available else None
     with patch.object(router, "decide", side_effect=RuntimeError("model unavailable")):
         result = router.route(incoming(channel), reply_thread_id=reply)
     assert result.thread_id == expected and result.fallback
@@ -108,7 +108,7 @@ def test_unavailable_router_uses_only_known_reply_associations(router, channel, 
 
 
 def test_timeout_returns_fallback_and_ignores_late_decision(router):
-    router.config = AppConfig({"agent": {"routing": {"timeout_seconds": 1}}})
+    router.config = AppConfig({"agent": {"routing": {"timeout_seconds": 1, "fallback_continue_minutes": 0}}})
     release, finished = threading.Event(), threading.Event()
 
     def late(*args):
@@ -192,3 +192,38 @@ def test_router_requires_search_even_if_model_immediately_decides(router):
     ), patch.object(router, "permitted_workstreams", return_value=[STREAM]):
         with pytest.raises(ValueError, match="search budget"):
             router.decide(incoming(), None, None, False, time.monotonic() + 20)
+
+
+def test_unavailable_router_continues_recent_telegram_conversation(router):
+    router.config = AppConfig({})
+    router.db.fetch_one.return_value = {"workstream_id": 7, "thread_id": "trip-followup"}
+    with patch.object(router, "decide", side_effect=RuntimeError("model unavailable")):
+        result = router.route(incoming("telegram"))
+    assert (result.thread_id, result.action, result.workstream_id, result.fallback) == ("trip-followup", "continue", 7, True)
+    sql, params = router.db.fetch_one.call_args.args
+    assert "make_interval" in sql and params[-1] == 180
+
+    router.db.fetch_one.reset_mock()
+    router.config = AppConfig({"agent": {"routing": {"fallback_continue_minutes": 0}}})
+    with patch.object(router, "decide", side_effect=RuntimeError("model unavailable")):
+        assert router.route(incoming("telegram")).thread_id == "fresh"
+    router.db.fetch_one.assert_not_called()
+
+
+def test_recent_conversations_are_supplied_and_selectable(router):
+    other = {"id": 9, "title": "Meeting reschedule", "main_thread_id": "meeting"}
+    router.db.fetch_all.side_effect = lambda sql, params=None: (
+        [{"workstream_id": 9}] if "max(r.received_at)" in sql else []
+    )
+    llm = MagicMock()
+    llm.chat.side_effect = [completion(calls=[search_call()]),
+                           completion('{"action":"continue","workstream_id":9,"reason":"Same meeting"}')]
+    with patch("assistant_agent.request_router.LlmClient", return_value=llm), patch(
+        "assistant_agent.request_router.TransactionDatabase", return_value=router.db
+    ), patch.object(router, "permitted_workstreams", return_value=[STREAM, other]), patch(
+        "assistant_agent.request_router.ContextStore.search_workstreams", return_value=[]
+    ):
+        result = router.decide(incoming(body="He replied, confirm it"), None, None, False, time.monotonic() + 20)
+    assert result.thread_id == "meeting" and result.workstream_id == 9
+    payload = json.loads(llm.chat.call_args.args[0][1]["content"])
+    assert [item["workstream_id"] for item in payload["recent_workstreams"]] == [9]
