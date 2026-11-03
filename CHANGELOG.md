@@ -2,10 +2,14 @@
 
 ## Unreleased: Repository and documentation refresh
 
+- Credential grants repair themselves after code updates. Start app, Restart and
+  Apply settings regenerate `data/.compose-secrets.yaml` (and the credential
+  volume) when the code changes which services receive a credential, then
+  recreate only the affected services. `./run.sh secrets sync` does the same
+  without a terminal, for deploy scripts and cron.
 - The request router now works at intake. `downloader` and `telegram-receiver`
   receive the OpenRouter/OpenAI key; before this, every routing call failed and
-  each message started a new workstream. Re-save setup, activate pending
-  credentials, and apply settings for both services.
+  each message started a new workstream.
 - Replies from anyone the assistant emailed on a thread are accepted after the
   job completes. Before, they were quarantined unless the sender was listed in
   `actionable_senders`.

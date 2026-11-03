@@ -101,6 +101,8 @@ Run `./run.sh` whenever you want to manage the installation:
 After changing settings, **Review & save**, then use **Services → Apply settings**
 on each affected component. Use **Settings → Credentials → Activate pending** for
 saved credential changes. Restarts and applying settings can interrupt active work.
+After a code update, **Start app** (or `./run.sh secrets sync`) also refreshes which
+services receive which credentials; you don't need to re-save setup for that.
 
 To stop everything, choose **Services → Stop app**. Your saved data stays in place.
 If the full-screen interface doesn't work in your terminal, use `./run.sh --plain`

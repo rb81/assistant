@@ -286,6 +286,9 @@ class Management:
             }
             if action not in commands:
                 raise SetupError("Unsupported service action")
+            if action != "stop":
+                self.progress = "Refreshing credential grants"
+                self.installation.reconcile_grants()
             self.progress = action.title() + " " + (service or "application")
             self.installation.compose(commands[action] + ([service] if service else []), timeout=1800)
         return self.services()

@@ -227,6 +227,25 @@ Activation recreates affected running containers: a plain restart may retain the
 old file bind mount after atomic replacement. Inactive profiles are not started.
 Saved credentials can remain pending; inspect service health after activation.
 
+Which services receive each credential is decided by the code, not by you. When an
+update changes those grants, **Start app**, **Restart** and **Apply settings**
+regenerate `data/.compose-secrets.yaml` and the credential volume automatically,
+and recreate only the services whose grants changed. To do the same after
+`git pull` or from a schedule, run:
+
+```bash
+./run.sh secrets sync
+```
+
+It runs without a terminal, prints nothing when grants are already current, and
+leaves credential values unchanged. To check every 15 minutes, add this line to
+the crontab of the account that manages Docker (`sudo crontab -e` if setup uses
+sudo for Docker):
+
+```cron
+*/15 * * * * /path/to/assistant/run.sh secrets sync >> /path/to/assistant/data/secrets-sync.log 2>&1
+```
+
 Obtain replacement third-party credentials from the provider, apply and verify
 them, then revoke the old credentials. The CLI does not rotate keys at providers.
 

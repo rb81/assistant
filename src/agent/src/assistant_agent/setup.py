@@ -922,6 +922,9 @@ class Installation:
         self.startup_stage = "checking saved configuration"
         with installation_lock(self.root):
             self.assert_current()
+            self.startup_stage = "refreshing credential grants"
+            # "up" below recreates any service whose grants changed.
+            self.reconcile_grants_locked(recreate=False)
             self.startup_stage = "Compose configuration"
             configuration = json.loads(self.compose(["config", "--format", "json"]))
             services = sorted(set(configuration["services"]) & LONG_RUNNING_SERVICES)
@@ -981,6 +984,44 @@ class Installation:
         with installation_lock(self.root):
             self.assert_current()
             return self.apply_locked(names)
+
+    def reconcile_grants(self, recreate=True):
+        with installation_lock(self.root):
+            self.assert_current()
+            return self.reconcile_grants_locked(recreate)
+
+    def reconcile_grants_locked(self, recreate=True):
+        """Regenerate saved secret grants when code changes which services receive a credential.
+
+        Returns the running services that were recreated, or every changed service when recreate=False."""
+        path = self.data / ".compose-secrets.yaml"
+        if not self.state.get("setup_complete") or self.overlay_original is None:
+            return []
+        current = self.overlay()
+        rendered = yaml.safe_dump(current, sort_keys=True).encode()
+        grants = self.credential_grants() if self.credential_volume else None
+        if rendered == self.overlay_original and (grants is None or self.credential_volume.record.get("grants") == grants):
+            return []
+        previous = (yaml.safe_load(self.overlay_original) or {}).get("services") or {}
+        changed = {service for service in set(previous) | set(current["services"])
+                   if previous.get(service) != current["services"].get(service)}
+        if grants is not None and self.credential_volume.record.get("grants") != grants:
+            old = self.credential_volume.record.get("grants") or {}
+            changed |= {service for service in set(old) | set(grants) if old.get(service) != grants.get(service)}
+            self.credential_volume.write(dict(self.credential_volume.record.get("values", {})), grants)
+        owner = path.stat()
+        atomic_write(path, rendered)
+        if os.geteuid() == 0 and (owner.st_uid, owner.st_gid) != (0, 0):
+            # Scheduled runs as root must leave the overlay readable by the administrator's account.
+            os.chown(path, owner.st_uid, owner.st_gid)
+        self.overlay_original = read_regular(path)
+        if not recreate:
+            return sorted(changed & LONG_RUNNING_SERVICES)
+        running = set(self.compose(["ps", "--status", "running", "--services"]).split())
+        targets = sorted(changed & running & LONG_RUNNING_SERVICES)
+        if targets:
+            self.compose(["up", "-d", "--no-deps", "--force-recreate", *targets], timeout=600)
+        return targets
 
     def retire_previous_volume(self):
         """Activate host credential mounts, detach every container, then destroy the old volume."""
@@ -1180,7 +1221,7 @@ def main():
     parser.add_argument("--plain", action="store_true", help="Use the traditional line-oriented menus")
     commands = parser.add_subparsers(dest="command")
     secret_parser = commands.add_parser("secrets", help="Manage credentials without displaying values")
-    secret_parser.add_argument("action", choices=("status", "update", "apply", "recover"))
+    secret_parser.add_argument("action", choices=("status", "update", "apply", "recover", "sync"))
     secret_parser.add_argument("name", nargs="?")
     commands.add_parser("tools", help="Open management at Services (legacy troubleshooting menus with --plain)")
     commands.add_parser("reset", help="Factory reset: rebuild the database, optionally delete files; keep settings and secrets")
@@ -1193,6 +1234,12 @@ def main():
                 print(f"{name}: configured" + (" (activation pending)" if pending else " (saved; runtime health not verified)"))
             if not instance.secret_values:
                 print("No credentials configured. Run setup first.")
+            return
+        if options.command == "secrets" and options.action == "sync":
+            # Noninteractive: safe for cron and deploy scripts; quiet when nothing changed.
+            recreated = Installation(options.root).reconcile_grants()
+            if recreated:
+                print("Credential grants refreshed; recreated: " + ", ".join(recreated))
             return
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise SetupError("Interactive setup requires a terminal; no files were changed")

@@ -1275,6 +1275,34 @@ with tempfile.TemporaryDirectory() as root:
                     self.assertEqual(services[service]["environment"]["OPENROUTER_API_KEY_FILE"],
                                      "/run/secrets/OPENROUTER_API_KEY")
 
+    def test_reconcile_grants_repairs_overlay_after_code_changes(self):
+        import assistant_agent.setup as setup_module
+
+        for volume in (False, True):
+            with self.subTest(volume=volume), tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+                instance = self.saved_configuration(root)
+                instance.use_credential_volume = volume
+                instance.state["setup_complete"] = True
+                with patch.object(setup_module, "ROUTING_SERVICES", ("downloader",)):
+                    instance.save()
+                overlay = Path(root) / "data/.compose-secrets.yaml"
+                stale = yaml.safe_load(overlay.read_text())["services"].get("telegram-receiver", {})
+                self.assertNotIn("OPENROUTER_API_KEY_FILE", stale.get("environment", {}))
+                reopened = Installation(root)
+                with patch.object(reopened, "compose", side_effect=["telegram-receiver\ntask-agent\n", ""]) as compose:
+                    self.assertEqual(reopened.reconcile_grants(), ["telegram-receiver"])
+                self.assertEqual(compose.call_args.args[0],
+                                 ["up", "-d", "--no-deps", "--force-recreate", "telegram-receiver"])
+                services = yaml.safe_load(overlay.read_text())["services"]
+                self.assertEqual(services["telegram-receiver"]["environment"]["OPENROUTER_API_KEY_FILE"],
+                                 "/run/secrets/OPENROUTER_API_KEY")
+                if volume:
+                    self.assertIn("OPENROUTER_API_KEY", reopened.credential_volume.record["grants"]["telegram-receiver"])
+                current = Installation(root)
+                with patch.object(current, "compose") as compose:
+                    self.assertEqual(current.reconcile_grants(), [])
+                compose.assert_not_called()
+
     def test_overrides_problems_block_save_until_fixed(self):
         import questionary
         from assistant_agent.setup import draft_problems
