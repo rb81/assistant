@@ -62,6 +62,13 @@ class ZoomMeetingTest(unittest.TestCase):
                 self.service.request("GET", "meetings/123")
             request.assert_not_called()
 
+    def test_client_errors_include_zoom_reason(self):
+        response = MagicMock(status_code=400, headers={})
+        response.json.return_value = {"code": 300, "message": "Invalid  start_time\nvalue"}
+        with patch.object(self.service, "token", return_value="token"), patch("httpx.request", return_value=response):
+            with self.assertRaisesRegex(self.error, r"^Zoom request failed \(HTTP 400\): code 300 Invalid start_time value$"):
+                self.service.request("PATCH", "meetings/123", {})
+
     def test_zoom_tools_are_loadable_and_calendar_supports_linking(self):
         from assistant_agent.tools import available_function_names, FUNCTION_TOOLS, TOOL_GUARDRAILS
         available = available_function_names(self.service.config)

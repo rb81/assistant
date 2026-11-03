@@ -83,7 +83,8 @@ class ZoomMeetings:
             if response.status_code == 404 and (method == "DELETE" or allow_not_found):
                 return {"not_found": True}
             if response.status_code >= 400:
-                raise ZoomError("Zoom request failed (HTTP %s)" % response.status_code, uncertain=response.status_code >= 500)
+                raise ZoomError("Zoom request failed (HTTP %s)%s" % (response.status_code, self.error_detail(response)),
+                                uncertain=response.status_code >= 500)
             if response.status_code == 204:
                 return {}
             try:
@@ -91,6 +92,20 @@ class ZoomMeetings:
             except ValueError as exc:
                 raise ZoomError("Zoom returned an unreadable response; reconcile before retrying", uncertain=True) from exc
         raise ZoomError("Zoom authorization failed")
+
+    @staticmethod
+    def error_detail(response):
+        try:
+            body = response.json()
+        except ValueError:
+            return ""
+        if not isinstance(body, dict):
+            return ""
+        message = " ".join(str(body.get("message") or "").split())[:300]
+        code = body.get("code")
+        if not message and code is None:
+            return ""
+        return ": %s%s" % ("code %s " % code if code is not None else "", message)
 
     def public(self, row):
         result = {key: row.get(key) for key in ("id", "provider_meeting_id", "title", "duration_minutes", "join_url", "status", "calendar_event_id", "last_error")}

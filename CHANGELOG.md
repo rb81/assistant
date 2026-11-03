@@ -15,6 +15,8 @@
   `agent.routing.fallback_continue_minutes` (default 180) instead of starting
   a new one.
 - `email_search` also returns emails the assistant sent (`sent_emails`).
+- Zoom API errors now include Zoom's error code and message instead of only the
+  HTTP status.
 - The agent writes to third parties as itself: the admin's circumstances are
   stated in the third person, never as "I".
 - Scheduled scripts are approved when scheduled, not when they first run.
