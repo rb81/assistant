@@ -611,6 +611,26 @@ class ApprovalDatabaseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.consume_telegram(pending["callback_id"], "123")
 
+    def test_telegram_denial_prevents_approval_on_either_channel(self):
+        self.config.values["agent"].update({
+            "approvals": {"channel": "both"},
+            "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+        })
+        with patch("assistant_agent.telegram.TelegramClient"), patch(
+            "assistant_agent.email_approvals.send_admin_email"
+        ) as send:
+            self.service.request("both:denied", self.payload, "Cancel task")
+        token, digest, _ = approval_reply(reply(send.call_args.args[2]))
+        pending = self.db.get_state("email-approval:" + digest)
+        with self.assertRaises(ValueError):
+            self.service.consume_telegram(pending["callback_id"], "456", denied=True)
+        self.assertEqual(self.service.consume_telegram(pending["callback_id"], "123", denied=True), self.payload)
+        self.assertEqual(self.db.get_state(pending["source_key"])["status"], "denied")
+        with self.assertRaises(ValueError):
+            self.service.consume(token, digest)
+        with self.assertRaises(ValueError):
+            self.service.consume_telegram(pending["callback_id"], "123")
+
     def test_telegram_fallback_shares_atomic_consumption_and_keeps_original_hash(self):
         from assistant_agent.telegram import TelegramError
         self.config.values["agent"].update({

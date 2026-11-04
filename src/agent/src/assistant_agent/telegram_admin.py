@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
-from .approval_actions import apply_approval
+from .approval_actions import apply_approval, deny_approval
 from .approval_channels import channels, review_label, review_summary, telegram_admins
-from .email_approvals import ApprovalDeliveryError, EmailApprovals, telegram_permission_summary
+from .email_approvals import (
+    ApprovalDeliveryError, EmailApprovals, approval_keyboard, telegram_approval_summary, telegram_permission_summary,
+)
 from .requests import TransactionDatabase
 
 
@@ -566,12 +568,12 @@ class TelegramAdmin:
                 raise
             self.send(sender, result[:3500], [[("Back", "ui:home:0")]])
         elif action == "review":
-            text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
-            self.send(sender, text + "\n\nConfirm this exact request?",
-                      [[("Confirm & start" if value["payload"]["kind"] == "email" else "Approve once",
-                         "ap:%s:ok" % callback_id),
-                        ("Not now", "ap:%s:later" % callback_id)],
-                       [("Details", "ap:%s:details" % callback_id)]])
+            self.send(sender, telegram_approval_summary(value["summary"]),
+                      [[(button["text"], button["callback_data"]) for button in row]
+                       for row in approval_keyboard(callback_id, value["payload"])])
+        elif action == "deny" and not network:
+            payload = service.consume_telegram(callback_id, sender, denied=True)
+            self.send(sender, deny_approval(self.db, payload), [[("Back", "ui:home:0")]])
         elif action == "ok" and not network:
             payload = service.consume_telegram(callback_id, sender)
             result = apply_approval(self.db, self.config, payload)
@@ -661,7 +663,8 @@ class TelegramAdmin:
                         else:
                             EmailApprovals(self.db, self.config).request(
                                 "menu-review:" + secrets.token_hex(12),
-                                {"kind": "review", "job_id": identifier, "version": str(job["updated_at"])},
+                                {"kind": "review", "job_id": identifier, "version": str(job["updated_at"]),
+                                 "security_action": bool(metadata.get("security_pending_action"))},
                                 review_summary(job, job.get("last_error") or "Task paused"),
                             )
                         self.send(sender, "A fresh confirmation has been sent through your configured approval channels.",

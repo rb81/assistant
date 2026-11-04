@@ -2,6 +2,22 @@
 import base64
 
 
+def deny_approval(db, payload):
+    if payload["kind"] == "review":
+        job = db.fetch_one(
+            """UPDATE jobs SET status = 'cancelled', locked_at = NULL, locked_by = NULL, updated_at = now()
+               WHERE id = %s AND status = 'needs_review' AND updated_at = %s RETURNING id""",
+            (payload["job_id"], payload["version"]),
+        )
+        if not job:
+            raise ValueError("This task has changed. Request a fresh approval from its status card.")
+        db.log_event(payload["job_id"], "status_change", output_data={"reason": "Telegram administrator denied approval"})
+        return "Request denied. Task cancelled; completed actions were not undone."
+    if payload["kind"] in {"email", "screened_email", "command"}:
+        return "Request denied. Nothing was approved or executed."
+    raise ValueError("Unknown approval action")
+
+
 def apply_approval(db, config, payload, instruction=""):
     from .admin_commands import AdminCommands
     from .email_ingest import EmailDownloader

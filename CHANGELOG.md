@@ -2,6 +2,9 @@
 
 ## Unreleased: Repository and documentation refresh
 
+- Telegram approvals show the request context and immediate approve/deny buttons,
+  removing the repetitive review-then-confirm step. Denying a paused task cancels
+  it; one-use, expiry and task-version checks remain in place.
 - Credential grants repair themselves after code updates. Start app, Restart and
   Apply settings regenerate `data/.compose-secrets.yaml` (and the credential
   volume) when the code changes which services receive a credential, then

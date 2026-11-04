@@ -49,9 +49,10 @@ def review_summary(job, reason):
     title = review_label(job)
     metadata = job.get("metadata") or {}
     if metadata.get("security_pending_action"):
-        return ("%s\n\nA safety check paused an action. Approve only after reviewing Details. "
-                "Approval permits the exact held action once without increasing execution limits.\n"
+        return ("%s\n\nA safety check paused an action. "
+                "Approve once permits only the exact action below without increasing execution limits. "
+                "Deny cancels the paused task; completed actions are not undone.\n"
                 "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))
     return ("%s\n\nThis task needs your attention. Resume continues existing work with additional "
-            "execution allowance; it does not undo actions already completed.\n"
+            "execution allowance. Deny cancels the task; completed actions are not undone.\n"
             "Job #%s\n\nDetails:\n%s" % (title, job["id"], reason))

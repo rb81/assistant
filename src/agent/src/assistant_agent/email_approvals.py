@@ -201,6 +201,26 @@ def permission_keyboard(callback: str, payload: dict) -> list:
     return rows
 
 
+def approval_keyboard(callback: str, payload: dict) -> list:
+    return [
+        [{"text": "Confirm & start" if payload.get("kind") == "email" else
+                  "Resume task" if payload.get("kind") == "review" and not payload.get("security_action") else
+                  "Approve once", "callback_data": "ap:%s:ok" % callback},
+         {"text": "Deny & cancel task" if payload.get("kind") == "review" else "Deny",
+          "callback_data": "ap:%s:deny" % callback}],
+        [{"text": "Details", "callback_data": "ap:%s:details" % callback}],
+    ]
+
+
+def telegram_approval_summary(summary: str) -> str:
+    from .admin_commands import redact_secrets
+    content = str(redact_secrets(summary))
+    encoded = content.encode("utf-16-le")
+    if len(encoded) > 7000:
+        return encoded[:6800].decode("utf-16-le", errors="ignore") + "\n\nContext shortened; open Details for the full request."
+    return content
+
+
 def telegram_permission_summary(summary: str, max_units: int = 3500) -> str:
     card = str(summary).split("\n\nDetails:", 1)[0]
     lines = card.splitlines()
@@ -344,7 +364,7 @@ class EmailApprovals:
                     client = TelegramClient(self.config)
                     callback = pending["callback_id"]
                     title = (telegram_permission_summary(summary) if payload.get("kind") == "permission"
-                             else summary.split("\n\nDetails:", 1)[0][:3700])
+                             else telegram_approval_summary(summary))
                     if payload.get("kind") == "network":
                         title = ("Legacy website requests cannot grant access. Request fresh combined script and host "
                                  "approval to allow access.\n\n" + title[:3500])
@@ -354,13 +374,7 @@ class EmailApprovals:
                     for identifier in admins:
                         sent = client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
-                            "reply_markup": {"inline_keyboard": keyboard or [
-                                [{"text": "Confirm & start" if payload.get("kind") == "email" else "Review & approve",
-                                  "callback_data": "ap:%s:%s" % (
-                                      callback, "ok" if payload.get("kind") == "email" else "review")},
-                                 {"text": "Not now", "callback_data": "ap:%s:later" % callback}],
-                                [{"text": "Details", "callback_data": "ap:%s:details" % callback}],
-                            ]},
+                            "reply_markup": {"inline_keyboard": keyboard or approval_keyboard(callback, payload)},
                         }, sending=True)
                         if payload.get("job_id"):
                             record_task_message(self.db, self.config, payload["job_id"], identifier, sent["message_id"])
@@ -430,10 +444,12 @@ class EmailApprovals:
                 raise ValueError("Approvals are configured for Telegram only; email fallback was not attempted")
         return self._consume(digest, hashlib.sha256(token.encode()).hexdigest())
 
-    def consume_telegram(self, callback_id: str, sender: str) -> dict:
+    def consume_telegram(self, callback_id: str, sender: str, *, denied=False) -> dict:
         if channels(self.config) not in {"telegram", "both"} or sender not in telegram_admins(self.config):
             raise ValueError("Administrator permission is required")
         row = self.telegram_pending(callback_id, sender)
+        if denied:
+            return self._consume(row["key"].removeprefix("email-approval:"), row["value"]["otp_hash"], denied=True)
         return self._consume(row["key"].removeprefix("email-approval:"), row["value"]["otp_hash"])
 
     def telegram_pending(self, callback_id: str, sender: str) -> dict:
@@ -449,7 +465,7 @@ class EmailApprovals:
             raise ValueError("This approval was already handled or is no longer available")
         return row
 
-    def _consume(self, digest: str, otp_hash: str) -> dict:
+    def _consume(self, digest: str, otp_hash: str, *, denied=False) -> dict:
         admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         row = self.db.fetch_one(
             """WITH consumed AS (
@@ -457,11 +473,11 @@ class EmailApprovals:
                AND value->>'otp_hash' = %s AND (value->>'expires')::timestamptz > now()
                RETURNING value
                ), marked AS (
-                   UPDATE runtime_state SET value = '{"status":"approved"}'::jsonb, updated_at = now()
+                   UPDATE runtime_state SET value = jsonb_build_object('status', %s::text), updated_at = now()
                    FROM consumed WHERE runtime_state.key = consumed.value->>'source_key'
                    RETURNING runtime_state.key
                ) SELECT value FROM consumed""",
-            ("email-approval:" + digest, admin, otp_hash),
+            ("email-approval:" + digest, admin, otp_hash, "denied" if denied else "approved"),
         )
         if not row:
             raise ValueError("Approval is expired, invalid, or already used. Send a fresh request.")

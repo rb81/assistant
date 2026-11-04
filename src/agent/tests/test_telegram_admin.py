@@ -46,7 +46,7 @@ def test_approval_delivery_obeys_selected_channels_and_shares_one_record(mode, e
     if telegram_calls:
         payload = telegram.return_value.call.call_args.args[1]
         assert payload["chat_id"] == "123"
-        assert "Private details" not in payload["text"]
+        assert "Private details" in payload["text"]
         for row in payload["reply_markup"]["inline_keyboard"]:
             for button in row:
                 assert len(button["callback_data"].encode()) <= 64
@@ -71,7 +71,7 @@ def test_email_confirmation_button_processes_request_without_second_review(ui, m
     confirm = next(button for button in buttons if button["text"] == "Confirm & start")
     assert "Subject: Script Testing" in message["text"]
     assert "Prepare the report." in message["text"]
-    assert {button["text"] for button in buttons} == {"Confirm & start", "Not now", "Details"}
+    assert {button["text"] for button in buttons} == {"Confirm & start", "Deny", "Details"}
     _, callback_id, action = confirm["callback_data"].split(":")
     assert action == "ok"
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
@@ -96,6 +96,52 @@ def test_email_approval_inbox_review_offers_direct_confirmation(ui):
     assert next(button for button in buttons if button["text"] == "Confirm & start")[
         "callback_data"] == "ap:%s:ok" % ("a" * 24)
     consume.assert_not_called()
+
+
+def test_security_approval_shows_context_and_runs_directly_from_first_message(ui):
+    payload = {"kind": "review", "job_id": 12, "version": "version", "security_action": True}
+    with patch("assistant_agent.telegram.TelegramClient") as telegram:
+        EmailApprovals(ui.db, config()).request(
+            "review:12", payload,
+            "Reschedule meeting\n\nDetails:\nReason: external recipient.\n"
+            "To: guest@example.com\nSubject: Next Wednesday\nBody: Please confirm the new time.",
+        )
+    pending = ui.db.set_state.call_args_list[0].args[1]
+    message = telegram.return_value.call.call_args.args[1]
+    assert "guest@example.com" in message["text"]
+    assert "Please confirm the new time." in message["text"]
+    buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
+    assert {button["text"] for button in buttons} == {"Approve once", "Deny & cancel task", "Details"}
+    approve = next(button for button in buttons if button["text"] == "Approve once")
+    _, callback_id, action = approve["callback_data"].split(":")
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram", return_value=payload) as consume, \
+            patch("assistant_agent.telegram_admin.apply_approval", return_value="Task resumed.") as apply:
+        ui.approval("123", callback_id, action)
+    consume.assert_called_once_with(callback_id, "123")
+    apply.assert_called_once_with(ui.db, ui.config, payload)
+    assert ui.client.call.call_args.args[1]["text"] == "Task resumed."
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_deny_review_cancels_only_unchanged_paused_task_without_approving(ui, stale):
+    payload = {"kind": "review", "job_id": 12, "version": "version"}
+    pending = {"payload": payload, "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+    ui.db.fetch_one.return_value = None if stale else {"id": 12}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
+            patch.object(EmailApprovals, "consume_telegram", return_value=payload) as consume, \
+            patch("assistant_agent.telegram_admin.apply_approval") as approve:
+        if stale:
+            with pytest.raises(ValueError, match="task has changed"):
+                ui.approval("123", "a" * 24, "deny")
+        else:
+            ui.approval("123", "a" * 24, "deny")
+            assert "Task cancelled" in ui.client.call.call_args.args[1]["text"]
+    consume.assert_called_once_with("a" * 24, "123", denied=True)
+    approve.assert_not_called()
+    query, params = ui.db.fetch_one.call_args.args
+    assert "status = 'needs_review' AND updated_at = %s" in query
+    assert params == (12, "version")
 
 
 def test_legacy_network_delivery_only_offers_blocks_and_cancellation():
@@ -519,13 +565,14 @@ def test_state_aware_job_controls_do_not_offer_blind_resume_for_reviews(ui):
 
 
 @pytest.mark.parametrize("kind", ["review", "email"])
-def test_expired_approval_offers_renewal_without_consuming_or_running(ui, kind):
+@pytest.mark.parametrize("action", ["ok", "deny"])
+def test_expired_approval_offers_renewal_without_consuming_or_running(ui, kind, action):
     pending = {"payload": {"kind": kind, "job_id": 12, "version": "old"},
                "summary": "Task", "expires": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()}
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), patch.object(
         EmailApprovals, "consume_telegram"
     ) as consume, patch("assistant_agent.telegram_admin.apply_approval") as execute:
-        ui.approval("123", "a" * 24, "ok")
+        ui.approval("123", "a" * 24, action)
     assert "Request fresh approval" in str(ui.client.call.call_args)
     consume.assert_not_called()
     execute.assert_not_called()

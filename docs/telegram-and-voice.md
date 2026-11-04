@@ -205,6 +205,15 @@ script requests offer **Approve once**, **Approve always**, **Deny** and optiona
 feedback. Website requests use **Always...** to choose this script version or all
 approved scripts; broad grants require confirmation. Once means one execution.
 
+Other approval notifications show the request context and decision buttons
+immediately, without a separate review/confirmation step. A held safety-check
+action offers **Approve once**; execution-limit reviews offer **Resume task**.
+**Deny & cancel task** cancels the paused task without undoing completed actions.
+Email confirmations offer **Confirm & start** and **Deny**; denying leaves the
+email unprocessed. **Details** remains optional for longer requests.
+Approvals remain administrator-only, expiring, single-use and bound to the task
+version that requested them.
+
 Administrators see **Needs attention**, **Archived** and **Permissions** in `/menu`.
 `/permissions` opens the same permissions browser directly.
 Permissions lists scripts, versions, downloadable code/diffs, host grants, legacy

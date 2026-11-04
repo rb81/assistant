@@ -65,7 +65,7 @@ class NotificationDedupeTest(unittest.TestCase):
             notify_admin_job_failure(db, AppConfig({"agent": {}}), {"id": 31}, "needs_review", "limit", "worker")
         self.assertEqual(approval.call_args.args[:2], (
             "review:31:2026-10-27T09:00:00+00:00",
-            {"kind": "review", "job_id": 31, "version": "2026-10-27T09:00:00+00:00"}))
+            {"kind": "review", "job_id": 31, "version": "2026-10-27T09:00:00+00:00", "security_action": False}))
         self.assertIn("Review diagnostics", approval.call_args.args[2])
         ordinary_email.assert_not_called()
 
