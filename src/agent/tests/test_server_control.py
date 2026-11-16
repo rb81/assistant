@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import shutil
@@ -7,23 +8,61 @@ import subprocess
 import tarfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+import yaml
+from rich.console import Console
+from fastapi.testclient import TestClient
 
 from assistant_agent.management_docker import DockerReader, PROJECT_LABEL
 from assistant_agent.management_server import connection
-from assistant_agent.server_control import MANAGEMENT_START_WAIT_SECONDS, bootstrap, start
+from assistant_agent.server_control import MANAGEMENT_START_WAIT_SECONDS, bootstrap, start, startup_progress
 from assistant_agent.setup import DockerCommandError, Installation, SetupError
-from assistant_agent.management_api import token_path
+from assistant_agent.management_api import create_app, ensure_token, token_path
 from assistant_agent.management_client import ManagementClient
 from assistant_agent.credential_volume import CredentialVolume
 from assistant_agent.management import Management
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_startup_progress_keeps_stages_visible_and_reports_elapsed_time():
+    output = io.StringIO()
+    console = Console(file=output, width=160, force_terminal=True, color_system=None)
+    with patch("assistant_agent.server_control.time.monotonic", side_effect=[100, 100, 135, 140]):
+        with startup_progress(console=console) as progress:
+            progress("building images")
+            assert "building images" in output.getvalue()
+            progress("checking services")
+    text = output.getvalue()
+    assert "[  35s] checking services (previous stage: 35s)" in text
+    assert "[  40s] Startup checks completed." in text
+
+
+def test_startup_progress_reports_which_stage_is_still_pending():
+    output = io.StringIO()
+    with startup_progress(interval=0.01, console=Console(file=output, width=160)) as progress:
+        progress("building images")
+        deadline = time.monotonic() + 2
+        while "Still waiting: building images" not in output.getvalue():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    assert "in this stage" in output.getvalue()
+
+
+def test_failed_startup_reports_stage_without_claiming_completion():
+    output = io.StringIO()
+    with pytest.raises(SetupError, match="failed"):
+        with startup_progress(console=Console(file=output)) as progress:
+            progress("checking PostgreSQL")
+            raise SetupError("failed")
+    assert "Startup stopped during: checking PostgreSQL" in output.getvalue()
+    assert "Startup checks completed" not in output.getvalue()
 
 
 def sources(root):
@@ -91,6 +130,8 @@ def test_health_wait_allows_cold_start_to_recover_after_docker_marks_it_unhealth
         ) == ready
     sleep.assert_called_once_with(5)
     assert "task-agent (unhealthy)" in progress.call_args.args[0]
+    assert "0/1 ready; 10s/600s health wait" in progress.call_args.args[0]
+    assert "completed polling cycle" in progress.call_args_list[0].args[0]
 
 
 def test_health_wait_deadline_is_failure_not_deferred_success():
@@ -109,6 +150,57 @@ def test_configured_start_does_not_report_running_when_health_verification_fails
             pytest.raises(SetupError, match="task-agent is not healthy"):
         start(tmp_path)
     assert "are running" not in capsys.readouterr().out
+
+
+def test_configured_start_releases_installation_lock_for_management_startup(tmp_path):
+    sources(tmp_path)
+    instance = bootstrap(tmp_path)
+    instance.state["setup_complete"] = True
+    instance.save()
+    rows = [{"Service": name, "State": "running", "Health": "healthy", "ID": name}
+            for name in ("management", "management-docker")]
+    configuration = json.dumps({"services": {row["Service"]: {} for row in rows}})
+
+    def management_startup():
+        token = ensure_token(tmp_path)
+        app = create_app(tmp_path, token)
+        try:
+            response = TestClient(app).get("/v2/health", headers={
+                "Host": "127.0.0.1", "Authorization": "Bearer " + token,
+            })
+            assert response.status_code == 200
+        finally:
+            app.state.management_operations.executor.shutdown(wait=True)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def verify_health(*args):
+            executor.submit(management_startup).result(timeout=3)
+            return rows
+
+        with patch.object(instance, "compose", side_effect=[configuration, "", json.dumps(rows)]), \
+                patch.object(instance, "wait_for_container_health", side_effect=verify_health), \
+                patch.object(instance, "docker", side_effect=["", '"unless-stopped"\n"unless-stopped"\n']):
+            assert instance.start_containers() == rows
+
+
+def test_configuration_changed_during_health_wait_is_not_recorded_as_activated(tmp_path):
+    sources(tmp_path)
+    instance = bootstrap(tmp_path)
+    instance.state["setup_complete"] = True
+    instance.save()
+    state = instance.state_path.read_bytes()
+
+    def external_edit(*args):
+        instance.overrides_path.write_text("AGENT_IDENTITY_NAME=Changed elsewhere\n")
+
+    with patch.object(instance, "compose", side_effect=[
+        json.dumps({"services": {"management": {}}}), "",
+    ]), patch.object(instance, "wait_for_container_health", side_effect=external_edit), \
+            patch.object(instance, "docker") as docker, \
+            pytest.raises(SetupError, match="Configuration changed"):
+        instance.start_containers()
+    assert instance.state_path.read_bytes() == state
+    docker.assert_not_called()
 
 
 def test_health_wait_preserves_docker_access_errors():
@@ -299,7 +391,7 @@ def test_installer_interruption_stops_its_startup_process_tree(tmp_path):
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
-def test_interactive_installer_animates_wait_and_only_replays_failed_startup_log(tmp_path, exit_code):
+def test_interactive_installer_shows_live_output_on_success_and_failure(tmp_path, exit_code):
     destination = tmp_path / "installation"
     (destination / "src/scripts").mkdir(parents=True)
     (destination / "src/scripts/server.sh").write_text("# marker\n")
@@ -332,8 +424,9 @@ def test_interactive_installer_animates_wait_and_only_replays_failed_startup_log
         if slave is not None:
             os.close(slave)
         os.close(master)
-    assert b"Starting... | 0s" in output
-    assert (b"startup-log-marker" in output) == (exit_code != 0)
+    assert b"startup-log-marker" in output
+    assert b"pending health checks appear below" in output
+    assert b"Starting... |" not in output
     assert (result.returncode == 0) == (exit_code == 0)
     assert not Path(str(destination) + ".install-lock").exists()
 
@@ -424,8 +517,20 @@ def test_containerized_api_and_scoped_docker_reader(tmp_path):
         if isinstance(status, list):
             status = status[0]
         assert all(publisher["URL"] == "127.0.0.1" for publisher in status["Publishers"])
-        instance.compose(["restart", "management"], timeout=30)
-        instance.compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "60", "management"], timeout=90)
+        compose_path = tmp_path / "src/docker-compose.yml"
+        configuration = yaml.safe_load(compose_path.read_text())
+        configuration["services"] = {
+            name: {key: value for key, value in configuration["services"][name].items() if key != "build"}
+            for name in ("management", "management-docker")
+        }
+        compose_path.write_text(yaml.safe_dump(configuration))
+        instance.state["setup_complete"] = True
+        instance.save()
+        instance.compose(["stop", "management"], timeout=30)
+        wait_for_health = instance.wait_for_container_health
+        with patch.object(instance, "wait_for_container_health",
+                          side_effect=lambda *args: wait_for_health(*args, timeout=60)):
+            instance.start_containers()
         assert client.health()["api_version"] == 2
     except SetupError:
         print(instance.compose(["ps", "--all"]))

@@ -16,8 +16,12 @@ The installer downloads source, builds images in Docker, and starts management
 and PostgreSQL. Fresh installations leave task workers stopped until setup is
 complete. A configured installation starts its configured services.
 
-Interactive installation shows an elapsed-time spinner while startup logs stay
-out of the way; failures display the diagnostics. After image preparation,
+Installation shows management-image build output and timestamped startup stages.
+Every fifteen seconds, an unfinished stage reports that it is still pending. Health-wait
+updates name the pending services and show how many are ready. Containers can
+be running before their health checks pass; workers must complete a polling
+cycle and verify database access, which may take longer if they pick up work.
+After image preparation,
 health checks get up to five minutes on a fresh install and ten minutes on a
 configured one. Transient unhealthy checks do not end that wait early. Exited
 services, failed helpers, and expired deadlines fail explicitly; installation

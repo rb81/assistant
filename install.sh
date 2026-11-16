@@ -34,9 +34,7 @@ LOCK="$DESTINATION.install-lock"
 (umask 077; mkdir "$LOCK") 2>/dev/null || fail "An installation is in progress, or a stale lock exists: $LOCK"
 WORK=
 START_PID=
-START_LOG=
 cleanup() {
-    if [ -n "$START_LOG" ]; then rm -f "$START_LOG"; fi
     if [ -n "$WORK" ]; then
         rm -f "$WORK/source.tar.gz" "$WORK/paths" "$WORK/types"
         rmdir "$WORK" 2>/dev/null || printf 'Temporary installation files remain at %s\n' "$WORK" >&2
@@ -50,7 +48,6 @@ terminate_tree() {
     kill "$1" 2>/dev/null || :
 }
 stop_start() {
-    if [ -n "$START_LOG" ]; then printf '\r\033[K' >&2; fi
     if [ -n "$START_PID" ]; then
         terminate_tree "$START_PID"
         wait "$START_PID" 2>/dev/null || :
@@ -88,34 +85,20 @@ fi
 
 for migration in "$DESTINATION"/migrations/*.sh; do
     [ -f "$migration" ] || continue
+    print_wrapped "Checking deployment migration: $(basename "$migration")"
     sh "$migration" "$DESTINATION/data" || fail "Migration failed: $migration"
 done
 
 print_wrapped 'Starting Assistant services; the first startup may take several minutes.'
-if [ -t 1 ] && [ -t 2 ]; then
-    START_LOG="$LOCK/startup.log"
-    sh "$DESTINATION/run.sh" server start </dev/null >"$START_LOG" 2>&1 &
-else
-    sh "$DESTINATION/run.sh" server start </dev/null &
-fi
+print_wrapped 'Build progress, timed startup stages, and pending health checks appear below.'
+sh "$DESTINATION/run.sh" server start </dev/null &
 START_PID=$!
-if [ -n "$START_LOG" ]; then
-    elapsed=0
-    while kill -0 "$START_PID" 2>/dev/null; do
-        case $((elapsed % 4)) in 0) frame='|' ;; 1) frame='/' ;; 2) frame='-' ;; 3) frame='\' ;; esac
-        printf '\r\033[KStarting... %s %ss' "$frame" "$elapsed" >&2
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    printf '\r\033[K' >&2
-fi
 if wait "$START_PID"; then
     START_STATUS=0
 else
     START_STATUS=$?
 fi
 START_PID=
-if [ "$START_STATUS" -ne 0 ] && [ -n "$START_LOG" ]; then cat "$START_LOG" >&2; fi
 [ "$START_STATUS" -eq 0 ] || fail 'Assistant could not be started. Review the Docker diagnostics above; installation is incomplete.'
 mkdir -p "$HOME/.local/bin"
 if [ ! -L "$LINK" ]; then

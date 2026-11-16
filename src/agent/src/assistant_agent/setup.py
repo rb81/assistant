@@ -1028,7 +1028,12 @@ class Installation:
             status = ", ".join(lagging)
             now = deadline - remaining
             if progress is not None and (status != last_status or now >= next_report):
-                progress("waiting for container health: " + ", ".join(lagging))
+                if last_status is None and set(services).intersection(AGENT_SERVICES):
+                    progress("worker readiness requires a completed polling cycle and a database check; "
+                             "running containers may still be processing their first cycle")
+                ready = len(services) - len(lagging)
+                progress(f"waiting for container health ({ready}/{len(services)} ready; "
+                         f"{int(timeout - remaining)}s/{timeout}s health wait): " + ", ".join(lagging))
                 last_status = status
                 next_report = now + 30
             time.sleep(min(5, remaining))
@@ -1061,10 +1066,11 @@ class Installation:
             if preserve_management:
                 targets = sorted(set(configuration["services"]) - {"management", "management-docker"})
             self.compose(["up", "-d", "--build", *targets], timeout=1800)
-            stage("waiting for container health")
-            # Compose --wait aborts as soon as a health check marks a container unhealthy,
-            # even if the requested wait deadline has not elapsed (e.g. cold model startup).
-            self.wait_for_container_health(services, configuration["services"], progress)
+        stage("waiting for container health")
+        # Management startup acquires the installation lock to initialize its token and identity.
+        self.wait_for_container_health(services, configuration["services"], progress)
+        with installation_lock(self.root):
+            self.assert_current()
             stage("checking container status")
             rows = self.container_rows()
             if any(row.get("Service") in configuration["services"] and row.get("Service") not in LONG_RUNNING_SERVICES and
