@@ -1344,6 +1344,25 @@ def test_message_attachment_references_are_contained_and_missing_files_are_expli
     ]
 
 
+@pytest.mark.parametrize("stored_digest", [None, "0" * 64])
+def test_project_file_download_hashes_current_bytes_not_tracking_metadata(tmp_path, stored_digest):
+    import base64
+    import hashlib
+
+    audio = tmp_path / "note.mp3"
+    audio.write_bytes(b"synthetic audio")
+    config = AppConfig({"agent": {"filesystem": {"shared_root": str(tmp_path)}}})
+    database = Mock()
+    database.fetch_one.return_value = {"path": str(audio), "sha256": stored_digest}
+    for offset in (0, 4):
+        content = execute_management(database, config, {
+            "kind": "project-file-content", "id": 4, "file_id": 8, "offset": offset, "limit": 4,
+        })
+        assert content["sha256"] == hashlib.sha256(audio.read_bytes()).hexdigest()
+        assert base64.b64decode(content["content_base64"]) == audio.read_bytes()[offset:offset + 4]
+        assert content["next_offset"] == offset + 4
+
+
 def test_transcript_audio_attachment_downloads_through_its_project(db, tmp_path):
     import base64
     from psycopg.types.json import Jsonb

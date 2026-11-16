@@ -142,19 +142,11 @@ class WorkspaceFiles:
         return digest.hexdigest()
 
     def read(self, path: str, offset: int = 0, limit: int = 1_048_576):
+        from .management_operator import read_file_chunk
         target = self.path(path)
         if not target.is_file() or offset < 0 or not 1 <= limit <= 1_048_576:
             raise ValueError("Select a workspace file and valid byte range")
-        with target.open("rb") as handle:
-            handle.seek(offset)
-            data = handle.read(limit)
-            size = os.fstat(handle.fileno()).st_size
-        return {
-            "path": str(target.relative_to(self.runtime.shared_root)), "offset": offset,
-            "next_offset": min(offset, size) + len(data), "size_bytes": size,
-            "content_base64": base64.b64encode(data).decode("ascii"),
-            "sha256": self.digest(target),
-        }
+        return {"path": str(target.relative_to(self.runtime.shared_root)), **read_file_chunk(target, offset, limit)}
 
     def mkdir(self, path: str):
         target = self.path(path)

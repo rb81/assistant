@@ -2,6 +2,7 @@
 import base64
 from datetime import datetime
 import binascii
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -439,19 +440,9 @@ def execute(db, config, request):
             raise ValueError("Project file is unavailable")
         tracker = WorkstreamFileTracker(None, config, None)
         target = _public_file_path(row["path"], tracker, config)
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(descriptor, "rb") as handle:
-            metadata = os.fstat(handle.fileno())
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("Project file is unavailable")
-            handle.seek(min(offset, metadata.st_size))
-            content = handle.read(limit)
-        next_offset = min(offset, metadata.st_size) + len(content)
         return {
-            "id": file_id, "path": _file_label(row["path"], tracker, config), "sha256": row["sha256"],
-            "offset": min(offset, metadata.st_size), "next_offset": next_offset,
-            "size_bytes": metadata.st_size, "truncated": next_offset < metadata.st_size,
-            "content_base64": base64.b64encode(content).decode("ascii"),
+            "id": file_id, "path": _file_label(row["path"], tracker, config),
+            **read_file_chunk(target, offset, limit),
         }
     if kind in {"file.upload", "file.attach"}:
         if request.get("confirmed") is not True:
@@ -565,6 +556,31 @@ ACTIVITY_LIMIT = 200
 ACTIVITY_PREVIEW_CHARACTERS = 4000
 # Sending the reply is already visible as a message, so it is not repeated as a tool call.
 ACTIVITY_HIDDEN_TOOLS = ("reply_send", "email_send")
+
+
+def read_file_chunk(target, offset, limit):
+    """Return a range and live digest from the same regular file, not stale tracking metadata."""
+    descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("File is unavailable")
+        digest = hashlib.sha256()
+        for block in iter(lambda: handle.read(FILE_CHUNK_SIZE), b""):
+            digest.update(block)
+        position = min(offset, before.st_size)
+        handle.seek(position)
+        content = handle.read(limit)
+        after = os.fstat(handle.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError("File changed during download; refresh before retrying")
+    next_offset = position + len(content)
+    return {
+        "sha256": digest.hexdigest(), "offset": position, "next_offset": next_offset,
+        "size_bytes": before.st_size, "truncated": next_offset < before.st_size,
+        "content_base64": base64.b64encode(content).decode("ascii"),
+    }
 
 
 def _message_attachments(db, config, message):
