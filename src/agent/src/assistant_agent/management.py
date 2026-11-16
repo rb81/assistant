@@ -627,11 +627,13 @@ class Management:
             self.installation.compose([
                 "run", "--rm", "--no-deps", "--pull", "never", "-T",
                 "--volume", self.management_source(), "--entrypoint", "python",
-                "task-agent", "-c", "import assistant_agent.management_operator",
+                "task-agent", "-c", "import assistant_agent.management_operator, assistant_agent.management_domains",
             ], timeout=60)
         except DockerCommandError as error:
             raise PublicSetupError("The management helper failed its startup check. "
-                             "This does not mean the application is stopped; restarting may not resolve it. "
+                             "This does not mean the application is stopped. If server source was updated, "
+                             "rebuild the task-agent image so its runtime dependencies match. "
+                             "Restarting alone does not install missing dependencies. "
                              "Check Docker Compose compatibility and the helper's source mount and dependencies, "
                              "then refresh. " + str(error)) from None
         self.helper_ready = True

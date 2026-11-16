@@ -205,7 +205,9 @@ def test_structured_transport_reuses_the_image_and_passes_requests_via_stdin_wit
         assert result["rows"][0]["id"] == 7
         docker.assert_called_once_with(["image", "inspect", "test-image"], timeout=30)
         probe = compose.call_args_list[1].args[0]
-        assert probe[-3:] == ["task-agent", "-c", "import assistant_agent.management_operator"]
+        assert probe[-3:] == [
+            "task-agent", "-c", "import assistant_agent.management_operator, assistant_agent.management_domains",
+        ]
         assert "--no-build" not in probe and "--build" not in probe
         assert probe[probe.index("--pull") + 1] == "never"
         assert "management_operator" in compose.call_args_list[2].args[0][-1]
@@ -255,6 +257,8 @@ def test_management_probe_failure_does_not_claim_the_running_app_needs_starting(
             with pytest.raises(SetupError, match="does not mean the application is stopped") as failure:
                 backend.prepare_management()
         assert "Services > Start app" not in str(failure.value)
+        assert "rebuild the task-agent image" in str(failure.value)
+        assert "Restarting alone does not install missing dependencies" in str(failure.value)
         assert not backend.helper_ready
 
 
@@ -309,6 +313,7 @@ def test_management_transports_run_with_real_compose_flags_and_readonly_source_m
         source = Path(root, "src/agent/src/assistant_agent")
         source.mkdir(parents=True)
         (source / "__init__.py").write_text("")
+        (source / "management_domains.py").write_text("")
         (source / "management_operator.py").write_text(
             "import json, sys\n"
             "if __name__ == '__main__':\n"

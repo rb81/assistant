@@ -168,6 +168,13 @@ If the checkout moved, resolve any launcher still pointing at the old location
 before registering the new one. Do not remove an unrelated installation's
 launcher. `server start` alone does not run the root `migrations/` scripts.
 
+Management helpers mount current source into the task-agent image, but that does
+not install changed Python dependencies. If a management read reports a missing
+runtime module (for example `pydantic`), ensure the updated
+`src/agent/requirements.txt` is present and rebuild the image with
+`./run.sh server start`. Restarting existing containers alone is insufficient.
+Rebuilding and starting services can interrupt active tasks.
+
 ## Data locations
 
 | Path | Contents |
