@@ -13,8 +13,9 @@ prompt. Task-agent reads at most `agent.prompt.max_context_file_bytes` bytes
 (65536 by default).
 
 The runtime context includes configured agent/admin identity, organization
-information when present, current time, timezone, and the shared-workspace
-documentation location.
+information when present, current time, timezone, help-tool guidance, and model/
+speech policy. Documentation is retrieved through `help_search` and `help_topic`,
+not a shared-workspace documentation directory.
 
 ## Task context
 

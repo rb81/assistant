@@ -252,11 +252,11 @@ defaults to `https://calendar.zoho.com/api/v1`.
 
 ## Verifying configuration
 
-Run `./run.sh --section calendar`. Optional read-only verification obtains a
-fresh access token and checks calendar discovery and event access; it does not
-create events or persist the test token. Failure does not prevent saving an
-offline draft, and credentials are not automatically rotated. After saving,
-apply changes to affected services and check status with `./run.sh tools`.
+Run `./run.sh --section calendar`, save, and apply changes to affected services.
+The current management forms validate the draft, not live provider access.
+Check services with `./run.sh management services`, then request a harmless
+calendar availability read to verify the configured account and scopes.
+The older host wizard's optional credential probe is not part of this interface.
 
 A persistent Zoho HTTP 401 after one refresh is an authentication error, not
 proof that the calendar is empty. Check the regional endpoint and credentials.

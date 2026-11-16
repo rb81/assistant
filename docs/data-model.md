@@ -53,7 +53,10 @@ erasing owned records and eligible derived files.
 
 - `emails` and `outbound_email_logs` — inbound and outbound message records.
 - `request_messages` and `channel_deliveries` — channel-neutral requests,
-  preprocessing state, reply routing, and delivery attempts.
+  preprocessing state, reply routing, delivery attempts, and client offers/
+  acknowledgments.
+- `client_channels` — registered desktop/CLI/TUI/custom channels, polling
+  availability, and fallback preferences. Client IDs are not credentials.
 - `telegram_workstream_selections` — each Telegram sender's browser selection;
   ordinary messages are routed by intent, not this saved selection.
 - `jobs`, `task_logs`, and `agent_checkpoints` — queued work, execution history,
@@ -91,6 +94,11 @@ erasing owned records and eligible derived files.
   (`job_id` NULL) or scoped to one job. Legacy allows are inactive; blocks still
   apply. Global grants are retired with audit records by migration 016.
 - `runtime_state` and `manual_events` — runtime metadata and monitor actions.
+
+The Management API also keeps protected installation-local state under `data/`,
+including its administrative token, installation identity, and operation journal.
+This is not all stored in PostgreSQL; back up the full installation data, not
+only a database dump.
 
 ## Queue and execution
 

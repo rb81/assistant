@@ -390,8 +390,8 @@ Administrators can list options and test a voice inside the running stack
 (the test is charged by OpenRouter but not recorded in the agent budget):
 
 ```bash
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts voices elevenlabs
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts test "Hello" --model elevenlabs/eleven-v3 --voice jessica  # add --no-zdr to compare routing
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts voices elevenlabs
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.tts test "Hello" --model elevenlabs/eleven-v3 --voice jessica  # add --no-zdr to compare routing
 ```
 
 Samples are saved on the host under `data/share/tts-tests/`.

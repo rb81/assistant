@@ -129,12 +129,20 @@ Back up first and stop the stack **before** moving or replacing source. Update
 from a reviewed server revision using your chosen source-download or Git workflow,
 preserving `data/`. The installer is not an updater.
 
-Run `./run.sh server start` from the updated location to regenerate absolute
-deployment paths, build management, and start the configured services. Rebuild
-application images through **Services > Start app** when source changes.
-If the checkout moved, rerun `ASSISTANT_INSTALL_DIR="$PWD" sh install.sh` to
-register its launcher; an existing launcher for the old location must be resolved
-first. Do not remove an unrelated installation's launcher.
+From the updated installation root, run:
+
+```sh
+ASSISTANT_INSTALL_DIR="$PWD" sh install.sh
+```
+
+For an existing installation, this runs the shipped deployment migrations,
+regenerates absolute paths and credential mounts, rebuilds images, and starts the
+configured services without downloading over your chosen source revision.
+Database migrations run during application startup.
+
+If the checkout moved, resolve any launcher still pointing at the old location
+before registering the new one. Do not remove an unrelated installation's
+launcher. `server start` alone does not run the root `migrations/` scripts.
 
 ## Data locations
 

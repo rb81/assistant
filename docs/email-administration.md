@@ -6,8 +6,16 @@ and embedding models. Ordinary requests still go through the assistant.
 ## Approval channels
 
 Choose the delivery channel in setup under **Advanced Settings → Approvals and
-names**: `email`, `telegram`, or `both`. Existing installations keep `email`.
-Telegram-only is recommended when Telegram is configured.
+names**: `email`, `telegram`, `both`, or `client`. The shipped default is `email`.
+Use `client` for Management API review without requiring an email/Telegram
+approval channel. Client IDs are delivery identities, not authentication;
+review still requires the instance's administrative API credential.
+
+In client mode, the server queues a notice for a registered client; inspect and
+decide pending approvals through the API/client UI. Registration and live polling
+are separate. If no client is registered, notice delivery fails explicitly;
+inspect pending approvals rather than assuming an action ran. See
+[client delivery](building-clients.md#client-channels-polling-and-fallback).
 
 The administrator's Telegram identity reuses the verified
 `AGENT_TELEGRAM_RECIPIENTS` mapping for `AGENT_ADMIN_EMAIL`; that numeric ID
@@ -31,9 +39,9 @@ start with `APPROVE ONCE`, `APPROVE ALWAYS`, `APPROVE ALWAYS FOR ALL SCRIPTS`
 (websites only), or `DENY`; full script manifests are attached.
 See [network access approvals](sandbox.md#network-access-approvals).
 
-Telegram `/permissions` and setup **Tools → Script and website permissions**
-show versions, host grants, legacy rules, and approval history; they also allow
-revocation and blocking. Permission changes stop active sandbox runs. Use
+Telegram `/permissions` shows versions, host grants, legacy rules, and approval
+history. In the terminal interface, open **Activity → Script permissions** to
+inspect scripts and revoke or block them. Permission changes stop active sandbox runs. Use
 `/menu` → **Needs attention** for paused tasks and its **Approval inbox** for
 pending confirmations, including held inbound mail. Expired buttons require a
 fresh approval; expiry does not delete the job.
@@ -147,15 +155,16 @@ through ordinary workers, not inline in admin commands.
 Run these examples from the installation root after setup:
 
 ```bash
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin status'
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin status'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin memory suggestions'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin requeue 123' --yes
 ```
 
 `data/.env` supplies the generated Compose file list, including the credential
 overlay. CLI access uses local OS/container authorization and does not require
-models or mailbox connectivity. `--yes` confirms locally. `./run.sh tools`
-offers these commands in menus.
+models or mailbox connectivity. `--yes` confirms locally. For ordinary
+administration, use **Activity** in `./run.sh`; `./run.sh tools` opens Services,
+not the retired Tools menu.
 
 ## Memory And Deletion
 
@@ -189,4 +198,5 @@ A held outbound-email call pauses the job as `needs_review`; review permits
 exactly that call once without increasing execution budgets. Script findings
 are cached per version, security profile, and task context. Reusable admin run
 approval bypasses repeated model checks for that version; a once approval
-permits one execution. Script permissions remain required even with YOLO mode.
+permits one execution. Email YOLO does not bypass script permissions; the separate Script YOLO setting
+explicitly disables those checks. See [YOLO modes](security.md#yolo-mode).

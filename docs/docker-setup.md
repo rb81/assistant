@@ -83,17 +83,19 @@ per-run internal networks and an HTTPS proxy restricted to approved hosts.
 `SANDBOX_EGRESS_MODE=open` in `data/.env` restores direct internet access.
 See [sandbox network isolation](sandbox.md#network-isolation).
 
-Only the restricted Docker reader mounts the Docker socket for management
-status, inspect, and bounded log reads; it cannot create containers or perform
-other mutations. The sandbox broker also mounts the socket to create and remove
-command containers and therefore has daemon-level authority. This is a
-significant host trust boundary; see
+The `management-docker` service mounts the Docker socket. Its read gateway permits
+only project-scoped status, inspection, and bounded logs; a separate private,
+authenticated executor performs typed administrative mutations. Treat that
+service as Docker-privileged, not read-only. The sandbox broker also has daemon
+authority to create and remove command containers. These are significant host
+trust boundaries; see
 [sandbox Docker socket](security.md#sandbox-docker-socket). Do not flatten the
 existing isolation networks.
 
 Command containers receive the shared workspace, not application credentials or
-the Docker socket. Management mounts the installation read-only and `data/`
-writable for token creation. Bind paths remain identical inside and outside
+the Docker socket. Management mounts the installation read-only and `data/` writable for tokens,
+configuration, and operation state. Only the private executor also has a writable
+`src/config` bind for reviewed source-YAML saves. Bind paths remain identical inside and outside
 administration containers so nested Compose uses the correct host paths.
 
 ## Persistent mounts
@@ -140,9 +142,9 @@ remove the broker or its Docker socket mount.
 
 ## Maintenance
 
-Before upgrading to version-bound script permissions, save setup again so
-revoke-only credentials and service-specific grants are generated. Restarting
-alone does not apply the change. See the
+After updating source, use the [installation upgrade steps](running-assistant.md#updating-or-moving-a-source-installation)
+to run deployment migrations and regenerate credential grants. A plain Docker
+restart does not update images, mounts, or environment. See the
 [upgrade and acceptance checklist](sandbox.md#upgrade-and-acceptance-checklist).
 
 Rebuild and recreate after source changes:

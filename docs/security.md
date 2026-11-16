@@ -1,5 +1,19 @@
 # Security Guide
 
+Start with these boundaries:
+
+- Use an assistant-owned mailbox and restrict senders and outgoing recipients.
+- Keep the [Management API](management-api.md) on loopback; use trusted SSH for
+  remote access. Its bearer token grants instance-wide administration.
+- Treat the host, Docker administrators, private management executor, and sandbox
+  broker as trusted. Container restrictions do not remove Docker daemon authority.
+- Keep credentials out of the workspace and protect backups. Secret files and
+  credential volumes are not encrypted storage.
+- Review approvals and external side effects. Deletion cannot recall sent
+  messages or provider copies.
+
+The sections below describe the exact behavior and recovery limits.
+
 ## Workstream deletion
 
 Open `./run.sh` -> **Activity → Projects & workstreams**. Select a project
@@ -78,16 +92,20 @@ and installation-level state are not task data and are not deleted.
 
 ## Access model
 
-The deployment publishes no application port. PostgreSQL, Ollama, ClamAV and
+The deployment publishes the authenticated Management API only on host loopback
+(`127.0.0.1:8765` by default), not the public network. PostgreSQL, Ollama, ClamAV and
 sandbox broker ports remain private. PostgreSQL
 connections and sandbox RPC use verified TLS; the sandbox also requires its
 service-scoped bearer token.
 
 Use a dedicated assistant mailbox, sender/recipient allowlists, verified admin
 identity, and explicit review for sensitive actions. See [email administration](email-administration.md).
-Admin requests require a one-use OTP and request hash delivered in an independent
-email to the configured admin, valid for ten minutes. From headers alone cannot
-authorize requests. This trusts possession of the admin mailbox; a leaked
+Email-delivered admin confirmations use a one-use OTP and request hash sent
+independently to the configured admin, normally valid for ten minutes. Telegram
+and authenticated Management API clients can decide version-bound approvals
+through their respective controls; see [approval channels](email-administration.md#approval-channels).
+From headers alone cannot authorize requests. Email confirmation trusts possession
+of the admin mailbox; a leaked
 confirmation or compromised mailbox defeats that trust. The hash binds the
 pending action and is not a second authentication factor. Approval credentials
 are excluded from model context.
@@ -135,8 +153,8 @@ setup completion and pending credential activation. Removing it prevents setup
 from finding the selected store reliably. The otherwise empty `data/.secrets` directory
 is retained for this metadata.
 
-To reverse the move, choose **Move credentials back to plaintext host files** in
-the post-setup menu or final review, then **Save and finish**. Setup restores
+To reverse the move, open **Settings → Storage & recovery → Move credentials to
+host files** and confirm. Setup restores
 restricted `data/.secrets` files (`0700` directory, `0600` files), switches the Compose
 overlay back to file-backed secrets, then handles the cleanup automatically: it
 confirms the host files match, recreates running services with host mounts,
@@ -381,7 +399,7 @@ question plus two yes/no risk flags.
 
 | Target | Setting | What is screened |
 |---|---|---|
-| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `AGENT_EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders, replies on open threads and replies from recipients of assistant-sent mail. Covers selected headers, text, HTML and attachment names and types. |
+| Inbound email | always on while the decision model is enabled | Fresh accepted task email, including mail claiming the admin address; covers selected headers, text, HTML and attachment names and types. Explicit `/admin` and approval-reply handling occur separately. |
 | Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
 | Scripts | `screen.scripts` (off) | Registered script versions before run approval; cached per version, policy and screening context. |
 
@@ -483,13 +501,13 @@ Static analysis remains best effort, not exhaustive command interception.
 malicious inbound and outbound email proceed without screening approval. The admin
 is notified afterwards. This email setting does not bypass script permissions,
 and malicious script versions remain blocked. Setup shows a strong
-warning and requires typing `ALLOW POSSIBLY MALICIOUS`, and services log a
-warning at startup while YOLO mode is on.
+warning in the legacy host wizard; current management changes use the shared
+review/confirmation flow. Services log a warning at startup while YOLO mode is on.
 
 The separate `agent.security.script_yolo` (also off by default) disables script,
 host and development-supervisor approvals, including script screening. Setup
-requires typing `ALLOW UNSUPERVISED SCRIPTS` and logs a startup warning. The proxy
-allows any public HTTPS hostname in this mode, but still enforces explicit
+uses the management review/confirmation flow, and services log a startup warning.
+The proxy allows any public HTTPS hostname in this mode, but still enforces explicit
 blocks, private-address restrictions and SNI checks; sandbox isolation and limits
 remain. Existing installations are not silently opted in. Turning it off creates
 no permanent grants. See [supervised development sessions](sandbox.md#supervised-development-sessions)
@@ -527,9 +545,11 @@ Endpoints must use HTTPS. Screened content is sent to the provider, so review it
 - A classifier is a risk filter, not a security boundary. Tool guardrails,
   recipient policy and the sandbox still apply.
 - Attachment contents are not screened; they are malware-scanned separately.
-- Email from the configured admin uses OTP approval instead of screening.
-- Script permission decisions use the same authenticated shared record over email
-  and Telegram; ordinary job resumes do not grant script permissions.
+- Fresh accepted admin task email is screened when enabled; routine confirmation
+  for new admin conversations is a separate setting, not a screening bypass.
+- Script permission decisions use the same authenticated shared record over email,
+  Telegram, and authenticated Management API clients; ordinary job resumes do
+  not grant script permissions.
 
 ## Responsible disclosure
 

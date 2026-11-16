@@ -33,7 +33,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET configuration` | Revision, setting catalog with help, navigation `groups`, instructions, original `agent_yaml`, backup names |
 | `POST configuration/preview` | Validate the exact draft; return changes, problems, and `preview_id` |
 | `GET configuration/agent-yaml/backups/{name}` | Read one retained fixed-name source backup into a new draft |
-| `GET configuration/check` | Saved-file validation; runtime verification is separate |
+| `GET configuration/check` | Saved-file validation; add `?runtime=true` for executor-backed container checks |
 | `GET services` | Stable service state/health for CLI/TUI consumers |
 | `GET services?details=true` | Add available container age information for a graphical status page |
 | `GET services/{id}/logs` | Bounded, redacted logs |
@@ -64,9 +64,11 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET operations` and `GET operations/{id}` | Retained outcomes and progress |
 
 Records and conversations use `page`/`query` (conversations: 25 per page, newest
-activity first, optional `channel` of `client`, `telegram` or `email`); approvals use `limit`/`offset`; transcripts use
-50-message pages; task activity uses eight-event pages. Workspace domain actions
-use their documented offsets/limits. Never assume one page is the whole dataset.
+activity first, optional `channel` of `client`, `telegram` or `email`); approvals
+use `limit`/`offset`; transcripts use 50-message pages. Task activity returns a
+bounded window of up to 200 calls, with `since` and `truncated`, not numbered
+pages. Workspace domain actions use their documented offsets/limits. Never
+assume one response is the whole dataset.
 
 ## Writes and recovery
 
@@ -149,7 +151,8 @@ chunked and digest checked; never interpret server attachment paths as local URL
 of every job in the task's thread, oldest first, as `{rows, total, truncated}`.
 Each row has `id`, `task_id`, `created_at`, `tool_name`, `tool_action`, `status`
 (`running`, `succeeded`, `failed`, `interrupted`), `input`, `output` (redacted previews, up to
-4000 characters) and `duration_ms`. Pass `since` (ISO 8601) to skip calls before
+4000 characters plus an ellipsis when truncated) and `duration_ms`.
+Pass `since` (ISO 8601) to skip calls before
 the earliest loaded message. Interleave rows with messages by `created_at` to
 show what the agent did between replies.
 Unpaired calls become `interrupted` when another call starts in the same job or

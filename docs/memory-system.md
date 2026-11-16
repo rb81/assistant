@@ -72,8 +72,8 @@ inbound/outbound email, contacts, and non-email requests. Request messages use
 keyword search even when other sources use embeddings. Workspace chunks are
 searched separately through `file_semantic_search`.
 
-The shipped configuration sets `agent.context.search_days` to 90 (the code
-fallback when absent is 30). This window applies to jobs, reminders, email, and
+`agent.context.search_days` defaults to 90 days in both shipped configuration and
+code. This window applies to jobs, reminders, email, and
 request messages, not memories or contacts. `recent_only=true` uses 7 days for
 the time-windowed sources; memory expiry still governs eligible memories.
 
@@ -130,8 +130,8 @@ To deploy automatic indexing on an existing installation, rebuild and recreate
 the services from the repository root:
 
 ```sh
-sudo docker compose --env-file data/.env up -d --build
-sudo docker compose --env-file data/.env logs --tail=100 workspace-indexer
+docker compose --env-file data/.env up -d --build
+docker compose --env-file data/.env logs --tail=100 workspace-indexer
 ```
 
 Services apply the embedding-invalidation/notification migration at startup.

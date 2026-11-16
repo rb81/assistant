@@ -31,7 +31,7 @@ to configure an installation.
 | `data/.secrets/` | Protected, ignored credential files and setup metadata |
 | `data/.compose-secrets.yaml` | Setup-generated Compose secret mounts |
 | `data/config/AGENT.md` | Local runtime instructions |
-| `data/.setup.lock`, `data/.venv-setup`, `data/backups/` | Setup state, environment, and local backups |
+| `data/.setup.lock`, `data/backups/` | Setup locking and local backups |
 
 Other mutable state—including PostgreSQL, private files, and the shared
 workspace—lives under `data/`. Do not commit that directory. Defaults are read
@@ -53,8 +53,10 @@ containers, but explicit Compose `environment:` entries take precedence. This
 file is not used for Compose interpolation: settings such as
 `TASK_AGENT_WORKERS` belong in `data/.env`.
 
-Setup rejects unknown, mistyped, wizard-managed, and Compose-managed override
-keys during review. Never put credentials in either environment file; use the
+Setup rejects unknown names, invalid types, credentials, and deployment-only
+keys in application overrides. Managed forms also write to `overrides.env`;
+the file is not limited to settings absent from the UI.
+Never put credentials in either environment file; use the
 `secrets` commands. Defaults and supported override rules are documented in
 [configuration files and overrides](env-overrides.md). Recreate affected
 services after changing runtime configuration.
@@ -81,5 +83,6 @@ enabling email intake or outbound email. See
 - [Memory and embeddings](memory-system.md)
 - [OpenRouter](openrouter.md)
 
-The project is prerelease. A separate legacy conversion bundle is published in
-the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).
+Older schema/layout installations may need the separate
+[layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition)
+before current deployment migrations can run.

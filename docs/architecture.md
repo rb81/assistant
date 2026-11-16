@@ -5,10 +5,11 @@ Python services handle intake, execution, indexing, scheduling, and monitoring.
 
 ## Services
 
-- `management` — authenticated configuration, service status, and bounded logs;
+- `management` — authenticated reads, reviewed mutations, and client delivery;
   published only on host loopback for local clients or SSH forwarding.
-- `management-docker` — internal, project-scoped read-only Docker gateway;
-  the API itself has no Docker socket.
+- `management-docker` — internal, project-scoped Docker read gateway and private
+  typed executor for administrative operations. It has Docker daemon authority;
+  the public API container itself has no Docker socket.
 - `postgres` — jobs, messages, logs, memories, reminders, integrations, and indexes.
 - `downloader` — optional email intake (the `email` profile).
 - `telegram-receiver` and `request-preprocessor` — optional private Telegram intake
@@ -29,8 +30,9 @@ Most application roles use the Python agent image and select behavior through
 
 ## Request and job flow
 
-Email or Telegram intake validates and records a request, processes permitted attachments,
-and queues work in an owning workstream. Task-agent claims it through PostgreSQL,
+Email, Telegram, or an authenticated client records a request and queues work in
+an owning workstream. Email/Telegram intake also processes permitted attachments.
+Task-agent claims queued work through PostgreSQL,
 builds context, calls the configured model, and runs available tools. Automatically
 routed jobs deliver replies through the request route; legacy email jobs require
 explicit email tools. PostgreSQL records progress and side effects. Research has
@@ -63,9 +65,10 @@ secrets, source files or service controls.
 
 PostgreSQL and sandbox control traffic use verified TLS. Compose networks scope
 internal communication. The operator API publishes only a loopback port; there
-is no browser administration interface. Desktop, CLI, and opt-in TUI reads share
-the management contracts. Local administrative writes run in disposable Docker
-containers, not host Python.
+is no browser administration interface. Desktop, CLI, and TUI reads and writes
+share the Management API. Docker-backed operations run through its private typed
+executor; the installed launcher also uses disposable administration containers
+for bootstrap and terminal access. The default installation needs no host Python.
 
 ## Persistent state
 

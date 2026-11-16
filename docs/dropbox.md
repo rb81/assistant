@@ -3,7 +3,7 @@
 Dropbox is an on-demand file exchange, not synchronization. A connected account
 provides documents from its app `Inbox`; tasks can send files to
 `Outbox/job-<id>` when standing export permission is enabled. Adding a file does
-not start a task—email the Assistant with a request to use it.
+not start a task—ask the Assistant to use it through a connected channel.
 
 ## Connect
 
@@ -23,21 +23,25 @@ Run:
 ./run.sh --section dropbox
 ```
 
-Enable Dropbox, enter the app key, open the displayed authorization URL on any
-device, and paste the authorization code into setup. Authorization uses PKCE
-S256 and offline access; access tokens refresh automatically. No callback
-server, public port, or host Dropbox client is needed. Keep authorization codes
-and refresh tokens private.
+Enable Dropbox and enter the app key and an **existing offline refresh token**
+for that app. The current management form accepts credentials; it does not
+display an OAuth consent URL or exchange an authorization code. Obtain the token
+using Dropbox's [OAuth code flow with PKCE](https://developers.dropbox.com/oauth-guide),
+requesting offline access (`token_access_type=offline`) and the scopes above.
+Do not paste a short-lived access token into the refresh-token field.
+
+Access tokens refresh automatically once connected. No public callback port or
+host Dropbox client is required for the runtime integration. Keep authorization
+codes, PKCE verifiers, and refresh tokens private.
 
 Create `Inbox` under `/Apps/<your-app-name>` in Dropbox before importing.
-`Outbox` and its task folder are created on first export. Optional setup
-verification checks authorization only; it creates no folders or files.
+`Outbox` and its task folder are created on first export. After saving and applying
+settings, ask for a read-only Inbox listing to verify access.
 
 Decide whether **any task may deliver files to Outbox without further
 confirmation**. This is standing permission (off by default), not approval for
-each upload. Review and save the connection. Cancel preserves the saved
-installation, but an authorization may already have been granted to Dropbox;
-revoke it there if no longer needed. Recreate affected services to apply changes.
+each upload. Review and save the connection, then recreate affected services.
+Discarding a draft does not revoke authorization already granted at Dropbox.
 
 ## Use
 
@@ -116,10 +120,11 @@ protected plaintext host files, mounted only into tool-using services and never
 the sandbox. Access tokens stay in process memory. Transfer status is recorded
 in `dropbox_transfers` and the normal task audit log.
 
-Reopen the Dropbox section to retain or reconnect the account. Disabling
-Dropbox removes credential mounts and disables exports; on Save, a separate
-confirmation removes stored settings and credentials. This does not remove
-remote files or revoke provider authorization: revoke the app in Dropbox.
+Reopen the Dropbox section to change credentials or disable the integration.
+Disabling it and applying settings removes its runtime credential grants; it
+does not automatically erase stored credentials. Remove those separately under
+**Settings → Credentials** if no longer needed. Neither action removes
+remote files or revokes provider authorization: revoke the app in Dropbox.
 Imported workspace copies, exports, and backups also remain until removed
 separately.
 

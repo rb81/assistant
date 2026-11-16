@@ -320,17 +320,18 @@ Email replies use `APPROVE ONCE`, `APPROVE ALWAYS`, or `DENY`
 on the first line, followed by optional feedback. Both channels resolve the same
 one-use request when delivery is configured as `both`.
 
-Manage permissions in Telegram **/permissions** (also **/menu → Permissions**), or
-**./run.sh tools → Script and website permissions**. Both use deterministic
-operations, not a model. Inspect scripts, stored code/version diffs, host scopes,
-pending requests and history; revoke grants or block/unblock scripts and hosts.
+Manage permissions in Telegram **/permissions** (also **/menu → Permissions**).
+The terminal interface's **Activity → Script permissions** provides script
+inspection and revoke/block actions. These use deterministic operations, not a
+model. Telegram's permissions browser also exposes stored code/version diffs,
+host scopes, pending requests, and history.
 Email approvals attach the full code manifest for inspection.
 
 ```bash
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions scripts'
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions hosts'
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions block-host api.example.com' --yes
-sudo docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions revoke-script 1' --yes
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions scripts'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions hosts'
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions block-host api.example.com' --yes
+docker compose --env-file data/.env exec task-agent python -m assistant_agent.admin_commands '/admin permissions revoke-script 1' --yes
 ```
 
 Permission changes stop active sandbox runs and invalidate in-flight policy
@@ -348,8 +349,8 @@ Old network-only approval replies and CLI allow operations are refused explicitl
 request a fresh combined version-bound approval instead.
 Revoking or blocking a script revokes its development sessions and invalidates
 pending approvals as well as preventing use of its host permissions.
-Factory reset has a
-separate **Sandbox script and network approvals and blocks** category.
+Factory reset clears the bundled database, including script/network approvals
+and blocks; it is not a selective permission reset. Revoke specific grants instead.
 
 For upgrades, save setup again to generate the revoke-only credential and
 updated Compose secret grants, then rebuild/recreate the agent and sandbox
@@ -359,8 +360,9 @@ services. Runtime database migration preserves existing rules.
 
 Back up local state before upgrading. From the repository root, run `./run.sh`,
 review **Advanced Settings → Approvals and names**, select `email`, `telegram`,
-or `both`, and save. Telegram requires a configured, verified administrator;
-email requires the admin address and working mail delivery.
+`both`, or `client`, and save. Telegram requires a configured, verified
+administrator; email requires the admin address and working mail delivery.
+Client mode uses authenticated Management API review and registered-client notices.
 
 Rebuild and recreate the stack using the generated Compose configuration:
 

@@ -95,8 +95,9 @@ Security screening can also pause a tool call for admin approval in
 `needs_review`. Approval permits retrying the identical call, not changed arguments.
 
 Scripts have a separate permission workflow even when screening is disabled:
-`script_approval_request` registers the finished version, then
-`network_access_request` requests any missing hosts for the identical invocation.
+`script_approval_request` submits the finished version and required hosts together.
+`network_access_request` is a compatibility entrypoint for combined approval, not
+an independent grant for arbitrary later code.
 Missing grants pause the job in `needs_review` with `metadata.permission_request`.
 An authenticated decision records the grant or denial, optional feedback, and
 queues the job without increasing its budgets. A generic resume is not a grant.

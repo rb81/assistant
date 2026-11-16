@@ -16,8 +16,10 @@
 - `docs/` — canonical host documentation.
 - `data/` — gitignored local settings, credentials, and runtime state.
 
-The root `run.sh` forwards all arguments to `src/scripts/run.sh`. Compose
-configuration is in `src/docker-compose.yml`; setup writes an absolute
+The root `run.sh` resolves installed symlinks and forwards arguments to
+`src/scripts/server.sh`, the Docker-backed launcher.
+`ASSISTANT_HOST_ADMIN=1` selects the legacy `src/scripts/run.sh` host-Python path.
+Compose configuration is in `src/docker-compose.yml`; setup writes an absolute
 `COMPOSE_FILE` value to `data/.env`. These paths describe the host checkout;
 the runtime receives documentation, not the repository source tree.
 
@@ -49,7 +51,7 @@ tracking and the transition path for older databases.
 - `email_ingest.py`, `telegram_ingest.py`, `requests.py` — intake and preprocessing.
 - `telegram_admin.py` — deterministic browsing, confirmations, guidance and recovery controls.
 - `email_approvals.py`, `approval_channels.py`, `approval_actions.py` — shared one-use
-  email/Telegram approvals, verified administrator identities and action execution.
+    email/Telegram/client approvals, verified administrator identities and action execution.
 - `replies.py`, `telegram.py` — channel-aware replies and Telegram delivery;
   `telegram_config.py` holds dependency-free settings helpers used by setup.
 - `workstreams.py`, `workstream_files.py`, `workstream_operator.py` — ownership,

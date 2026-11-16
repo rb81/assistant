@@ -29,7 +29,8 @@ AGENT_SANDBOX_ENABLED=false
 
 Use `true`/`false` for booleans and comma-separated values for lists. Blank
 values generally leave the default unchanged. Setup rejects unknown names,
-invalid values, credentials, and settings reserved for its forms.
+invalid values, credentials, and deployment-only settings. The management forms
+save supported application settings into this same file.
 
 ## Credentials
 
@@ -58,8 +59,12 @@ unknown or mistyped overrides, credentials absent from `agent.yaml`, a leftover
 plus overrides or cannot read a granted credential. Container checks require
 the local CLI's Docker access.
 
-The management API's `GET /v1/configuration/check` checks saved files only and
-returns `runtime_checked: false`; its Docker access is read-only.
+`./run.sh management check` and `GET /v2/configuration/check` check saved files
+only. `./run.sh config check` requests
+`GET /v2/configuration/check?runtime=true`, delegating container checks to the
+private executor. Inspect `runtime_checked` and `containers_checked`; a saved-file
+check does not verify running services or provider access. The legacy v1 endpoint
+remains saved-file-only.
 
 ## Upgrading older installations
 
