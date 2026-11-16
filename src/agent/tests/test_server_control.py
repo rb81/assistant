@@ -15,8 +15,8 @@ import pytest
 
 from assistant_agent.management_docker import DockerReader, PROJECT_LABEL
 from assistant_agent.management_server import connection
-from assistant_agent.server_control import bootstrap, start
-from assistant_agent.setup import Installation, SetupError
+from assistant_agent.server_control import MANAGEMENT_START_WAIT_SECONDS, bootstrap, start
+from assistant_agent.setup import DockerCommandError, Installation, SetupError
 from assistant_agent.management_api import token_path
 from assistant_agent.management_client import ManagementClient
 from assistant_agent.credential_volume import CredentialVolume
@@ -59,10 +59,77 @@ def test_fresh_bootstrap_is_idempotent_and_does_not_enable_workers(tmp_path):
     assert token_path(tmp_path).read_bytes() == token
     assert connection(tmp_path)["port"] == 8765
     assert connection(tmp_path)["token"] == token.decode().strip()
-    with patch.object(Installation, "compose", return_value="") as compose:
+    with patch.object(Installation, "compose", return_value="") as compose, \
+            patch.object(Installation, "wait_for_container_health") as wait:
         start(tmp_path)
     assert compose.call_args.args[0][-2:] == ["management", "postgres"]
+    assert compose.call_args.kwargs["timeout"] == 1800
+    assert wait.call_args.kwargs["timeout"] == MANAGEMENT_START_WAIT_SECONDS
     assert not reopened.state.get("setup_complete")
+
+
+def test_fresh_start_preserves_docker_failure_diagnostics(tmp_path):
+    instance = Mock()
+    instance.state = {}
+    instance.compose.side_effect = DockerCommandError("Docker registry credentials are unavailable")
+    with patch("assistant_agent.server_control.bootstrap", return_value=instance), pytest.raises(
+            SetupError, match=r"Docker registry credentials are unavailable.*Installation is incomplete"):
+        start(tmp_path)
+    instance.wait_for_container_health.assert_not_called()
+
+
+def test_health_wait_allows_cold_start_to_recover_after_docker_marks_it_unhealthy():
+    instance = Mock()
+    waiting = [{"Service": "task-agent", "State": "running", "Health": "unhealthy"}]
+    ready = [{"Service": "task-agent", "State": "running", "Health": "healthy"}]
+    instance.container_rows.side_effect = [waiting, ready]
+    progress = Mock()
+    with patch("assistant_agent.setup.time.monotonic", side_effect=[0, 10]), \
+            patch("assistant_agent.setup.time.sleep") as sleep:
+        assert Installation.wait_for_container_health(
+            instance, ["task-agent"], ["task-agent"], progress, timeout=600,
+        ) == ready
+    sleep.assert_called_once_with(5)
+    assert "task-agent (unhealthy)" in progress.call_args.args[0]
+
+
+def test_health_wait_deadline_is_failure_not_deferred_success():
+    instance = Mock()
+    instance.container_rows.return_value = [{"Service": "task-agent", "State": "running", "Health": "starting"}]
+    with patch("assistant_agent.setup.time.monotonic", side_effect=[0, 600]), \
+            pytest.raises(SetupError, match=r"within 600 seconds.*task-agent \(starting\).*Startup failed"):
+        Installation.wait_for_container_health(instance, ["task-agent"], ["task-agent"])
+
+
+def test_configured_start_does_not_report_running_when_health_verification_fails(tmp_path, capsys):
+    instance = Mock()
+    instance.state = {"setup_complete": True}
+    instance.start_containers.side_effect = SetupError("task-agent is not healthy")
+    with patch("assistant_agent.server_control.bootstrap", return_value=instance), \
+            pytest.raises(SetupError, match="task-agent is not healthy"):
+        start(tmp_path)
+    assert "are running" not in capsys.readouterr().out
+
+
+def test_health_wait_preserves_docker_access_errors():
+    instance = Mock()
+    instance.container_rows.side_effect = DockerCommandError("Docker is unavailable", reason="unavailable")
+    with pytest.raises(DockerCommandError, match="Docker is unavailable"), \
+            patch("assistant_agent.setup.time.sleep") as sleep:
+        Installation.wait_for_container_health(instance, ["task-agent"], ["task-agent"])
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("service, exit_code", [("task-agent", 0), ("ollama-model-puller", 1)])
+def test_health_wait_fails_immediately_for_stopped_worker_or_failed_helper(service, exit_code):
+    instance = Mock()
+    instance.container_rows.return_value = [{"Service": service, "State": "exited", "ExitCode": exit_code}]
+    with pytest.raises(SetupError, match="Container startup failed: " + service), \
+            patch("assistant_agent.setup.time.sleep") as sleep:
+        Installation.wait_for_container_health(
+            instance, ["task-agent"], ["task-agent", "ollama-model-puller"],
+        )
+    sleep.assert_not_called()
 
 
 def test_bootstrap_refuses_to_guess_an_existing_database_password(tmp_path):
@@ -164,10 +231,110 @@ def test_installer_reuses_existing_installation_and_does_not_consume_piped_stdin
     result = subprocess.run(
         ["sh", str(ROOT / "install.sh")], input="must-not-be-read\n", capture_output=True, text=True,
         env=dict(os.environ, HOME=str(home), PATH=str(tools) + ":" + os.environ["PATH"],
-                 ASSISTANT_INSTALL_DIR=str(destination)), check=True,
+                 ASSISTANT_INSTALL_DIR=str(destination), COLUMNS="40"), check=True,
     )
     assert "server-started" in result.stdout
+    assert "Starting Assistant services; the" in result.stdout
+    assert "startup may take several minutes." in result.stdout
+    assert all(len(line) <= 40 for line in result.stdout.splitlines()
+               if not line.startswith("  ") and "assistant-client" not in line)
     assert (home / ".local/bin/assistant").is_symlink()
+    assert not Path(str(destination) + ".install-lock").exists()
+
+
+def test_installer_does_not_report_success_when_server_start_fails(tmp_path):
+    home = tmp_path / "home"
+    destination = tmp_path / "installation"
+    (destination / "src/scripts").mkdir(parents=True)
+    (destination / "src/scripts/server.sh").write_text("# marker\n")
+    (destination / "run.sh").write_text('#!/bin/sh\nprintf "server failed\\n" >&2\nexit 7\n')
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "docker").write_text("#!/bin/sh\nexit 0\n")
+    (tools / "docker").chmod(0o700)
+    result = subprocess.run(
+        ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        env=dict(os.environ, HOME=str(home), PATH=str(tools) + ":" + os.environ["PATH"],
+                 ASSISTANT_INSTALL_DIR=str(destination)),
+    )
+    assert result.returncode != 0
+    assert "server failed" in result.stderr
+    assert "installation is incomplete" in result.stderr
+    assert "Assistant is installed" not in result.stdout
+    assert not (home / ".local/bin/assistant").exists()
+    assert not Path(str(destination) + ".install-lock").exists()
+
+
+def test_installer_interruption_stops_its_startup_process_tree(tmp_path):
+    destination = tmp_path / "installation"
+    (destination / "src/scripts").mkdir(parents=True)
+    (destination / "src/scripts/server.sh").write_text("# marker\n")
+    marker = tmp_path / "started"
+    (destination / "run.sh").write_text('#!/bin/sh\n: > "$START_MARKER"\nsleep 30\n')
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "docker").write_text("#!/bin/sh\nexit 0\n")
+    (tools / "docker").chmod(0o700)
+    process = subprocess.Popen(
+        ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=dict(os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(destination),
+                 PATH=str(tools) + ":" + os.environ["PATH"], START_MARKER=str(marker)),
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists():
+            assert process.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        process.terminate()
+        stdout, _ = process.communicate(timeout=5)
+        assert process.returncode != 0
+        assert b"Assistant is installed" not in stdout
+        assert not Path(str(destination) + ".install-lock").exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_interactive_installer_animates_wait_and_only_replays_failed_startup_log(tmp_path, exit_code):
+    destination = tmp_path / "installation"
+    (destination / "src/scripts").mkdir(parents=True)
+    (destination / "src/scripts/server.sh").write_text("# marker\n")
+    (destination / "run.sh").write_text(
+        '#!/bin/sh\nprintf "startup-log-marker\\n"\nsleep 0.1\nexit ' + str(exit_code) + "\n"
+    )
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "docker").write_text("#!/bin/sh\nexit 0\n")
+    (tools / "docker").chmod(0o700)
+    master, slave = os.openpty()
+    try:
+        result = subprocess.run(
+            ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave,
+            env=dict(os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(destination),
+                     PATH=str(tools) + ":" + os.environ["PATH"]), timeout=10,
+        )
+        os.close(slave)
+        slave = None
+        output = b""
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output += chunk
+    finally:
+        if slave is not None:
+            os.close(slave)
+        os.close(master)
+    assert b"Starting... | 0s" in output
+    assert (b"startup-log-marker" in output) == (exit_code != 0)
+    assert (result.returncode == 0) == (exit_code == 0)
     assert not Path(str(destination) + ".install-lock").exists()
 
 
@@ -215,10 +382,25 @@ def test_containerized_api_and_scoped_docker_reader(tmp_path):
     instance.save()
     try:
         instance.docker(["build", "-t", management_image, "-f", str(ROOT / "src/management/Dockerfile"), str(ROOT)], timeout=900)
-        instance.compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "60", "management"], timeout=120)
+        instance.compose(["up", "-d", "--no-build", "management"], timeout=120)
+        instance.wait_for_container_health(
+            ("management", "management-docker"), ("management", "management-docker"), timeout=60,
+        )
         token = token_path(tmp_path).read_text().strip()
         client = ManagementClient(f"http://127.0.0.1:{port}", token)
         assert client.health()["api_version"] == 2
+        api_container = instance.compose(["ps", "-q", "management"]).strip()
+        terminal = instance.docker([
+            "run", "--rm", "--network", "container:" + api_container,
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m",
+            "--mount", f"type=bind,source={token_path(tmp_path)},target=/run/assistant/management-token,readonly",
+            "-e", "ASSISTANT_CONTAINER_ADMIN=1",
+            "-e", "ASSISTANT_MANAGEMENT_TOKEN_FILE=/run/assistant/management-token",
+            management_image, "python", "-m", "assistant_agent.setup", "management", "config",
+        ], timeout=60)
+        assert json.loads(terminal)["api_version"] == 2
         assert "clients.register" in client.health()["capabilities"]
         v2_headers = {"Authorization": "Bearer " + token}
         v2_health = httpx.get(f"http://127.0.0.1:{port}/v2/health", headers=v2_headers, timeout=10)

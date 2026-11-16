@@ -2,6 +2,16 @@
 set -eu
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
+print_wrapped() {
+    width=${COLUMNS:-80}
+    if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+        terminal_width=$(tput cols 2>/dev/null || :)
+        case "$terminal_width" in ''|*[!0-9]*) ;; *) width=$terminal_width ;; esac
+    fi
+    case "$width" in ''|*[!0-9]*) width=80 ;; esac
+    [ "$width" -ge 20 ] || width=20
+    printf '%s\n' "$1" | fold -s -w "$width"
+}
 case "$(uname -s)" in Darwin|Linux) ;; *) fail 'Assistant currently supports macOS and Linux.' ;; esac
 for tool in curl tar docker; do
     command -v "$tool" >/dev/null 2>&1 || fail "Install $tool first, then rerun the installer."
@@ -21,26 +31,43 @@ if [ -e "$LINK" ] || [ -L "$LINK" ]; then
 fi
 mkdir -p "$(dirname -- "$DESTINATION")"
 LOCK="$DESTINATION.install-lock"
-mkdir "$LOCK" 2>/dev/null || fail "An installation is in progress, or a stale lock exists: $LOCK"
+(umask 077; mkdir "$LOCK") 2>/dev/null || fail "An installation is in progress, or a stale lock exists: $LOCK"
 WORK=
+START_PID=
+START_LOG=
 cleanup() {
+    if [ -n "$START_LOG" ]; then rm -f "$START_LOG"; fi
     if [ -n "$WORK" ]; then
         rm -f "$WORK/source.tar.gz" "$WORK/paths" "$WORK/types"
         rmdir "$WORK" 2>/dev/null || printf 'Temporary installation files remain at %s\n' "$WORK" >&2
     fi
     rmdir "$LOCK"
 }
+terminate_tree() {
+    for child in $(ps -ax -o pid= -o ppid= | awk -v parent="$1" '$2 == parent { print $1 }'); do
+        terminate_tree "$child"
+    done
+    kill "$1" 2>/dev/null || :
+}
+stop_start() {
+    if [ -n "$START_LOG" ]; then printf '\r\033[K' >&2; fi
+    if [ -n "$START_PID" ]; then
+        terminate_tree "$START_PID"
+        wait "$START_PID" 2>/dev/null || :
+    fi
+    exit 1
+}
 trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+trap stop_start HUP INT TERM
 
 if [ -e "$DESTINATION" ]; then
     test -f "$DESTINATION/src/scripts/server.sh" || fail 'Destination already exists and is not a packaged Assistant installation. Use a new directory; existing data was not changed.'
-    printf '%s\n' 'Existing installation detected. Preserving its source and data; this is not an implicit update.'
+    print_wrapped 'Existing installation detected. Its source and data will be preserved; this is not an implicit update.'
 else
     umask 077
     WORK=$(mktemp -d "${TMPDIR:-/tmp}/assistant-install.XXXXXXXX")
     ARCHIVE="$WORK/source.tar.gz"
-    printf 'Downloading Assistant %s...\n' "$REF"
+    print_wrapped "Downloading Assistant $REF..."
     curl --proto '=https' --tlsv1.2 -fLSs --retry 3 --max-filesize 52428800 \
         "https://github.com/rb81/assistant/archive/$REF.tar.gz" -o "$ARCHIVE"
     tar -tzf "$ARCHIVE" > "$WORK/paths"
@@ -64,13 +91,39 @@ for migration in "$DESTINATION"/migrations/*.sh; do
     sh "$migration" "$DESTINATION/data" || fail "Migration failed: $migration"
 done
 
-sh "$DESTINATION/run.sh" server start </dev/null
+print_wrapped 'Starting Assistant services; the first startup may take several minutes.'
+if [ -t 1 ] && [ -t 2 ]; then
+    START_LOG="$LOCK/startup.log"
+    sh "$DESTINATION/run.sh" server start </dev/null >"$START_LOG" 2>&1 &
+else
+    sh "$DESTINATION/run.sh" server start </dev/null &
+fi
+START_PID=$!
+if [ -n "$START_LOG" ]; then
+    elapsed=0
+    while kill -0 "$START_PID" 2>/dev/null; do
+        case $((elapsed % 4)) in 0) frame='|' ;; 1) frame='/' ;; 2) frame='-' ;; 3) frame='\' ;; esac
+        printf '\r\033[KStarting... %s %ss' "$frame" "$elapsed" >&2
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf '\r\033[K' >&2
+fi
+if wait "$START_PID"; then
+    START_STATUS=0
+else
+    START_STATUS=$?
+fi
+START_PID=
+if [ "$START_STATUS" -ne 0 ] && [ -n "$START_LOG" ]; then cat "$START_LOG" >&2; fi
+[ "$START_STATUS" -eq 0 ] || fail 'Assistant could not be started. Review the Docker diagnostics above; installation is incomplete.'
 mkdir -p "$HOME/.local/bin"
 if [ ! -L "$LINK" ]; then
     ln -s "$DESTINATION/run.sh" "$LINK"
 fi
-printf '\n%s\n' 'Assistant is installed and its management API starts with Docker.'
-printf '%s\n' 'Complete setup in the containerized TUI:'
+printf '\n'
+print_wrapped 'Assistant is installed and its management API is ready.'
+print_wrapped 'Complete setup in the containerized TUI:'
 printf '  %s\n' "\"$LINK\""
-printf '%s\n' 'Or connect with Assistant for macOS: https://github.com/rb81/assistant-client'
-printf '%s\n' 'SSH administrators can use assistant connect through the installed launcher; no separate pairing is required.'
+print_wrapped 'Or connect with Assistant for macOS: https://github.com/rb81/assistant-client'
+print_wrapped 'SSH administrators can use assistant connect through the installed launcher.'

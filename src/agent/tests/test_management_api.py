@@ -711,7 +711,7 @@ def test_opt_in_tui_uses_same_api_for_services_and_logs(tmp_path):
     options = SimpleNamespace(
         root=tmp_path, management_action="tui", token_file=None, url="http://127.0.0.1:8765",
     )
-    with patch("assistant_agent.management_client.ManagementClient") as factory, \
+    with patch("assistant_agent.management_client.ManagementClient.from_installation") as factory, \
             patch("assistant_agent.management_tui.ManagementApp") as app:
         client = factory.return_value
         client.health.return_value = {"instance_id": hashlib.sha256(local_token.encode()).hexdigest()[:32]}
@@ -731,7 +731,7 @@ def test_tui_uses_the_same_remote_transport_for_reads_and_writes(tmp_path):
     options = SimpleNamespace(
         root=tmp_path, management_action="tui", token_file=None, url="http://127.0.0.1:8765",
     )
-    with patch("assistant_agent.management_client.ManagementClient") as factory, \
+    with patch("assistant_agent.management_client.ManagementClient.from_installation") as factory, \
             patch("assistant_agent.management_tui.ManagementApp") as ui:
         factory.return_value.health.return_value = {"instance_id": "different-instance"}
         run_command(options)

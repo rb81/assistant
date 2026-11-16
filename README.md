@@ -27,9 +27,10 @@ your computer or server and keeps working while your client is closed.
 - **Meet you where you are:** use email, Telegram with voice support, or the
   native macOS app.
 
-For more advanced use, configure models for different jobs, schedule scripts,
-connect Dropbox, run concurrent workers, or build your own client using the
-[Management API](docs/building-clients.md).
+For advanced configuration and integrations, start at the
+[documentation index](docs/README.md). Developers can build independent clients
+with the [Management API](docs/building-clients.md); the first-party macOS app is
+maintained in the [client repository](https://github.com/rb81/assistant-client).
 
 ## Requirements
 
@@ -52,8 +53,8 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/ass
 ```
 
 The [installer](install.sh) downloads Assistant, builds its Docker images, and
-starts management services. The default location is `~/.local/share/assistant`.
-The first build can take several minutes.
+starts the local Management API. The default location is
+`~/.local/share/assistant`. The first build can take several minutes.
 
 Then open setup:
 
@@ -61,13 +62,15 @@ Then open setup:
 "$HOME/.local/bin/assistant"
 ```
 
-Follow the prompts to configure your assistant, models, and connections.
-Review and save your settings, then choose **Services > Start app**.
+The terminal interface connects to the local Management API. Follow its prompts
+to configure your assistant, models, and connections. Review and save your
+settings, then choose **Services > Start app**.
 The terminal interface needs at least 76 columns and 24 rows.
 
 Prefer a desktop interface? Use
-[Assistant for macOS](https://github.com/rb81/assistant-client) to connect to
-a local or remote installation, chat, and manage settings, services, and files.
+[Assistant for macOS](https://github.com/rb81/assistant-client) to connect to a
+local or remote installation, chat, and manage settings, services, and files.
+Its installation and connection instructions live in that client repository.
 
 For custom install locations, updates, backups, and troubleshooting, see
 [Running Assistant](docs/running-assistant.md).
@@ -97,7 +100,7 @@ configuration, and development.
 - [Running Assistant](docs/running-assistant.md)
 - [Configuration](docs/configuration.md)
 - [Security](docs/security.md)
-- [macOS client](https://github.com/rb81/assistant-client)
-- [Build a client](docs/building-clients.md)
+- [macOS client and its documentation](https://github.com/rb81/assistant-client)
+- [Build an independent API client](docs/building-clients.md)
 
 [Apache 2.0 license](LICENSE)

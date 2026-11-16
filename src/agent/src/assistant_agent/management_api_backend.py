@@ -1,15 +1,13 @@
 """In-memory TUI drafts; every platform read and write uses the management API."""
 import copy
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
-from .management_api import configuration_groups, read_token, token_path
 from .management_client import ManagementClient
-from .management import Field
-from .setup import SetupError, parse_environment, read_regular, validate_secret
+from .management_contracts import SettingField
+from .setup import SetupError, validate_secret
 
 
 CONFIGURED = "[configured]"
@@ -19,7 +17,6 @@ class ApiManagementBackend:
     def __init__(self, root, client=None):
         self.root = Path(root)
         self._client = client
-        self.confirm = lambda *args: False
         self.installation = None
         self.progress = ""
         self.values = {}
@@ -28,29 +25,26 @@ class ApiManagementBackend:
         self.accepted = False
         self.dirty = False
         self._preview = None
-        self.groups = configuration_groups()
+        self.groups = {}
+        self.field_metadata = {}
+        self.group_metadata = {}
 
     @property
     def client(self):
         if self._client is None:
-            port = 8765
-            if os.environ.get("ASSISTANT_CONTAINER_ADMIN") != "1":
-                values, _ = parse_environment((read_regular(self.root / "data/.env") or b"").decode())
-                port = int(values.get("ASSISTANT_MANAGEMENT_PORT") or 8765)
-            url = os.environ.get("ASSISTANT_MANAGEMENT_URL") or f"http://127.0.0.1:{port}"
-            self._client = ManagementClient(url, read_token(token_path(self.root)))
+            self._client = ManagementClient.from_installation(self.root)
         return self._client
 
     def load(self):
         self.configuration = self.client.configuration()
+        self.group_metadata = {item["id"]: item for item in self.configuration["groups"]}
         groups = {}
         for item in self.configuration["settings"]:
             key = item["group"]
-            title = self.groups.get(key, (key.replace("catalog:", "").replace("_", " ").title(),))[0]
-            groups.setdefault(key, (title, []))[1].append(Field(
-                item["key"], item["label"], item["default"], item["secret"], item["boolean"],
-            ))
+            title = self.group_metadata.get(key, {}).get("title", key)
+            groups.setdefault(key, (title, []))[1].append(SettingField.model_validate(item))
         self.groups = groups
+        self.field_metadata = {item["key"]: item["metadata"] for item in self.configuration["settings"]}
         self.restrictions = {field["key"]: field["edit_restriction"] for field in self.configuration["settings"]
                              if not field["editable"]}
         credentials = self.client.get("credentials")["credentials"]
@@ -78,18 +72,26 @@ class ApiManagementBackend:
         self.stage_fields(self.groups[group][1], values)
 
     def stage_fields(self, specs, values):
+        changes = []
         for field in specs:
             if field.key not in values:
                 continue
             value = values[field.key]
+            if field.key in self.restrictions:
+                if value != self.value(field):
+                    raise SetupError(self.restrictions[field.key])
+                continue
             if field.secret:
                 if not value:
                     continue
                 validate_secret(field.key, value)
-                self.credentials[field.key] = value
+                changes.append((self.credentials, field.key, value))
             else:
-                self.values[field.key] = value.strip()
-        self.dirty = self.values != self.installation.values or self.credentials != self.installation.secret_values
+                changes.append((self.values, field.key, value.strip()))
+        for target, key, value in changes:
+            target[key] = value
+        self.dirty = (self.values != self.installation.values or self.credentials != self.installation.secret_values
+                      or self.instructions is not None or self.accepted != self.configuration["setup_complete"])
 
     def instruction_text(self):
         return self.instructions.decode() if self.instructions is not None else self.configuration["instructions"]

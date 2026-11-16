@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from email.utils import parseaddr
 from pathlib import Path
@@ -29,7 +30,7 @@ from . import settings_schema
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
 from .transport_security import validate_embedding_url, validate_https_url
 from .validation import WEAK_PASSWORDS
-from .setup_privileges import authorization_handler, prepare_sudo, terminal_authorization
+from .setup_privileges import prepare_sudo, terminal_authorization
 
 
 AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
@@ -990,6 +991,48 @@ class Installation:
                 lagging.append(service + " (" + (row.get("Health") or row.get("State") or "unknown") + ")")
         return lagging
 
+    def wait_for_container_health(self, services, configured_services, progress=None, *, timeout=STARTUP_WAIT_SECONDS):
+        deadline = time.monotonic() + timeout
+        last_status = None
+        next_report = 0
+        while True:
+            rows = self.container_rows()
+            failed = [
+                row.get("Service") for row in rows
+                if row.get("Service") in configured_services and (
+                    row.get("State") == "dead"
+                    or (row.get("State") == "exited"
+                        and (row.get("Service") in services or int(row.get("ExitCode") or 0) != 0))
+                )
+            ]
+            if failed:
+                raise SetupError(
+                    "Container startup failed: " + ", ".join(sorted(failed))
+                    + ". Inspect service logs; readiness was not verified."
+                )
+            by_service = {row.get("Service"): row for row in rows}
+            lagging = []
+            for service in services:
+                row = by_service.get(service, {})
+                if row.get("State") != "running" or row.get("Health") not in (None, "", "healthy"):
+                    lagging.append(service + " (" + (row.get("Health") or row.get("State") or "missing") + ")")
+            if not lagging:
+                return rows
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SetupError(
+                    "These containers did not become healthy within " + str(timeout) + " seconds: "
+                    + ", ".join(lagging)
+                    + ". Startup failed; readiness was not verified. Inspect service logs before retrying."
+                )
+            status = ", ".join(lagging)
+            now = deadline - remaining
+            if progress is not None and (status != last_status or now >= next_report):
+                progress("waiting for container health: " + ", ".join(lagging))
+                last_status = status
+                next_report = now + 30
+            time.sleep(min(5, remaining))
+
     def start_containers(self, progress=None, *, preserve_management=False):
         def stage(message):
             self.startup_stage = message
@@ -1019,19 +1062,9 @@ class Installation:
                 targets = sorted(set(configuration["services"]) - {"management", "management-docker"})
             self.compose(["up", "-d", "--build", *targets], timeout=1800)
             stage("waiting for container health")
-            try:
-                # First starts may download models or initialize databases before reporting healthy.
-                self.compose(["up", "-d", "--wait", "--wait-timeout", str(STARTUP_WAIT_SECONDS), *services],
-                             timeout=STARTUP_WAIT_SECONDS + 60)
-            except DockerCommandError as error:
-                lagging = self.unhealthy_services(services)
-                if not lagging:
-                    raise
-                raise SetupError(
-                    "These containers did not become healthy within " + str(STARTUP_WAIT_SECONDS) + " seconds: "
-                    + ", ".join(lagging) + ". They may still be starting; rerun ./run.sh server start once they settle, "
-                    "or inspect docker compose --env-file data/.env logs SERVICE.",
-                ) from error
+            # Compose --wait aborts as soon as a health check marks a container unhealthy,
+            # even if the requested wait deadline has not elapsed (e.g. cold model startup).
+            self.wait_for_container_health(services, configuration["services"], progress)
             stage("checking container status")
             rows = self.container_rows()
             if any(row.get("Service") in configuration["services"] and row.get("Service") not in LONG_RUNNING_SERVICES and
@@ -1357,8 +1390,7 @@ def main():
             raise SetupError("Interactive setup requires a terminal; no files were changed")
         from .management_tui import ManagementApp
         ui = ManagementApp(options.root)
-        with authorization_handler(ui.authorize):
-            ui.run(options)
+        ui.run(options)
     except SetupError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None

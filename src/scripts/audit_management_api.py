@@ -52,6 +52,7 @@ RUNTIME_INTERNAL = {
     "ASSISTANT_MANAGEMENT_EXECUTOR": "Internal flag identifying the private executor.",
     "ASSISTANT_MANAGEMENT_EXECUTOR_URL": "Private executor network address fixed by Compose.",
     "ASSISTANT_MANAGEMENT_URL": "Local client connection override; validated as a loopback address.",
+    "ASSISTANT_MANAGEMENT_TOKEN_FILE": "Protected token path supplied to the API client by the launcher.",
     "DOCKER_HOST": "Host Docker context and the private Compose proxy determine Docker connectivity.",
     "EGRESS_POLICY": "The broker injects the approved policy into each ephemeral proxy.",
     "EGRESS_PROXY_PORT": "The broker and proxy use the same fixed internal port.",

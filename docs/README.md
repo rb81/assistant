@@ -1,7 +1,9 @@
 # Assistant documentation
 
 New here? [Install Assistant](../README.md#install), then follow
-[Running Assistant](running-assistant.md) to finish setup.
+[Running Assistant](running-assistant.md) to finish setup. The terminal and
+desktop interfaces connect to the same Management API; desktop setup and usage
+instructions live in the [client repository](https://github.com/rb81/assistant-client).
 
 ## Getting started
 
@@ -10,7 +12,7 @@ New here? [Install Assistant](../README.md#install), then follow
 | [Running Assistant](running-assistant.md) | Setup, everyday controls, backups, and reset |
 | [Configuration](configuration.md) | Settings, instructions, and credentials |
 | [Security](security.md) | Account isolation, permissions, approvals, and trust boundaries |
-| [macOS app](https://github.com/rb81/assistant-client) | Desktop installation, connections, and source builds |
+| [macOS app](https://github.com/rb81/assistant-client) | Desktop installation, connections, usage, and source builds |
 
 ## Integrations
 

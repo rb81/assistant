@@ -3,6 +3,13 @@
 One containerized API serves the CLI, TUI,
 [Assistant for macOS](https://github.com/rb81/assistant-client), and
 [independent clients](building-clients.md).
+The terminal interface is an API client: it does not manage Docker, PostgreSQL,
+or host files directly. The installed launcher handles local deployment
+bootstrap; client reads and writes go through the authenticated API.
+The TUI builds its settings pages and help from the server's configuration
+catalog, groups, fields, and help, and reviews edits through the configuration
+preview API. Draft previews and database-password generation run as background
+tasks with status feedback. Feature parity with the desktop client is not implied.
 
 ## Connection
 
@@ -183,6 +190,9 @@ uploads. Approval decisions use the exact displayed opaque reference/version;
 expired or changed reviews cannot be approved. Database reset requires `RESET`.
 
 ## CLI/TUI and checks
+
+Use these commands from the installation root. Direct Compose commands are an
+advanced host-operator escape hatch, not a way for clients to bypass the API.
 
 ```sh
 ./run.sh management health

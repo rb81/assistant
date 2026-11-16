@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 
 import yaml
-from prompt_toolkit.application import Application, get_app, run_in_terminal
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
@@ -26,12 +26,10 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Box, Checkbox, Dialog, TextArea
 
-from .management_api import configuration_groups
 from .management_api_backend import ApiManagementBackend
 from .management_help import ACTION_HELP, SERVICE_HELP, credential_help, field_help, page_help
 from .secret_store import SECRET_NAMES
 from .setup import SetupError, setup_failure_message, validate_secret
-from .setup_privileges import terminal_authorization
 
 
 STYLE = Style.from_dict({
@@ -58,12 +56,11 @@ STYLE = Style.from_dict({
 })
 SECTIONS = ("Home", "Services", "Activity", "Connections", "Settings", "Help")
 SPINNER = ("|", "/", "-", "\\")
-GROUPS = configuration_groups()
 
 
 class HelpLexer(Lexer):
     def lex_document(self, document):
-        headings = {"Navigation", "Docker and authorization", "Settings and data",
+        headings = {"Navigation", "Connection and services", "Settings and data",
                     "System and functionality questions"}
         def line(number):
             value = document.lines[number]
@@ -154,9 +151,7 @@ class ManagementApp:
     def __init__(self, root, *, input=None, output=None, backend=None):
         self.root = Path(root)
         self.backend = backend or ApiManagementBackend(self.root)
-        if isinstance(self.backend, ApiManagementBackend):
-            self.backend.confirm = self.confirm_from_worker
-        self.groups = getattr(self.backend, "groups", GROUPS)
+        self.groups = getattr(self.backend, "groups", {})
         self.location = Location("Home")
         self.history = []
         self.cache = {}
@@ -184,6 +179,7 @@ class ManagementApp:
         self.log_key = None
         self.form = {}
         self.form_group = None
+        self.draft_revision = 0
         self.actions = []
         self.control_topics = {}
         self.dialog_topics = {}
@@ -363,6 +359,8 @@ class ManagementApp:
 
     def save_form(self):
         if self.form_group is not None:
+            self.draft_revision += 1
+            self.cache.pop(("Review", 0, "", None, None, None), None)
             values = {key: ("true" if widget.checked else "false") if isinstance(widget, Checkbox)
                       else widget.text for key, widget in self.form.items()}
             if self.form_group == "instructions":
@@ -482,23 +480,6 @@ class ManagementApp:
         if self.loaded and not quiet:
             self.render()
         self.app.invalidate()
-
-    def confirm_from_worker(self, label, default=False):
-        async def ask():
-            return bool(await self.confirm_dialog("Administrator access", label, "Authorize"))
-        return asyncio.run_coroutine_threadsafe(ask(), self.loop).result()
-
-    def authorize(self):
-        async def prompt():
-            allowed = await self.confirm_dialog(
-                "Administrator authorization",
-                "Only the pending privileged command uses sudo.\n"
-                "Your system will request your password; Assistant never reads or saves it.",
-                "Authorize")
-            if not allowed:
-                raise SetupError("Authorization cancelled. The pending command was not run.")
-            return await run_in_terminal(partial(terminal_authorization, confirmed=True), in_executor=True)
-        return asyncio.run_coroutine_threadsafe(prompt(), self.loop).result()
 
     def close_dialog(self, result):
         focus_label = next((action.label for action in self.actions if action.control is self.dialog_focus), None)
@@ -647,6 +628,16 @@ class ManagementApp:
                       report=False, quiet=background)
         elif route == "Credentials":
             self.render()
+        elif route == "Review":
+            revision = self.draft_revision
+            def loaded(problems):
+                if self.draft_revision != revision:
+                    self.refresh_pending = self.location.route == "Review"
+                    return
+                self.cache[key] = problems
+                if self.key() == key:
+                    self.render()
+            self.task("Validating draft", self.backend.problems, loaded, report=False)
         elif route == "Pending deletions":
             self.load_pending()
         elif route == "Record":
@@ -734,7 +725,7 @@ class ManagementApp:
         self.control_topics = {}
         route = self.location.route
         if not self.loaded:
-            message = self.loading_error or "Loading saved configuration. Your data stays on this computer."
+            message = self.loading_error or "Reading configuration from the Management API."
             docker_error = "docker" in message.lower()
             actions = [self.action("Retry", self.load, primary=True)]
             if "rotation" in message.lower():
@@ -817,6 +808,9 @@ class ManagementApp:
 
     def acknowledge(self):
         self.backend.accepted = not self.backend.accepted
+        self.backend.dirty = True
+        self.draft_revision += 1
+        self.cache.pop(("Review", 0, "", None, None, None), None)
         self.render()
 
     def hub(self, route):
@@ -829,14 +823,16 @@ class ManagementApp:
         elif route == "Connections":
             choices = [(self.groups[key][0] + (" / enabled" if self.backend.value(self.groups[key][1][0]) == "true" else
                 " / not enabled"), "Connection:" + key)
-                for key in ("email", "telegram", "calendar", "zoom", "dropbox", "transcription")]
+                for key in ("email", "telegram", "calendar", "zoom", "dropbox", "transcription")
+                if key in self.groups]
             description = "Enable only what you need. Labels describe your draft, not verified connectivity."
         elif route == "Advanced":
             choices = [(title, "Form:" + key) for key, (title, _) in self.groups.items()
                        if key.startswith(("advanced:", "catalog:", "calendar:")) or key == "deployment"]
             description = "Focused controls for limits, search, privacy, and background behavior."
         else:
-            choices = [(self.groups[key][0], "Form:" + key) for key in ("identity", "models", "security", "embeddings")]
+            choices = [(self.groups[key][0], "Form:" + key) for key in ("identity", "models", "security", "embeddings")
+                       if key in self.groups]
             choices += [("Assistant instructions", "Instructions"), ("Credentials", "Credentials"),
                         ("Search maintenance", "Search"), ("Storage & recovery", "Storage"),
                         ("Advanced settings", "Advanced")]
@@ -1201,7 +1197,8 @@ class ManagementApp:
             if restriction:
                 items.extend([text(spec.label + " (read only)"), text(restriction, height=2), text()])
                 continue
-            self.control_topics[widget.control] = (spec.label, field_help(spec))
+            metadata = getattr(self.backend, "field_metadata", {}).get(spec.key, {})
+            self.control_topics[widget.control] = (spec.label, metadata.get("help") or field_help(spec))
             if spec.boolean:
                 items.extend([widget, text()])
             else:
@@ -1209,7 +1206,8 @@ class ManagementApp:
                 items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget, text()])
         if key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
             items.insert(0, self.action("Generate secure database password", self.generate_password))
-        self.put(title, page_help("Form:" + key),
+        group_help = getattr(self.backend, "group_metadata", {}).get(key, {}).get("help")
+        self.put(title, group_help or page_help("Form:" + key),
                  items, actions=[
                      self.action("Keep draft", self.keep_draft, primary=True),
                      self.action("Review & save", self.review),
@@ -1220,14 +1218,11 @@ class ManagementApp:
             self.app.layout.focus(visible[0])
 
     def generate_password(self):
-        try:
-            self.form["AGENT_DATABASE_PASSWORD"].text = self.backend.generate_database_password()
-        except SetupError as error:
-            self.error = str(error)
-            self.app.invalidate()
-            return
-        self.status = "Secure database password generated in this form. Keep draft to retain it."
-        self.app.invalidate()
+        widget = self.form["AGENT_DATABASE_PASSWORD"]
+        def loaded(password):
+            widget.text = password
+            self.status = "Secure database password generated in this form. Keep draft to retain it."
+        self.task("Generating database password", self.backend.generate_database_password, loaded, report=False)
 
     def keep_draft(self):
         try:
@@ -1264,14 +1259,25 @@ class ManagementApp:
     def review(self):
         if not self.loaded:
             return
-        self.go("Review")
+        self.cache.pop(("Review", 0, "", None, None, None), None)
+        if self.location.route == "Review":
+            self.render()
+            self.refresh()
+        else:
+            self.go("Review")
 
     def review_screen(self):
-        problems = self.backend.problems()
+        problems = self.cache.get(self.key())
+        if problems is None:
+            self.put("Review & save", "The Management API validates your draft before saving.",
+                     [text(self.read_errors.get(self.key()) or "Validating draft...")],
+                     actions=[self.action("Retry validation", self.refresh,
+                                          help_text="Ask the Management API to validate this draft again.")])
+            return
         original = self.backend.installation
         items = [text("Draft changes are not active until saved and applied.", height=2)]
         for key in ("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_MODEL", "COMPOSE_PROFILES"):
-            spec = next((spec for _, specs in GROUPS.values() for spec in specs if spec.key == key), None)
+            spec = next((spec for _, specs in self.groups.values() for spec in specs if spec.key == key), None)
             value = (self.backend.draft().values.get(key, "") if key == "COMPOSE_PROFILES" else
                      self.backend.value(spec) if spec else self.backend.values.get(key, "(not set)"))
             items.append(text(clean(f"{key.replace('AGENT_', ''):<24} {value}")))
@@ -1291,7 +1297,7 @@ class ManagementApp:
                 target = ("Form:" + key if key in self.groups else "Advanced" if key == "advanced" else
                           "Instructions" if key == "instructions" else "Settings")
                 items += [text(clean(message), height=Dimension(min=1, max=3)),
-                          self.action("Edit " + GROUPS.get(key, (key, []))[0],
+                          self.action("Edit " + self.groups.get(key, (key, []))[0],
                                       partial(self.go, target))]
         else:
             items.append(text("Ready to save.", style="class:ok"))
@@ -1361,10 +1367,10 @@ class ManagementApp:
             "Tab moves through controls. Enter opens an item. Esc goes back.\n"
             "Use arrows or PgUp/PgDn to scroll long text, including this guide.\n"
             "Forms preserve your draft across sections. Ctrl-S opens review.\n\n"
-            "Docker and authorization\n"
-            "Start Docker Desktop on macOS, or your Docker daemon on Linux.\n"
-            "When sudo is needed, authorize inside the interface. Only the system\n"
-            "password prompt leaves the screen. Assistant never receives your password.\n\n"
+            "Connection and services\n"
+            "All reads and changes use the Management API, including service controls.\n"
+            "The terminal never runs Docker, database commands, or sudo.\n"
+            "If the API is offline, start Docker and run assistant server start on the host.\n\n"
             "Settings and data\n"
             "Save writes local configuration. Apply recreates services using saved settings.\n"
             "Data is under data/. Back it up, including the credential volume when enabled.\n\n"
@@ -1376,12 +1382,12 @@ class ManagementApp:
             "Permissions and safety: docs/security.md")
         guide.lexer = HelpLexer()
         guide.height = Dimension(min=5, preferred=22)
-        self.put("Help", "Local administration help. No model is used.", [guide])
+        self.put("Help", "Management API client help. No model is used.", [guide])
         self.app.layout.focus(guide)
 
     def load(self):
         def loaded(instance):
-            self.groups = getattr(self.backend, "groups", GROUPS)
+            self.groups = getattr(self.backend, "groups", {})
             self.loaded = True
             self.loading_error = ""
             self.render()
@@ -1398,7 +1404,7 @@ class ManagementApp:
                 elif self.location.route in {"Home", "Services", "Service", "Tasks", "Memories", "Reminders",
                                               "Projects", "Scripts", "Pending deletions", "Record", "Logs"}:
                     self.app.loop.call_soon(self.refresh)
-        self.task("Loading local configuration", self.backend.load, loaded, report=False)
+        self.task("Loading API configuration", self.backend.load, loaded, report=False)
 
     def prepare_management(self):
         self.refresh_pending = True
@@ -1432,9 +1438,9 @@ class ManagementApp:
             self.loop = asyncio.get_running_loop()
             if options is not None:
                 if options.section:
-                    self.location = Location("Form:" + options.section if options.section in self.groups else
-                                             "Advanced" if options.section == "advanced" else
-                                             "Instructions" if options.section == "instructions" else "Settings")
+                    self.location = Location("Advanced" if options.section == "advanced" else
+                                             "Instructions" if options.section == "instructions" else
+                                             "Form:" + options.section)
                 elif options.command == "tools":
                     self.location = Location("Services")
                 elif options.command == "secrets":

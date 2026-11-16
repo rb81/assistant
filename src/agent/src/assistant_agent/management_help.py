@@ -148,8 +148,8 @@ ACTION_HELP = {
     "Refresh status": "Read current Docker component state and health again without restarting it.",
     "Retry screen": "Try rendering this page again after resolving the reported problem. Your draft is preserved.",
     "Back": "Return to the previous page. Form edits are retained in the draft unless you choose Discard this form.",
-    "Retry": "Reload saved local configuration after resolving the displayed startup error.",
-    "Quit": "Exit local administration. Running Docker services continue. You will be asked before discarding edits.",
+    "Retry": "Reload configuration from the Management API after resolving the displayed startup error.",
+    "Quit": "Exit the terminal client. Running services continue. You will be asked before discarding edits.",
     "[x] I understand the responsibilities": "Withdraw the first-run acknowledgement. Saving setup requires "
                                              "accepting that the assistant can take real actions and send data to providers.",
     "[ ] I understand the responsibilities": "Acknowledge the first-run warnings about real actions, provider "

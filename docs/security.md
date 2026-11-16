@@ -140,8 +140,8 @@ No additional persistent service is needed.
 
 `secrets status`, `secrets update`, `secrets apply` and database rotation/recovery
 continue to use the selected store. Docker must be available to manage credentials
-once this option is enabled. If migration uses explicitly authorized noninteractive
-sudo, subsequent volume access uses that authorization too.
+once this option is enabled. The terminal interface does not provide a sudo
+authorization flow; configure Docker access for the installation account first.
 
 The volume remains **plaintext**. This option keeps credentials out of ordinary
 file reads and indexing; it does not protect against Docker
@@ -257,8 +257,7 @@ and recreate only the services whose grants changed. To do the same after
 
 It runs without a terminal, prints nothing when grants are already current, and
 leaves credential values unchanged. To check every 15 minutes, add this line to
-the crontab of the account that manages Docker (`sudo crontab -e` if setup uses
-sudo for Docker):
+the crontab of the account that manages Docker, as permitted by host policy:
 
 ```cron
 */15 * * * * /path/to/assistant/run.sh secrets sync >> /path/to/assistant/data/secrets-sync.log 2>&1

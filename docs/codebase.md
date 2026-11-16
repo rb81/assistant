@@ -24,18 +24,19 @@ Compose configuration is in `src/docker-compose.yml`; setup writes an absolute
 the runtime receives documentation, not the repository source tree.
 
 The Python entry module is `assistant_agent.setup`.
-`management_tui.py` owns one persistent
-prompt-toolkit application; `management.py` provides presentation-free host
-operations and configuration field metadata. `management_operator.py` is the
-local-only JSON transport for typed database records and trusted admin actions
-inside Compose. Native sudo authorization lives in `setup_privileges.py`.
-`management_api.py` and `management_contracts.py` expose authenticated,
-loopback-only v2 read/write contracts through the existing management operations;
-`management_client.py` consumes them for CLI/TUI administration. The native macOS
-client has its own repository, [assistant-client](https://github.com/rb81/assistant-client);
-see [the API reference](management-api.md) for server development commands.
-The native interface does not call the legacy setup or Tools menus; the `--plain`
-entry point is removed so clients share one management boundary.
+`management_tui.py` owns the terminal interface; `management_api_backend.py`
+adapts its reads and writes to the Management API. The TUI builds settings
+navigation and help from the API's server-provided groups and field catalog,
+not a local UI catalog. `management.py` provides management operations.
+`management_api.py` and
+`management_contracts.py` expose authenticated, loopback-only v2 contracts;
+`management_client.py` consumes them for CLI/TUI administration. Docker-backed
+work goes through the private executor, not directly from the TUI. Its client
+container receives only a read-only token bind, not the installation tree or
+Docker socket. Host-side bootstrap and privileged operations remain separate
+launcher commands. The native macOS client has its own repository,
+[assistant-client](https://github.com/rb81/assistant-client); see
+[the API reference](management-api.md) for server development commands.
 
 `src/database/schema.sql` is the generated current schema baseline. Startup
 requires its baseline marker and applies unrecorded migrations in filename order.

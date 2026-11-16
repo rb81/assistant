@@ -1,7 +1,9 @@
 """Shared HTTP transport for CLI and terminal management."""
 import json
+import os
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -15,6 +17,23 @@ from .setup import SetupError
 
 
 class ManagementClient:
+    @classmethod
+    def from_installation(cls, root, *, url=None, token_file=None):
+        """Read connection credentials only; platform state comes from HTTP."""
+        from .management_api import read_token, token_path
+        from .setup import parse_environment, read_regular
+
+        if url is None:
+            url = os.environ.get("ASSISTANT_MANAGEMENT_URL")
+        if not url:
+            port = 8765
+            if os.environ.get("ASSISTANT_CONTAINER_ADMIN") != "1":
+                values, _ = parse_environment((read_regular(Path(root) / "data/.env") or b"").decode())
+                port = int(values.get("ASSISTANT_MANAGEMENT_PORT") or port)
+            url = f"http://127.0.0.1:{port}"
+        path = token_file or os.environ.get("ASSISTANT_MANAGEMENT_TOKEN_FILE") or token_path(root)
+        return cls(url, read_token(path))
+
     def __init__(self, url, token):
         try:
             parsed = urlsplit(url)
@@ -41,9 +60,15 @@ class ManagementClient:
                     method, self.url + "/v2/" + resource, headers=headers, json=payload,
                 )
                 if not response.is_success:
-                    if response.status_code == 503:
-                        raise SetupError("Management API is temporarily unavailable; retry.")
-                    raise SetupError(f"Management API returned HTTP {response.status_code}. Check the server and token.")
+                    try:
+                        error = response.json()
+                    except ValueError:
+                        error = None
+                    message = error.get("error", {}).get("message") if (
+                        isinstance(error, dict) and isinstance(error.get("error"), dict)) else None
+                    if not isinstance(message, str) or not message.strip():
+                        message = f"Management API returned HTTP {response.status_code}. Check the server and token."
+                    raise SetupError(message)
                 payload = response.json()
                 if not isinstance(payload, (dict, list)):
                     raise ValueError
@@ -99,18 +124,15 @@ class ManagementClient:
 
 
 def run_command(options):
-    from .management_api import read_token, serve, token_path
-
     if options.management_action == "serve":
+        from .management_api import serve
         serve(options.root, options.port)
         return
-    token = read_token(options.token_file or token_path(options.root))
-    client = ManagementClient(options.url, token)
+    client = ManagementClient.from_installation(options.root, url=options.url, token_file=options.token_file)
     if options.management_action == "tui":
         from .management_api_backend import ApiManagementBackend
         from .management_tui import ManagementApp
         ui = ManagementApp(options.root, backend=ApiManagementBackend(options.root, client))
-        ui.backend.confirm = ui.confirm_from_worker
         ui.run(options)
         return
     import json

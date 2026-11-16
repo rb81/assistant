@@ -66,9 +66,13 @@ secrets, source files or service controls.
 PostgreSQL and sandbox control traffic use verified TLS. Compose networks scope
 internal communication. The operator API publishes only a loopback port; there
 is no browser administration interface. Desktop, CLI, and TUI reads and writes
-share the Management API. Docker-backed operations run through its private typed
-executor; the installed launcher also uses disposable administration containers
-for bootstrap and terminal access. The default installation needs no host Python.
+share the Management API. The TUI is a thin API client and does not directly
+manage Docker, PostgreSQL, or host files. Its separate client runtime has no
+installation-root or Docker-socket mount. Docker-backed operations run through
+the API's private typed executor; the installed launcher may use disposable
+administration containers for bootstrap. Host-side server and credential-sync
+commands are explicit operator operations. The default installation needs no
+host Python.
 
 ## Persistent state
 

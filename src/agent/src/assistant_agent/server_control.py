@@ -1,12 +1,30 @@
 """Installation bootstrap and lifecycle operations run inside the admin image."""
 import argparse
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import secrets
 import sys
 
+from rich.console import Console
+
 from .management_api import ensure_token
-from .setup import Installation, SetupError, setup_failure_message
+from .setup import DockerCommandError, Installation, SetupError, setup_failure_message
+
+
+MANAGEMENT_START_WAIT_SECONDS = 300
+
+
+@contextmanager
+def startup_progress():
+    console = Console()
+    with console.status("Starting Assistant services...") as status:
+        def progress(stage):
+            if console.is_terminal:
+                status.update(stage)
+            else:
+                console.print("Server: " + stage + "...", markup=False)
+        yield progress
 
 
 def bootstrap(root):
@@ -25,11 +43,26 @@ def start(root):
     print("Preparing saved configuration and credentials...", flush=True)
     instance = bootstrap(root)
     if instance.state.get("setup_complete"):
-        instance.start_containers(progress=lambda stage: print("Server: " + stage + "...", flush=True))
+        with startup_progress() as progress:
+            instance.start_containers(progress=progress)
         print("Assistant and its management API are running.")
     else:
-        print("Starting management and PostgreSQL; image downloads may take several minutes...", flush=True)
-        instance.compose(["up", "-d", "--wait", "--wait-timeout", "90", "management", "postgres"], timeout=1800)
+        print("Starting management and PostgreSQL; waiting for Docker health checks...", flush=True)
+        try:
+            with startup_progress() as progress:
+                instance.compose(
+                    ["up", "-d", "management", "postgres"], timeout=1800,
+                )
+                instance.wait_for_container_health(
+                    ("management", "management-docker", "postgres"),
+                    ("management", "management-docker", "postgres"),
+                    progress=progress, timeout=MANAGEMENT_START_WAIT_SECONDS,
+                )
+        except DockerCommandError as error:
+            raise SetupError(
+                str(error) + " Installation is incomplete. Run ./run.sh server status "
+                "and inspect Docker logs before retrying."
+            ) from error
         print("Assistant management is running; setup is required before task workers start.")
     print("Open the desktop client to inspect this instance, or run ./run.sh to complete setup in the TUI.")
 

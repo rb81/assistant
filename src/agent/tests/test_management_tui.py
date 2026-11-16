@@ -23,6 +23,7 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.widgets import Checkbox
 
 from assistant_agent.management import GROUPS, Management
+from assistant_agent.management_api import configuration_groups
 from assistant_agent.management_help import GROUP_HELP, credential_help, field_help, page_help
 from assistant_agent.management_tui import ManagementApp
 from assistant_agent.secret_store import SECRET_NAMES
@@ -56,6 +57,7 @@ async def wait_for(predicate):
 async def running(root):
     with create_pipe_input() as pipe:
         backend = Management(root, Mock(return_value=False))
+        backend.groups = configuration_groups()
         backend.load()
         backend.installation.state["setup_complete"] = True
         backend.values.update(AGENT_IDENTITY_NAME="Assistant", AGENT_APP_TIMEZONE="UTC")
@@ -404,12 +406,12 @@ def test_help_sections_have_spacing_and_documentation_is_reachable_by_keyboard()
                 await asyncio.sleep(0.08)
                 control = ui.app.layout.current_control
                 assert control.buffer.read_only()
-                assert "Ctrl-S opens review.\n\nDocker and authorization" in control.buffer.text
+                assert "Ctrl-S opens review.\n\nConnection and services" in control.buffer.text
                 lines = snapshot(ui)
-                heading = next(i for i, line in enumerate(lines) if "Docker and authorization" in line)
+                heading = next(i for i, line in enumerate(lines) if "Connection and services" in line)
                 assert not lines[heading - 1].strip()
                 screen = ui.app.renderer._last_screen
-                column = lines[heading].index("Docker and authorization")
+                column = lines[heading].index("Connection and services")
                 cell = screen.data_buffer[heading][column]
                 assert ui.app._merged_style.get_attrs_for_style_str(cell.style).bold
                 assert not ui.app._merged_style.get_attrs_for_style_str(
@@ -505,40 +507,50 @@ def test_docker_offline_has_a_real_retry_action_in_the_same_application():
         asyncio.run(scenario(Path(root)))
 
 
-def test_sudo_authorization_only_yields_to_the_native_password_prompt():
+def test_api_failure_leaves_the_ui_responsive_without_local_authorization():
     async def scenario(root):
         async with running(root) as (ui, pipe):
-            with patch("assistant_agent.management_tui.terminal_authorization", return_value=True) as authorize:
-                ui.task("Privileged operation", ui.authorize)
-                await wait_for(lambda: bool(ui.floats.floats))
-                pipe.send_text("\t\r")
+            operation = Mock(side_effect=SetupError("Management API is unavailable."))
+            with patch("assistant_agent.setup_privileges.terminal_authorization") as authorize:
+                ui.task("Service operation", operation)
                 await wait_for(lambda: not ui.busy)
-                authorize.assert_called_once_with(confirmed=True)
+                authorize.assert_not_called()
+                assert "Management API is unavailable" in ui.error
                 assert ui.app.is_running
+                ui.go("Settings")
+                assert ui.location.route == "Settings"
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
 
-def test_sudo_cancellation_and_denial_leave_the_ui_responsive_without_running_the_command():
+def test_review_drops_validation_for_a_draft_edited_while_the_api_was_busy():
     async def scenario(root):
         async with running(root) as (ui, pipe):
-            for cancel in (True, False):
-                command = Mock()
-                def privileged_operation():
-                    ui.authorize()
-                    command()
-                with patch("assistant_agent.management_tui.terminal_authorization",
-                           side_effect=SetupError("Authorization failed. The pending command was not run.")) as authorize:
-                    ui.task("Privileged operation", privileged_operation)
-                    await wait_for(lambda: bool(ui.floats.floats))
-                    pipe.send_text("\x1b" if cancel else "\t\r")
-                    await wait_for(lambda: not ui.busy and not ui.floats.floats)
-                    command.assert_not_called()
-                    assert authorize.call_count == (0 if cancel else 1)
-                    assert "pending command was not run" in ui.error
-                    assert ui.app.is_running
-                    ui.go("Settings")
-                    assert ui.location.route == "Settings"
+            release = threading.Event()
+            started = threading.Event()
+            calls = []
+
+            def validate():
+                calls.append(ui.backend.values["AGENT_IDENTITY_NAME"])
+                if len(calls) == 1:
+                    started.set()
+                    assert release.wait(3)
+                    return [("identity", "Old draft validation")]
+                return []
+
+            with patch.object(ui.backend, "problems", side_effect=validate):
+                ui.review()
+                await wait_for(started.is_set)
+                try:
+                    ui.go("Form:identity")
+                    ui.form["AGENT_IDENTITY_NAME"].text = "Changed during validation"
+                    ui.review()
+                finally:
+                    release.set()
+                await wait_for(lambda: not ui.busy and len(calls) == 2)
+                assert calls == ["Assistant", "Changed during validation"]
+                assert ui.cache[ui.key()] == []
+                assert "Old draft validation" not in "\n".join(snapshot(ui))
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -1051,6 +1063,7 @@ def test_discarding_model_form_also_discards_its_generated_password():
         async with running(root) as (ui, pipe):
             ui.go("Form:models")
             ui.generate_password()
+            await wait_for(lambda: not ui.busy)
             assert ui.form["AGENT_DATABASE_PASSWORD"].text
             assert "AGENT_DATABASE_PASSWORD" not in ui.backend.credentials
             ui.discard_form()
@@ -1088,6 +1101,7 @@ def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
         root = Path(temporary)
         (root / "src/scripts").mkdir(parents=True)
         (root / "src/agent").mkdir()
+        shutil.copytree(repository / "src/config", root / "src/config")
         (root / "data").mkdir()
         shutil.copy2(repository / "run.sh", root / "run.sh")
         shutil.copy2(repository / "src/scripts/run.sh", root / "src/scripts/run.sh")

@@ -18,15 +18,19 @@ Then complete setup and start the application from the installation directory:
 ./run.sh server start
 ```
 
-`./run.sh` administers the instance through Docker; host Python and OpenSSL are
-not required. Remote Docker contexts are rejected because host bind mounts must
-refer to the installation on the same machine. For remote administration, use
-the desktop client's SSH tunnel.
+The local launcher uses Docker to bootstrap and run the installation; host
+Python and OpenSSL are not required. Once connected, the terminal interface
+performs administration through the Management API, not by managing Docker or
+PostgreSQL directly. Remote Docker contexts are rejected because host bind
+mounts must refer to the installation on the same machine. For remote
+administration, use the desktop client's SSH tunnel.
 
 Setup records the absolute Compose file list—including the generated credential
 overlay—in `data/.env`. Keep `data/.compose-secrets.yaml` present and do not
 replace its setup-generated `COMPOSE_FILE`. Rerun setup after moving the
 installation to refresh absolute Compose and sandbox mount paths.
+
+For direct host-side inspection (an operator escape hatch, not a TUI step):
 
 ```bash
 docker compose --env-file data/.env ps
@@ -91,6 +95,14 @@ authority to create and remove command containers. These are significant host
 trust boundaries; see
 [sandbox Docker socket](security.md#sandbox-docker-socket). Do not flatten the
 existing isolation networks.
+
+The public Management API container does not mount the Docker socket. The
+launcher runs the TUI as a separate client container whose only host bind mount
+is the read-only token file: there is no installation-root or Docker-socket
+mount, supplementary socket group, or Linux capability, and its root filesystem
+is read-only.
+Docker-backed actions are mediated by the private executor. Host-side bootstrap,
+`server` commands, and `secrets sync` remain separate operator actions.
 
 Command containers receive the shared workspace, not application credentials or
 the Docker socket. Management mounts the installation read-only and `data/` writable for tokens,

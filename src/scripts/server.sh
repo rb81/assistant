@@ -73,6 +73,23 @@ admin() {
     fi
 }
 
+api_client() {
+    set -- python -m assistant_agent.setup --root "$ROOT" "$@"
+    if [ -t 0 ] && [ -t 1 ]; then
+        set -- -t "$IMAGE" "$@"
+    else
+        set -- "$IMAGE" "$@"
+    fi
+    docker run --rm -i --network "$NETWORK" --user "$ASSISTANT_UID:$ASSISTANT_GID" \
+        --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+        --tmpfs /tmp:rw,nosuid,nodev,size=16m \
+        --mount "type=bind,source=$ROOT/data/.management-token,target=/run/assistant/management-token,readonly" \
+        -e ASSISTANT_CONTAINER_ADMIN=1 \
+        -e ASSISTANT_MANAGEMENT_URL=http://127.0.0.1:8765 \
+        -e ASSISTANT_MANAGEMENT_TOKEN_FILE=/run/assistant/management-token \
+        -e HOME=/tmp -e TERM "$@"
+}
+
 if [ "${1:-}" = server ]; then
     shift
     if [ "$#" -eq 0 ]; then set -- start; fi
@@ -80,6 +97,8 @@ if [ "${1:-}" = server ]; then
 elif [ "${1:-}" = management ] && [ "${2:-}" = serve ]; then
     test "$#" -eq 2 || { printf '%s\n' 'Set ASSISTANT_MANAGEMENT_PORT in data/.env; management serve takes no flags in container mode.' >&2; exit 1; }
     admin assistant_agent.server_control --root "$ROOT" start
-else
+elif [ "${1:-}" = secrets ] && [ "${2:-}" = sync ]; then
     admin assistant_agent.setup --root "$ROOT" "$@"
+else
+    api_client "$@"
 fi

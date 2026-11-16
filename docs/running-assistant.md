@@ -16,6 +16,20 @@ The installer downloads source, builds images in Docker, and starts management
 and PostgreSQL. Fresh installations leave task workers stopped until setup is
 complete. A configured installation starts its configured services.
 
+Interactive installation shows an elapsed-time spinner while startup logs stay
+out of the way; failures display the diagnostics. After image preparation,
+health checks get up to five minutes on a fresh install and ten minutes on a
+configured one. Transient unhealthy checks do not end that wait early. Exited
+services, failed helpers, and expired deadlines fail explicitly; installation
+does not report success before readiness is verified.
+
+The installed `assistant` command opens the terminal interface; from a source
+checkout, use `./run.sh`. The interface uses the local Management API for
+settings, service controls, and activity. The launcher handles local deployment
+bootstrap; the interface does not manage Docker or PostgreSQL directly. For the
+desktop client, including its connection and usage instructions, see the
+[client repository](https://github.com/rb81/assistant-client).
+
 In the terminal interface:
 
 1. Configure identity, model credentials, and connections.
@@ -84,6 +98,12 @@ From the installation root:
 ./run.sh management logs task-agent
 ./run.sh server stop             # Stop the whole stack; preserve data
 ```
+
+The `server` commands are host-side launcher operations using Docker; they are
+explicit operator controls for starting, inspecting, or stopping the deployment.
+The terminal interface itself uses the Management API. For advanced credential
+grant maintenance, `./run.sh secrets sync` is likewise a host-side operator
+command, not a TUI action.
 
 The TUI's **Services > Stop app** stops workers but keeps management available.
 Closing a client never stops services. Docker restart policies keep started
@@ -189,9 +209,12 @@ Telegram history are not deleted. If replay-prevention state cannot be restored,
 application services remain stopped: resolve the error and rerun reset.
 Enabled workspace indexing rebuilds from preserved files.
 
-## Operations
+## Advanced host operations (escape hatch)
 
-For direct Compose use from the installation root:
+These Docker Compose commands are an operator escape hatch for managing the
+host deployment directly. They are not steps in the terminal or desktop
+interface; routine administration should use the Management API-backed clients.
+From the installation root:
 
 ```sh
 docker compose --env-file data/.env ps
