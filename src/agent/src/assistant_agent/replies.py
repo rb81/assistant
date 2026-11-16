@@ -8,9 +8,13 @@ from .validation import smtp_configured
 
 
 def reminder_delivery(config: Any, job: dict[str, Any], channel: str = "auto") -> dict[str, Any]:
-    if channel not in {"auto", "email", "telegram"}:
-        raise ValueError("reminder notification_channel must be auto, email or telegram")
+    if channel not in {"auto", "email", "telegram", "client"}:
+        raise ValueError("reminder notification_channel must be auto, email, telegram or client")
     route = (job.get("metadata") or {}).get("reply_route") or {}
+    if channel in {"auto", "client"} and route.get("channel") == "client":
+        return {"primary": route, "fallback": {}}
+    if channel == "client":
+        raise ValueError("A registered client destination is required")
     source_channel = route.get("channel") or (job.get("metadata") or {}).get("source_channel")
     if channel == "auto" and source_channel in {"email", "telegram"}:
         channel = source_channel
@@ -68,7 +72,7 @@ class ReplyRouter:
         except Exception:
             self.runtime.db.execute("UPDATE channel_deliveries SET status = 'uncertain', error = 'SMTP delivery requires reconciliation' WHERE id = %s", (row["id"],))
             return {"status": "uncertain", "log_id": row["id"]}
-        state = "sent" if result.get("status") == "sent" else "failed"
+        state = result.get("status") if result.get("status") in {"sent", "uncertain"} else "failed"
         self.runtime.db.execute("UPDATE channel_deliveries SET status = %s, sent_at = CASE WHEN %s = 'sent' THEN now() ELSE NULL END WHERE id = %s", (state, state, row["id"]))
         return result
 
@@ -102,6 +106,9 @@ class ReplyRouter:
             return {**result, "body": body}
         if route.get("channel") == "email":
             return {**self.email(route, body, purpose), "body": body}
+        if route.get("channel") == "client":
+            from .client_channels import ClientChannels
+            return ClientChannels(self.runtime.db, self.runtime.config).send(self.runtime, route, body, purpose)
         if route.get("channel") in self.adapters:
             return self.adapters[route["channel"]](self.runtime, route, body, purpose)
         if route.get("channel"):

@@ -16,6 +16,7 @@ from .task_agent import TaskAgent
 from .tool_result_cache import ToolResultCache
 from .validation import postgres_password_is_weak, validate_role_config
 from .workspace_index import WorkspaceIndex
+from .worker_health import reporting
 
 
 LOGGER = logging.getLogger("assistant.agent")
@@ -104,7 +105,7 @@ def run_role(role: str) -> None:
             )
         if not admin_configured(config):
             LOGGER.warning(
-                "task-agent running without ADMIN_EMAIL configuration: admin notifications and "
+                "task-agent running without AGENT_ADMIN_EMAIL configuration: admin notifications and "
                 "request_input recipient='admin' will be unavailable."
             )
 
@@ -175,12 +176,13 @@ def main() -> None:
     configure_logging()
     if postgres_password_is_weak():
         LOGGER.error(
-            "SECURITY WARNING: POSTGRES_PASSWORD is not set or is using a known weak/placeholder "
+            "SECURITY WARNING: AGENT_DATABASE_PASSWORD is not set or is using a known weak/placeholder "
             "value. Change it in your .env file before deploying. "
             "See docs/security.md for guidance."
         )
     role = os.getenv("AGENT_ROLE", "task-agent")
-    run_role(role)
+    with reporting(role):
+        run_role(role)
 
 
 if __name__ == "__main__":

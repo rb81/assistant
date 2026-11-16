@@ -1,4 +1,6 @@
-"""DNS-based sender authentication for email claiming to come from the admin.
+"""DNS-based sender authentication, enforced for email claiming to come from the admin.
+
+Non-admin screening also uses these results as evidence, not an acceptance gate.
 
 An email passes when either check passes for a domain aligned with its single
 From address:
@@ -8,8 +10,8 @@ From address:
   one (added by the receiving mail server, above anything the sender supplied),
   is authorized by the SPF record of the Return-Path domain.
 
-This check can only reject mail; a pass never grants admin trust (admin actions
-still require an emailed OTP).
+This check can only reject mail; a pass never grants admin trust. Ordinary task
+continuations need no routine confirmation, but privileged actions still require approval.
 """
 
 import email
@@ -151,7 +153,7 @@ def admin_domain_warning(config: AppConfig) -> Optional[str]:
     """Best-effort startup check that the admin domain publishes SPF or DMARC; DKIM selectors cannot be discovered."""
     domain = _domain(str(config.get("agent.admin.email") or ""))
     if not domain:
-        return "admin email authentication is enabled but ADMIN_EMAIL is not set"
+        return "admin email authentication is enabled but AGENT_ADMIN_EMAIL is not set"
     import dns.resolver
 
     resolver = dns.resolver.Resolver()

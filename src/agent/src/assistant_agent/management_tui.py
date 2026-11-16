@@ -26,7 +26,8 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Box, Checkbox, Dialog, TextArea
 
-from .management import GROUPS, Management
+from .management_api import configuration_groups
+from .management_api_backend import ApiManagementBackend
 from .management_help import ACTION_HELP, SERVICE_HELP, credential_help, field_help, page_help
 from .secret_store import SECRET_NAMES
 from .setup import SetupError, setup_failure_message, validate_secret
@@ -57,6 +58,7 @@ STYLE = Style.from_dict({
 })
 SECTIONS = ("Home", "Services", "Activity", "Connections", "Settings", "Help")
 SPINNER = ("|", "/", "-", "\\")
+GROUPS = configuration_groups()
 
 
 class HelpLexer(Lexer):
@@ -151,7 +153,10 @@ class Location:
 class ManagementApp:
     def __init__(self, root, *, input=None, output=None, backend=None):
         self.root = Path(root)
-        self.backend = backend or Management(self.root, self.confirm_from_worker)
+        self.backend = backend or ApiManagementBackend(self.root)
+        if isinstance(self.backend, ApiManagementBackend):
+            self.backend.confirm = self.confirm_from_worker
+        self.groups = getattr(self.backend, "groups", GROUPS)
         self.location = Location("Home")
         self.history = []
         self.cache = {}
@@ -265,9 +270,9 @@ class ManagementApp:
             return "Welcome  /  Getting connected"
         route = self.location.route
         if route.startswith("Form:"):
-            return "Settings  /  " + GROUPS[route[5:]][0]
+            return "Settings  /  " + self.groups[route[5:]][0]
         if route.startswith("Connection:"):
-            return "Connections  /  " + GROUPS[route[11:]][0]
+            return "Connections  /  " + self.groups[route[11:]][0]
         if route == "Record" and self.location.record:
             return "Activity  /  " + self.location.record["_kind"].title() + "  /  Details"
         return route.replace(":", "  /  ")
@@ -778,7 +783,7 @@ class ManagementApp:
         running = sum(row["state"] == "running" for row in workers)
         summary = (f"{running} of {len(workers)} components running" if self.services else
                    "No configured components." if self.services_loaded else "Runtime health has not been checked.")
-        name = self.backend.values.get("AGENT_NAME", "Assistant")
+        name = self.backend.values.get("AGENT_IDENTITY_NAME", "Assistant")
         first = not instance.state.get("setup_complete")
         items = [
             text(clean(name), style="class:title"), text(summary), text(),
@@ -822,15 +827,16 @@ class ManagementApp:
             ]
             description = "Browse actual records. Open an item to see its details and available actions."
         elif route == "Connections":
-            choices = [(GROUPS[key][0] + (" / enabled" if self.backend.value(GROUPS[key][1][0]) == "true" else
+            choices = [(self.groups[key][0] + (" / enabled" if self.backend.value(self.groups[key][1][0]) == "true" else
                 " / not enabled"), "Connection:" + key)
                 for key in ("email", "telegram", "calendar", "zoom", "dropbox", "transcription")]
             description = "Enable only what you need. Labels describe your draft, not verified connectivity."
         elif route == "Advanced":
-            choices = [(title, "Form:" + key) for key, (title, _) in GROUPS.items() if key.startswith("advanced:")]
+            choices = [(title, "Form:" + key) for key, (title, _) in self.groups.items()
+                       if key.startswith(("advanced:", "catalog:", "calendar:")) or key == "deployment"]
             description = "Focused controls for limits, search, privacy, and background behavior."
         else:
-            choices = [(GROUPS[key][0], "Form:" + key) for key in ("identity", "models", "security", "embeddings")]
+            choices = [(self.groups[key][0], "Form:" + key) for key in ("identity", "models", "security", "embeddings")]
             choices += [("Assistant instructions", "Instructions"), ("Credentials", "Credentials"),
                         ("Search maintenance", "Search"), ("Storage & recovery", "Storage"),
                         ("Advanced settings", "Advanced")]
@@ -1013,7 +1019,7 @@ class ManagementApp:
             if route == "Credentials":
                 explanation = credential_help(row["id"]) + " " + (
                     "Rotate with coordinated consumer restarts. This may cause downtime; keep a backup."
-                    if row["id"] == "POSTGRES_PASSWORD" else
+                    if row["id"] == "AGENT_DATABASE_PASSWORD" else
                     "Replace through masked input, then activate it in affected services.")
             elif route == "Services":
                 explanation = (SERVICE_HELP.get(row["id"], "Additional Docker Compose component configured for this installation.") +
@@ -1180,7 +1186,7 @@ class ManagementApp:
         self.mutate_text("create-memory", None, "")
 
     def edit_group(self, key):
-        title, specs = GROUPS[key]
+        title, specs = self.groups[key]
         if self.form_group != key:
             self.form_group = key
             self.form = {
@@ -1191,13 +1197,17 @@ class ManagementApp:
         items = []
         for spec in specs:
             widget = self.form[spec.key]
+            restriction = getattr(self.backend, "restrictions", {}).get(spec.key)
+            if restriction:
+                items.extend([text(spec.label + " (read only)"), text(restriction, height=2), text()])
+                continue
             self.control_topics[widget.control] = (spec.label, field_help(spec))
             if spec.boolean:
                 items.extend([widget, text()])
             else:
                 suffix = " (configured; blank keeps it)" if spec.secret and spec.key in self.backend.credentials else ""
                 items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget, text()])
-        if key == "models" and not self.backend.installation.secret_values.get("POSTGRES_PASSWORD"):
+        if key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
             items.insert(0, self.action("Generate secure database password", self.generate_password))
         self.put(title, page_help("Form:" + key),
                  items, actions=[
@@ -1205,11 +1215,13 @@ class ManagementApp:
                      self.action("Review & save", self.review),
                      self.action("Discard this form", self.discard_form),
                  ])
-        self.app.layout.focus(next(iter(self.form.values())))
+        visible = [widget for key, widget in self.form.items() if key not in getattr(self.backend, "restrictions", {})]
+        if visible:
+            self.app.layout.focus(visible[0])
 
     def generate_password(self):
         try:
-            self.form["POSTGRES_PASSWORD"].text = self.backend.generate_database_password()
+            self.form["AGENT_DATABASE_PASSWORD"].text = self.backend.generate_database_password()
         except SetupError as error:
             self.error = str(error)
             self.app.invalidate()
@@ -1258,7 +1270,7 @@ class ManagementApp:
         problems = self.backend.problems()
         original = self.backend.installation
         items = [text("Draft changes are not active until saved and applied.", height=2)]
-        for key in ("AGENT_NAME", "AGENT_TIMEZONE", "AGENT_LLM_MODEL", "COMPOSE_PROFILES"):
+        for key in ("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_MODEL", "COMPOSE_PROFILES"):
             spec = next((spec for _, specs in GROUPS.values() for spec in specs if spec.key == key), None)
             value = (self.backend.draft().values.get(key, "") if key == "COMPOSE_PROFILES" else
                      self.backend.value(spec) if spec else self.backend.values.get(key, "(not set)"))
@@ -1276,7 +1288,7 @@ class ManagementApp:
         if problems:
             items.append(text("Needs attention", style="class:danger"))
             for key, message in problems:
-                target = ("Form:" + key if key in GROUPS else "Advanced" if key == "advanced" else
+                target = ("Form:" + key if key in self.groups else "Advanced" if key == "advanced" else
                           "Instructions" if key == "instructions" else "Settings")
                 items += [text(clean(message), height=Dimension(min=1, max=3)),
                           self.action("Edit " + GROUPS.get(key, (key, []))[0],
@@ -1321,7 +1333,7 @@ class ManagementApp:
                     if values["name"].strip() not in SECRET_NAMES:
                         raise SetupError("Unknown credential name. Use the connection or model form.")
                 result = await self.confirm_dialog(
-                    "Add credential", "Enter a supported credential name, such as OPENROUTER_API_KEY or IMAP_PASSWORD.\n"
+                    "Add credential", "Enter a supported credential name, such as AGENT_LLM_OPENROUTER_API_KEY or AGENT_EMAIL_IMAP_PASSWORD.\n"
                     "For normal account setup, use the Models or Connections forms instead.", "Continue",
                                                   fields=(("name", "Credential name", False, ""),), validate=validate)
                 if result is not False:
@@ -1329,9 +1341,9 @@ class ManagementApp:
             self.app.create_background_task(choose())
             return
         self.confirm_action(
-            "Rotate database password" if name == "POSTGRES_PASSWORD" else "Replace credential",
+            "Rotate database password" if name == "AGENT_DATABASE_PASSWORD" else "Replace credential",
             name + "\n" + credential_help(name) + "\nThe new value is masked." +
-            (" Database rotation briefly stops consumers; keep a backup." if name == "POSTGRES_PASSWORD" else
+            (" Database rotation briefly stops consumers; keep a backup." if name == "AGENT_DATABASE_PASSWORD" else
              " Activate the replacement afterward in affected services."),
             "Save", lambda values: self.backend.replace_credential(name, values["value"]),
             lambda result: self.saved(), fields=(("value", "New value", True, ""),),
@@ -1369,6 +1381,7 @@ class ManagementApp:
 
     def load(self):
         def loaded(instance):
+            self.groups = getattr(self.backend, "groups", GROUPS)
             self.loaded = True
             self.loading_error = ""
             self.render()
@@ -1419,7 +1432,7 @@ class ManagementApp:
             self.loop = asyncio.get_running_loop()
             if options is not None:
                 if options.section:
-                    self.location = Location("Form:" + options.section if options.section in GROUPS else
+                    self.location = Location("Form:" + options.section if options.section in self.groups else
                                              "Advanced" if options.section == "advanced" else
                                              "Instructions" if options.section == "instructions" else "Settings")
                 elif options.command == "tools":

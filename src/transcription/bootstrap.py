@@ -18,7 +18,7 @@ def digest(path: Path) -> str:
 
 
 def main():
-    token_path = os.environ.get("TRANSCRIPTION_API_TOKEN_FILE")
+    token_path = os.environ.get("AGENT_TRANSCRIPTION_API_TOKEN_FILE")
     if token_path:
         token = Path(token_path).read_text().strip()
         if len(token) < 32:

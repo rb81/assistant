@@ -5,6 +5,7 @@ from typing import Any
 from .config import AppConfig
 from .database import Database
 from .notifications import notify_admin_job_failure
+from .worker_health import poll_cycle
 
 
 LOGGER = logging.getLogger("assistant.supervisor")
@@ -26,7 +27,8 @@ class Supervisor:
         interval = self.config.get_int("agent.limits.poll_interval_seconds", 60)
         while not stop_requested():
             try:
-                count = self.run_once()
+                with poll_cycle(interval):
+                    count = self.run_once()
                 LOGGER.info("supervisor reviewed %s job(s)", count)
             except Exception:
                 LOGGER.exception("supervisor loop failed")

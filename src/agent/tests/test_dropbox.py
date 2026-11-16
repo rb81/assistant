@@ -512,7 +512,7 @@ class DropboxTransferTest(unittest.TestCase):
         cache.mkdir()
         (cache / "result.txt").write_text("private")
         self.config.values["agent"]["tool_result_cache"] = {"root": str(cache)}
-        for name in ["POSTGRES_PASSWORD", "AGENT.md", "agent.yaml", "private.pem"]:
+        for name in ["AGENT_DATABASE_PASSWORD", "AGENT.md", "agent.yaml", "private.pem"]:
             (self.shared / name).write_text("private")
             with self.assertRaises(DropboxError):
                 self.service.export_file(name)
@@ -594,7 +594,7 @@ class DropboxSetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
             instance.values = {"AGENT_LLM_MODEL": "model", "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1"}
-            instance.secret_values = {"POSTGRES_PASSWORD": "database-password", "OPENROUTER_API_KEY": "model-key"}
+            instance.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
             instance.save()
             paths = [Path(root) / "data" / name for name in (".env", ".compose-secrets.yaml", ".secrets/state.json")]
             before = {path: path.read_bytes() for path in paths}
@@ -603,22 +603,22 @@ class DropboxSetupTest(unittest.TestCase):
                 interactive(argparse.Namespace(root=Path(root), command=None, section="dropbox"))
             for path, data in before.items():
                 self.assertEqual(path.read_bytes(), data)
-            self.assertNotIn("DROPBOX_REFRESH_TOKEN", Installation(root).secret_values)
-            self.assertFalse((Path(root) / "data/.secrets/DROPBOX_REFRESH_TOKEN").exists())
+            self.assertNotIn("AGENT_DROPBOX_REFRESH_TOKEN", Installation(root).secret_values)
+            self.assertFalse((Path(root) / "data/.secrets/AGENT_DROPBOX_REFRESH_TOKEN").exists())
 
     def test_validation_requires_connection_and_bounds_file_limit(self):
         from assistant_agent.setup import Installation, SetupError, validate_draft
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
-            instance.values = {"AGENT_LLM_MODEL": "model", "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1", "DROPBOX_ENABLED": "true"}
-            instance.secret_values = {"POSTGRES_PASSWORD": "database-password", "OPENROUTER_API_KEY": "model-key"}
-            with self.assertRaisesRegex(SetupError, "DROPBOX_CLIENT_ID"):
+            instance.values = {"AGENT_LLM_MODEL": "model", "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1", "AGENT_DROPBOX_ENABLED": "true"}
+            instance.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
+            with self.assertRaisesRegex(SetupError, "AGENT_DROPBOX_CLIENT_ID"):
                 validate_draft(instance)
-            instance.secret_values.update({"DROPBOX_CLIENT_ID": "client", "DROPBOX_REFRESH_TOKEN": "refresh"})
+            instance.secret_values.update({"AGENT_DROPBOX_CLIENT_ID": "client", "AGENT_DROPBOX_REFRESH_TOKEN": "refresh"})
             validate_draft(instance)
             for limit in ["0", "invalid", "157286401"]:
-                instance.values["DROPBOX_MAX_FILE_BYTES"] = limit
-                with self.assertRaisesRegex(SetupError, "DROPBOX_MAX_FILE_BYTES"):
+                instance.values["AGENT_DROPBOX_MAX_FILE_BYTES"] = limit
+                with self.assertRaisesRegex(SetupError, "AGENT_DROPBOX_MAX_FILE_BYTES"):
                     validate_draft(instance)
 
     def test_setup_stages_pkce_credentials_and_consent_without_writing_files(self):
@@ -629,43 +629,43 @@ class DropboxSetupTest(unittest.TestCase):
             console = MagicMock()
             with patch("assistant_agent.dropbox_provider.exchange_code", return_value="refresh-canary") as exchange:
                 prompt_dropbox(instance, lambda question: next(answers), MagicMock(side_effect=[True, True, True, False]), console)
-            self.assertEqual(instance.secret_values["DROPBOX_REFRESH_TOKEN"], "refresh-canary")
-            self.assertEqual(instance.values["DROPBOX_ALLOW_EXPORTS"], "true")
+            self.assertEqual(instance.secret_values["AGENT_DROPBOX_REFRESH_TOKEN"], "refresh-canary")
+            self.assertEqual(instance.values["AGENT_DROPBOX_ALLOW_EXPORTS"], "true")
             self.assertEqual(exchange.call_args.args[:2], ("client", "authorization-code"))
             self.assertFalse((Path(root) / ".env").exists())
             self.assertNotIn("refresh-canary", str(console.mock_calls))
             instance.save()
             reloaded = Installation(root)
             self.assertEqual(reloaded.secret_values, instance.secret_values)
-            self.assertEqual((Path(root) / "data/.secrets/DROPBOX_REFRESH_TOKEN").stat().st_mode & 0o777, 0o600)
-            self.assertIn("DROPBOX_REFRESH_TOKEN", reloaded.overlay()["secrets"])
+            self.assertEqual((Path(root) / "data/.secrets/AGENT_DROPBOX_REFRESH_TOKEN").stat().st_mode & 0o777, 0o600)
+            self.assertIn("AGENT_DROPBOX_REFRESH_TOKEN", reloaded.overlay()["secrets"])
 
     def test_disable_keeps_or_removes_connection_and_stops_mounting_secrets(self):
         from assistant_agent.setup import Installation, prompt_dropbox
         for remove in [False, True]:
             with tempfile.TemporaryDirectory() as root:
                 instance = Installation(root)
-                instance.values = {"DROPBOX_ENABLED": "true", "DROPBOX_ALLOW_EXPORTS": "true"}
-                instance.secret_values = {"DROPBOX_CLIENT_ID": "client", "DROPBOX_REFRESH_TOKEN": "refresh"}
+                instance.values = {"AGENT_DROPBOX_ENABLED": "true", "AGENT_DROPBOX_ALLOW_EXPORTS": "true"}
+                instance.secret_values = {"AGENT_DROPBOX_CLIENT_ID": "client", "AGENT_DROPBOX_REFRESH_TOKEN": "refresh"}
                 instance.save()
                 prompt_dropbox(instance, MagicMock(), MagicMock(side_effect=[False, remove]), MagicMock())
-                self.assertNotIn("DROPBOX_REFRESH_TOKEN", instance.overlay()["secrets"])
+                self.assertNotIn("AGENT_DROPBOX_REFRESH_TOKEN", instance.overlay()["secrets"])
                 instance.save()
                 reloaded = Installation(root)
-                self.assertEqual(reloaded.values["DROPBOX_ALLOW_EXPORTS"], "false")
-                self.assertEqual("DROPBOX_REFRESH_TOKEN" in reloaded.secret_values, not remove)
+                self.assertEqual(reloaded.values["AGENT_DROPBOX_ALLOW_EXPORTS"], "false")
+                self.assertEqual("AGENT_DROPBOX_REFRESH_TOKEN" in reloaded.secret_values, not remove)
 
     def test_failed_exchange_preserves_saved_credentials_and_env(self):
         from assistant_agent.setup import Installation, SetupError, prompt_dropbox
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
-            instance.secret_values = {"DROPBOX_CLIENT_ID": "old-client", "DROPBOX_REFRESH_TOKEN": "old-refresh"}
+            instance.secret_values = {"AGENT_DROPBOX_CLIENT_ID": "old-client", "AGENT_DROPBOX_REFRESH_TOKEN": "old-refresh"}
             instance.save()
             original = instance.env_original
             answers = iter(["Reconnect", "new-client", "code"])
             with patch("assistant_agent.dropbox_provider.exchange_code", side_effect=DropboxError("authorization failed")), self.assertRaises(SetupError):
                 prompt_dropbox(instance, lambda question: next(answers), MagicMock(side_effect=[True, True]), MagicMock())
-            self.assertEqual(instance.secret_values["DROPBOX_REFRESH_TOKEN"], "old-refresh")
+            self.assertEqual(instance.secret_values["AGENT_DROPBOX_REFRESH_TOKEN"], "old-refresh")
             self.assertEqual(Installation(root).env_original, original)
 
     def test_read_only_verification_and_config_file_secrets(self):
@@ -673,16 +673,16 @@ class DropboxSetupTest(unittest.TestCase):
         from assistant_agent.setup import Installation, prompt_dropbox
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
-            instance.secret_values = {"DROPBOX_CLIENT_ID": "client", "DROPBOX_REFRESH_TOKEN": "refresh"}
+            instance.secret_values = {"AGENT_DROPBOX_CLIENT_ID": "client", "AGENT_DROPBOX_REFRESH_TOKEN": "refresh"}
             answers = iter(["Keep existing", "26214400"])
             with patch.object(DropboxClient, "token", return_value="access") as token, patch.object(DropboxClient, "request") as request:
                 prompt_dropbox(instance, lambda question: next(answers), MagicMock(side_effect=[True, True, True]), MagicMock())
             token.assert_called_once_with(force=True)
             request.assert_not_called()
             instance.save()
-            with patch.dict(os.environ, {"AGENT_CONFIG": str(Path(root) / "missing.yaml"), "DROPBOX_ENABLED": "true", "DROPBOX_ALLOW_EXPORTS": "true",
-                                        "DROPBOX_CLIENT_ID_FILE": str(Path(root) / "data/.secrets/DROPBOX_CLIENT_ID"),
-                                        "DROPBOX_REFRESH_TOKEN_FILE": str(Path(root) / "data/.secrets/DROPBOX_REFRESH_TOKEN")}, clear=True):
+            with patch.dict(os.environ, {"AGENT_CONFIG": str(Path(root) / "missing.yaml"), "AGENT_DROPBOX_ENABLED": "true", "AGENT_DROPBOX_ALLOW_EXPORTS": "true",
+                                        "AGENT_DROPBOX_CLIENT_ID_FILE": str(Path(root) / "data/.secrets/AGENT_DROPBOX_CLIENT_ID"),
+                                        "AGENT_DROPBOX_REFRESH_TOKEN_FILE": str(Path(root) / "data/.secrets/AGENT_DROPBOX_REFRESH_TOKEN")}, clear=True):
                 config = load_config()
             self.assertEqual(config.get("agent.dropbox.refresh_token"), "refresh")
             self.assertTrue(config.get_bool("agent.dropbox.allow_exports"))

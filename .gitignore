@@ -50,3 +50,4 @@ temp/
 # OS metadata
 .DS_Store
 Thumbs.db
+agent.yaml.bk_*

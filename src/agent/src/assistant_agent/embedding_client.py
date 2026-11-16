@@ -17,29 +17,13 @@ keyword_only: ContextVar[bool] = ContextVar("assistant_embedding_keyword_only", 
 class EmbeddingClient:
     def __init__(self, config: AppConfig):
         self.config = config
-        self.enabled = config.get_bool(
-            "agent.embeddings.enabled",
-            config.get_bool("agent.memory.embeddings.enabled", True),
-        )
-        self.base_url = str(
-            config.get(
-                "agent.embeddings.base_url",
-                config.get("agent.memory.embeddings.base_url", "http://ollama:11434"),
-            )
-        ).rstrip("/")
+        self.enabled = config.get_bool("agent.embeddings.enabled", True)
+        self.base_url = str(config.get("agent.embeddings.base_url", "http://ollama:11434")).rstrip("/")
         endpoint = validate_embedding_url(self.base_url)
         self._uses_internal_http = endpoint.scheme.lower() == "http"
-        self.model = str(
-            config.get(
-                "agent.embeddings.model",
-                config.get("agent.memory.embeddings.model", "embeddinggemma"),
-            )
-        )
-        self.timeout_seconds = config.get_int(
-            "agent.embeddings.timeout_seconds",
-            config.get_int("agent.memory.embeddings.timeout_seconds", 20),
-        )
-        dimensions = config.get("agent.embeddings.dimensions", config.get("agent.memory.embeddings.dimensions"))
+        self.model = str(config.get("agent.embeddings.model", "embeddinggemma"))
+        self.timeout_seconds = config.get_int("agent.embeddings.timeout_seconds", 20)
+        dimensions = config.get("agent.embeddings.dimensions")
         try:
             self.dimensions: Optional[int] = int(dimensions) if dimensions not in (None, "") else None
         except (TypeError, ValueError):

@@ -25,6 +25,7 @@ import yaml
 from dotenv.parser import parse_stream
 
 from .secret_store import SECRET_NAMES, is_secret_name
+from . import settings_schema
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
 from .transport_security import validate_embedding_url, validate_https_url
 from .validation import WEAK_PASSWORDS
@@ -38,8 +39,11 @@ MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat"
 TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat")
 # Intake services call the routing model before a request is assigned to a workstream.
 ROUTING_SERVICES = ("downloader", "telegram-receiver")
-LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {"postgres", "clamav", "ollama", "sandbox", "transcription"}
-GENERATED_SECRETS = {"POSTGRES_PASSWORD", "SANDBOX_API_TOKEN", "SANDBOX_REVOKE_TOKEN", "TRANSCRIPTION_API_TOKEN"}
+STARTUP_WAIT_SECONDS = 600
+LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {
+    "postgres", "clamav", "ollama", "sandbox", "transcription", "management", "management-docker",
+}
+GENERATED_SECRETS = {"AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN", "AGENT_TRANSCRIPTION_API_TOKEN"}
 SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
 ADVANCED_SETTINGS = {
     "Calendar privacy": (
@@ -53,8 +57,8 @@ ADVANCED_SETTINGS = {
     ),
     "Email behavior": (
         ("AGENT_EMAIL_SAVE_TO_SENT", "agent.email.save_to_sent", "Save outgoing email to the Sent folder?", True, bool, None),
-        ("AGENT_IMAP_POLL_INTERVAL", "agent.email.imap_poll_interval_seconds", "Inbox polling interval (seconds)", 60, int, 1),
-        ("AGENT_MAX_EMAILS_PER_HOUR", "agent.limits.max_emails_per_hour", "Maximum outgoing emails per hour", 10, int, 1),
+        ("AGENT_EMAIL_IMAP_POLL_INTERVAL_SECONDS", "agent.email.imap_poll_interval_seconds", "Inbox polling interval (seconds)", 60, int, 1),
+        ("AGENT_LIMITS_MAX_EMAILS_PER_HOUR", "agent.limits.max_emails_per_hour", "Maximum outgoing emails per hour", 10, int, 1),
         ("AGENT_EMAIL_MAX_ATTACHMENT_COUNT", "agent.email.max_attachment_count", "Maximum attachments per outgoing email (0 = disabled)", 5, int, 0),
     ),
     "Memory and workspace indexing": (
@@ -70,19 +74,19 @@ ADVANCED_SETTINGS = {
         ("AGENT_SEARCH_EXCLUDED_DOMAINS", "agent.search.excluded_domains", "Excluded search domains (comma-separated; blank = none)", [], list, None),
     ),
     "Model preset tool": (
-        ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires OPENROUTER_API_KEY)", False, bool, None),
+        ("AGENT_MODEL_SERVICE_ENABLED", "agent.model_service.enabled", "Enable the OpenRouter model preset tool? (text, image and audio; requires AGENT_LLM_OPENROUTER_API_KEY)", False, bool, None),
         ("AGENT_MODEL_SERVICE_ZDR_ONLY", "agent.model_service.zdr_only", "Restrict the model preset tool to Zero Data Retention (ZDR) models and routing? (No = all models)", False, bool, None),
         ("AGENT_MODEL_SERVICE_BUDGET_USD", "agent.model_service.budget_usd", "Shared model preset and TTS budget (USD; checked before each request, final request may exceed it)", 5.0, float, 0.01),
         ("AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS", "agent.model_service.budget_period_days", "Rolling budget period (days, 1-365)", 30, int, 1),
     ),
     "Text-to-speech": (
-        ("AGENT_TTS_ENABLED", "agent.tts.enabled", "Enable dedicated text-to-speech? (requires OPENROUTER_API_KEY; shares spending limits with the model preset tool)", False, bool, None),
+        ("AGENT_TTS_ENABLED", "agent.tts.enabled", "Enable dedicated text-to-speech? (requires AGENT_LLM_OPENROUTER_API_KEY; shares spending limits with the model preset tool)", False, bool, None),
         ("AGENT_TTS_ZDR_ONLY", "agent.tts.zdr_only", "Restrict text-to-speech to ZDR models and routing? (No = all speech models)", False, bool, None),
         ("AGENT_TTS_MODEL", "agent.tts.model", "Speech model slug (list options with: python -m assistant_agent.tts voices)", "mistralai/voxtral-mini-tts-3-0", str, None),
         ("AGENT_TTS_VOICE", "agent.tts.voice", "Voice identifier for the speech model", "gb_jane_confident", str, None),
     ),
     "Approvals and names": (
-        ("AGENT_APPROVAL_CHANNEL", "agent.approvals.channel", "Approval delivery: email, telegram, or both (Telegram recommended when configured)", "email", str, None),
+        ("AGENT_APPROVALS_CHANNEL", "agent.approvals.channel", "Approval delivery: email, telegram, both, or client", "email", str, None),
         ("AGENT_NAMING_MODEL", "agent.naming.model", "Inexpensive model for job and workstream names", "openai/gpt-4.1-mini", str, None),
     ),
     "Research and notifications": (
@@ -92,15 +96,16 @@ ADVANCED_SETTINGS = {
     ),
 }
 SECURITY_SETTINGS = {
-    "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "agent.security.email_authentication.enabled",
-    "AGENT_SECURITY_DECISION_ENABLED": "agent.security.decision_model.enabled",
-    "AGENT_SECURITY_DECISION_PROVIDER": "agent.security.decision_model.provider",
-    "AGENT_SECURITY_DECISION_URL": "agent.security.decision_model.url",
-    "AGENT_SECURITY_DECISION_MODEL": "agent.security.decision_model.model",
-    "AGENT_SECURITY_DECISION_ON_ERROR": "agent.security.decision_model.on_error",
-    "AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL": "agent.security.decision_model.screen.outbound_email",
-    "AGENT_SECURITY_SCREEN_SCRIPTS": "agent.security.decision_model.screen.scripts",
-    "AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS": "agent.security.scripts.allowed_domains",
+    "AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED": "agent.security.email_authentication.enabled",
+    "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS": "agent.security.confirm_new_admin_conversations",
+    "AGENT_SECURITY_DECISION_MODEL_ENABLED": "agent.security.decision_model.enabled",
+    "AGENT_SECURITY_DECISION_MODEL_PROVIDER": "agent.security.decision_model.provider",
+    "AGENT_SECURITY_DECISION_MODEL_URL": "agent.security.decision_model.url",
+    "AGENT_SECURITY_DECISION_MODEL_MODEL": "agent.security.decision_model.model",
+    "AGENT_SECURITY_DECISION_MODEL_ON_ERROR": "agent.security.decision_model.on_error",
+    "AGENT_SECURITY_DECISION_MODEL_SCREEN_OUTBOUND_EMAIL": "agent.security.decision_model.screen.outbound_email",
+    "AGENT_SECURITY_DECISION_MODEL_SCREEN_SCRIPTS": "agent.security.decision_model.screen.scripts",
+    "AGENT_SECURITY_SCRIPTS_ALLOWED_DOMAINS": "agent.security.scripts.allowed_domains",
     "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS": "agent.security.allow_possibly_malicious",
     "AGENT_SECURITY_SCRIPT_YOLO": "agent.security.script_yolo",
     "AGENT_SECURITY_DEVELOPMENT_MODEL": "agent.security.development.model",
@@ -110,23 +115,23 @@ SECURITY_SETTINGS = {
 YOLO_CONFIRMATION = "ALLOW POSSIBLY MALICIOUS"
 ADVANCED_ENV_NAMES = frozenset(setting[0] for settings in ADVANCED_SETTINGS.values() for setting in settings)
 PROMPT_DEFAULTS = {
-    "AGENT_NAME": "agent.identity.name", "AGENT_EMAIL": "agent.identity.email",
-    "ADMIN_NAME": "agent.admin.name", "ADMIN_EMAIL": "agent.admin.email",
-    "ORG_NAME": "agent.org.name", "ORG_SECURITY_EMAIL": "agent.org.security_email",
-    "AGENT_TIMEZONE": "agent.app.timezone",
+    "AGENT_IDENTITY_NAME": "agent.identity.name", "AGENT_IDENTITY_EMAIL": "agent.identity.email",
+    "AGENT_ADMIN_NAME": "agent.admin.name", "AGENT_ADMIN_EMAIL": "agent.admin.email",
+    "AGENT_ORG_NAME": "agent.org.name", "AGENT_ORG_SECURITY_EMAIL": "agent.org.security_email",
+    "AGENT_APP_TIMEZONE": "agent.app.timezone",
     "AGENT_LLM_BASE_URL": "agent.llm.base_url", "AGENT_LLM_MODEL": "agent.llm.model",
     "AGENT_LLM_FALLBACK_MODEL": "agent.llm.fallback_model",
-    "CALENDAR_ENABLED": "agent.calendar.enabled", "ZOOM_ENABLED": "agent.zoom.enabled",
-    "DROPBOX_ENABLED": "agent.dropbox.enabled", "DROPBOX_ALLOW_EXPORTS": "agent.dropbox.allow_exports",
-    "DROPBOX_MAX_FILE_BYTES": "agent.dropbox.max_file_bytes",
-    "TELEGRAM_ENABLED": "agent.telegram.enabled", "TELEGRAM_ALLOWED_USER_IDS": "agent.telegram.allowed_user_ids",
-    "TRANSCRIPTION_ENABLED": "agent.transcription.enabled", "TRANSCRIPTION_LANGUAGE": "agent.transcription.language",
+    "AGENT_CALENDAR_ENABLED": "agent.calendar.enabled", "AGENT_ZOOM_ENABLED": "agent.zoom.enabled",
+    "AGENT_DROPBOX_ENABLED": "agent.dropbox.enabled", "AGENT_DROPBOX_ALLOW_EXPORTS": "agent.dropbox.allow_exports",
+    "AGENT_DROPBOX_MAX_FILE_BYTES": "agent.dropbox.max_file_bytes",
+    "AGENT_TELEGRAM_ENABLED": "agent.telegram.enabled", "AGENT_TELEGRAM_ALLOWED_USER_IDS": "agent.telegram.allowed_user_ids",
+    "AGENT_TRANSCRIPTION_ENABLED": "agent.transcription.enabled", "AGENT_TRANSCRIPTION_LANGUAGE": "agent.transcription.language",
     **SECURITY_SETTINGS,
      **{"AGENT_EMBEDDINGS_" + field.upper(): "agent.embeddings." + field for field in
          ("enabled", "model", "base_url", "dimensions", "timeout_seconds")},
     **{name: "agent.email." + name.lower() for name in (
-        "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_FOLDER", "IMAP_ARCHIVE_FOLDER", "IMAP_QUARANTINE_FOLDER", "IMAP_SENT_FOLDER",
-        "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_FROM",
+        "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_PORT", "AGENT_EMAIL_IMAP_USERNAME", "AGENT_EMAIL_IMAP_FOLDER", "AGENT_EMAIL_IMAP_ARCHIVE_FOLDER", "AGENT_EMAIL_IMAP_QUARANTINE_FOLDER", "AGENT_EMAIL_IMAP_SENT_FOLDER",
+        "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_PORT", "AGENT_EMAIL_SMTP_USERNAME", "AGENT_EMAIL_SMTP_FROM",
     )},
 }
 
@@ -135,17 +140,25 @@ class SetupError(RuntimeError):
     pass
 
 
+class PublicSetupError(SetupError):
+    """A curated failure whose message is safe to show to authenticated management clients."""
+
+
+class PermissionActivationError(SetupError):
+    pass
+
+
 SECTION_KEYS = {
-    "identity": (("AGENT_NAME", "AGENT_TIMEZONE", "ADMIN_NAME", "ADMIN_EMAIL", "ORG_NAME", "ORG_SECURITY_EMAIL", "ORG_INTERNAL_EMAIL_DOMAINS"), ()),
-    "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "POSTGRES_PASSWORD"), ()),
+    "identity": (("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_ADMIN_NAME", "AGENT_ADMIN_EMAIL", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS"), ()),
+    "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_DATABASE_PASSWORD"), ()),
     "embeddings": ((), ("AGENT_EMBEDDINGS_",)),
-    "email": (("SETUP_EMAIL_ENABLED", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_EMAIL"), ("IMAP_", "SMTP_")),
-    "calendar": ((), ("CALENDAR_",)),
-    "zoom": ((), ("ZOOM_",)),
-    "dropbox": ((), ("DROPBOX_",)),
-    "telegram": ((), ("TELEGRAM_",)),
-    "transcription": ((), ("TRANSCRIPTION_",)),
-    "security": ((*SECURITY_SETTINGS, "SECURITY_DECISION_API_KEY"), ()),
+    "email": (("SETUP_EMAIL_ENABLED", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_IDENTITY_EMAIL"), ("AGENT_EMAIL_IMAP_", "AGENT_EMAIL_SMTP_")),
+    "calendar": ((), ("AGENT_CALENDAR_",)),
+    "zoom": ((), ("AGENT_ZOOM_",)),
+    "dropbox": ((), ("AGENT_DROPBOX_",)),
+    "telegram": ((), ("AGENT_TELEGRAM_",)),
+    "transcription": ((), ("AGENT_TRANSCRIPTION_",)),
+    "security": ((*SECURITY_SETTINGS, "AGENT_SECURITY_DECISION_MODEL_API_KEY"), ()),
     "advanced": (tuple(sorted(ADVANCED_ENV_NAMES)), ()),
     "instructions": ((), ()),
 }
@@ -163,77 +176,45 @@ def section_settings(values, secret_values, section):
 
 
 OVERRIDES_FILE = "overrides.env"
-WIZARD_EXTRA_NAMES = frozenset({"AGENT_FUSION_ENABLED", "COMPOSE_PROFILES", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME", "SANDBOX_SHARED_ROOT_HOST"})
 OVERRIDES_HEADER = """\
-# Assistant manual overrides
+# Assistant settings
 #
-# Uncomment a line and set a value to override config/agent.yaml in the agent containers.
-# Setup creates this file once and never rewrites it, so your edits survive re-running setup.
-# Settings the setup wizard manages are deliberately absent: change those with ./run.sh.
+# Overrides for src/config/agent.yaml. Each name is the agent.yaml path in upper case with
+# dots as underscores (agent.email.smtp_host -> AGENT_EMAIL_SMTP_HOST). Setup and the
+# management API write this file; hand edits are preserved.
 # Never put credentials here; use: ./run.sh secrets update NAME
 # Booleans: true/false. Lists: comma-separated. Apply edits by recreating containers:
 #   docker compose --env-file data/.env up -d --force-recreate
-# Setup reports unknown, misspelled, mistyped or wizard-managed keys at its review step.
 """
 
 
-def wizard_managed(name):
-    return (name in PROMPT_DEFAULTS or name in ADVANCED_ENV_NAMES or name in WIZARD_EXTRA_NAMES
-            or name.startswith(("SETUP_", "COMPOSE_"))
-            or any(name in names or name.startswith(prefixes) for names, prefixes in SECTION_KEYS.values()))
+def setting_names():
+    """Environment names of every non-secret agent.yaml setting."""
+    return {item["env"] for item in settings_schema.catalog() if not item["secret"]}
 
 
-def compose_environment_names(root):
-    """Names set in a service environment: block, which Compose prefers over env_file values."""
-    source = read_regular(Path(root) / "src/docker-compose.yml")
-    services = ((yaml.safe_load(source) or {}).get("services") or {}) if source else {}
-    names = set()
-    for service in services.values():
-        environment = (service or {}).get("environment") or {}
-        if isinstance(environment, list):
-            environment = dict(item.partition("=")[::2] for item in environment)
-        names |= set(environment)
-    return names
+# Extra calendar accounts (AGENT_CALENDAR_GOOGLE_2_*) have no YAML leaf; their non-secret fields are read from the environment.
+NUMBERED_CALENDAR_SETTING = re.compile(r"AGENT_CALENDAR_(GOOGLE|OUTLOOK|ZOHO)_[2-9]_(CALENDAR_ID|TENANT_ID|API_BASE)")
 
 
-def manual_override_entries(root):
-    blocked = compose_environment_names(root)
-    excluded = {name for name, _, _ in ENV_OVERRIDES if wizard_managed(name) or name in blocked or is_secret_name(name)}
-    managed_paths = {path for name, path, _ in ENV_OVERRIDES if name in excluded}
-    return [(name, path, caster) for name, path, caster in ENV_OVERRIDES
-            if name not in excluded and path not in managed_paths]
+def is_setting_name(name):
+    return name in setting_names() or bool(NUMBERED_CALENDAR_SETTING.fullmatch(name))
 
 
-def overrides_template(root, defaults):
-    lines = [OVERRIDES_HEADER]
-    group = None
-    for name, path, caster in manual_override_entries(root):
-        section = path.split(".")[1]
-        if section != group:
-            group = section
-            lines.append("\n# --- " + {"llm": "LLM"}.get(section, section.replace("_", " ").title()) + " ---\n")
-        value = defaults.get(path)
-        shown = "unset" if value is None else ",".join(map(str, value)) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else str(value)
-        kind = caster.__name__ if caster else "str"
-        lines.append(f"# {path} ({kind}; default: {shown})\n# {name}=\n")
-    return "".join(lines)
-
-
-def overrides_problems(root, text):
+def overrides_problems(text):
     try:
         values, _ = parse_environment(text)
     except SetupError as exc:
         return [OVERRIDES_FILE + ": " + str(exc).replace(".env", OVERRIDES_FILE)]
-    allowed = {name: caster for name, _, caster in manual_override_entries(root)}
+    allowed = {name: caster for name, _, caster in ENV_OVERRIDES if not is_secret_name(name)}
     problems = []
     for name, value in values.items():
-        if is_secret_name(name.removesuffix("_FILE")) or any(part in name for part in ("PASSWORD", "SECRET", "TOKEN", "API_KEY", "SIGNING_KEY")) and name not in allowed:
+        if is_secret_name(name.removesuffix("_FILE")) or (
+                name not in allowed and any(part in name for part in ("PASSWORD", "SECRET", "TOKEN", "API_KEY", "SIGNING_KEY"))):
             problems.append(OVERRIDES_FILE + ": remove credential " + name + "; use ./run.sh secrets update")
-        elif wizard_managed(name) or name in compose_environment_names(root):
-            problems.append(OVERRIDES_FILE + ": " + name + " is managed by setup or docker-compose.yml and would be ignored or conflict; remove it")
-        elif name not in allowed:
+        elif name not in allowed and not NUMBERED_CALENDAR_SETTING.fullmatch(name):
             problems.append(OVERRIDES_FILE + ": unknown setting " + name)
-        elif value.strip():
+        elif name in allowed and value.strip():
             caster = allowed[name]
             try:
                 if caster is bool and value.strip().lower() not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
@@ -245,7 +226,9 @@ def overrides_problems(root, text):
     return problems
 
 
-class DockerCommandError(SetupError):
+class DockerCommandError(PublicSetupError):
+    """A Docker failure whose message is curated; raw command output is never included."""
+
     def __init__(self, message, *, stdout=None, reason=None):
         super().__init__(message)
         self.stdout = stdout
@@ -316,29 +299,34 @@ def docker_failure(arguments, result):
 
 
 def secret_services(name):
-    if name == "POSTGRES_PASSWORD":
+    if name == "AGENT_DATABASE_PASSWORD":
         return ("postgres", *AGENT_SERVICES)
-    if name == "DATABASE_URL":
+    if name == "AGENT_DATABASE_URL":
         return AGENT_SERVICES
-    if name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+    if name in ("AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY"):
         return (*MODEL_SERVICES, *ROUTING_SERVICES)
-    if name == "IMAP_PASSWORD":
+    if name == "AGENT_EMAIL_IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
-    if name == "SMTP_PASSWORD":
+    if name == "AGENT_EMAIL_SMTP_PASSWORD":
         return ("downloader", *MODEL_SERVICES, "reminder-scheduler", "telegram-receiver", "request-preprocessor")
-    if name == "TELEGRAM_BOT_TOKEN":
+    if name == "AGENT_TELEGRAM_BOT_TOKEN":
         return ("downloader", "telegram-receiver", "request-preprocessor", "reminder-scheduler", *TOOL_SERVICES)
-    if name == "TRANSCRIPTION_API_TOKEN":
+    if name == "AGENT_TRANSCRIPTION_API_TOKEN":
         return ("transcription-init", "request-preprocessor", "downloader")
-    if name == "SANDBOX_API_TOKEN":
+    if name == "AGENT_SANDBOX_API_TOKEN":
         return ("sandbox-init", "sandbox", "task-agent")
-    if name == "SANDBOX_REVOKE_TOKEN":
+    if name == "AGENT_SANDBOX_REVOKE_TOKEN":
         return ("downloader", "telegram-receiver")
-    if name.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
+    if name.startswith(("AGENT_CALENDAR_", "AGENT_ZOOM_", "AGENT_DROPBOX_")):
         return TOOL_SERVICES
-    if name == "SECURITY_DECISION_API_KEY":
+    if name == "AGENT_SECURITY_DECISION_MODEL_API_KEY":
         return ("downloader", *TOOL_SERVICES)
     raise SetupError("Unknown secret name")
+
+
+def container_variable(service, name):
+    """Variable a service reads for a credential; PostgreSQL's image defines its own name."""
+    return "POSTGRES_PASSWORD" if (service, name) == ("postgres", "AGENT_DATABASE_PASSWORD") else name
 
 
 def read_regular(path):
@@ -347,7 +335,7 @@ def read_regular(path):
     return path.read_bytes() if path.exists() else None
 
 
-def atomic_write(path, content, mode=0o600):
+def atomic_write(path, content, mode=0o600, *, owner=None):
     previous = read_regular(path)
     if path.parent.is_symlink():
         raise SetupError("Configuration directories must not be symlinks")
@@ -356,6 +344,10 @@ def atomic_write(path, content, mode=0o600):
     descriptor, temporary = tempfile.mkstemp(prefix=".setup-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            if owner is not None:
+                current = os.fstat(handle.fileno())
+                if (current.st_uid, current.st_gid) != owner:
+                    os.fchown(handle.fileno(), *owner)
             os.fchmod(handle.fileno(), mode)
             handle.write(content)
             handle.flush()
@@ -419,7 +411,7 @@ def env_assignment(name, value):
     return f"{name}='{escaped}'\n"
 
 
-def write_transaction(writes, originals):
+def write_transaction(writes, originals, *, metadata=None):
     completed = []
     original_modes = {path: stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600 for path in writes}
     try:
@@ -432,7 +424,10 @@ def write_transaction(writes, originals):
                 path.unlink(missing_ok=True)
             else:
                 mode = 0o644 if path.parent.name == "tls" and path.suffix == ".crt" else 0o600
-                if mode == 0o600:
+                if metadata and path in metadata:
+                    uid, gid, mode = metadata[path]
+                    atomic_write(path, content, mode=mode, owner=(uid, gid))
+                elif mode == 0o600:
                     atomic_write(path, content)
                 else:
                     atomic_write(path, content, mode=mode)
@@ -442,7 +437,11 @@ def write_transaction(writes, originals):
             if original is None:
                 path.unlink(missing_ok=True)
             else:
-                atomic_write(path, original, mode=original_modes[path])
+                if metadata and path in metadata:
+                    uid, gid, _ = metadata[path]
+                    atomic_write(path, original, mode=original_modes[path], owner=(uid, gid))
+                else:
+                    atomic_write(path, original, mode=original_modes[path])
         raise SetupError("Save failed; previous configuration was restored") from None
 
 
@@ -451,7 +450,7 @@ def validate_secret(name, value):
         raise SetupError("Unknown secret name")
     if not value or not value.strip() or "\x00" in value or "\n" in value or "\r" in value:
         raise SetupError("Credentials must be nonempty single-line values")
-    if name in {"SANDBOX_API_TOKEN", "TRANSCRIPTION_API_TOKEN"} and len(value) < 32:
+    if name in {"AGENT_SANDBOX_API_TOKEN", "AGENT_TRANSCRIPTION_API_TOKEN"} and len(value) < 32:
         raise SetupError("Authentication credentials must contain at least 32 characters")
     if value in WEAK_PASSWORDS:
         raise SetupError("Replace the placeholder credential")
@@ -470,10 +469,16 @@ class Installation:
         self.env_path = self.data / ".env"
         self.env_original = read_regular(self.env_path)
         self.env_text = (self.env_original or b"").decode("utf-8")
-        self.values, _ = parse_environment(self.env_text)
-        defaults = read_regular(self.data / "config/agent.yaml")
-        if defaults is None:
-            defaults = read_regular(self.source / "config/agent.yaml")
+        self.overrides_path = self.data / OVERRIDES_FILE
+        self.overrides_original = read_regular(self.overrides_path)
+        self.overrides_text = (self.overrides_original or b"").decode("utf-8")
+        self.values = {**parse_environment(self.env_text)[0], **parse_environment(self.overrides_text)[0]}
+        if read_regular(self.data / "config/agent.yaml") is not None:
+            raise SetupError("data/config/agent.yaml is no longer read; settings come from the shipped agent.yaml and "
+                             "data/overrides.env. Run: sh migrations/002-shipped-agent-yaml.sh data")
+        defaults = read_regular(self.source / "config/agent.yaml")
+        self.defaults_original = defaults
+        self.defaults_copy = None
         try:
             parsed = yaml.safe_load(defaults.decode()) if defaults else {}
             if parsed is not None and not isinstance(parsed, dict):
@@ -511,9 +516,11 @@ class Installation:
         self.credential_volume = None
         self.use_credential_volume = bool(self.state.get("credential_volume"))
         if self.state.get("previous_credential_volume"):
-            self.use_sudo = platform.system() == "Linux" and bool(self.state.get("previous_credential_volume_sudo"))
+            self.use_sudo = (not os.getenv("ASSISTANT_CONTAINER_ADMIN") and platform.system() == "Linux"
+                             and bool(self.state.get("previous_credential_volume_sudo")))
         if self.use_credential_volume:
-            self.use_sudo = platform.system() == "Linux" and bool(self.state.get("credential_volume_sudo"))
+            self.use_sudo = (not os.getenv("ASSISTANT_CONTAINER_ADMIN") and platform.system() == "Linux"
+                             and bool(self.state.get("credential_volume_sudo")))
             from .credential_volume import CredentialVolume
             name = self.state["credential_volume"]
             if not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", name):
@@ -575,7 +582,7 @@ class Installation:
 
     def credential_grants(self):
         return {
-            service: sorted(key.removesuffix("_FILE") for key, value in spec.get("environment", {}).items()
+            service: sorted(str(value).removeprefix("/run/secrets/") for key, value in spec.get("environment", {}).items()
                             if key.endswith("_FILE") and str(value).startswith("/run/secrets/"))
             for service, spec in self.overlay()["services"].items()
             if any(str(value).startswith("/run/secrets/") for value in spec.get("environment", {}).values())
@@ -595,7 +602,7 @@ class Installation:
             atomic_write(self.directory / name, value)
 
     def remove_settings(self, prefix):
-        if not prefix.startswith(("CALENDAR_", "ZOOM_", "DROPBOX_")):
+        if not prefix.startswith(("AGENT_CALENDAR_", "AGENT_ZOOM_", "AGENT_DROPBOX_")):
             raise SetupError("Only optional integration settings can be removed here")
         self.values = {name: value for name, value in self.values.items() if not name.startswith(prefix)}
         self.secret_values = {name: value for name, value in self.secret_values.items() if not name.startswith(prefix)}
@@ -613,13 +620,13 @@ class Installation:
         compose_services = (yaml.safe_load(compose_source) or {}).get("services", {}) if compose_source else None
         staged_sandbox = compose_services is not None and "sandbox-init" in compose_services
         for name in sorted(self.secret_values):
-            if name.startswith("CALENDAR_") and self.values.get("CALENDAR_ENABLED", "").lower() == "false":
+            if name.startswith("AGENT_CALENDAR_") and self.values.get("AGENT_CALENDAR_ENABLED", "").lower() == "false":
                 continue
-            if name.startswith("ZOOM_") and self.values.get("ZOOM_ENABLED", "").lower() == "false":
+            if name.startswith("AGENT_ZOOM_") and self.values.get("AGENT_ZOOM_ENABLED", "").lower() == "false":
                 continue
-            if name.startswith("DROPBOX_") and self.values.get("DROPBOX_ENABLED", "").lower() == "false":
+            if name.startswith("AGENT_DROPBOX_") and self.values.get("AGENT_DROPBOX_ENABLED", "").lower() == "false":
                 continue
-            if name == "TRANSCRIPTION_API_TOKEN" and self.values.get("TRANSCRIPTION_ENABLED", "").lower() == "false":
+            if name == "AGENT_TRANSCRIPTION_API_TOKEN" and self.values.get("AGENT_TRANSCRIPTION_ENABLED", "").lower() == "false":
                 continue
             declarations[name] = {"file": str(self.directory / name)}
             for service in secret_services(name):
@@ -630,11 +637,12 @@ class Installation:
                 if service == "sandbox-init" and not staged_sandbox:
                     continue
                 spec = services.setdefault(service, {"environment": {}, "secrets": []})
-                spec["environment"][name] = None
-                if service == "sandbox" and name == "SANDBOX_API_TOKEN" and staged_sandbox:
-                    spec["environment"][name + "_FILE"] = "/run/assistant/runtime/current/SANDBOX_API_TOKEN"
+                variable = container_variable(service, name)
+                spec["environment"][variable] = None
+                if service == "sandbox" and name == "AGENT_SANDBOX_API_TOKEN" and staged_sandbox:
+                    spec["environment"][name + "_FILE"] = "/run/assistant/runtime/current/AGENT_SANDBOX_API_TOKEN"
                     continue
-                spec["environment"][name + "_FILE"] = "/run/secrets/" + name
+                spec["environment"][variable + "_FILE"] = "/run/secrets/" + name
                 spec["secrets"].append(name)
             embedding_settings = {}
             for name, default in (("AGENT_EMBEDDINGS_MODEL", "embeddinggemma"),
@@ -653,6 +661,12 @@ class Installation:
                         "target": "/run/secrets", "read_only": True,
                         "volume": {"nocopy": True, "subpath": "services/" + service},
                     }]
+            if compose_services is not None and "management" in compose_services:
+                services.setdefault("management", {})["volumes"] = [{
+                    "type": "volume", "source": "assistant-credentials",
+                    "target": "/run/assistant/credentials", "read_only": True,
+                    "volume": {"nocopy": True},
+                }]
             return {
                 "services": services,
                 "volumes": {"assistant-credentials": {
@@ -667,7 +681,9 @@ class Installation:
             self.save_locked()
 
     def assert_current(self):
-        if (read_regular(self.env_path) != self.env_original or read_regular(self.state_path) != self.state_original
+        if (read_regular(self.env_path) != self.env_original or read_regular(self.overrides_path) != self.overrides_original
+                or read_regular(self.source / "config/agent.yaml") != self.defaults_original
+                or read_regular(self.state_path) != self.state_original
                 or read_regular(self.data / ".compose-secrets.yaml") != self.overlay_original):
             raise SetupError("Configuration changed during this session; reopen setup")
         if self.credential_volume:
@@ -680,21 +696,21 @@ class Installation:
 
     def save_locked(self):
         self.assert_current()
-        if not self.secret_values.get("SANDBOX_API_TOKEN"):
-            self.secret_values["SANDBOX_API_TOKEN"] = secrets.token_urlsafe(32)
-        self.secret_values["SANDBOX_REVOKE_TOKEN"] = hmac.new(
-            self.secret_values["SANDBOX_API_TOKEN"].encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256,
+        if not self.secret_values.get("AGENT_SANDBOX_API_TOKEN"):
+            self.secret_values["AGENT_SANDBOX_API_TOKEN"] = secrets.token_urlsafe(32)
+        self.secret_values["AGENT_SANDBOX_REVOKE_TOKEN"] = hmac.new(
+            self.secret_values["AGENT_SANDBOX_API_TOKEN"].encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256,
         ).hexdigest()
-        if self.values.get("TRANSCRIPTION_ENABLED") == "true":
-            if not self.secret_values.get("TRANSCRIPTION_API_TOKEN"):
-                self.secret_values["TRANSCRIPTION_API_TOKEN"] = secrets.token_urlsafe(32)
-            self.values.setdefault("TRANSCRIPTION_BASE_URL", "http://transcription:8080")
-            self.values.setdefault("TRANSCRIPTION_LANGUAGE", "auto")
+        if self.values.get("AGENT_TRANSCRIPTION_ENABLED") == "true":
+            if not self.secret_values.get("AGENT_TRANSCRIPTION_API_TOKEN"):
+                self.secret_values["AGENT_TRANSCRIPTION_API_TOKEN"] = secrets.token_urlsafe(32)
+            self.values.setdefault("AGENT_TRANSCRIPTION_BASE_URL", "http://transcription:8080")
+            self.values.setdefault("AGENT_TRANSCRIPTION_LANGUAGE", "auto")
             current_profiles = [p.strip() for p in self.values.get("COMPOSE_PROFILES", "").split(",") if p.strip()]
             if current_profiles and "voice" not in current_profiles:
                 current_profiles.append("voice")
                 self.values["COMPOSE_PROFILES"] = ",".join(current_profiles)
-        elif self.values.get("TRANSCRIPTION_ENABLED") == "false":
+        elif self.values.get("AGENT_TRANSCRIPTION_ENABLED") == "false":
             current_profiles = [p.strip() for p in self.values.get("COMPOSE_PROFILES", "").split(",") if p.strip()]
             if "voice" in current_profiles:
                 current_profiles.remove("voice")
@@ -732,12 +748,28 @@ class Installation:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
         original_values, _ = parse_environment(self.env_text)
+        original_overrides, _ = parse_environment(self.overrides_text)
         self.values.pop("SANDBOX_DOCS_ROOT_HOST", None)
+        settings = setting_names() | {
+            name for name in self.values.keys() | original_values.keys() | original_overrides.keys()
+            if NUMBERED_CALENDAR_SETTING.fullmatch(name)
+        }
+        # Settings live in overrides.env; .env keeps only Compose and installation variables.
         updates = {key: value for key, value in self.values.items()
-               if not is_secret_name(key.removesuffix("_FILE")) and original_values.get(key) != value}
+               if key not in settings and not is_secret_name(key.removesuffix("_FILE")) and original_values.get(key) != value}
+        override_updates = {key: value for key, value in self.values.items()
+                            if key in settings and original_overrides.get(key) != value}
+        override_removed = {key for key in original_overrides if key in settings and key not in self.values}
         updates["COMPOSE_FILE"] = str(self.source / "docker-compose.yml") + os.pathsep + str(self.data / ".compose-secrets.yaml")
         updates["SANDBOX_SHARED_ROOT_HOST"] = str(self.root / "data/share")
-        removed = {key for key in original_values if key not in self.values or is_secret_name(key.removesuffix("_FILE"))}
+        updates["ASSISTANT_INSTALL_ROOT"] = str(self.root)
+        updates["ASSISTANT_UID"] = os.environ.get("ASSISTANT_UID", self.values.get("ASSISTANT_UID", str(os.getuid())))
+        updates["ASSISTANT_GID"] = os.environ.get("ASSISTANT_GID", self.values.get("ASSISTANT_GID", str(os.getgid())))
+        for name in ("ASSISTANT_DOCKER_SOCKET", "ASSISTANT_MANAGEMENT_IMAGE"):
+            if os.environ.get(name):
+                updates[name] = os.environ[name]
+        removed = {key for key in original_values
+                   if key not in self.values or key in settings or is_secret_name(key.removesuffix("_FILE"))}
         deleted_secrets = {name for name, snapshot in self.snapshots.items() if snapshot is not None and name not in self.secret_values}
         deleted_secrets |= self.migrated - self.secret_values.keys()
         changed = {name for name, value in self.secret_values.items()
@@ -747,7 +779,7 @@ class Installation:
         if previous_overlay:
             def granted(overlay, name):
                 return {service for service, spec in (overlay.get("services") or {}).items()
-                        if (spec.get("environment") or {}).get(name + "_FILE")}
+                        if (spec.get("environment") or {}).get(container_variable(service, name) + "_FILE")}
             current_overlay = self.overlay()
             changed |= {name for name in self.secret_values if granted(previous_overlay, name) != granted(current_overlay, name)}
         self.state["pending"] = sorted(set(self.state.get("pending", [])) | changed | self.migrated | deleted_secrets)
@@ -789,11 +821,19 @@ class Installation:
         writes[self.data / ".compose-secrets.yaml"] = yaml.safe_dump(self.overlay(), sort_keys=True).encode()
         writes[self.env_path] = render_environment(self.env_text, updates, removed).encode()
         writes[self.state_path] = json.dumps(self.state).encode()
-        config_path = self.data / "config/agent.yaml"
-        if read_regular(config_path) is None:
-            defaults = read_regular(self.source / "config/agent.yaml")
-            if defaults is not None:
-                writes[config_path] = defaults
+        source_metadata = {}
+        if self.defaults_copy is not None and self.defaults_copy != self.defaults_original:
+            from .management_yaml import backup_writes
+            source = self.source / "config/agent.yaml"
+            writes.update(backup_writes(source.parent, self.defaults_original))
+            writes[source] = self.defaults_copy
+            info = source.stat()
+            source_metadata = {
+                path: (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode) if path == source else 0o600)
+                for path in writes if path.parent == source.parent
+            }
+        # The read-only config mount (AGENT.md) needs its directory even before a prompt is saved.
+        (self.data / "config").mkdir(mode=0o700, parents=True, exist_ok=True)
         for name, value in self.tls_files.items():
             writes[self.root / "data/private/tls" / name] = value
         for name in existing_service_tls:
@@ -803,9 +843,9 @@ class Installation:
             if read_regular(prompt) != self.prompt_original:
                 raise SetupError("Assistant instructions changed during setup; reopen setup")
             writes[prompt] = self.prompt_copy
-        overrides = self.data / OVERRIDES_FILE
-        if read_regular(overrides) is None:
-            writes[overrides] = overrides_template(self.root, self.defaults).encode()
+        if override_updates or override_removed or self.overrides_original is None:
+            writes[self.overrides_path] = render_environment(
+                self.overrides_text or OVERRIDES_HEADER, override_updates, override_removed).encode()
         originals = {}
         for path in writes:
             for parent in (path.parent, *path.parent.parents):
@@ -823,7 +863,10 @@ class Installation:
                         spec["image"] = "python:3.12-slim"
                     self.docker(["compose", "-f", "-", "config", "--quiet"], input_text=yaml.safe_dump(probe))
                     volume.verify_mount()
-            write_transaction(writes, originals)
+            if source_metadata:
+                write_transaction(writes, originals, metadata=source_metadata)
+            else:
+                write_transaction(writes, originals)
         except BaseException:
             if volume_previous is not None:
                 volume.write(volume_previous.get("values", {}), volume_previous.get("grants", {}))
@@ -834,12 +877,16 @@ class Installation:
             self.credential_volume = None
         self.env_original = read_regular(self.env_path)
         self.env_text = self.env_original.decode()
-        self.values, _ = parse_environment(self.env_text)
+        self.overrides_original = read_regular(self.overrides_path)
+        self.overrides_text = (self.overrides_original or b"").decode("utf-8")
+        self.values = {**parse_environment(self.env_text)[0], **parse_environment(self.overrides_text)[0]}
         self.state_original = read_regular(self.state_path)
         self.overlay_original = read_regular(self.data / ".compose-secrets.yaml")
         self.snapshots = {name: self.read_credential(name) for name in self.secret_values}
         self.prompt_original = read_regular(prompt)
         self.prompt_copy = None
+        self.defaults_original = read_regular(self.source / "config/agent.yaml")
+        self.defaults_copy = None
         self.migrated.clear()
 
     def compose(self, arguments, input_text=None, timeout=180):
@@ -853,8 +900,10 @@ class Installation:
         return command
 
     def docker_environment(self):
-        return {key: value for key, value in os.environ.items()
+        environment = {key: value for key, value in os.environ.items()
                 if not is_secret_name(key.removesuffix("_FILE")) and key not in {"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME"}}
+        environment["ASSISTANT_INSTALL_ROOT"] = str(self.root)
+        return environment
 
     def compose_interactive(self, arguments, stdout=None, stderr=None):
         """Run Compose attached to the terminal (or stdout) so operators see real output; returns the exit code."""
@@ -913,40 +962,78 @@ class Installation:
                       "import ssl,urllib.request; from pathlib import Path; "
                       "root=Path('/run/assistant/runtime/current'); "
                       "context=ssl.create_default_context(cafile=str(root/'sandbox.crt')); "
-                      "token=(root/'SANDBOX_API_TOKEN').read_text().strip(); "
+                      "token=(root/'AGENT_SANDBOX_API_TOKEN').read_text().strip(); "
                       "request=urllib.request.Request('https://sandbox:8080/health',headers={'Authorization':'Bearer '+token}); "
                       "response=urllib.request.urlopen(request,context=context,timeout=15); "
                       "assert response.status == 200; print('Sandbox authenticated TLS probe passed')"])
 
-    def start_containers(self):
-        self.startup_stage = "checking saved configuration"
+    def container_rows(self):
+        payload = self.compose(["ps", "--all", "--format", "json"])
+        try:
+            parsed = json.loads(payload)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            return [json.loads(line) for line in payload.splitlines() if line.strip()]
+
+    def unhealthy_services(self, services):
+        """Name the services that are not yet running and healthy; states and names carry no credentials."""
+        try:
+            rows = {row.get("Service"): row for row in self.container_rows()}
+        except (SetupError, json.JSONDecodeError):
+            return []
+        lagging = []
+        for service in services:
+            row = rows.get(service)
+            if row is None:
+                lagging.append(service + " (missing)")
+            elif row.get("State") != "running" or row.get("Health") not in (None, "", "healthy"):
+                lagging.append(service + " (" + (row.get("Health") or row.get("State") or "unknown") + ")")
+        return lagging
+
+    def start_containers(self, progress=None, *, preserve_management=False):
+        def stage(message):
+            self.startup_stage = message
+            if progress is not None:
+                progress(message)
+
+        stage("checking saved configuration")
         with installation_lock(self.root):
             self.assert_current()
-            self.startup_stage = "refreshing credential grants"
+            stage("refreshing credential grants")
             # "up" below recreates any service whose grants changed.
             self.reconcile_grants_locked(recreate=False)
-            self.startup_stage = "Compose configuration"
+            stage("Compose configuration")
             configuration = json.loads(self.compose(["config", "--format", "json"]))
             services = sorted(set(configuration["services"]) & LONG_RUNNING_SERVICES)
             if not services:
                 raise SetupError("No enabled long-running Assistant services were found")
             staged_sandbox = "sandbox-init" in configuration["services"]
             if staged_sandbox:
-                self.startup_stage = "building sandbox initialization image"
+                stage("building sandbox initialization image")
                 self.compose(["build", "sandbox-init"], timeout=1800)
-                self.startup_stage = "staging sandbox protected files"
+                stage("staging sandbox protected files")
                 self.stage_sandbox_runtime()
-            self.startup_stage = "building and starting containers"
-            self.compose(["up", "-d", "--build"], timeout=1800)
-            self.startup_stage = "waiting for container health"
-            self.compose(["up", "-d", "--wait", "--wait-timeout", "180", *services], timeout=240)
-            self.startup_stage = "checking container status"
-            payload = self.compose(["ps", "--all", "--format", "json"])
+            stage("building and starting containers")
+            targets = []
+            if preserve_management:
+                targets = sorted(set(configuration["services"]) - {"management", "management-docker"})
+            self.compose(["up", "-d", "--build", *targets], timeout=1800)
+            stage("waiting for container health")
             try:
-                parsed = json.loads(payload)
-                rows = parsed if isinstance(parsed, list) else [parsed]
-            except json.JSONDecodeError:
-                rows = [json.loads(line) for line in payload.splitlines() if line.strip()]
+                # First starts may download models or initialize databases before reporting healthy.
+                self.compose(["up", "-d", "--wait", "--wait-timeout", str(STARTUP_WAIT_SECONDS), *services],
+                             timeout=STARTUP_WAIT_SECONDS + 60)
+            except DockerCommandError as error:
+                lagging = self.unhealthy_services(services)
+                if not lagging:
+                    raise
+                raise SetupError(
+                    "These containers did not become healthy within " + str(STARTUP_WAIT_SECONDS) + " seconds: "
+                    + ", ".join(lagging) + ". They may still be starting; rerun ./run.sh server start once they settle, "
+                    "or inspect docker compose --env-file data/.env logs SERVICE.",
+                ) from error
+            stage("checking container status")
+            rows = self.container_rows()
             if any(row.get("Service") in configuration["services"] and row.get("Service") not in LONG_RUNNING_SERVICES and
                    (row.get("State") == "dead" or (row.get("State") == "exited" and int(row.get("ExitCode") or 0) != 0)) for row in rows):
                 raise SetupError("A startup helper failed; inspect docker compose --env-file data/.env ps -a and logs")
@@ -956,12 +1043,12 @@ class Installation:
             if any(row.get("State") != "running" or row.get("Health") not in (None, "", "healthy") for row in active):
                 raise SetupError("Some containers are not running or healthy; inspect docker compose --env-file data/.env ps -a and logs")
             if staged_sandbox:
-                self.startup_stage = "verifying sandbox protected-file activation"
+                stage("verifying sandbox protected-file activation")
                 self.verify_sandbox_runtime()
             identities = [row.get("ID") or row.get("Name") for row in active]
             if not all(identities):
                 raise SetupError("Docker did not return container identities; restart policies were not verified")
-            self.startup_stage = "verifying restart policies"
+            stage("verifying restart policies")
             self.docker(["update", "--restart", "unless-stopped", *identities])
             policies = [json.loads(line) for line in self.docker(
                 ["inspect", "--format", "{{json .HostConfig.RestartPolicy.Name}}", *identities]
@@ -969,11 +1056,11 @@ class Installation:
             verified = policies == ["unless-stopped"] * len(identities)
             if not verified:
                 raise SetupError("Container restart policies could not be verified")
-            self.startup_stage = "recording credential activation"
+            stage("recording credential activation")
             deleted = set(self.state.get("removed", []))
             grants = self.overlay()["services"]
             applied = {name for name in self.state.get("pending", []) if any(service in services and
-                       (name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")) for service in secret_services(name))}
+                       (name in deleted or grants.get(service, {}).get("environment", {}).get(container_variable(service, name) + "_FILE")) for service in secret_services(name))}
             self.state["pending"] = sorted(set(self.state.get("pending", [])) - applied)
             self.state["removed"] = sorted(deleted - applied)
             atomic_write(self.state_path, json.dumps(self.state).encode())
@@ -1069,17 +1156,17 @@ class Installation:
             return targets
 
     def apply_locked(self, names):
-        if "SANDBOX_API_TOKEN" in names:
-            names = list(set(names) | {"SANDBOX_REVOKE_TOKEN"})
+        if "AGENT_SANDBOX_API_TOKEN" in names:
+            names = list(set(names) | {"AGENT_SANDBOX_REVOKE_TOKEN"})
         grants = self.overlay()["services"]
         deleted = set(self.state.get("removed", []))
         affected = {service for name in names for service in secret_services(name)
-                if name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")}
+                if name in deleted or grants.get(service, {}).get("environment", {}).get(container_variable(service, name) + "_FILE")}
         running = set(self.compose(["ps", "--status", "running", "--services"]).split())
         targets = sorted(affected & running)
         compose_source = read_regular(self.source / "docker-compose.yml")
         configured = (yaml.safe_load(compose_source) or {}).get("services", {}) if compose_source else {}
-        staged_sandbox = "SANDBOX_API_TOKEN" in names and "sandbox-init" in configured and "sandbox" in running
+        staged_sandbox = "AGENT_SANDBOX_API_TOKEN" in names and "sandbox-init" in configured and "sandbox" in running
         if staged_sandbox:
             self.stage_sandbox_runtime()
             targets = sorted(set(targets) | {"sandbox"})
@@ -1092,9 +1179,9 @@ class Installation:
             self.verify_sandbox_runtime()
         pending = set(self.state.get("pending", []))
         applied = {name for name in names if any(service in running and
-               (name in deleted or grants.get(service, {}).get("environment", {}).get(name + "_FILE")) for service in secret_services(name))}
+               (name in deleted or grants.get(service, {}).get("environment", {}).get(container_variable(service, name) + "_FILE")) for service in secret_services(name))}
         if staged_sandbox:
-            applied.add("SANDBOX_API_TOKEN")
+            applied.add("AGENT_SANDBOX_API_TOKEN")
         self.state["pending"] = sorted(pending - applied)
         self.state["removed"] = sorted(deleted - applied)
         atomic_write(self.state_path, json.dumps(self.state).encode())
@@ -1109,11 +1196,11 @@ class Installation:
             self.rotate_database_locked(replacement)
 
     def rotate_database_locked(self, replacement):
-        validate_secret("POSTGRES_PASSWORD", replacement)
+        validate_secret("AGENT_DATABASE_PASSWORD", replacement)
         overrides, _ = parse_environment((read_regular(self.data / OVERRIDES_FILE) or b"").decode())
-        if "DATABASE_URL" in self.secret_values or any(self.values.get(name) or overrides.get(name) for name in ("AGENT_DATABASE_HOST", "AGENT_DATABASE_USER", "AGENT_DATABASE_NAME")):
+        if "AGENT_DATABASE_URL" in self.secret_values or any(self.values.get(name) or overrides.get(name) for name in ("AGENT_DATABASE_HOST", "AGENT_DATABASE_USER", "AGENT_DATABASE_NAME")):
             raise SetupError("Custom database deployments require their own coordinated rotation procedure")
-        previous = self.secret_values.get("POSTGRES_PASSWORD")
+        previous = self.secret_values.get("AGENT_DATABASE_PASSWORD")
         if not previous:
             raise SetupError("Existing database credential is required for recovery")
         running = set(self.compose(["ps", "--status", "running", "--services"]).split())
@@ -1127,12 +1214,12 @@ class Installation:
             if consumers:
                 self.compose(["stop", *consumers])
             self.set_database_password(replacement)
-            self.secret_values["POSTGRES_PASSWORD"] = replacement
+            self.secret_values["AGENT_DATABASE_PASSWORD"] = replacement
             self.save_locked()
             self.verify_database_password(replacement)
             self.compose(["up", "-d", "--wait", "--wait-timeout", "90", "--no-deps", "--force-recreate", "postgres", *consumers])
             self.verify_database_password(replacement)
-            self.state["pending"] = [name for name in self.state.get("pending", []) if name != "POSTGRES_PASSWORD"]
+            self.state["pending"] = [name for name in self.state.get("pending", []) if name != "AGENT_DATABASE_PASSWORD"]
             atomic_write(self.state_path, json.dumps(self.state).encode())
             self.state_original = read_regular(self.state_path)
             self.write_credential("rotation.json", None)
@@ -1165,7 +1252,7 @@ def recover_database_locked(root, prepare=None):
         if prepare is not None:
             prepare(instance)
         instance.set_database_password(record["previous"])
-        instance.write_credential("POSTGRES_PASSWORD", record["previous"].encode())
+        instance.write_credential("AGENT_DATABASE_PASSWORD", record["previous"].encode())
         instance.verify_database_password(record["previous"])
         instance.compose(["up", "-d", "--wait", "--wait-timeout", "90", "--no-deps", "--force-recreate", "postgres", *record["consumers"]])
         instance.verify_database_password(record["previous"])
@@ -1184,7 +1271,7 @@ def recover_database_locked(root, prepare=None):
     if prepare is not None:
         prepare(instance)
     instance.set_database_password(record["previous"])
-    atomic_write(root / "data/.secrets/POSTGRES_PASSWORD", record["previous"].encode())
+    atomic_write(root / "data/.secrets/AGENT_DATABASE_PASSWORD", record["previous"].encode())
     instance.verify_database_password(record["previous"])
     instance.compose(["up", "-d", "--wait", "--wait-timeout", "90", "--no-deps", "--force-recreate", "postgres", *record["consumers"]])
     instance.verify_database_password(record["previous"])
@@ -1217,22 +1304,47 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     navigation = parser.add_mutually_exclusive_group()
     navigation.add_argument("--section", choices=SECTION_IDS, help="Edit one section of an existing installation")
-    navigation.add_argument("--wizard", action="store_true", help="Open setup configuration (all sections with --plain)")
-    parser.add_argument("--plain", action="store_true", help="Use the traditional line-oriented menus")
+    navigation.add_argument("--wizard", action="store_true", help="Open setup configuration")
     commands = parser.add_subparsers(dest="command")
     secret_parser = commands.add_parser("secrets", help="Manage credentials without displaying values")
     secret_parser.add_argument("action", choices=("status", "update", "apply", "recover", "sync"))
     secret_parser.add_argument("name", nargs="?")
-    commands.add_parser("tools", help="Open management at Services (legacy troubleshooting menus with --plain)")
+    config_parser = commands.add_parser("config", help="Verify saved settings and running containers against agent.yaml")
+    config_parser.add_argument("action", choices=("check",))
+    commands.add_parser("tools", help="Open management at Services")
     commands.add_parser("reset", help="Factory reset: rebuild the database, optionally delete files; keep settings and secrets")
+    management_parser = commands.add_parser("management", help="Shared management API client")
+    management_parser.add_argument("management_action", choices=(
+        "serve", "health", "config", "check", "services", "logs", "tui", "domains", "clients",
+        "query", "operation", "operation-status", "poll", "acknowledge",
+        "records", "approvals", "permissions", "messages",
+    ))
+    management_parser.add_argument("--operation-id")
+    management_parser.add_argument("--client-id")
+    management_parser.add_argument("--record-id", type=int)
+    management_parser.add_argument("--page", type=int, default=0)
+    management_parser.add_argument("--search", default="")
+    management_parser.add_argument("--message-id", action="append", type=int, default=[])
+    management_parser.add_argument("service", nargs="?")
+    management_parser.add_argument("--port", type=int, default=8765, help="Loopback API port for serve")
+    management_parser.add_argument("--url", default="http://127.0.0.1:8765", help="Local API or SSH-forwarded address")
+    management_parser.add_argument("--token-file", type=Path, help="Protected token file for API clients")
     options = parser.parse_args()
     try:
+        if options.command == "management":
+            from .management_client import run_command
+            run_command(options)
+            return
+        if options.command == "config":
+            from .config_check import report
+            from .management_api_backend import ApiManagementBackend
+            raise SystemExit(report(ApiManagementBackend(options.root).client.get("configuration/check?runtime=true")))
         if options.command == "secrets" and options.action == "status":
-            instance = Installation(options.root)
-            for name in sorted(instance.secret_values):
-                pending = name in instance.state.get("pending", []) or name in instance.migrated
-                print(f"{name}: configured" + (" (activation pending)" if pending else " (saved; runtime health not verified)"))
-            if not instance.secret_values:
+            from .management_api_backend import ApiManagementBackend
+            credentials = ApiManagementBackend(options.root).client.get("credentials")["credentials"]
+            for credential in credentials:
+                print(f"{credential['name']}: {credential['status']} (runtime health not verified)")
+            if not credentials:
                 print("No credentials configured. Run setup first.")
             return
         if options.command == "secrets" and options.action == "sync":
@@ -1243,14 +1355,10 @@ def main():
             return
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise SetupError("Interactive setup requires a terminal; no files were changed")
-        if options.plain:
-            with authorization_handler(terminal_authorization):
-                interactive(options)
-        else:
-            from .management_tui import ManagementApp
-            ui = ManagementApp(options.root)
-            with authorization_handler(ui.authorize):
-                ui.run(options)
+        from .management_tui import ManagementApp
+        ui = ManagementApp(options.root)
+        with authorization_handler(ui.authorize):
+            ui.run(options)
     except SetupError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None
@@ -1357,12 +1465,12 @@ def interactive(options):
             raise SetupError("Unknown secret name")
         console.print("Values are masked. Provider credentials must be obtained from the provider first.")
         console.print("Affected services: " + ", ".join(secret_services(name)))
-        if name == "POSTGRES_PASSWORD":
+        if name == "AGENT_DATABASE_PASSWORD":
             console.print("Database rotation stops consumers, updates the role, and recreates containers. Keep a current backup.")
         value = prompt_credential(answer, name, None)
-        if not confirm("Save and coordinate database rotation?" if name == "POSTGRES_PASSWORD" else "Save this replacement credential?"):
+        if not confirm("Save and coordinate database rotation?" if name == "AGENT_DATABASE_PASSWORD" else "Save this replacement credential?"):
             return
-        if name == "POSTGRES_PASSWORD":
+        if name == "AGENT_DATABASE_PASSWORD":
             ensure_docker_access(instance, confirm)
             instance.rotate_database(value)
         else:
@@ -1419,13 +1527,13 @@ def interactive(options):
         return enabled
 
     def identity():
-        text("AGENT_NAME", "Assistant name", "Assistant")
-        text("AGENT_TIMEZONE", "Timezone (IANA identifier, e.g. Europe/London)", "UTC")
-        text("ADMIN_NAME", "Your name")
-        text("ADMIN_EMAIL", "Your email address for approvals and notifications")
-        text("ORG_NAME", "Organization name (optional)")
-        text("ORG_SECURITY_EMAIL", "Security contact email (optional)")
-        text("ORG_INTERNAL_EMAIL_DOMAINS", "Internal email domains (comma-separated, optional)")
+        text("AGENT_IDENTITY_NAME", "Assistant name", "Assistant")
+        text("AGENT_APP_TIMEZONE", "Timezone (IANA identifier, e.g. Europe/London)", "UTC")
+        text("AGENT_ADMIN_NAME", "Your name")
+        text("AGENT_ADMIN_EMAIL", "Your email address for approvals and notifications")
+        text("AGENT_ORG_NAME", "Organization name (optional)")
+        text("AGENT_ORG_SECURITY_EMAIL", "Security contact email (optional)")
+        text("AGENT_ORG_INTERNAL_EMAIL_DOMAINS", "Internal email domains (comma-separated, optional)")
 
     def models():
         previous_url = instance.values.get("AGENT_LLM_BASE_URL") or instance.defaults.get("agent.llm.base_url") or "https://openrouter.ai/api/v1"
@@ -1434,13 +1542,13 @@ def interactive(options):
         default = "https://openrouter.ai/api/v1" if provider == "OpenRouter" else "https://api.openai.com/v1"
         instance.values["AGENT_LLM_BASE_URL"] = previous_url if (provider == "OpenRouter") == ("openrouter.ai" in previous_url) else default
         text("AGENT_LLM_BASE_URL", "Model API base URL", default)
-        credential("OPENROUTER_API_KEY" if provider == "OpenRouter" else "OPENAI_API_KEY")
+        credential("AGENT_LLM_OPENROUTER_API_KEY" if provider == "OpenRouter" else "AGENT_LLM_OPENAI_API_KEY")
         text("AGENT_LLM_MODEL", "Primary model identifier", "anthropic/claude-sonnet-4.6" if provider == "OpenRouter" else "gpt-4.1")
         text("AGENT_LLM_FALLBACK_MODEL", "Fallback model identifier (optional)", "openai/gpt-5.4" if provider == "OpenRouter" else "")
         instance.values["AGENT_SEARCH_ENABLED"] = str(provider == "OpenRouter").lower()
         if provider != "OpenRouter":
             instance.values["AGENT_FUSION_ENABLED"] = "false"
-        current_password = instance.secret_values.get("POSTGRES_PASSWORD")
+        current_password = instance.secret_values.get("AGENT_DATABASE_PASSWORD")
         if current_password and current_password not in WEAK_PASSWORDS:
             console.print("Existing database password retained. Use secrets update for coordinated rotation.")
         else:
@@ -1451,9 +1559,9 @@ def interactive(options):
                 raise SetupError("PostgreSQL data is private and no usable password is saved. Supply the existing database password or use coordinated password rotation; setup will not generate a replacement") from None
             if database_initialized:
                 if current_password in WEAK_PASSWORDS:
-                    raise SetupError("Existing database uses a placeholder password. Use secrets update POSTGRES_PASSWORD for coordinated rotation first")
+                    raise SetupError("Existing database uses a placeholder password. Use secrets update AGENT_DATABASE_PASSWORD for coordinated rotation first")
                 raise SetupError("Existing database detected. Supply its current password; setup will not replace it")
-            instance.secret_values["POSTGRES_PASSWORD"] = prompt_credential(answer, "POSTGRES_PASSWORD", None)
+            instance.secret_values["AGENT_DATABASE_PASSWORD"] = prompt_credential(answer, "AGENT_DATABASE_PASSWORD", None)
 
     def embeddings():
         nonlocal embeddings_edited
@@ -1470,21 +1578,21 @@ def interactive(options):
         enabled = capability("SETUP_EMAIL_ENABLED", "Enable email intake and outgoing email?", True)
         if enabled:
             for name, label, default in (
-                ("IMAP_HOST", "IMAP server", ""), ("IMAP_PORT", "IMAP TLS port", "993"),
-                ("IMAP_USERNAME", "Assistant mailbox login", ""), ("SMTP_HOST", "SMTP server", ""),
-                ("SMTP_PORT", "SMTP TLS/STARTTLS port", "587"), ("SMTP_USERNAME", "SMTP login", instance.values.get("IMAP_USERNAME", "")),
-                ("SMTP_FROM", "Assistant sender address", instance.values.get("IMAP_USERNAME", "")),
-                ("IMAP_FOLDER", "Incoming folder", "INBOX"), ("IMAP_ARCHIVE_FOLDER", "Processed-mail folder", "Archive"),
-                ("IMAP_QUARANTINE_FOLDER", "Quarantine folder (rejected, held and unaccepted mail)", "Quarantine"),
-                ("IMAP_SENT_FOLDER", "Sent-mail folder", "Sent"),
+                ("AGENT_EMAIL_IMAP_HOST", "IMAP server", ""), ("AGENT_EMAIL_IMAP_PORT", "IMAP TLS port", "993"),
+                ("AGENT_EMAIL_IMAP_USERNAME", "Assistant mailbox login", ""), ("AGENT_EMAIL_SMTP_HOST", "SMTP server", ""),
+                ("AGENT_EMAIL_SMTP_PORT", "SMTP TLS/STARTTLS port", "587"), ("AGENT_EMAIL_SMTP_USERNAME", "SMTP login", instance.values.get("AGENT_EMAIL_IMAP_USERNAME", "")),
+                ("AGENT_EMAIL_SMTP_FROM", "Assistant sender address", instance.values.get("AGENT_EMAIL_IMAP_USERNAME", "")),
+                ("AGENT_EMAIL_IMAP_FOLDER", "Incoming folder", "INBOX"), ("AGENT_EMAIL_IMAP_ARCHIVE_FOLDER", "Processed-mail folder", "Archive"),
+                ("AGENT_EMAIL_IMAP_QUARANTINE_FOLDER", "Quarantine folder (rejected, held and unaccepted mail)", "Quarantine"),
+                ("AGENT_EMAIL_IMAP_SENT_FOLDER", "Sent-mail folder", "Sent"),
             ):
                 text(name, label, default)
-            credential("IMAP_PASSWORD")
-            credential("SMTP_PASSWORD")
-            text("EMAIL_ACTIONABLE_SENDERS", "Addresses allowed to start jobs", instance.values.get("ADMIN_EMAIL", ""))
-            domain = instance.values.get("ADMIN_EMAIL", "").partition("@")[2]
-            text("EMAIL_ALLOWED_RECIPIENT_DOMAINS", "Allowed outgoing recipient domains", domain)
-            text("AGENT_EMAIL", "Assistant email identity", instance.values.get("SMTP_FROM", ""))
+            credential("AGENT_EMAIL_IMAP_PASSWORD")
+            credential("AGENT_EMAIL_SMTP_PASSWORD")
+            text("AGENT_EMAIL_ACTIONABLE_SENDERS", "Addresses allowed to start jobs", instance.values.get("AGENT_ADMIN_EMAIL", ""))
+            domain = instance.values.get("AGENT_ADMIN_EMAIL", "").partition("@")[2]
+            text("AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS", "Allowed outgoing recipient domains", domain)
+            text("AGENT_IDENTITY_EMAIL", "Assistant email identity", instance.values.get("AGENT_EMAIL_SMTP_FROM", ""))
             console.print("Admin requests use a separate, ten-minute OTP/hash email confirmation. No signing key is needed. "
                           "Mail from senders that are not accepted is moved to the quarantine folder unread.")
         instance.values["AGENT_DEEP_RESEARCH_ENABLED"] = str(enabled and "openrouter.ai" in instance.values.get("AGENT_LLM_BASE_URL", "")).lower()
@@ -1492,38 +1600,38 @@ def interactive(options):
             instance.defaults.get("agent.heartbeat.admin_digest_interval_hours", 0)))
 
     def calendar():
-        if capability("CALENDAR_ENABLED", "Enable calendar integration?"):
+        if capability("AGENT_CALENDAR_ENABLED", "Enable calendar integration?"):
             console.print("Select the providers to keep. Deselecting a provider removes its saved settings and credentials when you save.")
             choices = [questionary.Choice(provider.title(), value=provider, checked=any(
-                name.startswith("CALENDAR_" + provider.upper() + "_") for name in instance.secret_values
+                name.startswith("AGENT_CALENDAR_" + provider.upper() + "_") for name in instance.secret_values
             )) for provider in ("google", "outlook", "zoho")]
             providers = prompt_calendar_providers(answer, choices, console)
             for provider in ("google", "outlook", "zoho"):
                 if provider not in providers:
-                    instance.remove_settings("CALENDAR_" + provider.upper() + "_")
+                    instance.remove_settings("AGENT_CALENDAR_" + provider.upper() + "_")
             if not providers:
-                instance.values["CALENDAR_ENABLED"] = "false"
-                instance.values.pop("CALENDAR_DEFAULT_PROVIDER", None)
+                instance.values["AGENT_CALENDAR_ENABLED"] = "false"
+                instance.values.pop("AGENT_CALENDAR_DEFAULT_PROVIDER", None)
             else:
-                previous = instance.values.get("CALENDAR_DEFAULT_PROVIDER")
-                instance.values["CALENDAR_DEFAULT_PROVIDER"] = providers[0] if len(providers) == 1 else answer(
+                previous = instance.values.get("AGENT_CALENDAR_DEFAULT_PROVIDER")
+                instance.values["AGENT_CALENDAR_DEFAULT_PROVIDER"] = providers[0] if len(providers) == 1 else answer(
                     questionary.select("Default calendar provider", choices=providers, default=previous if previous in providers else providers[0])
                 )
                 for provider in providers:
                     console.print("Configure " + provider.title() + " Calendar")
                     for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"):
-                        credential("CALENDAR_" + provider.upper() + "_" + field)
-                    text("CALENDAR_" + provider.upper() + "_CALENDAR_ID", provider.title() + " calendar identifier", "primary" if provider == "google" else "default")
+                        credential("AGENT_CALENDAR_" + provider.upper() + "_" + field)
+                    text("AGENT_CALENDAR_" + provider.upper() + "_CALENDAR_ID", provider.title() + " calendar identifier", "primary" if provider == "google" else "default")
                     if provider == "outlook":
-                        text("CALENDAR_OUTLOOK_TENANT_ID", "Microsoft tenant ID", "common")
+                        text("AGENT_CALENDAR_OUTLOOK_TENANT_ID", "Microsoft tenant ID", "common")
                     if provider == "zoho":
-                        text("CALENDAR_ZOHO_API_BASE", "Zoho regional API base (including /api/v1)", "https://calendar.zoho.com/api/v1")
-                text("CALENDAR_DEFAULT_ALERT_MINUTES", "Default alert lead time (minutes)", "30")
+                        text("AGENT_CALENDAR_ZOHO_API_BASE", "Zoho regional API base (including /api/v1)", "https://calendar.zoho.com/api/v1")
+                text("AGENT_CALENDAR_DEFAULT_ALERT_MINUTES", "Default alert lead time (minutes)", "30")
                 if confirm("Verify calendar credentials with fresh-token, read-only calendar and event requests now?", False):
                     from .calendar.diagnostics import verify_provider
                     from .calendar.models import ProviderConfig
                     for provider in providers:
-                        prefix = "CALENDAR_" + provider.upper() + "_"
+                        prefix = "AGENT_CALENDAR_" + provider.upper() + "_"
                         result = verify_provider(ProviderConfig(
                             name=provider, provider_type=provider,
                             calendar_id=instance.values[prefix + "CALENDAR_ID"],
@@ -1534,52 +1642,52 @@ def interactive(options):
                                    "tenant_id": instance.values.get(prefix + "TENANT_ID", "common")},
                         ))
                         console.print(result["provider"] + ": " + result["status"] + " - " + result["detail"], markup=False)
-        elif any(name.startswith("CALENDAR_") for name in instance.secret_values):
+        elif any(name.startswith("AGENT_CALENDAR_") for name in instance.secret_values):
             if confirm("Also remove all saved calendar settings and credentials?"):
-                instance.remove_settings("CALENDAR_")
-                instance.values["CALENDAR_ENABLED"] = "false"
+                instance.remove_settings("AGENT_CALENDAR_")
+                instance.values["AGENT_CALENDAR_ENABLED"] = "false"
     def zoom():
-        if capability("ZOOM_ENABLED", "Enable managed Zoom meetings?"):
+        if capability("AGENT_ZOOM_ENABLED", "Enable managed Zoom meetings?"):
             mode = answer(questionary.select("Zoom authentication", choices=[
                 questionary.Choice("Server-to-server OAuth (Account ID, Client ID, Client Secret)", value="s2s"),
                 questionary.Choice("User OAuth (Client ID, Client Secret, Refresh Token)", value="oauth"),
-            ], default=instance.values.get("ZOOM_AUTH_MODE") or "s2s"))
-            instance.values["ZOOM_AUTH_MODE"] = mode
+            ], default=instance.values.get("AGENT_ZOOM_AUTH_MODE") or "s2s"))
+            instance.values["AGENT_ZOOM_AUTH_MODE"] = mode
             console.print("Use your Zoom app credentials. Access tokens are obtained automatically; a webhook Secret Token is not used for meeting management.")
-            instance.remove_settings("ZOOM_REFRESH_TOKEN" if mode == "s2s" else "ZOOM_ACCOUNT_ID")
-            for name in ("ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_ACCOUNT_ID" if mode == "s2s" else "ZOOM_REFRESH_TOKEN"):
+            instance.remove_settings("AGENT_ZOOM_REFRESH_TOKEN" if mode == "s2s" else "AGENT_ZOOM_ACCOUNT_ID")
+            for name in ("AGENT_ZOOM_CLIENT_ID", "AGENT_ZOOM_CLIENT_SECRET", "AGENT_ZOOM_ACCOUNT_ID" if mode == "s2s" else "AGENT_ZOOM_REFRESH_TOKEN"):
                 credential(name)
-            text("ZOOM_USER_ID", "Zoom user ID", "me")
-        elif any(name.startswith("ZOOM_") for name in instance.secret_values):
+            text("AGENT_ZOOM_USER_ID", "Zoom user ID", "me")
+        elif any(name.startswith("AGENT_ZOOM_") for name in instance.secret_values):
             if confirm("Also remove all saved Zoom settings and credentials?"):
-                instance.remove_settings("ZOOM_")
-                instance.values["ZOOM_ENABLED"] = "false"
+                instance.remove_settings("AGENT_ZOOM_")
+                instance.values["AGENT_ZOOM_ENABLED"] = "false"
 
     def dropbox():
         options.stage = "configuring Dropbox"
         prompt_dropbox(instance, answer, confirm, console)
 
     def telegram():
-        if not capability("TELEGRAM_ENABLED", "Enable private Telegram messaging?"):
+        if not capability("AGENT_TELEGRAM_ENABLED", "Enable private Telegram messaging?"):
             return
-        credential("TELEGRAM_BOT_TOKEN")
-        text("TELEGRAM_ALLOWED_USER_IDS", "Authorized numeric Telegram user IDs (comma-separated)", "")
-        identifiers = [value.strip() for value in instance.values["TELEGRAM_ALLOWED_USER_IDS"].split(",") if value.strip()]
+        credential("AGENT_TELEGRAM_BOT_TOKEN")
+        text("AGENT_TELEGRAM_ALLOWED_USER_IDS", "Authorized numeric Telegram user IDs (comma-separated)", "")
+        identifiers = [value.strip() for value in instance.values["AGENT_TELEGRAM_ALLOWED_USER_IDS"].split(",") if value.strip()]
         if not identifiers or any(not value.isdigit() or int(value) < 1 for value in identifiers):
             raise SetupError("Telegram requires an explicit list of numeric user IDs")
-        text("TELEGRAM_RECIPIENTS", 'Verified email-to-Telegram identity mapping (JSON object)', "{}")
+        text("AGENT_TELEGRAM_RECIPIENTS", 'Verified email-to-Telegram identity mapping (JSON object)', "{}")
         try:
-            identities = json.loads(instance.values["TELEGRAM_RECIPIENTS"])
+            identities = json.loads(instance.values["AGENT_TELEGRAM_RECIPIENTS"])
             if not isinstance(identities, dict) or any(str(value) not in identifiers for value in identities.values()):
                 raise ValueError
         except ValueError:
             raise SetupError("Telegram identity mappings must use authorized numeric IDs") from None
 
     def transcription():
-        if capability("TRANSCRIPTION_ENABLED", "Enable local English/Arabic voice transcription?"):
-            instance.secret_values.setdefault("TRANSCRIPTION_API_TOKEN", secrets.token_urlsafe(32))
-            instance.values["TRANSCRIPTION_BASE_URL"] = "http://transcription:8080"
-            instance.values["TRANSCRIPTION_LANGUAGE"] = "auto"
+        if capability("AGENT_TRANSCRIPTION_ENABLED", "Enable local English/Arabic voice transcription?"):
+            instance.secret_values.setdefault("AGENT_TRANSCRIPTION_API_TOKEN", secrets.token_urlsafe(32))
+            instance.values["AGENT_TRANSCRIPTION_BASE_URL"] = "http://transcription:8080"
+            instance.values["AGENT_TRANSCRIPTION_LANGUAGE"] = "auto"
             console.print("The managed multilingual small model is downloaded with SHA-256 verification. Voice processing is isolated from Ollama.")
 
     def security():
@@ -1778,14 +1886,14 @@ def interactive(options):
         options.stage = "reviewing configuration"
         profiles = [name for name in existing_profiles if name and name not in {"email", "api", "telegram", "voice"}]
         profiles += [name for setting, name in (("SETUP_EMAIL_ENABLED", "email"),) if instance.values.get(setting) == "true"]
-        profiles += [name for setting, name in (("TELEGRAM_ENABLED", "telegram"), ("TRANSCRIPTION_ENABLED", "voice")) if instance.values.get(setting) == "true"]
+        profiles += [name for setting, name in (("AGENT_TELEGRAM_ENABLED", "telegram"), ("AGENT_TRANSCRIPTION_ENABLED", "voice")) if instance.values.get(setting) == "true"]
         instance.values["COMPOSE_PROFILES"] = ",".join(profiles)
         problems = draft_problems(instance)
         error = problems[0][1] if problems else None
         table = Table(title="Review before saving")
         table.add_column("Setting")
         table.add_column("Value")
-        for name in ("AGENT_NAME", "AGENT_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL", "AGENT_EMBEDDINGS_DIMENSIONS", "COMPOSE_PROFILES", "CALENDAR_ENABLED", "CALENDAR_DEFAULT_PROVIDER", "ZOOM_ENABLED", "ZOOM_AUTH_MODE", "DROPBOX_ENABLED", "DROPBOX_ALLOW_EXPORTS", "DROPBOX_MAX_FILE_BYTES", "TELEGRAM_ENABLED", "TELEGRAM_ALLOWED_USER_IDS", "TELEGRAM_RECIPIENTS", "TRANSCRIPTION_ENABLED", "TRANSCRIPTION_LANGUAGE"):
+        for name in ("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL", "AGENT_EMBEDDINGS_DIMENSIONS", "COMPOSE_PROFILES", "AGENT_CALENDAR_ENABLED", "AGENT_CALENDAR_DEFAULT_PROVIDER", "AGENT_ZOOM_ENABLED", "AGENT_ZOOM_AUTH_MODE", "AGENT_DROPBOX_ENABLED", "AGENT_DROPBOX_ALLOW_EXPORTS", "AGENT_DROPBOX_MAX_FILE_BYTES", "AGENT_TELEGRAM_ENABLED", "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_TELEGRAM_RECIPIENTS", "AGENT_TRANSCRIPTION_ENABLED", "AGENT_TRANSCRIPTION_LANGUAGE"):
             table.add_row(name, instance.values.get(name, ""))
         for settings in ADVANCED_SETTINGS.values():
             for name, *_ in settings:
@@ -1800,7 +1908,7 @@ def interactive(options):
             table.add_row(name, "REMOVE on save")
         table.add_row("data/config/AGENT.md", "Copy example on save" if instance.prompt_copy is not None else "Preserve existing / create manually")
         overrides_path = instance.data / OVERRIDES_FILE
-        table.add_row(OVERRIDES_FILE, "Hand-edited; never rewritten" if overrides_path.is_file() else "Create commented template on save")
+        table.add_row(OVERRIDES_FILE, "Settings written on save; hand edits preserved" if overrides_path.is_file() else "Create on save")
         console.print(table)
         if error:
             for section, message in problems:
@@ -1933,8 +2041,8 @@ def start_saved_containers(instance, confirm, console):
 
 def advanced_value_error(setting, value):
     name, path, label, default, kind, minimum = setting
-    if name == "AGENT_APPROVAL_CHANNEL" and value not in {"email", "telegram", "both"}:
-        return "Approval delivery must be email, telegram or both"
+    if name == "AGENT_APPROVALS_CHANNEL" and value not in {"email", "telegram", "both", "client"}:
+        return "Approval delivery must be email, telegram, both or client"
     if name == "AGENT_NAMING_MODEL" and not str(value).strip():
         return "Naming model must not be blank"
     if name in {"AGENT_TTS_MODEL", "AGENT_TTS_VOICE"} and not str(value).strip():
@@ -2057,7 +2165,8 @@ def security_value(instance, name, default=None):
     if default is None:
         default = {
             "AGENT_SECURITY_SCRIPT_YOLO": False,
-            "AGENT_SECURITY_EMAIL_AUTH_ENABLED": True,
+            "AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED": True,
+            "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS": True,
             "AGENT_SECURITY_DEVELOPMENT_MODEL": "",
             "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": 30,
             "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": 20,
@@ -2109,25 +2218,26 @@ def prompt_security(instance, answer, confirm, console):
                   "that claims to come from your admin address. Either must pass for your admin domain. Failures are "
                   "quarantined and you are notified. Other senders are unaffected. Recommended and on by default; "
                   "turn it off only if your mail provider cannot pass DKIM or SPF.")
-    toggle("AGENT_SECURITY_EMAIL_AUTH_ENABLED", "Require DKIM or SPF on admin email? (recommended)", True)
+    toggle("AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED", "Require DKIM or SPF on admin email? (recommended)", True)
+    toggle("AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS", "Confirm new admin conversations?", True)
 
     console.print("A decision model rates content as not malicious, possibly malicious or malicious. "
                   "When configured, every accepted inbound email is screened; this cannot be turned off. "
                   "Possibly malicious items wait for your OTP approval; malicious items are quarantined and reported.")
-    enabled = security_value(instance, "AGENT_SECURITY_DECISION_ENABLED") == "true"
-    current = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", DEFAULT_PROVIDER) or DEFAULT_PROVIDER
+    enabled = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_ENABLED") == "true"
+    current = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_PROVIDER", DEFAULT_PROVIDER) or DEFAULT_PROVIDER
     route = answer(questionary.select(
         "Decision model endpoint", default=("openrouter" if current == "openrouter" else "direct") if enabled else "none",
         choices=[questionary.Choice("None (no screening)", value="none"),
                  questionary.Choice("OpenRouter Decisions API (recommended; any decision model, uses your OpenRouter key)", value="openrouter"),
                  questionary.Choice("A provider's own decision API", value="direct")]))
     if route == "none":
-        instance.values["AGENT_SECURITY_DECISION_ENABLED"] = "false"
-        for name in ("AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL", "AGENT_SECURITY_SCREEN_SCRIPTS", "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"):
+        instance.values["AGENT_SECURITY_DECISION_MODEL_ENABLED"] = "false"
+        for name in ("AGENT_SECURITY_DECISION_MODEL_SCREEN_OUTBOUND_EMAIL", "AGENT_SECURITY_DECISION_MODEL_SCREEN_SCRIPTS", "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS"):
             instance.values[name] = "false"
         instance.secret_values.pop(SECRET_NAME, None)
         return
-    instance.values["AGENT_SECURITY_DECISION_ENABLED"] = "true"
+    instance.values["AGENT_SECURITY_DECISION_MODEL_ENABLED"] = "true"
     if route == "openrouter":
         provider = "openrouter"
     else:
@@ -2139,39 +2249,39 @@ def prompt_security(instance, answer, confirm, console):
                      questionary.Choice("OpenAI decisions API", value="openai"),
                      questionary.Choice("Custom System One-compatible endpoint", value="custom")]))
     if provider != current:
-        instance.values["AGENT_SECURITY_DECISION_URL"] = ""
-        instance.values["AGENT_SECURITY_DECISION_MODEL"] = ""
-    instance.values["AGENT_SECURITY_DECISION_PROVIDER"] = provider
+        instance.values["AGENT_SECURITY_DECISION_MODEL_URL"] = ""
+        instance.values["AGENT_SECURITY_DECISION_MODEL_MODEL"] = ""
+    instance.values["AGENT_SECURITY_DECISION_MODEL_PROVIDER"] = provider
     spec = PROVIDERS[provider]
     if provider == "openrouter":
         console.print("OpenRouter normalizes all decision models to one format. Enter any decision model slug, "
                       "for example perplexity/pplx-decider-v1.2, typesafe/jev-1.13, cloudflare/clef or "
                       "openai/gpt-6-luna-decisions. A pinned version keeps screening thresholds stable.")
-        instance.values["AGENT_SECURITY_DECISION_URL"] = ""
-        ask("AGENT_SECURITY_DECISION_MODEL", "Decision model slug", spec.model)
+        instance.values["AGENT_SECURITY_DECISION_MODEL_URL"] = ""
+        ask("AGENT_SECURITY_DECISION_MODEL_MODEL", "Decision model slug", spec.model)
         instance.secret_values.pop(SECRET_NAME, None)
         key_name = OPENROUTER_SECRET_NAME
         if not instance.secret_values.get(key_name):
             console.print("No OpenRouter API key is configured yet; enter one to use OpenRouter for screening.")
             instance.secret_values[key_name] = prompt_credential(answer, key_name, None)
     else:
-        ask("AGENT_SECURITY_DECISION_URL", "Decision API URL" + ("" if spec.url else " (HTTPS)"), spec.url)
-        ask("AGENT_SECURITY_DECISION_MODEL", "Decision model identifier", spec.model)
-        if instance.values["AGENT_SECURITY_DECISION_URL"] == spec.url:
-            instance.values["AGENT_SECURITY_DECISION_URL"] = ""
+        ask("AGENT_SECURITY_DECISION_MODEL_URL", "Decision API URL" + ("" if spec.url else " (HTTPS)"), spec.url)
+        ask("AGENT_SECURITY_DECISION_MODEL_MODEL", "Decision model identifier", spec.model)
+        if instance.values["AGENT_SECURITY_DECISION_MODEL_URL"] == spec.url:
+            instance.values["AGENT_SECURITY_DECISION_MODEL_URL"] = ""
         key_name = SECRET_NAME
         instance.secret_values[key_name] = prompt_credential(answer, key_name, instance.secret_values.get(key_name))
-    if instance.values["AGENT_SECURITY_DECISION_MODEL"] == spec.model:
-        instance.values["AGENT_SECURITY_DECISION_MODEL"] = ""
-    instance.values["AGENT_SECURITY_DECISION_ON_ERROR"] = answer(questionary.select(
-        "If the decision model is unavailable", default=security_value(instance, "AGENT_SECURITY_DECISION_ON_ERROR", "review") or "review",
+    if instance.values["AGENT_SECURITY_DECISION_MODEL_MODEL"] == spec.model:
+        instance.values["AGENT_SECURITY_DECISION_MODEL_MODEL"] = ""
+    instance.values["AGENT_SECURITY_DECISION_MODEL_ON_ERROR"] = answer(questionary.select(
+        "If the decision model is unavailable", default=security_value(instance, "AGENT_SECURITY_DECISION_MODEL_ON_ERROR", "review") or "review",
         choices=[questionary.Choice("Hold for my approval (recommended)", value="review"),
                  questionary.Choice("Reject", value="reject"),
                  questionary.Choice("Allow without screening", value="allow")]))
     console.print("Inbound email screening: always on.")
-    toggle("AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL", "Also screen outgoing email to external recipients?")
-    if toggle("AGENT_SECURITY_SCREEN_SCRIPTS", "Also screen scripts before the assistant runs them? (imports, calls and network hosts are analysed)"):
-        ask("AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS", "Domains scripts may contact without extra scrutiny (comma-separated; blank = none)")
+    toggle("AGENT_SECURITY_DECISION_MODEL_SCREEN_OUTBOUND_EMAIL", "Also screen outgoing email to external recipients?")
+    if toggle("AGENT_SECURITY_DECISION_MODEL_SCREEN_SCRIPTS", "Also screen scripts before the assistant runs them? (imports, calls and network hosts are analysed)"):
+        ask("AGENT_SECURITY_SCRIPTS_ALLOWED_DOMAINS", "Domains scripts may contact without extra scrutiny (comma-separated; blank = none)")
     if confirm("Send a test request to the decision model now?", True):
         try:
             result = test_connection(security_config(instance), instance.secret_values[key_name])
@@ -2201,7 +2311,7 @@ def prompt_development_security(instance, answer, confirm, console):
     console.print("Development sessions always use an independent, tool-free supervisor unless script YOLO is "
                   "explicitly enabled. The supervisor reviews the entire source version against your approved brief. "
                   "Leave the model blank to use your agent model, provider and existing credential. Enter an "
-                  "OpenRouter provider/model ID to select another model using OPENROUTER_API_KEY. Presets are not used.")
+                  "OpenRouter provider/model ID to select another model using AGENT_LLM_OPENROUTER_API_KEY. Presets are not used.")
     for name, label, default in (
         ("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID (blank = agent model)", ""),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
@@ -2275,24 +2385,24 @@ def prompt_dropbox(instance, answer, confirm, console):
     def default(name, fallback):
         return instance.values.get(name, instance.defaults.get(PROMPT_DEFAULTS[name], fallback))
 
-    enabled = confirm("Enable private Dropbox file exchange?", str(default("DROPBOX_ENABLED", False)).lower() == "true")
-    instance.values["DROPBOX_ENABLED"] = str(enabled).lower()
+    enabled = confirm("Enable private Dropbox file exchange?", str(default("AGENT_DROPBOX_ENABLED", False)).lower() == "true")
+    instance.values["AGENT_DROPBOX_ENABLED"] = str(enabled).lower()
     if not enabled:
-        instance.values["DROPBOX_ALLOW_EXPORTS"] = "false"
-        if any(name.startswith("DROPBOX_") for name in instance.secret_values) and confirm("Also remove all saved Dropbox settings and credentials?", False):
-            instance.remove_settings("DROPBOX_")
-            instance.values["DROPBOX_ENABLED"] = "false"
-            instance.values["DROPBOX_ALLOW_EXPORTS"] = "false"
+        instance.values["AGENT_DROPBOX_ALLOW_EXPORTS"] = "false"
+        if any(name.startswith("AGENT_DROPBOX_") for name in instance.secret_values) and confirm("Also remove all saved Dropbox settings and credentials?", False):
+            instance.remove_settings("AGENT_DROPBOX_")
+            instance.values["AGENT_DROPBOX_ENABLED"] = "false"
+            instance.values["AGENT_DROPBOX_ALLOW_EXPORTS"] = "false"
         return
     console.print("Dropbox uses a dedicated App Folder only. Create a scoped App Folder app in the Dropbox developer console, not a Full Dropbox app. Files in Inbox are imported on demand; outputs use Outbox/job-<id>. No synchronization, public links or deletions.")
     console.print("Dropbox is not end-to-end encrypted. Imported content may reach configured model providers. Credentials are stored in permission-protected local files after Save.")
-    connected = bool(instance.secret_values.get("DROPBOX_CLIENT_ID") and instance.secret_values.get("DROPBOX_REFRESH_TOKEN"))
+    connected = bool(instance.secret_values.get("AGENT_DROPBOX_CLIENT_ID") and instance.secret_values.get("AGENT_DROPBOX_REFRESH_TOKEN"))
     reconnect = not connected or answer(questionary.select("Dropbox connection", choices=["Keep existing", "Reconnect"], default="Keep existing")) == "Reconnect"
     if reconnect:
         if not confirm("Confirm this Dropbox app is registered with App Folder access, not Full Dropbox", False):
             raise SetupError("Dropbox requires an App Folder app; no authorization saved")
-        client_id = answer(questionary.text("Dropbox app key (client ID)", default=instance.secret_values.get("DROPBOX_CLIENT_ID", ""))).strip()
-        validate_secret("DROPBOX_CLIENT_ID", client_id)
+        client_id = answer(questionary.text("Dropbox app key (client ID)", default=instance.secret_values.get("AGENT_DROPBOX_CLIENT_ID", ""))).strip()
+        validate_secret("AGENT_DROPBOX_CLIENT_ID", client_id)
         url, verifier = authorization(client_id)
         console.print("Open this URL in your browser, authorize, then enter the displayed code here. Do not send the code by email or chat.")
         console.print(url, markup=False, highlight=False, soft_wrap=True)
@@ -2301,16 +2411,16 @@ def prompt_dropbox(instance, answer, confirm, console):
             refresh_token = exchange_code(client_id, code, verifier)
         except DropboxError as exc:
             raise SetupError(str(exc)) from None
-        validate_secret("DROPBOX_REFRESH_TOKEN", refresh_token)
-        instance.secret_values.update({"DROPBOX_CLIENT_ID": client_id, "DROPBOX_REFRESH_TOKEN": refresh_token})
-    instance.values["DROPBOX_ALLOW_EXPORTS"] = str(confirm(
+        validate_secret("AGENT_DROPBOX_REFRESH_TOKEN", refresh_token)
+        instance.secret_values.update({"AGENT_DROPBOX_CLIENT_ID": client_id, "AGENT_DROPBOX_REFRESH_TOKEN": refresh_token})
+    instance.values["AGENT_DROPBOX_ALLOW_EXPORTS"] = str(confirm(
         "Allow any task to deliver workspace files to Dropbox Outbox without additional confirmation?",
-        str(default("DROPBOX_ALLOW_EXPORTS", False)).lower() == "true")).lower()
-    instance.values["DROPBOX_MAX_FILE_BYTES"] = answer(questionary.text(
-        "Maximum Dropbox file size in bytes (default 25 MiB)", default=str(default("DROPBOX_MAX_FILE_BYTES", 25 * 1024 * 1024)))).strip()
+        str(default("AGENT_DROPBOX_ALLOW_EXPORTS", False)).lower() == "true")).lower()
+    instance.values["AGENT_DROPBOX_MAX_FILE_BYTES"] = answer(questionary.text(
+        "Maximum Dropbox file size in bytes (default 25 MiB)", default=str(default("AGENT_DROPBOX_MAX_FILE_BYTES", 25 * 1024 * 1024)))).strip()
     if confirm("Verify Dropbox authorization now? (read-only; no files or folders created)", False):
-        config = AppConfig({"agent": {"dropbox": {"enabled": True, "client_id": instance.secret_values["DROPBOX_CLIENT_ID"],
-                            "refresh_token": instance.secret_values["DROPBOX_REFRESH_TOKEN"]}}})
+        config = AppConfig({"agent": {"dropbox": {"enabled": True, "client_id": instance.secret_values["AGENT_DROPBOX_CLIENT_ID"],
+                            "refresh_token": instance.secret_values["AGENT_DROPBOX_REFRESH_TOKEN"]}}})
         try:
             DropboxClient(config).token(force=True)
         except DropboxError as exc:
@@ -2350,11 +2460,11 @@ def draft_problems(instance):
                 problem(section, name + " must be a boolean")
     values.setdefault("SETUP_EMAIL_ENABLED",
                       str("email" in [profile.strip() for profile in values.get("COMPOSE_PROFILES", "").split(",")]).lower())
-    if instance.secret_values.get("DATABASE_URL"):
+    if instance.secret_values.get("AGENT_DATABASE_URL"):
         try:
-            validate_database_url(instance.secret_values["DATABASE_URL"])
+            validate_database_url(instance.secret_values["AGENT_DATABASE_URL"])
         except RuntimeError as exc:
-            problem("models", "DATABASE_URL: " + str(exc))
+            problem("models", "AGENT_DATABASE_URL: " + str(exc))
     for settings in ADVANCED_SETTINGS.values():
         for setting in settings:
             if setting[0] in values:
@@ -2362,32 +2472,32 @@ def draft_problems(instance):
                 if error:
                     problem("advanced", error)
     model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
-    if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
-        problem("advanced", "Model preset tool requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
+    if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
+        problem("advanced", "Model preset tool requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
     tts_enabled = values.get("AGENT_TTS_ENABLED", instance.defaults.get("agent.tts.enabled", False))
-    if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("OPENROUTER_API_KEY"):
-        problem("advanced", "Text-to-speech requires OPENROUTER_API_KEY; configure it with setup secrets update OPENROUTER_API_KEY")
-    approval_channel = values.get("AGENT_APPROVAL_CHANNEL", instance.defaults.get("agent.approvals.channel", "email"))
+    if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
+        problem("advanced", "Text-to-speech requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
+    approval_channel = values.get("AGENT_APPROVALS_CHANNEL", instance.defaults.get("agent.approvals.channel", "email"))
     if approval_channel in {"telegram", "both"}:
-        enabled = values.get("TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
-        allowed = AppConfig({"ids": values.get("TELEGRAM_ALLOWED_USER_IDS",
+        enabled = values.get("AGENT_TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
+        allowed = AppConfig({"ids": values.get("AGENT_TELEGRAM_ALLOWED_USER_IDS",
                             instance.defaults.get("agent.telegram.allowed_user_ids", []))}).get_list("ids")
-        if str(enabled).lower() not in {"true", "1", "yes", "on"} or not instance.secret_values.get("TELEGRAM_BOT_TOKEN"):
+        if str(enabled).lower() not in {"true", "1", "yes", "on"} or not instance.secret_values.get("AGENT_TELEGRAM_BOT_TOKEN"):
             problem("advanced", "Telegram approvals require an enabled Telegram integration and bot token")
         from .approval_channels import telegram_admins
         try:
             admins = telegram_admins(AppConfig({"agent": {
-                "admin": {"email": values.get("ADMIN_EMAIL", instance.defaults.get("agent.admin.email", ""))},
+                "admin": {"email": values.get("AGENT_ADMIN_EMAIL", instance.defaults.get("agent.admin.email", ""))},
                 "telegram": {
                     "allowed_user_ids": allowed,
-                    "recipients": values.get("TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
+                    "recipients": values.get("AGENT_TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
                 },
             }}))
             if not admins:
                 raise ValueError("Missing admin mapping")
         except ValueError:
             problem("advanced", "Telegram approvals require the admin email's verified Telegram recipient mapping "
-                    "to an allowlisted numeric user ID; configure ADMIN_EMAIL and Telegram identity mappings")
+                    "to an allowlisted numeric user ID; configure AGENT_ADMIN_EMAIL and Telegram identity mappings")
     def embedding_value(field, default):
         return values.get("AGENT_EMBEDDINGS_" + field.upper(), instance.defaults.get("agent.embeddings." + field, default))
 
@@ -2410,10 +2520,10 @@ def draft_problems(instance):
         except (RuntimeError, ValueError, TypeError):
             problem("embeddings", "Embeddings and search: use HTTPS except for local Ollama at http://ollama:11434; check the model, positive timeout, and supported dimensions (EmbeddingGemma: 128/256/512/768)")
     try:
-        ZoneInfo(values.get("AGENT_TIMEZONE", instance.defaults.get("agent.app.timezone") or "UTC"))
+        ZoneInfo(values.get("AGENT_APP_TIMEZONE", instance.defaults.get("agent.app.timezone") or "UTC"))
     except (ValueError, ZoneInfoNotFoundError):
         problem("identity", "Check the timezone (IANA identifier, e.g. Europe/London)")
-    for name, section in (("IMAP_PORT", "email"), ("SMTP_PORT", "email")):
+    for name, section in (("AGENT_EMAIL_IMAP_PORT", "email"), ("AGENT_EMAIL_SMTP_PORT", "email")):
         try:
             if values.get(name) and not 1 <= int(values[name]) <= 65535:
                 raise ValueError
@@ -2429,35 +2539,35 @@ def draft_problems(instance):
             raise RuntimeError
     except RuntimeError:
         problem("models", "A model and valid HTTPS model API URL without credentials are required")
-    required = {"POSTGRES_PASSWORD": "models", ("OPENROUTER_API_KEY" if "openrouter.ai" in base_url else "OPENAI_API_KEY"): "models"}
+    required = {"AGENT_DATABASE_PASSWORD": "models", ("AGENT_LLM_OPENROUTER_API_KEY" if "openrouter.ai" in base_url else "AGENT_LLM_OPENAI_API_KEY"): "models"}
     if values.get("SETUP_EMAIL_ENABLED") == "true":
-        required.update(dict.fromkeys(("IMAP_PASSWORD", "SMTP_PASSWORD"), "email"))
-        for name in ("ADMIN_EMAIL", "IMAP_HOST", "IMAP_USERNAME", "SMTP_HOST", "SMTP_USERNAME", "SMTP_FROM", "EMAIL_ACTIONABLE_SENDERS", "EMAIL_ALLOWED_RECIPIENT_DOMAINS"):
+        required.update(dict.fromkeys(("AGENT_EMAIL_IMAP_PASSWORD", "AGENT_EMAIL_SMTP_PASSWORD"), "email"))
+        for name in ("AGENT_ADMIN_EMAIL", "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_USERNAME", "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_USERNAME", "AGENT_EMAIL_SMTP_FROM", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS"):
             if not values.get(name):
-                problem("identity" if name == "ADMIN_EMAIL" else "email", "Email operation requires " + name)
-        for name in ("IMAP_HOST", "SMTP_HOST"):
+                problem("identity" if name == "AGENT_ADMIN_EMAIL" else "email", "Email operation requires " + name)
+        for name in ("AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_SMTP_HOST"):
             host = values.get(name, "")
             if host and (any(char.isspace() for char in host) or any(char in host for char in "/@")):
                 problem("email", name + " must be a server hostname, not a URL")
-    for name, section in (("ADMIN_EMAIL", "identity"), ("ORG_SECURITY_EMAIL", "identity"),
-                          ("SMTP_FROM", "email"), ("AGENT_EMAIL", "email")):
+    for name, section in (("AGENT_ADMIN_EMAIL", "identity"), ("AGENT_ORG_SECURITY_EMAIL", "identity"),
+                          ("AGENT_EMAIL_SMTP_FROM", "email"), ("AGENT_IDENTITY_EMAIL", "email")):
         address = values.get(name, "")
         if address and not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", parseaddr(address)[1]):
             problem(section, name + " must be a valid email address")
-    if values.get("CALENDAR_ENABLED") == "true":
-        provider = values.get("CALENDAR_DEFAULT_PROVIDER", instance.defaults.get("agent.calendar.default_provider") or "google").upper()
+    if values.get("AGENT_CALENDAR_ENABLED") == "true":
+        provider = values.get("AGENT_CALENDAR_DEFAULT_PROVIDER", instance.defaults.get("agent.calendar.default_provider") or "google").upper()
         if not re.fullmatch(r"(GOOGLE|OUTLOOK|ZOHO)(_[2-9])?", provider):
             problem("calendar", "Default calendar provider must be google, outlook or zoho")
         else:
-            required.update(dict.fromkeys(("CALENDAR_" + provider + "_" + field for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
+            required.update(dict.fromkeys(("AGENT_CALENDAR_" + provider + "_" + field for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
         for name, value in instance.secret_values.items():
-            match = re.fullmatch(r"(CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO)(?:_[2-9])?)_(?:CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name)
+            match = re.fullmatch(r"(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO)(?:_[2-9])?)_(?:CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name)
             if match and value:
                 required.update(dict.fromkeys((match[1] + "_" + field for field in
                                                ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")), "calendar"))
     zoho_api_bases = [value for name, value in values.items()
-                      if name == "CALENDAR_ZOHO_API_BASE"
-                      or (name.startswith("CALENDAR_ZOHO_") and name.endswith("_API_BASE"))]
+                      if name == "AGENT_CALENDAR_ZOHO_API_BASE"
+                      or (name.startswith("AGENT_CALENDAR_ZOHO_") and name.endswith("_API_BASE"))]
     if zoho_api_bases:
         from .calendar.providers.zoho import normalize_api_base
         for value in zoho_api_bases:
@@ -2466,51 +2576,52 @@ def draft_problems(instance):
             except ValueError:
                 problem("calendar", "Zoho Calendar API base must use HTTPS on a supported Zoho Calendar host")
                 break
-    if values.get("ZOOM_ENABLED") == "true":
-        mode = values.get("ZOOM_AUTH_MODE", instance.defaults.get("agent.zoom.auth_mode") or "s2s")
+    if values.get("AGENT_ZOOM_ENABLED") == "true":
+        mode = values.get("AGENT_ZOOM_AUTH_MODE", instance.defaults.get("agent.zoom.auth_mode") or "s2s")
         if mode not in {"s2s", "oauth"}:
             problem("zoom", "Zoom authorization mode must be s2s or oauth")
-        required.update(dict.fromkeys(("ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_ACCOUNT_ID" if mode == "s2s" else "ZOOM_REFRESH_TOKEN"), "zoom"))
-    if values.get("TRANSCRIPTION_ENABLED") == "true" and values.get("TRANSCRIPTION_LANGUAGE", "auto") not in {"auto", "en", "ar"}:
+        required.update(dict.fromkeys(("AGENT_ZOOM_CLIENT_ID", "AGENT_ZOOM_CLIENT_SECRET", "AGENT_ZOOM_ACCOUNT_ID" if mode == "s2s" else "AGENT_ZOOM_REFRESH_TOKEN"), "zoom"))
+    if values.get("AGENT_TRANSCRIPTION_ENABLED") == "true" and values.get("AGENT_TRANSCRIPTION_LANGUAGE", "auto") not in {"auto", "en", "ar"}:
         problem("transcription", "Voice transcription language must be auto, en or ar")
-    telegram_enabled = values.get("TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
+    telegram_enabled = values.get("AGENT_TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
     if AppConfig({"enabled": telegram_enabled}).get_bool("enabled"):
         from .telegram_config import telegram_identities
-        required["TELEGRAM_BOT_TOKEN"] = "telegram"
-        identifiers = AppConfig({"ids": values.get("TELEGRAM_ALLOWED_USER_IDS",
+        required["AGENT_TELEGRAM_BOT_TOKEN"] = "telegram"
+        identifiers = AppConfig({"ids": values.get("AGENT_TELEGRAM_ALLOWED_USER_IDS",
                                 instance.defaults.get("agent.telegram.allowed_user_ids", []))}).get_list("ids")
         if not identifiers or any(not re.fullmatch(r"[1-9][0-9]{0,18}", identifier)
                                   or int(identifier) >= 2**63 for identifier in identifiers):
             problem("telegram", "Telegram requires an explicit list of positive numeric user IDs")
         try:
             identities = telegram_identities(AppConfig({"agent": {"telegram": {
-                "recipients": values.get("TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
+                "recipients": values.get("AGENT_TELEGRAM_RECIPIENTS", instance.defaults.get("agent.telegram.recipients", {})),
             }}}))
             if any(str(identifier) not in identifiers for identifier in identities.values()):
                 raise ValueError("Telegram recipient mappings must use authorized numeric user IDs")
         except ValueError as error:
             problem("telegram", str(error))
-    for name in ("DROPBOX_ENABLED", "DROPBOX_ALLOW_EXPORTS"):
+    for name in ("AGENT_DROPBOX_ENABLED", "AGENT_DROPBOX_ALLOW_EXPORTS"):
         if values.get(name, "false") not in {"true", "false"}:
             problem("dropbox", name + " must be true or false")
-    if values.get("DROPBOX_ENABLED") == "true":
-        required.update(dict.fromkeys(("DROPBOX_CLIENT_ID", "DROPBOX_REFRESH_TOKEN"), "dropbox"))
+    if values.get("AGENT_DROPBOX_ENABLED") == "true":
+        required.update(dict.fromkeys(("AGENT_DROPBOX_CLIENT_ID", "AGENT_DROPBOX_REFRESH_TOKEN"), "dropbox"))
         try:
-            if not 1 <= int(values.get("DROPBOX_MAX_FILE_BYTES", 25 * 1024 * 1024)) <= 150 * 1024 * 1024:
+            if not 1 <= int(values.get("AGENT_DROPBOX_MAX_FILE_BYTES", 25 * 1024 * 1024)) <= 150 * 1024 * 1024:
                 raise ValueError
         except ValueError:
-            problem("dropbox", "DROPBOX_MAX_FILE_BYTES must be between 1 byte and 150 MiB")
+            problem("dropbox", "AGENT_DROPBOX_MAX_FILE_BYTES must be between 1 byte and 150 MiB")
     from .development_supervisor import configuration_errors
     for error in configuration_errors(security_config(instance)):
         problem("security", error)
     if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL", "").strip():
-        required.setdefault("OPENROUTER_API_KEY", "security")
+        required.setdefault("AGENT_LLM_OPENROUTER_API_KEY", "security")
     from .security_screening import PROVIDER_CHOICES
-    if security_value(instance, "AGENT_SECURITY_EMAIL_AUTH_ENABLED", True) not in {"true", "false"}:
-        problem("security", "AGENT_SECURITY_EMAIL_AUTH_ENABLED must be true or false")
-    if values.get("AGENT_SECURITY_DECISION_ENABLED", "false") == "true":
-        provider = security_value(instance, "AGENT_SECURITY_DECISION_PROVIDER", "openrouter") or "openrouter"
-        url = security_value(instance, "AGENT_SECURITY_DECISION_URL")
+    for name in ("AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED", "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS"):
+        if security_value(instance, name, True) not in {"true", "false"}:
+            problem("security", name + " must be true or false")
+    if values.get("AGENT_SECURITY_DECISION_MODEL_ENABLED", "false") == "true":
+        provider = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_PROVIDER", "openrouter") or "openrouter"
+        url = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_URL")
         if provider not in PROVIDER_CHOICES:
             problem("security", "Decision model provider must be one of " + ", ".join(PROVIDER_CHOICES))
         try:
@@ -2522,11 +2633,11 @@ def draft_problems(instance):
                     raise RuntimeError
         except RuntimeError:
             problem("security", "Decision model URL must be an HTTPS URL without credentials")
-        if provider == "custom" and not security_value(instance, "AGENT_SECURITY_DECISION_MODEL"):
+        if provider == "custom" and not security_value(instance, "AGENT_SECURITY_DECISION_MODEL_MODEL"):
             problem("security", "A custom decision model requires a model identifier")
-        if security_value(instance, "AGENT_SECURITY_DECISION_ON_ERROR", "review") not in {"review", "reject", "allow"}:
+        if security_value(instance, "AGENT_SECURITY_DECISION_MODEL_ON_ERROR", "review") not in {"review", "reject", "allow"}:
             problem("security", "Decision model error handling must be review, reject or allow")
-        required.setdefault("OPENROUTER_API_KEY" if provider == "openrouter" else "SECURITY_DECISION_API_KEY", "security")
+        required.setdefault("AGENT_LLM_OPENROUTER_API_KEY" if provider == "openrouter" else "AGENT_SECURITY_DECISION_MODEL_API_KEY", "security")
     elif security_value(instance, "AGENT_SECURITY_ALLOW_POSSIBLY_MALICIOUS", False) == "true":
         problem("security", "YOLO mode requires a configured decision model")
     for name in sorted(required):
@@ -2539,7 +2650,7 @@ def draft_problems(instance):
     except UnicodeDecodeError:
         overrides = None
         problem("advanced", OVERRIDES_FILE + ": file must be UTF-8 text")
-    for message in overrides_problems(instance.root, overrides) if overrides else ():
+    for message in overrides_problems(overrides) if overrides else ():
         problem("advanced", message)
     return problems
 

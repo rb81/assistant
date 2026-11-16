@@ -40,6 +40,7 @@ class ReminderScheduler:
 
     def deliver_notifications(self) -> int:
         from .replies import ReplyRouter
+        from .client_channels import delivery_accepted
         from .task_agent import TaskAgent
         from .tools import ToolRuntime
         jobs = self.db.fetch_all(
@@ -60,7 +61,7 @@ class ReminderScheduler:
                         if not current or current["status"] != "waiting":
                             continue
                         result = ReplyRouter(ToolRuntime(self.db, self.config, job)).send(job["notification_text"], purpose="reminder")
-                        if result.get("status") == "sent":
+                        if delivery_accepted(result):
                             database = TransactionDatabase(connection)
                             completed = database.fetch_one(
                                 """UPDATE jobs SET status = 'completed', completed_at = now()

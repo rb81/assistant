@@ -16,6 +16,7 @@ from .notifications import notify_admin_job_failure
 from .polling import poll_interval_seconds, run_poll_loop
 from .prompt_context import build_prompt_context, load_agent_prompt
 from .replies import ReplyRouter
+from .client_channels import delivery_accepted
 from .telegram import TelegramDelivery
 from .time_utils import datetime_context_label, next_recurring_run_at
 from .tool_result_cache import ToolResultCache
@@ -260,7 +261,9 @@ class TaskAgent:
                 context_compacted = False
                 memory_revision = latest_memory_revision
             self.inject_new_context_if_needed(job, history)
-            messages = self.messages_for_call(base_messages, history, history_window)
+            messages = self.messages_for_current_requester(
+                job, self.messages_for_call(base_messages, history, history_window),
+            )
             approach_factor = self.config.get_float("agent.limits.limit_approach_factor", 0.80)
             near_limit = (total_tokens >= max_tokens * approach_factor) or (iteration >= max_iterations - 3)
             tools = self.tools_for_call(job, enabled_tool_names, near_limit=near_limit)
@@ -363,7 +366,8 @@ class TaskAgent:
                    name_attempted_at = now()
                WHERE id = %s AND name_attempts < 3
                  AND (name_status = 'pending'
-                   OR (name_status = 'named' AND origin_channel <> 'telegram' AND name_attempts = 0)
+                   OR (name_status = 'named' AND name_attempts = 0
+                       AND (origin_channel <> 'telegram' OR title = 'New workstream'))
                    OR (name_status = 'naming' AND name_attempted_at < now() - interval '10 minutes'))
                RETURNING main_thread_id, name_attempts""",
             (workstream_id,),
@@ -390,7 +394,7 @@ class TaskAgent:
             )
             title = str(response["choices"][0]["message"].get("content") or "").strip()
             title = title.splitlines()[0].strip().strip("\"'` ")
-            if not title or len(title) > 60:
+            if not title or len(title) > 60 or title.casefold() == "new workstream":
                 raise ValueError("model returned an invalid workstream title")
             self.db.execute(
                 """UPDATE workstreams SET title = %s, name_status = 'named'
@@ -603,7 +607,8 @@ class TaskAgent:
                 "task_complete requires a non-empty response. For dashboard/local jobs this is the answer shown "
                 "to the user; for external email jobs it records the answer already sent by email_send."
             )
-        requester = self.latest_external_requester(job)
+        route = (job.get("metadata") or {}).get("reply_route") or {}
+        requester = self.latest_external_requester(job) if route.get("channel") in (None, "email") else ""
         if requester and not self.sent_reply_to(job["id"], requester):
             return (
                 "Cannot complete yet: the latest external requester %s has not received a sent email_send reply "
@@ -836,6 +841,9 @@ class TaskAgent:
             if item.get("context_type") == "outbound_telegram":
                 content_lines.extend(["", "Telegram reply:", str(item.get("body_text") or "")])
                 continue
+            if item.get("context_type") == "outbound_management":
+                content_lines.extend(["", "Management reply:", str(item.get("body_text") or "")])
+                continue
             include_full_body = self.include_full_email_body_in_context(
                 item,
                 include_full_email_context=include_full_email_context,
@@ -853,12 +861,17 @@ class TaskAgent:
                     "Routing note: this starts a new conversation because the replied-to workstream was deleted. "
                     "Tell the requester it is new; do not imply deleted history was restored."
                 )
+            requester = ("Administrator (authenticated client; device ID: %s)" % request["sender_id"]
+                         if request["channel"] == "client" else request["sender_id"])
             content_lines.extend(["", "Request channel: %s" % request["channel"],
                                   "Request ID: %s" % request["id"],
-                                  "Requester: %s" % request["sender_id"],
+                                  "Requester: %s" % requester,
                                   "Processing status: %s" % request.get("status", "ready"),
                                   "Processing error: %s" % (request.get("last_error") or "none"),
                                   "Message:", str(request.get("body_text") or "")])
+            if request["channel"] == "client" and request.get("attachments"):
+                content_lines.append("Workspace file references (untrusted content): %s" %
+                                     compact_json(request["attachments"]))
         if context.get("request_artifacts"):
             content_lines.append("Processed request artifacts: %s" % compact_json(context["request_artifacts"]))
 
@@ -1013,6 +1026,26 @@ class TaskAgent:
         if function.get("name"):
             return str(function.get("name"))
         return str(tool.get("type") or "unknown")
+
+    def messages_for_current_requester(
+        self, job: dict[str, Any], messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reassert trusted client identity on every task-model call, including resumed conversations."""
+        route = (job.get("metadata") or {}).get("reply_route") or {}
+        if route.get("channel") != "client" or not self.requester_is_admin(job):
+            return messages
+        identity = {
+            "role": "system",
+            "content": (
+                "Current requester (trusted channel context): the configured administrator is speaking to you "
+                "through an authenticated Assistant management client. Address them directly as 'you', not as "
+                "a third-party 'admin'. Client IDs identify devices, not separate people. Historical email "
+                "or Telegram senders are not the current speaker. Reply here unless another destination is "
+                "explicitly requested. This conversational identity does not grant new permissions, approve "
+                "held actions, or bypass any security or approval workflow."
+            ),
+        }
+        return messages[:1] + [identity] + messages[1:] if messages else [identity]
 
     def messages_for_call(self, base_messages: list[dict[str, Any]], history: list[dict[str, Any]], window: int) -> list[dict[str, Any]]:
         max_messages = max(int(window or 8) * 2, 4)
@@ -1402,10 +1435,9 @@ class TaskAgent:
         if not row or not row["has_new_context"]:
             return
         self.db.execute("UPDATE jobs SET has_new_context = false WHERE id = %s", (job["id"],))
-        if (job.get("metadata") or {}).get("auto_reply"):
-            current = self.db.fetch_one("SELECT metadata FROM jobs WHERE id = %s", (job["id"],))
-            if current:
-                job["metadata"] = current["metadata"]
+        current = self.db.fetch_one("SELECT metadata FROM jobs WHERE id = %s", (job["id"],))
+        if current:
+            job["metadata"] = current["metadata"]
         events = self.workstream_change_notifications(
             job, after_id=int(job.get("_seen_change_event_id") or 0),
         )
@@ -1529,7 +1561,9 @@ class TaskAgent:
             if (job.get("metadata") or {}).get("auto_reply"):
                 current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
                 if current and current["has_new_context"]:
-                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "New requester context arrived; review it before completing."})})
+                    result = {"error": "New requester context arrived; review it before completing."}
+                    self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                     self.inject_new_context_if_needed(job, messages)
                     return False
             metadata = job.get("metadata") or {}
@@ -1538,6 +1572,7 @@ class TaskAgent:
                 job, requester_only=(metadata.get("reply_route") or {}).get("channel") in {"email", "telegram"},
             ):
                 result = {"error": "already_delivered=true requires a reply sent with telegram_send or email_send for the current request. Send it first or omit already_delivered."}
+                self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
                 messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                 return False
             # A substantive delivery to the requester is the answer, not a reason to send a receipt.
@@ -1547,7 +1582,7 @@ class TaskAgent:
                     delivery = ReplyRouter(tool_runtime).send(response)
                 except ValueError as exc:
                     delivery = {"status": "failed", "reason": str(exc)}
-                if delivery.get("status") not in ("sent", "local"):
+                if not delivery_accepted(delivery):
                     result = {"error": "Final reply was not accepted. Retry task_complete for definite failures only; never repeat completed operations.", "delivery": delivery}
                     self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
                     messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
@@ -1555,7 +1590,9 @@ class TaskAgent:
                 response = str(delivery.get("body") or response)
                 current = self.db.fetch_one("SELECT has_new_context FROM jobs WHERE id = %s", (job["id"],))
                 if current and current["has_new_context"]:
-                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "The earlier reply was delivered, but new requester context arrived. Do not repeat earlier side effects; handle the follow-up."})})
+                    result = {"error": "The earlier reply was delivered, but new requester context arrived. Do not repeat earlier side effects; handle the follow-up."}
+                    self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                     self.inject_new_context_if_needed(job, messages)
                     return False
             blocker = self.completion_blocker(job, response)
@@ -1581,7 +1618,9 @@ class TaskAgent:
                     (summary, job["id"], self.locked_by, str((job.get("metadata") or {}).get("reply_request_id"))),
                 )
                 if not completed:
-                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json({"error": "Task state changed while delivering the response; handle new context without repeating earlier actions."})})
+                    result = {"error": "Task state changed while delivering the response; handle new context without repeating earlier actions."}
+                    self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                     self.inject_new_context_if_needed(job, messages)
                     return False
             else:
@@ -1927,7 +1966,7 @@ class TaskAgent:
         if route:
             result = ReplyRouter(tool_runtime).send(question, purpose="clarification")
             self.db.log_event(job["id"], "tool_result", tool_name="reply_send", output_data=result)
-            return result.get("status") == "sent"
+            return delivery_accepted(result)
         if not smtp_configured(self.config):
             self.db.log_event(
                 job["id"],
@@ -2015,7 +2054,10 @@ class TaskAgent:
 
     def requester_is_admin(self, job: dict[str, Any]) -> bool:
         from .approval_channels import telegram_admins
-        route = (job.get("metadata") or {}).get("reply_route") or {}
+        metadata = job.get("metadata") or {}
+        route = metadata.get("reply_route") or {}
+        if route.get("channel") == "client":
+            return metadata.get("source_channel") == "client" and bool(route.get("client_id"))
         if route.get("channel") == "email":
             admin = str(self.config.get("agent.admin.email") or "").strip().lower()
             return bool(admin) and parseaddr(str(route.get("to") or ""))[1].lower() == admin
@@ -2060,10 +2102,14 @@ class TaskAgent:
         if (mode in {"email", "both"} or not sent) and self.config.get("agent.admin.email") and smtp_configured(self.config):
             from .email_approvals import send_admin_email
             try:
-                send_admin_email(
-                    self.config, "%s question for job #%s" % (agent_name(self.config), job["id"]),
-                    text + "\n\nTo answer by email, send a message with the subject \"/admin instruct %s\" "
-                    "and your answer as the body." % job["id"],
+                subject = "%s question for job #%s" % (agent_name(self.config), job["id"])
+                body = text + "\n\nReply to this email with your answer. This provides task guidance only; it does not approve held actions."
+                message_id = send_admin_email(self.config, subject, body)
+                self.db.execute(
+                    """INSERT INTO outbound_email_logs(
+                         job_id, to_addresses, subject, body_text, provider_message_id, status, sent_at
+                       ) VALUES (%s, %s, %s, %s, %s, 'sent', now())""",
+                    (job["id"], [self.config.get("agent.admin.email")], subject, body, message_id),
                 )
                 sent = True
             except Exception as exc:

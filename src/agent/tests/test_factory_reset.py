@@ -12,10 +12,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from assistant_agent.config import AppConfig
-from assistant_agent.factory_reset import CATEGORIES, Layout, all_targets, archive, delete_files, expand
+from assistant_agent.factory_reset import CATEGORIES, KEEP_TABLES, Layout, all_targets, archive, delete_files, expand
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-STATE_TABLES = {"runtime_state", "schema_migrations"}
+STATE_TABLES = {"runtime_state"} | KEEP_TABLES
 
 
 def defined_tables():
@@ -216,6 +216,18 @@ class ResetOrchestrationTest(unittest.TestCase):
             self.assertEqual(steps[5], ["up", "-d", "--wait", "--wait-timeout", "180", "downloader", "task-agent", "workspace-indexer"])
             self.assertFalse((Path(root) / "data/backups").exists())
 
+    def test_reset_keeps_management_control_plane_running(self):
+        from assistant_agent.setup_tools import run_factory_reset
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.instance(root)
+            instance.compose.return_value = "task-agent\npostgres\nmanagement\nmanagement-docker\n"
+            instance.compose_interactive.return_value = 0
+            run_factory_reset(instance, MagicMock())
+            steps = [arguments.args[0] for arguments in instance.compose_interactive.call_args_list]
+            self.assertEqual(steps[0], ["stop", "task-agent"])
+            self.assertIn("management", steps[-1])
+            self.assertIn("management-docker", steps[-1])
+
     def test_reset_failure_restores_previously_running_services(self):
         from assistant_agent.setup import SetupError
         from assistant_agent.setup_tools import run_factory_reset
@@ -272,7 +284,7 @@ class ResetOrchestrationTest(unittest.TestCase):
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access"):
                 factory_reset_menu(instance, lambda question: next(responses), lambda label, default=False: next(responses), MagicMock())
             run.assert_called_once_with(instance, unittest.mock.ANY, clean_install=True, keep_mailbox_position=False)
-            instance.secret_values["DATABASE_URL"] = "postgresql://custom"
+            instance.secret_values["AGENT_DATABASE_URL"] = "postgresql://custom"
             console = MagicMock()
             with patch("assistant_agent.setup_tools.run_factory_reset") as run, patch("assistant_agent.setup_tools.ensure_docker_access") as access:
                 factory_reset_menu(instance, lambda question: self.fail("custom database must be refused"), lambda label, default=False: False, console)
@@ -324,7 +336,7 @@ class ResetOrchestrationTest(unittest.TestCase):
                 )
                 preserved = (
                     "config/AGENT.md", "config/agent.yaml", ".env", "overrides.env",
-                    ".secrets/POSTGRES_PASSWORD", ".setup-state.json", ".compose-secrets.yaml",
+                    ".secrets/AGENT_DATABASE_PASSWORD", ".setup-state.json", ".compose-secrets.yaml",
                     "private/tls/postgres.key", "ollama/models/model", "backups/snapshot",
                 )
                 for name in (*files, *preserved):

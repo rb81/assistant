@@ -14,6 +14,7 @@ COPY src/agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/agent/src ./src
+COPY src/config/agent.yaml src/config/agent.schema.yaml ./defaults/
 COPY docs ./docs
 
 CMD ["python", "-m", "assistant_agent.main"]

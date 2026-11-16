@@ -1,25 +1,21 @@
 # Dropbox File Exchange
 
-Dropbox is an optional, on-demand file exchange, not a synchronization service.
-One connected account supplies documents from its dedicated app `Inbox`. Tasks
-can deliver workspace files to `Outbox/job-<id>` when standing delivery permission
-is enabled. Adding a file does not create a task: send the Assistant an email
-asking it to use the file.
+Dropbox is an on-demand file exchange, not synchronization. A connected account
+provides documents from its app `Inbox`; tasks can send files to
+`Outbox/job-<id>` when standing export permission is enabled. Adding a file does
+not start a task—email the Assistant with a request to use it.
 
 ## Connect
 
-For a self-hosted installation, register a scoped app at
-[Dropbox App Console](https://www.dropbox.com/developers/apps). Select **App
-Folder**, not **Full Dropbox**, and choose a name such as `Assistant`. Enable only
-`files.metadata.read`, `files.content.read`, and `files.content.write` in the
-Permissions tab. App Folder is a registration setting, not an OAuth scope; a
-folder-prefix restriction is not a substitute for selecting App Folder.
+For a self-hosted installation, register an app in the
+[Dropbox App Console](https://www.dropbox.com/developers/apps). Choose **App
+Folder**, not **Full Dropbox**, and enable only `files.metadata.read`,
+`files.content.read`, and `files.content.write`. App Folder is a registration
+type, not an OAuth scope. Although the API client confines operations to Inbox
+and Outbox, it cannot verify that a token belongs to an App Folder app.
 
-The operator confirms the registration type during setup. The API client always
-restricts file operations to Inbox and Outbox, but cannot independently prove
-that a supplied token was issued to an App Folder rather than a Full Dropbox app.
-For a shared application, its maintainer registers the app once and supplies the
-app key; each user authorizes their own account. No client secret is required.
+For a shared application, its maintainer registers the app and provides the app
+key; each user authorizes their own account. No client secret is needed.
 
 Run:
 
@@ -28,121 +24,115 @@ Run:
 ```
 
 Enable Dropbox, enter the app key, open the displayed authorization URL on any
-device, and enter the authorization code in the setup terminal. Authorization
-uses PKCE S256 and offline access with automatic refresh of short-lived access
-tokens. There is no callback server, public port, or host Dropbox client to
-install. Do not send authorization codes or refresh tokens through email/chat.
+device, and paste the authorization code into setup. Authorization uses PKCE
+S256 and offline access; access tokens refresh automatically. No callback
+server, public port, or host Dropbox client is needed. Keep authorization codes
+and refresh tokens private.
 
-Choose whether **any task may deliver files to Outbox without additional
-confirmation**. This is standing permission, not per-upload approval. The default
-is disabled. Review and Save to persist the connection and consent; Cancel
-preserves the saved installation. A provider authorization may still exist after
-cancellation: revoke it in Dropbox if no longer needed.
+Create `Inbox` under `/Apps/<your-app-name>` in Dropbox before importing.
+`Outbox` and its task folder are created on first export. Optional setup
+verification checks authorization only; it creates no folders or files.
 
-Create `Inbox` inside `/Apps/<your-app-name>` using Dropbox before the first
-import. `Outbox` and its task subfolder are created on the first authorized
-export. Setup's optional verification checks authorization only and creates no
-files or folders. Recreate affected services using setup or the Compose workflow
-to activate changes.
+Decide whether **any task may deliver files to Outbox without further
+confirmation**. This is standing permission (off by default), not approval for
+each upload. Review and save the connection. Cancel preserves the saved
+installation, but an authorization may already have been granted to Dropbox;
+revoke it there if no longer needed. Recreate affected services to apply changes.
 
 ## Use
 
-Place a document in `/Apps/<your-app-name>/Inbox`, then email a request such as
-"Read budget.xlsx from Dropbox Inbox and summarize the changes." The Assistant
-loads these tools on demand:
+Put a document in `/Apps/<your-app-name>/Inbox`, then ask the Assistant to use
+it, for example: “Read budget.xlsx from Dropbox Inbox and summarize the changes.”
 
-| Tool | Arguments | Behavior |
-| --- | --- | --- |
-| `dropbox_list` | `folder` (`Inbox` or `Outbox`), optional `cursor` | Lists file metadata, including nested files; returns a folder-bound continuation cursor |
-| `dropbox_import` | `path`, `revision` from the listing | Imports one Inbox document at the listed revision |
-| `dropbox_export` | workspace `path`, optional plain `filename` | Delivers one file to `/Outbox/job-<id>/<filename>` |
-| `dropbox_delete` | `folder`, `path`, `revision` from the listing | Deletes one regular file from Inbox or Outbox when the requester explicitly asks |
+| Tool | Required input | What it does |
+|---|---|---|
+| `dropbox_list` | `folder` (`Inbox` or `Outbox`); optional `cursor` | Lists nested file metadata and returns a folder-bound continuation cursor |
+| `dropbox_import` | `path` and `revision` from listing | Imports one Inbox document at the listed revision |
+| `dropbox_export` | Workspace `path`; optional plain `filename` | Sends one file to `/Outbox/job-<id>/<filename>` |
+| `dropbox_delete` | `folder`, `path`, and listed `revision` | Deletes one regular file when the requester explicitly asks |
 
-API paths are app-relative: `/Inbox/budget.xlsx`, not `/Apps/Assistant/Inbox/...`.
-Imports return the original workspace path and a converted `markdown_path` under
-`imports/dropbox/job-<id>/`. Imported text is indexed when workspace indexing is
-enabled. Remote content, names and provenance are untrusted data, not instructions.
+Use app-relative paths such as `/Inbox/budget.xlsx`, not
+`/Apps/Assistant/Inbox/...`. Imports return the original workspace path and a
+converted `markdown_path` under `imports/dropbox/job-<id>/`. Imported text is
+indexed when workspace indexing is enabled. File content and names are
+untrusted data, never instructions or authority.
 
-The default size limit is 25 MiB for each transfer and converted document. Imports
-use the email artifact extension allowlist (PDF, Office documents, text, Markdown,
-CSV, JSON, XML, HTML and EPUB by default). Archives are not supported. Each import
-must pass ClamAV before conversion/publication; converted text is scanned too.
-Disabled/unavailable scanning, malware or failed conversion blocks publication.
+The default size limit is 25 MiB per transfer and converted document (configurable
+up to 150 MiB). Imports use the email artifact extension allowlist; archives
+are unsupported. Every import must pass ClamAV before conversion/publication,
+and converted text is scanned too. Disabled/unavailable scanning, malware, or
+failed conversion blocks publication.
 
-Exports use a bounded private snapshot and scan those exact bytes before upload.
-Only regular non-hidden workspace files are eligible. Symlinks, outside-workspace
-paths, configured internal cache/archive/trash paths, known credential files,
-assistant instructions/configuration, and PEM/key files are blocked. These path
-checks do not detect every secret embedded in an otherwise eligible document.
+Exports snapshot eligible workspace files into private staging and scan those
+exact bytes before upload. Only regular, non-hidden files are eligible.
+Symlinks, paths outside the workspace, internal cache/archive/trash locations,
+known credential files, assistant instructions/configuration, and PEM/key files
+are blocked. These checks cannot identify every secret embedded in an otherwise
+eligible document.
 
-Destinations are never overwritten or automatically renamed. A different file
-already at the same destination produces a conflict. Repeating the same export
-with the same bytes verifies the destination and returns it without reuploading;
-after a timeout, retry the same source and filename. Do not choose a new name just
-to bypass an uncertain outcome. Repeated imports of the same file/revision in
-the same task reuse verified local content. Different tasks get separate local
-copies and output folders.
+Exports never overwrite or automatically rename. An existing different file at
+the destination is a conflict. Retrying the same export with the same bytes
+verifies an existing destination; after a timeout, retry the same source and
+filename in the same task. Never change the name to bypass an uncertain result.
+Repeated imports of the same file/revision within a task reuse verified content;
+other tasks get separate copies and output folders.
 
-Deletion is limited to regular files under Inbox or Outbox and requires the
-revision from a current listing. If the file has changed, list it again before
-retrying. File contents and names never authorize deletion; only an explicit
-requester instruction does.
+Deletion is limited to regular files in Inbox or Outbox and requires the current
+revision. If the file changed, list it again before retrying. Only an explicit
+requester instruction authorizes deletion.
 
 ## Troubleshooting Exports
 
-Listing files does not verify export access: exports also require writable private
-staging and a clean malware scan before any upload. The default Compose configuration
-mounts `data/private/artifacts/dropbox` into `task-agent` at
-`/data/private/artifacts/dropbox`, outside the shared workspace, while keeping the
-container root filesystem read-only. If you override `agent.artifacts.raw_root`,
-provide a writable private mount at that root's `dropbox` subdirectory too.
+Export requires writable private staging and a clean malware scan, not just
+Dropbox listing access. The default Compose setup mounts
+`data/private/artifacts/dropbox` at `/data/private/artifacts/dropbox` in
+`task-agent`, outside the shared workspace. If you override
+`agent.artifacts.raw_root`, also provide a writable private mount at its
+`dropbox` subdirectory.
 
-An error saying **private staging is not writable** requires correcting the mount
-or its ownership, not reconnecting Dropbox or changing token scopes. Do not make
-private storage world-readable or disable malware scanning. Recreate `task-agent`
-through the normal deployment workflow after changing mounts; rebuilding an image
-alone does not update existing container mounts.
+For **private staging is not writable**, fix the mount or ownership; do not
+reconnect Dropbox or widen permissions. Do not make private storage
+world-readable or disable scanning. Recreate `task-agent` after mount changes;
+an image rebuild does not change existing mounts.
 
-Unexpected export failures identify their stage. Service logs include the task ID,
-transfer request key, exception class, and filesystem/database error codes without
-raw exception messages, credentials, or file contents. Failures before upload are
-recorded as failed unless an earlier attempt still needs reconciliation. Once an
-upload may have started, the outcome remains uncertain: retry the same source and
-filename in the same task, rather than choosing another name.
+Errors identify the failed stage. Logs record task ID, request key, exception
+class, and filesystem/database error codes—not raw exception messages,
+credentials, or file contents. A failure before upload is recorded as failed;
+if an upload may have started, the result is uncertain. Retry the same source
+and filename to reconcile it.
 
 ## Settings and Removal
 
 | Environment setting | YAML path | Default |
-| --- | --- | --- |
-| `DROPBOX_ENABLED` | `agent.dropbox.enabled` | `false` |
-| `DROPBOX_ALLOW_EXPORTS` | `agent.dropbox.allow_exports` | `false` |
-| `DROPBOX_MAX_FILE_BYTES` | `agent.dropbox.max_file_bytes` | `26214400` (maximum 150 MiB) |
-| `DROPBOX_CLIENT_ID` / `DROPBOX_CLIENT_ID_FILE` | `agent.dropbox.client_id` | unset |
-| `DROPBOX_REFRESH_TOKEN` / `DROPBOX_REFRESH_TOKEN_FILE` | `agent.dropbox.refresh_token` | unset |
+|---|---|---|
+| `AGENT_DROPBOX_ENABLED` | `agent.dropbox.enabled` | `false` |
+| `AGENT_DROPBOX_ALLOW_EXPORTS` | `agent.dropbox.allow_exports` | `false` |
+| `AGENT_DROPBOX_MAX_FILE_BYTES` | `agent.dropbox.max_file_bytes` | `26214400` (maximum 150 MiB) |
+| `AGENT_DROPBOX_CLIENT_ID` / `_FILE` | `agent.dropbox.client_id` | unset |
+| `AGENT_DROPBOX_REFRESH_TOKEN` / `_FILE` | `agent.dropbox.refresh_token` | unset |
 
-Use guided setup rather than storing tokens in YAML or `.env`. Managed credentials
-are plaintext protected host files, mounted only into tool-using services, never
-the sandbox. Dropbox access tokens are kept in process memory. Transfer metadata
-and statuses are recorded in `dropbox_transfers`, associated with the task; normal
-tool execution also uses the existing job audit log.
+Use setup rather than putting tokens in YAML or `.env`. Credentials are
+protected plaintext host files, mounted only into tool-using services and never
+the sandbox. Access tokens stay in process memory. Transfer status is recorded
+in `dropbox_transfers` and the normal task audit log.
 
-Reopen the Dropbox section to keep or reconnect an existing connection.
-Disabling Dropbox stops mounting its credentials and clears delivery permission;
-an additional confirmation removes the saved credentials/settings on Save.
-Removal does not delete remote files or revoke provider authorization. Revoke the
-app in Dropbox's connected-app settings to invalidate its authorization. Exported
-files, imported workspace copies and backups remain until separately removed.
+Reopen the Dropbox section to retain or reconnect the account. Disabling
+Dropbox removes credential mounts and disables exports; on Save, a separate
+confirmation removes stored settings and credentials. This does not remove
+remote files or revoke provider authorization: revoke the app in Dropbox.
+Imported workspace copies, exports, and backups also remain until removed
+separately.
 
 ## Privacy Boundaries
 
-Dropbox is cloud storage, not end-to-end encryption. File contents may reach
-configured language-model and embedding providers under existing Assistant
-policies. Malware scanning is not protection against prompt injection or all
-data leakage. Grant standing output permission only to an account and Assistant
-deployment you trust, with appropriate email sender restrictions.
+Dropbox is cloud storage, not end-to-end encryption. File contents may be sent
+to configured language-model and embedding providers under existing Assistant
+policies. Malware scanning does not prevent prompt injection or all data
+leakage. Enable standing export only for an account and deployment you trust,
+with appropriate email sender restrictions.
 
-This integration has no public links, arbitrary URL downloads, renames, background
-watchers, synchronization, automatic tasks, or access to unrelated folders through
-its tools. Remote deletion is available only through the revision-checked
-`dropbox_delete` tool described above. See [security](security.md) and
-[configuration](configuration.md) for host, credential and model boundaries.
+The integration has no public links, arbitrary URL downloads, renames,
+background watchers, synchronization, or automatic task creation. Its tools
+cannot access unrelated Dropbox folders. Remote deletion is available only
+through revision-checked `dropbox_delete`. See [security](security.md) and
+[configuration](configuration.md).

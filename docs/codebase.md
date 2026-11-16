@@ -11,6 +11,8 @@
 - `src/database/` — PostgreSQL schema and access policy.
 - `src/config/` — tracked configuration defaults and prompt template.
 - `src/scripts/` — setup implementation and maintenance scripts.
+- `src/management/` — container image for management and administration.
+- `examples/management-client/` — standalone Python API client and tests.
 - `docs/` — canonical host documentation.
 - `data/` — gitignored local settings, credentials, and runtime state.
 
@@ -25,9 +27,13 @@ prompt-toolkit application; `management.py` provides presentation-free host
 operations and configuration field metadata. `management_operator.py` is the
 local-only JSON transport for typed database records and trusted admin actions
 inside Compose. Native sudo authorization lives in `setup_privileges.py`.
-The native interface does not call the legacy setup or Tools menus; those remain
-available only through `--plain`. The previous wrapper and design mockup were
-removed. Existing runtime paths and dependency-environment names are unchanged.
+`management_api.py` and `management_contracts.py` expose authenticated,
+loopback-only v2 read/write contracts through the existing management operations;
+`management_client.py` consumes them for CLI/TUI administration. The native macOS
+client has its own repository, [assistant-client](https://github.com/rb81/assistant-client);
+see [the API reference](management-api.md) for server development commands.
+The native interface does not call the legacy setup or Tools menus; the `--plain`
+entry point is removed so clients share one management boundary.
 
 `src/database/schema.sql` is the generated current schema baseline. Startup
 requires its baseline marker and applies unrecorded migrations in filename order.
@@ -79,6 +85,8 @@ PYTHONPATH=src/agent/src python -m pytest -q src/agent/tests/test_memory_manager
 ```
 
 Sandbox and transcription tests live alongside their respective services.
+Docker tests require `ASSISTANT_TEST_DOCKER=1` and disposable infrastructure;
+never point destructive integration tests at a live installation.
 
 For code changes, update the focused tests and relevant guide. Start at
 [the documentation index](README.md), then consult [architecture](architecture.md)

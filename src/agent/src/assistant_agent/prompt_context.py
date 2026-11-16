@@ -56,7 +56,7 @@ def shared_root(config: AppConfig) -> Path:
 def agent_prompt_path(config: AppConfig) -> Path:
     """Resolve the path to the AGENT.md prompt file."""
     configured = str(config.get("agent.prompt.agent_file", "AGENT.md") or "AGENT.md").strip()
-    config_dir = Path(os.getenv("AGENT_CONFIG", "/app/config/agent.yaml")).parent
+    config_dir = Path(os.getenv("ASSISTANT_CONFIG_DIR", "/app/config"))
     candidate = config_dir / configured
     if candidate.is_file():
         return candidate.resolve()

@@ -29,7 +29,7 @@ AUDIO_FORMATS = {"wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "webm", "pcm
 
 
 def configured(config) -> bool:
-    return config.get_bool("agent.model_service.enabled", False) and bool(read_secret("OPENROUTER_API_KEY"))
+    return config.get_bool("agent.model_service.enabled", False) and bool(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
 
 
 class OpenRouterModels:
@@ -37,9 +37,9 @@ class OpenRouterModels:
         self.config = config
 
     def request(self, path, payload=None):
-        key = read_secret("OPENROUTER_API_KEY")
+        key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not key:
-            raise ModelServiceError("OPENROUTER_API_KEY is required for the model service")
+            raise ModelServiceError("AGENT_LLM_OPENROUTER_API_KEY is required for the model service")
         return urllib.request.Request(
             BASE_URL + path,
             data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
@@ -166,7 +166,7 @@ class ModelService(ModelToolResources):
 
     def run(self, action, **arguments):
         if not configured(self.config):
-            raise ModelServiceError("Model service is disabled or OPENROUTER_API_KEY is missing")
+            raise ModelServiceError("Model service is disabled or AGENT_LLM_OPENROUTER_API_KEY is missing")
         methods = {
             "query_models": self.query_models, "add_preset": self.add_preset,
             "list_presets": self.list_presets, "delete_preset": self.delete_preset,

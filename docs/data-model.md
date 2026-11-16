@@ -4,7 +4,7 @@
 
 `src/database/schema.sql` is the generated current PostgreSQL schema, not a
 legacy bootstrap schema. It seeds `schema_migrations` with
-`000_current_baseline` and the applied records for `006`–`011`. Those migration
+`000_current_baseline` and the applied records for `006`–`020`. Those migration
 files remain in `src/agent/src/assistant_agent/migrations/`; the startup runner
 applies only unrecorded SQL files, in filename order.
 
@@ -20,8 +20,9 @@ for supported existing current-baseline databases. Keep schema changes in
 application migration tracking; do not apply individual migration files
 manually.
 
-The paths above refer to a contributor's repository checkout. Runtime containers
-receive the docs mounted in the shared workspace, not the source tree.
+These paths refer to a contributor's repository checkout. Documentation is
+bundled with the application image; the source tree is not mounted into runtime
+containers.
 
 ## Conversations and work ownership
 
@@ -33,13 +34,12 @@ and requires idle work. Archived workstreams remain retaining owners when deleti
 shared data elsewhere. Job display names live in `jobs.metadata.title`, separate
 from the original task summary and instructions.
 
-Setup's workstream browser separates **User workstreams** from **Administrative
-data**. The latter is the internal `system:unattributed` bucket for legacy data
-without known provenance and administrative deliveries such as Telegram command
-responses. Zero retained objects does not mean it contains no delivery records.
-Ownership and deletion rules are unchanged; later administrative messages can
-recreate the bucket after deletion. System threads belonging to actual user
-workstreams remain with those workstreams, not in this administrative category.
+The workstream browser separates **User workstreams** from **Administrative
+data**. The latter is the `system:unattributed` bucket for legacy data without
+known provenance and administrative deliveries such as Telegram command
+responses. It may contain delivery records even when it has no retained objects,
+and later administrative messages can recreate it after deletion. System threads
+for user workstreams remain with those workstreams.
 
 `workstream_objects` records object identity and origin ownership;
 `workstream_attachments` records retaining relationships. Contacts and files

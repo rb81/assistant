@@ -2,6 +2,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from .config import AppConfig
+from .worker_health import poll_cycle
 
 
 def poll_interval_seconds(
@@ -26,10 +27,12 @@ def run_poll_loop(
 ) -> None:
     while not stop_requested():
         try:
-            result = poll_once()
-            if on_result:
-                on_result(result)
-            if should_sleep(result):
+            with poll_cycle(interval_seconds):
+                result = poll_once()
+                if on_result:
+                    on_result(result)
+                sleep = should_sleep(result)
+            if sleep:
                 if stop_requested(interval_seconds):
                     return
         except Exception:

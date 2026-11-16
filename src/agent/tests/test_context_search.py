@@ -154,11 +154,11 @@ class ContextSearchTest(unittest.TestCase):
                                 args = mock_jobs.call_args[0]
                                 self.assertEqual(args[2], 7)  # days parameter
 
-    def test_fallback_to_default_when_search_days_30(self):
-        """Test fallback to 30 days when config is not present."""
+    def test_fallback_to_default_when_search_days_missing(self):
+        """Test fallback to the agent.yaml default (90 days) when config is not present."""
         config_no_search_days = AppConfig({"agent": {}})
         store_no_config = ContextStore(self.db, config_no_search_days)
-        self.assertEqual(store_no_config.search_days(), 30)
+        self.assertEqual(store_no_config.search_days(), 90)
 
 
 class ContextSearchToolTest(unittest.TestCase):

@@ -164,7 +164,7 @@ class DevelopmentSupervisorTest(unittest.TestCase):
         selected = factory.call_args.args[0]
         self.assertEqual(selected.get("agent.llm.model"), "openai/gpt-sol-6.1")
         self.assertEqual(selected.get("agent.llm.base_url"), "https://openrouter.ai/api/v1")
-        self.assertEqual(selected.get("agent.llm.api_key_env"), "OPENROUTER_API_KEY")
+        self.assertEqual(selected.get("agent.llm.api_key_env"), "AGENT_LLM_OPENROUTER_API_KEY")
         self.assertFalse(factory.call_args.kwargs["allow_fallback"])
         self.assertEqual(config.get("agent.llm.model"), "task-model")
 
@@ -226,17 +226,17 @@ class DevelopmentSupervisorTest(unittest.TestCase):
                                     "search": {"enabled": False},
                                     "security": {"development": {"max_runs": -1, "model": "openai/gpt-sol-6.1"}}}})
         with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
-            "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "OPENAI_API_KEY" else None,
+            "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "AGENT_LLM_OPENAI_API_KEY" else None,
         ):
             errors = validate_role_config("task-agent", config)
         self.assertTrue(any("max_runs" in error for error in errors))
-        self.assertIn("Development supervisor model overrides require OPENROUTER_API_KEY", errors)
+        self.assertIn("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY", errors)
         config.values["agent"]["security"]["development"]["model"] = ""
         with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
-            "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "OPENAI_API_KEY" else None,
+            "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "AGENT_LLM_OPENAI_API_KEY" else None,
         ):
             errors = validate_role_config("task-agent", config)
-        self.assertNotIn("Development supervisor model overrides require OPENROUTER_API_KEY", errors)
+        self.assertNotIn("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY", errors)
 
     def test_startup_logs_full_script_yolo_warning_only_when_enabled(self):
         from assistant_agent import main

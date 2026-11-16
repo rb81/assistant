@@ -2,12 +2,12 @@
 
 The task agent composes a system message from the operator-maintained
 `data/config/AGENT.md`, generated runtime identity/time context, and tool
-instructions. The configured prompt filename is `agent.prompt.agent_file` in
-the active `data/config/agent.yaml` (defaults in `src/config/agent.yaml`).
+instructions. The configured prompt filename is the `agent.prompt.agent_file`
+setting (`AGENT_PROMPT_AGENT_FILE` in `data/overrides.env`).
 Setup can initialize the local prompt from `src/config/AGENT.md.example`.
 
-The filename resolves relative to the directory containing `AGENT_CONFIG`
-(`/app/config/agent.yaml` in Compose). If it is absent, the loader tries the
+The filename resolves relative to `ASSISTANT_CONFIG_DIR` (`/app/config`, the
+read-only mount of `data/config/`). If it is absent, the loader tries the
 same filename with `.example` appended. Startup rejects a missing or empty
 prompt. Task-agent reads at most `agent.prompt.max_context_file_bytes` bytes
 (65536 by default).

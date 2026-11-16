@@ -32,8 +32,8 @@ WEAK_PASSWORDS = {
 
 
 def postgres_password_is_weak() -> bool:
-    """Return True if POSTGRES_PASSWORD is unset or matches a known weak/placeholder value."""
-    password = read_secret("POSTGRES_PASSWORD", "") or ""
+    """Return True if AGENT_DATABASE_PASSWORD is unset or matches a known weak/placeholder value."""
+    password = read_secret("AGENT_DATABASE_PASSWORD", "") or ""
     return not password.strip() or password.strip() in WEAK_PASSWORDS
 
 
@@ -45,15 +45,15 @@ def is_set(value: Any) -> bool:
 
 
 def has_model_api_key() -> bool:
-    return is_set(read_secret("OPENROUTER_API_KEY")) or is_set(read_secret("OPENAI_API_KEY"))
+    return is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY")) or is_set(read_secret("AGENT_LLM_OPENAI_API_KEY"))
 
 
 def uses_openrouter(config: AppConfig) -> bool:
-    return "openrouter.ai" in str(config.get("agent.llm.base_url", "")).lower()
+    return "openrouter.ai" in str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).lower()
 
 
 def openrouter_configured(config: AppConfig) -> bool:
-    return uses_openrouter(config) and is_set(read_secret("OPENROUTER_API_KEY"))
+    return uses_openrouter(config) and is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
 
 
 def smtp_configured(config: AppConfig) -> bool:
@@ -100,14 +100,14 @@ def search_configured(config: AppConfig) -> bool:
 
 
 def fusion_configured(config: AppConfig) -> bool:
-    return config.get_bool("agent.fusion.enabled", False) and openrouter_configured(config)
+    return config.get_bool("agent.fusion.enabled", True) and openrouter_configured(config)
 
 
 def calendar_configured(config: AppConfig) -> bool:
     if not config.get_bool("agent.calendar.enabled", False):
         return False
     return any(
-        is_set(read_secret(f"CALENDAR_{provider}_CLIENT_ID"))
+        is_set(read_secret(f"AGENT_CALENDAR_{provider}_CLIENT_ID"))
         for provider in ("GOOGLE", "OUTLOOK", "ZOHO")
     )
 
@@ -126,7 +126,7 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         errors.append(str(exc))
 
     if role in ("downloader", "all") and not imap_configured(config):
-        errors.append("IMAP is required for downloader: set IMAP_HOST, IMAP_USERNAME, and IMAP_PASSWORD")
+        errors.append("IMAP is required for downloader: set AGENT_EMAIL_IMAP_HOST, AGENT_EMAIL_IMAP_USERNAME, and AGENT_EMAIL_IMAP_PASSWORD")
     if role == "all" and config.get_bool("agent.telegram.enabled", False):
         errors.append("Telegram requires independent telegram-receiver and request-preprocessor roles; use managed Compose rather than sequential AGENT_ROLE=all")
 
@@ -144,7 +144,7 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
             errors.append(str(exc))
     if role in ("request-preprocessor", "downloader") and config.get_bool("agent.transcription.enabled", False):
         if len(str(config.get("agent.transcription.api_token") or "")) < 32:
-            errors.append("Transcription requires TRANSCRIPTION_API_TOKEN of at least 32 characters")
+            errors.append("Transcription requires AGENT_TRANSCRIPTION_API_TOKEN of at least 32 characters")
         if config.get("agent.transcription.language", "auto") not in {"auto", "en", "ar"}:
             errors.append("Transcription language must be auto, en or ar")
 
@@ -160,17 +160,17 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         from .development_supervisor import configuration_errors
         errors.extend(configuration_errors(config))
         if (str(config.get("agent.security.development.model", "")).strip()
-                and not is_set(read_secret("OPENROUTER_API_KEY"))):
-            errors.append("Development supervisor model overrides require OPENROUTER_API_KEY")
+                and not is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))):
+            errors.append("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY")
 
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
     model_required = role in ("task-agent", "all") or deep_research_role_enabled or heartbeat_role_enabled
     if model_required and uses_openrouter(config) and not openrouter_configured(config):
-        errors.append("%s uses OpenRouter and requires OPENROUTER_API_KEY" % role)
+        errors.append("%s uses OpenRouter and requires AGENT_LLM_OPENROUTER_API_KEY" % role)
 
     if model_required and not uses_openrouter(config) and not has_model_api_key():
-        errors.append("%s requires OPENROUTER_API_KEY or OPENAI_API_KEY" % role)
+        errors.append("%s requires AGENT_LLM_OPENROUTER_API_KEY or AGENT_LLM_OPENAI_API_KEY" % role)
 
     if model_required and not is_set(config.get("agent.llm.model")):
         errors.append("%s requires agent.llm.model" % role)
@@ -181,25 +181,25 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if role in ("workspace-indexer", "workspace-index-cron") and not shared_root_status(config)["available"]:
         errors.append("workspace indexer requires an available shared workspace root")
 
-    if role in ("task-agent", "all") and config.get_bool("agent.fusion.enabled", False) and not openrouter_configured(config):
+    if role in ("task-agent", "all") and config.get_bool("agent.fusion.enabled", True) and not openrouter_configured(config):
         errors.append("OpenRouter fusion is enabled but OpenRouter is not configured")
 
-    # Note: ADMIN_EMAIL and SMTP are recommended for task-agent but not required.
+    # Note: AGENT_ADMIN_EMAIL and SMTP are recommended for task-agent but not required.
     # The agent can function via the workspace/dashboard without email.
     # Runtime methods handle missing email config gracefully by logging notes instead of crashing.
 
     if role in ("deep-research-agent", "deep-research-cron", "all") and config.get_bool("agent.deep_research.enabled", True):
         if not search_configured(config):
-            errors.append("deep research requires OpenRouter web search: set OPENROUTER_API_KEY and keep SEARCH_ENABLED=true")
+            errors.append("deep research requires OpenRouter web search: set AGENT_LLM_OPENROUTER_API_KEY and keep SEARCH_ENABLED=true")
         if not smtp_configured(config):
             errors.append("deep research requires SMTP config so it can request human guidance by email")
         if not admin_configured(config):
-            errors.append("deep research requires ADMIN_EMAIL as a fallback guidance recipient")
+            errors.append("deep research requires AGENT_ADMIN_EMAIL as a fallback guidance recipient")
 
     heartbeat_digest_enabled = config.get_int("agent.heartbeat.admin_digest_interval_hours", 0) > 0
     if role in ("heartbeat", "heartbeat-cron", "all") and config.get_bool("agent.heartbeat.enabled", True) and heartbeat_digest_enabled:
         if not admin_configured(config):
-            errors.append("heartbeat requires ADMIN_EMAIL so it can send queue-health digests")
+            errors.append("heartbeat requires AGENT_ADMIN_EMAIL so it can send queue-health digests")
         if not smtp_configured(config):
             errors.append("heartbeat requires SMTP config so it can send queue-health digests")
 
@@ -230,9 +230,9 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
                 "memory_delete",
             ],
             "embeddings": {
-                "available": config.get_bool("agent.embeddings.enabled", config.get_bool("agent.memory.embeddings.enabled", True)),
-                "base_url": config.get("agent.embeddings.base_url", config.get("agent.memory.embeddings.base_url", "http://ollama:11434")),
-                "model": config.get("agent.embeddings.model", config.get("agent.memory.embeddings.model", "embeddinggemma")),
+                "available": config.get_bool("agent.embeddings.enabled", True),
+                "base_url": config.get("agent.embeddings.base_url", "http://ollama:11434"),
+                "model": config.get("agent.embeddings.model", "embeddinggemma"),
             },
         },
 
@@ -257,13 +257,13 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
             "providers": [
                 p
                 for p, var in (
-                    ("google", "CALENDAR_GOOGLE_CLIENT_ID"),
-                    ("outlook", "CALENDAR_OUTLOOK_CLIENT_ID"),
-                    ("zoho", "CALENDAR_ZOHO_CLIENT_ID"),
+                    ("google", "AGENT_CALENDAR_GOOGLE_CLIENT_ID"),
+                    ("outlook", "AGENT_CALENDAR_OUTLOOK_CLIENT_ID"),
+                    ("zoho", "AGENT_CALENDAR_ZOHO_CLIENT_ID"),
                 )
                 if is_set(read_secret(var))
             ],
-            "default_provider": os.getenv("CALENDAR_DEFAULT_PROVIDER") or config.get("agent.calendar.default_provider"),
+            "default_provider": os.getenv("AGENT_CALENDAR_DEFAULT_PROVIDER") or config.get("agent.calendar.default_provider"),
             "default_alert_minutes": config.get_int("agent.calendar.default_alert_minutes", 30),
             "policy": {
                 "allow_read_event_details": config.get_bool("agent.calendar.policy.allow_read_event_details", False),
@@ -276,8 +276,8 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
             "tools": ["deep_research_request", "deep_research_status", "web_search"]
             if config.get_bool("agent.deep_research.enabled", True) and search_configured(config)
             else [],
-            "max_tool_calls": config.get_int("agent.deep_research.max_tool_calls", 25),
-            "max_iterations": config.get_int("agent.deep_research.max_iterations", 15),
+            "max_tool_calls": config.get_int("agent.deep_research.max_tool_calls", 40),
+            "max_iterations": config.get_int("agent.deep_research.max_iterations", 30),
             "search_available": search_configured(config),
         },
         "file_tools": {

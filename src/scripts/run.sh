@@ -14,7 +14,7 @@ if [ ! -x "$VENV/bin/python" ]; then
     case "$choice" in y|Y|yes|YES) ;; *) exit 0 ;; esac
     "$PYTHON" -m venv "$VENV"
 fi
-if ! "$VENV/bin/python" -c 'import yaml, dotenv, questionary, rich, httpx, prompt_toolkit' 2>/dev/null; then
+if ! "$VENV/bin/python" -c 'import yaml, dotenv, questionary, rich, httpx, prompt_toolkit, fastapi, uvicorn; from pydantic import TypeAdapter' 2>/dev/null; then
     printf '%s\n' 'Install/update the isolated administration dependencies? [y/N]'
     read -r choice
     case "$choice" in y|Y|yes|YES) ;; *) exit 0 ;; esac

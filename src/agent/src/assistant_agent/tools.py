@@ -39,7 +39,9 @@ from .replies import reminder_delivery
 from .requests import TransactionDatabase
 from .secret_store import read_secret
 from .script_analysis import ScriptAnalyzer
-from .security_screening import MALICIOUS, NOT_MALICIOUS, SecurityScreener, action_fingerprint, notify_admin
+from .security_screening import (
+    MALICIOUS, NOT_MALICIOUS, SecurityScreener, action_fingerprint, notify_admin, screening_task_context,
+)
 from .telegram import TELEGRAM_FUNCTION_TOOLS, TelegramDelivery, TelegramError, telegram_configured, telegram_destination
 from .tts import TEXT_TO_SPEECH_TOOL, TextToSpeech, configured as tts_configured
 from .zoom_meetings import ZOOM_FUNCTION_TOOLS, ZOOM_TOOL_NAMES, ZoomError, ZoomMeetings
@@ -261,6 +263,41 @@ EMAIL_HTML_TEMPLATE = """<!doctype html>
 
 class ToolError(Exception):
     pass
+
+
+def create_deep_research(db, config, job, *, research_question=None, title=None, instructions=None,
+                         priority=0, max_tool_calls=None, metadata=None, question=None):
+    if not config.get_bool("agent.deep_research.enabled", True):
+        raise ToolError("deep research is disabled")
+    if not search_configured(config):
+        raise ToolError("deep research requires OpenRouter web search configuration")
+    question_text = str(research_question if research_question is not None else question or "").strip()
+    if not question_text:
+        raise ToolError("research_question is required")
+    clean_title = str(title or "").strip() or question_text[:120]
+    clean_instructions = str(instructions).strip() if instructions is not None else None
+    default = config.get_int("agent.deep_research.max_tool_calls", DEFAULT_DEEP_RESEARCH_TOOL_CALLS)
+    try:
+        limit = int(max_tool_calls if max_tool_calls is not None else default)
+    except (TypeError, ValueError) as exc:
+        raise ToolError("max_tool_calls must be an integer") from exc
+    call_limit = min(max(limit, 1), MAX_DEEP_RESEARCH_TOOL_CALLS)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO deep_research_runs(
+                     original_job_id, original_thread_id, title, research_question, instructions,
+                     priority, max_tool_calls, metadata
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+                (job["id"], job["thread_id"], clean_title, question_text, clean_instructions,
+                 int(priority or 0), call_limit, Jsonb(json_safe(metadata or {}))),
+            )
+            run = cur.fetchone()
+            cur.execute(
+                "INSERT INTO manual_events(event_type, payload) VALUES (%s, %s)",
+                ("deep_research_created", Jsonb(json_safe({"run_id": run["id"], "original_job_id": job["id"]}))),
+            )
+    return {"deep_research_run": run}
 
 
 class SandboxAttemptsExhausted(ToolError):
@@ -1211,6 +1248,7 @@ class ToolRuntime:
                 filename=attachment["filename"],
             )
 
+        delivery_started = False
         try:
             context = ssl.create_default_context()
             client = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30, context=context) if smtp_port == 465 else smtplib.SMTP(smtp_host, smtp_port, timeout=30)
@@ -1219,17 +1257,22 @@ class ToolRuntime:
                     server.starttls(context=context)
                 if smtp_user and smtp_password:
                     server.login(smtp_user, smtp_password)
+                delivery_started = True
                 refused = server.send_message(message, from_addr=smtp_from_address, to_addrs=recipients)
                 if refused:
                     raise ToolError("SMTP refused recipients: %s" % json.dumps(refused, default=str))
         except Exception as exc:
+            uncertain = delivery_started and not isinstance(
+                exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError),
+            )
+            reason = "SMTP delivery outcome is uncertain; check the recipient before retrying" if uncertain else str(exc)
             self.db.execute(
                 "UPDATE outbound_email_logs SET status = 'failed', blocked_reason = %s WHERE id = %s",
-                (str(exc), log_row["id"]),
+                (reason, log_row["id"]),
             )
             return {
-                "status": "failed",
-                "reason": str(exc),
+                "status": "uncertain" if uncertain else "failed",
+                "reason": reason,
                 "log_id": log_row["id"],
                 "in_reply_to": clean_in_reply_to,
                 "attachments": attachment_metadata,
@@ -1380,7 +1423,7 @@ class ToolRuntime:
         return EMAIL_HTML_TEMPLATE.format(body=rendered)
 
     def _append_to_sent_if_enabled(self, message: EmailMessage) -> dict[str, Any]:
-        if not self.config.get_bool("agent.email.save_to_sent", False):
+        if not self.config.get_bool("agent.email.save_to_sent", True):
             return {"enabled": False}
 
         host = self.config.get("agent.email.imap_host")
@@ -1554,7 +1597,7 @@ class ToolRuntime:
         clean_status = str(status or "").strip().lower()
         if clean_status and clean_status not in allowed_statuses:
             raise ToolError("invalid job status")
-        days = self.config.get_int("agent.context.search_days", 30)
+        days = self.config.get_int("agent.context.search_days", 90)
         pattern = "%%%s%%" % clean_query
         if clean_status:
             rows = self.db.fetch_all(
@@ -2218,61 +2261,11 @@ class ToolRuntime:
         metadata: Optional[dict[str, Any]] = None,
         question: Optional[str] = None,
     ) -> dict[str, Any]:
-        if not self.config.get_bool("agent.deep_research.enabled", True):
-            raise ToolError("deep research is disabled")
-        if not search_configured(self.config):
-            raise ToolError("deep research requires OpenRouter web search configuration")
-        question_text = str(research_question if research_question is not None else question or "").strip()
-        if not question_text:
-            raise ToolError("research_question is required")
-        clean_title = str(title or "").strip() or question_text[:120]
-        clean_instructions = str(instructions).strip() if instructions is not None else None
-        call_limit = self._clean_deep_research_tool_call_limit(max_tool_calls)
-        with self.db.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO deep_research_runs(
-                      original_job_id,
-                      original_thread_id,
-                      title,
-                      research_question,
-                      instructions,
-                      priority,
-                      max_tool_calls,
-                      metadata
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING *
-                    """,
-                    (
-                        self.job["id"],
-                        self.job["thread_id"],
-                        clean_title,
-                        question_text,
-                        clean_instructions,
-                        int(priority or 0),
-                        call_limit,
-                        Jsonb(json_safe(metadata or {})),
-                    ),
-                )
-                run = cur.fetchone()
-                cur.execute(
-                    "INSERT INTO manual_events(event_type, payload) VALUES (%s, %s)",
-                    (
-                        "deep_research_created",
-                        Jsonb(json_safe({"run_id": run["id"], "original_job_id": self.job["id"]})),
-                    ),
-                )
-        return {"deep_research_run": run}
-
-    def _clean_deep_research_tool_call_limit(self, value: Optional[int]) -> int:
-        default = self.config.get_int("agent.deep_research.max_tool_calls", DEFAULT_DEEP_RESEARCH_TOOL_CALLS)
-        try:
-            limit = int(value if value is not None else default)
-        except (TypeError, ValueError) as exc:
-            raise ToolError("max_tool_calls must be an integer") from exc
-        return min(max(limit, 1), MAX_DEEP_RESEARCH_TOOL_CALLS)
+        return create_deep_research(
+            self.db, self.config, self.job, research_question=research_question, title=title,
+            instructions=instructions, priority=priority, max_tool_calls=max_tool_calls,
+            metadata=metadata, question=question,
+        )
 
     def command_execute(self, command: list[str], timeout_seconds: Optional[int] = None, workdir: Optional[str] = None) -> dict[str, Any]:
         if not command:
@@ -2285,7 +2278,7 @@ class ToolRuntime:
             validate_https_url(str(base_url), "Sandbox base URL")
         except RuntimeError as exc:
             raise ToolError(str(exc)) from exc
-        sandbox_token = read_secret("SANDBOX_API_TOKEN")
+        sandbox_token = read_secret("AGENT_SANDBOX_API_TOKEN")
         if not sandbox_token:
             raise ToolError("sandbox authentication is not configured")
         tls_context = ssl.create_default_context(cafile="/run/assistant/tls/sandbox.crt")
@@ -2387,8 +2380,8 @@ class ToolRuntime:
                 self.workstream_files.reconcile(before, self.workstream_files.snapshot())
 
     def sandbox_control(self, method: str, path: str) -> dict[str, Any]:
-        token = read_secret("SANDBOX_REVOKE_TOKEN") if path == "/permissions/revoke" else None
-        token = token or read_secret("SANDBOX_API_TOKEN")
+        token = read_secret("AGENT_SANDBOX_REVOKE_TOKEN") if path == "/permissions/revoke" else None
+        token = token or read_secret("AGENT_SANDBOX_API_TOKEN")
         if not token:
             raise ToolError("sandbox authentication is not configured")
         url = str(self.config.get("agent.sandbox.base_url", "https://sandbox:8080")).rstrip("/") + path
@@ -2546,25 +2539,25 @@ class ToolRuntime:
             self._dropbox_service = DropboxFiles(self.db, self.config, self.job)
         return self._dropbox_service
 
-    def dropbox_list(self, folder="Inbox", cursor=None):
+    def dropbox_list(self, folder: str = "Inbox", cursor: Optional[str] = None):
         try:
             return self._dropbox().client.list_files(folder, cursor)
         except DropboxError as exc:
             raise ToolError(str(exc)) from None
 
-    def dropbox_import(self, path, revision):
+    def dropbox_import(self, path: str, revision: str):
         try:
             return self._dropbox().import_file(path, revision)
         except DropboxError as exc:
             raise ToolError(str(exc)) from None
 
-    def dropbox_export(self, path, filename=None):
+    def dropbox_export(self, path: str, filename: Optional[str] = None):
         try:
             return self._dropbox().export_file(path, filename)
         except DropboxError as exc:
             raise ToolError(str(exc)) from None
 
-    def dropbox_delete(self, folder, path, revision):
+    def dropbox_delete(self, folder: str, path: str, revision: str):
         try:
             return self._dropbox().client.delete_file(path, revision, folder)
         except DropboxError as exc:
@@ -2767,6 +2760,7 @@ class ToolRuntime:
             self.job["metadata"] = {**metadata, "security_approved_actions": approved}
             return
         state["job_id"] = self.job.get("id")
+        state["application_context"] = screening_task_context(self.db, self.job)
         result = screener.screen(target, state, hard_signals)
         if result.level == NOT_MALICIOUS:
             return

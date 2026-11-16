@@ -22,7 +22,7 @@ def stage(source: Path, token_path: Path, destination: Path) -> None:
     token = read_source(token_path).decode("utf-8").strip()
     if len(token) < 32 or not token.isascii() or any(character.isspace() for character in token):
         raise ValueError("Sandbox initialization requires a valid token")
-    files["SANDBOX_API_TOKEN"] = token.encode("utf-8")
+    files["AGENT_SANDBOX_API_TOKEN"] = token.encode("utf-8")
     if destination.is_symlink():
         raise ValueError("Sandbox runtime directory must not be a symlink")
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -77,7 +77,7 @@ def stage(source: Path, token_path: Path, destination: Path) -> None:
 def main() -> None:
     if os.geteuid() != 0:
         raise RuntimeError("Sandbox initialization must run as container root")
-    stage(Path("/run/assistant/source"), Path("/run/secrets/SANDBOX_API_TOKEN"), Path("/run/assistant/runtime"))
+    stage(Path("/run/assistant/source"), Path("/run/secrets/AGENT_SANDBOX_API_TOKEN"), Path("/run/assistant/runtime"))
 
 
 if __name__ == "__main__":

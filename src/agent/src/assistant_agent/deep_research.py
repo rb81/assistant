@@ -13,6 +13,7 @@ from .llm_client import LlmClient
 from .notifications import notify_admin_job_failure
 from .polling import poll_interval_seconds, run_poll_loop
 from .replies import ReplyRouter
+from .client_channels import delivery_accepted
 from .requests import TransactionDatabase
 from .task_agent import TaskAgent
 from .tool_result_cache import ToolResultCache
@@ -154,7 +155,7 @@ class DeepResearchAgent:
         )
         messages = self.build_messages(run, execution_job)
         tools = research_tools(self.config)
-        max_iterations = self.config.get_int("agent.deep_research.max_iterations", 15)
+        max_iterations = self.config.get_int("agent.deep_research.max_iterations", 30)
 
         for _iteration in range(max_iterations):
             if not self.still_owns_run(run):
@@ -553,7 +554,7 @@ class DeepResearchAgent:
         if (original_job.get("metadata") or {}).get("reply_route"):
             result = ReplyRouter(tool_runtime).send(question, purpose="clarification")
             self.db.log_event(original_job["id"], "tool_result", tool_name="reply_send", output_data=result)
-            if result.get("status") != "sent":
+            if not delivery_accepted(result):
                 reason = "Research guidance delivery requires attention: %s" % result.get("status")
                 self.db.update_job_status(original_job["id"], "needs_review", last_error=reason)
                 raise ToolError(reason)

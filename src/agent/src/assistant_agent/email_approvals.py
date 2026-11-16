@@ -117,7 +117,7 @@ def approval_reply(message: Message) -> tuple[str, str, str] | None:
     return tokens.pop(), hashes.pop(), "\n".join(instructions).strip()
 
 
-def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, bytes] | None = None) -> None:
+def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, bytes] | None = None) -> str:
     message = EmailMessage()
     message["From"] = agent_email(config)
     message["To"] = config.get("agent.admin.email")
@@ -138,6 +138,7 @@ def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, 
             client.starttls(context=context)
         client.login(config.get("agent.email.smtp_username"), config.get("agent.email.smtp_password"))
         client.send_message(message)
+    return str(message["Message-ID"])
 
 
 NETWORK_EMAIL_INSTRUCTIONS = (
@@ -358,6 +359,12 @@ class EmailApprovals:
             self.db.set_state(key, {**pending, "otp_hash": hashlib.sha256(token.encode()).hexdigest()})
             prepared = True
             delivery_errors = []
+            if mode == "client":
+                from .client_channels import ClientChannels
+                ClientChannels(self.db, self.config).notice(
+                    summary[:20000] + "\n\nReview and decide this one-use approval through the Management API.",
+                    "approval", "client-approval:" + digest, job_id=payload.get("job_id"),
+                )
             if mode in {"telegram", "both"}:
                 from .telegram import TelegramClient, record_task_message
                 try:
@@ -391,7 +398,7 @@ class EmailApprovals:
                     if email_fallback:
                         from .validation import smtp_configured
                         if not admin or not smtp_configured(self.config):
-                            raise ValueError("Email approval fallback requires ADMIN_EMAIL and SMTP configuration")
+                            raise ValueError("Email approval fallback requires AGENT_ADMIN_EMAIL and SMTP configuration")
                     body = (
                         permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes,
                                               email_body_details)
@@ -428,7 +435,7 @@ class EmailApprovals:
             else:
                 self.db.execute("DELETE FROM runtime_state WHERE key IN (%s, %s)", (key, source_key))
             raise
-        self.db.set_state(source_key, {"status": "sent",
+        self.db.set_state(source_key, {"status": "client_queued" if mode == "client" else "sent",
                                       **({"email_fallback": True} if email_fallback else {})})
         return True
 

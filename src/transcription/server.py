@@ -14,8 +14,8 @@ from fastapi import FastAPI, HTTPException, Request
 
 
 def secret_token() -> str:
-    pointer = os.environ.get("TRANSCRIPTION_API_TOKEN_FILE")
-    value = Path(pointer).read_text().strip() if pointer else os.environ.get("TRANSCRIPTION_API_TOKEN", "")
+    pointer = os.environ.get("AGENT_TRANSCRIPTION_API_TOKEN_FILE")
+    value = Path(pointer).read_text().strip() if pointer else os.environ.get("AGENT_TRANSCRIPTION_API_TOKEN", "")
     if len(value) < 32:
         raise RuntimeError("transcription requires a secret token of at least 32 characters")
     return value
@@ -23,7 +23,7 @@ def secret_token() -> str:
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 capacity = asyncio.Semaphore(1)
-MODEL = Path(os.environ.get("WHISPER_MODEL_PATH", "/models/ggml-small.bin"))
+MODEL = Path(os.environ.get("AGENT_TRANSCRIPTION_MODEL_PATH", "/models/ggml-small.bin"))
 MAX_BYTES = 20 * 1024 * 1024
 MAX_SECONDS = 600
 
@@ -55,7 +55,7 @@ def transcribe_file(source: Path, directory: Path, language: str) -> dict:
     if not samples or sum(sample * sample for sample in samples) / len(samples) < 1024:
         raise ValueError("no audible speech was detected")
     output = directory / "transcript"
-    threads = min(max(int(os.environ.get("WHISPER_THREADS", "2")), 1), 4)
+    threads = min(max(int(os.environ.get("AGENT_TRANSCRIPTION_THREADS", "2")), 1), 4)
     run_process(["whisper-cli", "-m", str(MODEL), "-f", str(waveform), "-l", language,
                  "-t", str(threads), "-ng", "-oj", "-of", str(output)], 300)
     result_path = output.with_suffix(".json")

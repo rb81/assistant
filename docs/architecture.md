@@ -1,11 +1,14 @@
 # Architecture
 
-Assistant runs as a Docker Compose application. PostgreSQL stores durable
-application state; Python services perform intake, job execution, indexing,
-scheduling, and monitoring.
+Assistant is a Docker Compose application. PostgreSQL stores durable state;
+Python services handle intake, execution, indexing, scheduling, and monitoring.
 
 ## Services
 
+- `management` — authenticated configuration, service status, and bounded logs;
+  published only on host loopback for local clients or SSH forwarding.
+- `management-docker` — internal, project-scoped read-only Docker gateway;
+  the API itself has no Docker socket.
 - `postgres` — jobs, messages, logs, memories, reminders, integrations, and indexes.
 - `downloader` — optional email intake (the `email` profile).
 - `telegram-receiver` and `request-preprocessor` — optional private Telegram intake
@@ -26,15 +29,14 @@ Most application roles use the Python agent image and select behavior through
 
 ## Request and job flow
 
-Email or Telegram intake validates and records a request, processes permitted
-attachments, and queues work in an owning workstream. A task-agent claims a job
-through PostgreSQL, builds context, calls the configured model, and executes
-available tools. Automatically routed jobs deliver final answers and clarification
-through the request's reply route; legacy email jobs require explicit email tools.
-Side effects and progress are recorded in PostgreSQL. Research has a dedicated
-worker; the reminder scheduler queues task-agent jobs or delivers notification-only
-reminders without a model call. System-thread outcomes are available to the
-owning workstream's main conversation.
+Email or Telegram intake validates and records a request, processes permitted attachments,
+and queues work in an owning workstream. Task-agent claims it through PostgreSQL,
+builds context, calls the configured model, and runs available tools. Automatically
+routed jobs deliver replies through the request route; legacy email jobs require
+explicit email tools. PostgreSQL records progress and side effects. Research has
+a dedicated worker; reminders either queue task-agent jobs or send notifications
+without a model call. System-thread outcomes are available in the owning
+workstream's main conversation.
 
 Task-agent workers claim jobs with database locking, preventing simultaneous
 claims of the same queued job. This is not an exactly-once guarantee for external
@@ -42,14 +44,12 @@ side effects after retries; see [concurrent job processing](concurrent-job-proce
 
 ## Runtime boundaries
 
-The agent's file tools are rooted at `/data/share`. That workspace is not the
-host repository. Protected credentials, database files, and private artifacts
-are kept outside it.
+Agent file tools are rooted at `/data/share`, not the host repository.
+Credentials, database files, and private artifacts are kept outside the workspace.
 
-Command execution is delegated to the sandbox broker. For each command, the
-broker starts a disposable container with the shared workspace mount. It does
-not give the command container application credentials, the Docker socket, or
-access to the host repository. The broker itself has Docker daemon access; see
+The sandbox broker starts a disposable container for each command with the
+shared workspace mounted. The command container has no application credentials,
+Docker socket, or host-repository access. The broker itself has Docker daemon access; see
 [security](security.md) for the residual risk and host requirements.
 Command containers have no direct internet: a per-run proxy sidecar allows
 HTTPS only to approved hosts, and the agent requests new hosts through an admin
@@ -62,12 +62,14 @@ or per-command containers. Help is reference material, not access to host
 secrets, source files or service controls.
 
 PostgreSQL and sandbox control traffic use verified TLS. Compose networks scope
-internal service communication; the application does not publish an operator
-web interface.
+internal communication. The operator API publishes only a loopback port; there
+is no browser administration interface. Desktop, CLI, and opt-in TUI reads share
+the management contracts. Local administrative writes run in disposable Docker
+containers, not host Python.
 
 ## Persistent state
 
-Local deployment state is under the gitignored `data/` directory, including
-`.env`, optional overrides, credentials, setup state, PostgreSQL, private files,
-and the shared workspace. Tracked defaults and templates live under `src/config`.
+Local deployment state is under gitignored `data/`: `.env`, overrides,
+credentials, setup state, PostgreSQL, private files, and the shared workspace.
+Tracked defaults and templates are under `src/config`.
 See [running Assistant](running-assistant.md) for paths and commands.

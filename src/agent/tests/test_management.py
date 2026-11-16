@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -20,12 +20,12 @@ from test_network_access import db  # noqa: F401
 def configured(root):
     installation = Installation(root)
     installation.values = {
-        "AGENT_NAME": "Original", "AGENT_TIMEZONE": "UTC", "AGENT_LLM_MODEL": "model",
+        "AGENT_IDENTITY_NAME": "Original", "AGENT_APP_TIMEZONE": "UTC", "AGENT_LLM_MODEL": "model",
         "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1",
         "COMPOSE_PROFILES": "custom", "UNRELATED": "preserve",
-        "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "false",
+        "AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED": "false",
     }
-    installation.secret_values = {"POSTGRES_PASSWORD": "database-password", "OPENROUTER_API_KEY": "model-key"}
+    installation.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
     installation.prompt_copy = b"Ask for approval before external actions."
     installation.state["setup_complete"] = True
     installation.save()
@@ -60,15 +60,15 @@ def test_native_forms_save_reviewed_configuration_without_mutating_the_live_snap
         original = configured(root)
         backend = management(root)
         values = {spec.key: backend.value(spec) for spec in GROUPS["identity"][1]}
-        values["AGENT_NAME"] = "Changed"
+        values["AGENT_IDENTITY_NAME"] = "Changed"
         backend.stage("identity", values)
-        assert backend.installation.values["AGENT_NAME"] == "Original"
-        assert Installation(root).values["AGENT_NAME"] == "Original"
+        assert backend.installation.values["AGENT_IDENTITY_NAME"] == "Original"
+        assert Installation(root).values["AGENT_IDENTITY_NAME"] == "Original"
         assert backend.problems() == []
-        assert backend.installation.values["AGENT_NAME"] == "Original"
+        assert backend.installation.values["AGENT_IDENTITY_NAME"] == "Original"
         backend.save()
         reopened = Installation(root)
-        assert reopened.values["AGENT_NAME"] == "Changed"
+        assert reopened.values["AGENT_IDENTITY_NAME"] == "Changed"
         assert reopened.values["UNRELATED"] == "preserve"
         assert reopened.values["COMPOSE_PROFILES"] == "custom"
         assert reopened.secret_values == original.secret_values
@@ -81,12 +81,12 @@ def test_invalid_form_staging_is_atomic_and_does_not_replace_database_password()
         backend = management(root)
         values = {spec.key: backend.value(spec) for spec in GROUPS["models"][1]}
         values["AGENT_LLM_MODEL"] = "different-model"
-        values["POSTGRES_PASSWORD"] = "replacement-password"
+        values["AGENT_DATABASE_PASSWORD"] = "replacement-password"
         before = dict(backend.values)
         with pytest.raises(SetupError, match="Rotate database"):
             backend.stage("models", values)
         assert backend.values == before
-        assert backend.credentials["POSTGRES_PASSWORD"] == "database-password"
+        assert backend.credentials["AGENT_DATABASE_PASSWORD"] == "database-password"
 
 
 def test_native_security_form_persists_development_supervisor_settings():
@@ -117,7 +117,7 @@ def test_save_validates_the_entire_draft_and_preserves_files_on_failure():
         configured(root)
         backend = management(root)
         original = backend.installation.env_original
-        backend.values["AGENT_TIMEZONE"] = "invalid/timezone"
+        backend.values["AGENT_APP_TIMEZONE"] = "invalid/timezone"
         with pytest.raises(SetupError, match="timezone"):
             backend.save()
         assert Path(root, "data/.env").read_bytes() == original
@@ -128,7 +128,7 @@ def test_failed_first_save_preserves_the_saved_snapshot_and_keeps_the_draft():
         backend = management(root)
         backend.accepted = True
         backend.values.update(AGENT_LLM_MODEL="model", AGENT_LLM_BASE_URL="https://openrouter.ai/api/v1")
-        backend.credentials.update(POSTGRES_PASSWORD="database-password", OPENROUTER_API_KEY="model-key")
+        backend.credentials.update(AGENT_DATABASE_PASSWORD="database-password", AGENT_LLM_OPENROUTER_API_KEY="model-key")
         backend.instructions = b"Ask for approval before external actions."
         backend.dirty = True
         with patch("assistant_agent.setup.write_transaction", side_effect=SetupError("Write failed")):
@@ -145,38 +145,50 @@ def test_failed_first_save_preserves_the_saved_snapshot_and_keeps_the_draft():
 def test_services_parse_compose_json_lines_and_include_not_created_components():
     with tempfile.TemporaryDirectory() as root:
         backend = management(root)
+        config = json.dumps({"services": {
+            "task-agent": {"restart": "unless-stopped"},
+            "postgres": {"restart": "unless-stopped"},
+            "reminder-scheduler": {"restart": "unless-stopped"},
+            "downloader": {"profiles": ["email"], "restart": "unless-stopped"},
+        }})
         rows = [
             {"Service": "task-agent", "State": "running", "Health": "healthy"},
             {"Service": "postgres", "State": "exited", "Health": ""},
         ]
         with patch.object(backend, "access"), patch.object(
             backend.installation, "compose",
-            side_effect=["task-agent\npostgres\nreminder-scheduler", "\n".join(map(json.dumps, rows))],
+            side_effect=[config, "\n".join(map(json.dumps, rows))],
         ):
             result = backend.services()
         by_name = {row["id"]: row for row in result}
         assert by_name["task-agent"]["health"] == "healthy"
         assert by_name["postgres"]["state"] == "exited"
         assert by_name["reminder-scheduler"]["state"] == "not created"
+        assert by_name["downloader"]["state"] == "profile inactive"
 
 
 def test_service_actions_validate_the_service_and_never_repeat_failed_operations():
     with tempfile.TemporaryDirectory() as root:
         backend = management(root)
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", return_value="task-agent\n"
+            backend.installation, "compose",
+            return_value=json.dumps({"services": {"task-agent": {"restart": "unless-stopped"}}}),
         ) as compose:
             with pytest.raises(SetupError, match="no longer configured"):
                 backend.lifecycle("restart", "missing-service")
-        compose.assert_called_once_with(["config", "--services"])
+        compose.assert_called_once_with(["--profile", "*", "config", "--format", "json"])
         with patch.object(backend, "access"), patch.object(
             backend.installation, "compose",
-            side_effect=["task-agent\n", DockerCommandError("Docker failed")],
+            side_effect=[
+                json.dumps({"services": {"task-agent": {"restart": "unless-stopped"}}}),
+                "task-agent\n",
+                DockerCommandError("Docker failed"),
+            ],
         ) as compose:
             with pytest.raises(DockerCommandError):
                 backend.lifecycle("restart", "task-agent")
-        assert compose.call_count == 2
-        assert compose.call_args.args[0] == ["restart", "task-agent"]
+        assert compose.call_count == 3
+        assert compose.call_args.args[0] == ["--profile", "*", "restart", "task-agent"]
 
 
 def test_structured_transport_reuses_the_image_and_passes_requests_via_stdin_without_building():
@@ -264,6 +276,30 @@ def test_management_selects_build_only_task_image_from_a_multi_service_configura
         assert backend.helper_ready
 
 
+def test_management_readiness_is_shared_across_requests_until_a_helper_failure():
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        first = management(root)
+        with patch.object(first, "access"), patch.object(
+                first.installation, "compose", side_effect=['{"services":{"task-agent":{"image":"i"}}}', ""]), \
+                patch.object(first.installation, "docker"):
+            first.prepare_management()
+        second = management(root)
+        with patch.object(second, "access") as access:
+            second.prepare_management()
+        access.assert_not_called()
+        with patch.object(second, "access"), patch.object(
+                second.installation, "compose", side_effect=DockerCommandError("Helper exited.")):
+            with pytest.raises(DockerCommandError):
+                second.request({"kind": "memories"})
+        third = management(root)
+        with patch.object(third, "access") as access, patch.object(
+                third.installation, "compose", side_effect=['{"services":{"task-agent":{"image":"i"}}}', ""]), \
+                patch.object(third.installation, "docker"):
+            third.prepare_management()
+        access.assert_called_once()
+
+
 @pytest.mark.skipif(os.getenv("ASSISTANT_TEST_DOCKER") != "1", reason="requires disposable Docker helpers")
 @pytest.mark.parametrize("build_only", [False, True])
 def test_management_transports_run_with_real_compose_flags_and_readonly_source_mount(build_only):
@@ -322,9 +358,12 @@ def test_mutations_require_explicit_confirmation_and_reuse_the_existing_admin_ba
     with pytest.raises(ValueError, match="confirmation"):
         execute(db, config, {"kind": "mutate", "action": "cancel", "id": 9})
     db.fetch_one.assert_not_called()
-    with patch("assistant_agent.management_operator.AdminCommands") as admin:
+    db.connect.return_value = MagicMock()
+    with patch("assistant_agent.management_operator.AdminCommands") as admin, \
+            patch("assistant_agent.task_deletion.TaskDeletionService", autospec=True) as deletion:
         admin.return_value.execute.return_value = '{"id": 9, "status": "cancelled"}'
         result = execute(db, config, {"kind": "mutate", "action": "cancel", "id": 9, "confirmed": True})
+    deletion.return_value.assert_operable.assert_called_once_with(9)
     admin.return_value.execute.assert_called_once_with("/admin cancel 9", "", confirmed=True)
     assert result["result"]["status"] == "cancelled"
 
@@ -448,7 +487,7 @@ def test_editing_unrelated_settings_preserves_existing_profiles_until_explicitly
         backend = management(root)
         backend.values["COMPOSE_PROFILES"] = "custom,email,telegram"
         assert backend.draft().values["COMPOSE_PROFILES"] == "custom,email,telegram"
-        backend.values["TELEGRAM_ENABLED"] = "false"
+        backend.values["AGENT_TELEGRAM_ENABLED"] = "false"
         assert backend.draft().values["COMPOSE_PROFILES"] == "custom,email"
 
 
@@ -456,7 +495,7 @@ def test_logs_redact_saved_credentials_even_when_a_replacement_is_in_the_draft()
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
-        backend.credentials["OPENROUTER_API_KEY"] = "replacement-key"
+        backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] = "replacement-key"
         assert backend.redact("model-key and replacement-key") == "[hidden] and [hidden]"
 
 
@@ -472,6 +511,37 @@ def test_malformed_record_responses_are_reported_instead_of_crashing_the_ui(resp
         with patch.object(backend, "access"), patch.object(backend.installation, "compose", return_value=response):
             with pytest.raises(SetupError, match="response was invalid"):
                 backend.request({"kind": "memories"})
+
+
+@pytest.mark.parametrize("row", [
+    {"id": 1, "kind": "request", "body": "Hello", "created_at": "2026-01-01"},
+    {"id": 1, "kind": "request", "body": "Hello", "channel": "email"},
+])
+def test_task_messages_reject_missing_channel_or_timestamp(row):
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        backend.helper_ready = True
+        with patch.object(backend, "access"), patch.object(
+            backend.installation, "compose", return_value=json.dumps({"rows": [row], "total": 1}),
+        ):
+            with pytest.raises(SetupError, match="response was invalid"):
+                backend.request({"kind": "task-messages", "id": 1})
+
+
+def test_task_activity_accepts_interrupted_calls():
+    response = {"rows": [{
+        "id": "1:2", "tool_name": "task_complete", "created_at": "2026-01-01",
+        "status": "interrupted",
+    }], "total": 1, "truncated": False}
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        backend.helper_ready = True
+        with patch.object(backend, "access"), patch.object(
+            backend.installation, "compose", return_value=json.dumps(response),
+        ):
+            assert backend.request({"kind": "task-activity", "id": 1}) == response
 
 
 def test_search_status_uses_existing_runtime_instead_of_building_an_image():
@@ -513,12 +583,13 @@ def test_script_search_pages_beyond_the_old_hundred_row_limit():
 def test_service_polling_ignores_changing_uptime_when_state_and_health_are_unchanged():
     with tempfile.TemporaryDirectory() as root:
         backend = management(root)
+        config = json.dumps({"services": {"task-agent": {"restart": "unless-stopped"}}})
         first = {"Service": "task-agent", "State": "running", "Health": "healthy",
                  "Status": "Up 20 seconds", "RunningFor": "20 seconds ago"}
         second = {**first, "Status": "Up 25 seconds", "RunningFor": "25 seconds ago"}
         with patch.object(backend, "access"), patch.object(
             backend.installation, "compose", side_effect=[
-                "task-agent", json.dumps(first), "task-agent", json.dumps(second),
+                config, json.dumps(first), config, json.dumps(second),
             ],
         ):
             assert backend.services() == backend.services()
@@ -529,9 +600,9 @@ def test_secret_form_edits_preserve_significant_leading_and_trailing_spaces():
         configured(root)
         backend = management(root)
         values = {spec.key: backend.value(spec) for spec in GROUPS["email"][1]}
-        values["IMAP_PASSWORD"] = " secret with spaces "
+        values["AGENT_EMAIL_IMAP_PASSWORD"] = " secret with spaces "
         backend.stage("email", values)
-        assert backend.credentials["IMAP_PASSWORD"] == " secret with spaces "
+        assert backend.credentials["AGENT_EMAIL_IMAP_PASSWORD"] == " secret with spaces "
 
 
 def test_telegram_form_preserves_yaml_recipients_as_valid_json():
@@ -543,17 +614,17 @@ def test_telegram_form_preserves_yaml_recipients_as_valid_json():
             "org": {"internal_email_domains": ["example.com"]},
         }})
         specs = {spec.key: spec for spec in GROUPS["telegram"][1]}
-        assert json.loads(backend.value(specs["TELEGRAM_RECIPIENTS"])) == {"admin@example.com": "123"}
-        domains = next(spec for spec in GROUPS["identity"][1] if spec.key == "ORG_INTERNAL_EMAIL_DOMAINS")
+        assert json.loads(backend.value(specs["AGENT_TELEGRAM_RECIPIENTS"])) == {"admin@example.com": "123"}
+        domains = next(spec for spec in GROUPS["identity"][1] if spec.key == "AGENT_ORG_INTERNAL_EMAIL_DOMAINS")
         assert backend.value(domains) == "example.com"
-        backend.values.update(TELEGRAM_ENABLED="true", TELEGRAM_ALLOWED_USER_IDS="123")
-        backend.credentials["TELEGRAM_BOT_TOKEN"] = "bot-token"
+        backend.values.update(AGENT_TELEGRAM_ENABLED="true", AGENT_TELEGRAM_ALLOWED_USER_IDS="123")
+        backend.credentials["AGENT_TELEGRAM_BOT_TOKEN"] = "bot-token"
         backend.stage("telegram", {spec.key: backend.value(spec) for spec in specs.values()})
         assert not [message for section, message in backend.problems() if section == "telegram"]
 
 
 @pytest.mark.parametrize("token, identifiers, recipients, message", [
-    ("", "123", "{}", "TELEGRAM_BOT_TOKEN"),
+    ("", "123", "{}", "AGENT_TELEGRAM_BOT_TOKEN"),
     ("bot-token", "", "{}", "positive numeric"),
     ("bot-token", "-123", "{}", "positive numeric"),
     ("bot-token", "123", "admin@example.com=123", "JSON object"),
@@ -563,9 +634,9 @@ def test_telegram_validation_blocks_unusable_native_configuration(token, identif
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
-        backend.values.update(TELEGRAM_ENABLED="true", TELEGRAM_ALLOWED_USER_IDS=identifiers,
-                              TELEGRAM_RECIPIENTS=recipients)
-        backend.credentials["TELEGRAM_BOT_TOKEN"] = token
+        backend.values.update(AGENT_TELEGRAM_ENABLED="true", AGENT_TELEGRAM_ALLOWED_USER_IDS=identifiers,
+                              AGENT_TELEGRAM_RECIPIENTS=recipients)
+        backend.credentials["AGENT_TELEGRAM_BOT_TOKEN"] = token
         assert any(section == "telegram" and message in error for section, error in backend.problems())
         with pytest.raises(SetupError, match=message):
             backend.save()
@@ -601,8 +672,8 @@ def test_named_credential_activation_only_applies_the_requested_pending_credenti
         backend = management(root)
         with patch.object(backend, "access"), patch.object(backend, "load"), \
                 patch.object(backend.installation, "apply") as apply:
-            backend.apply_credentials("OPENROUTER_API_KEY")
-            apply.assert_called_once_with(["OPENROUTER_API_KEY"])
+            backend.apply_credentials("AGENT_LLM_OPENROUTER_API_KEY")
+            apply.assert_called_once_with(["AGENT_LLM_OPENROUTER_API_KEY"])
             with pytest.raises(SetupError, match="no pending activation"):
                 backend.apply_credentials("UNKNOWN")
             assert apply.call_count == 1
@@ -621,7 +692,7 @@ def test_start_requires_saved_setup_and_reports_the_build_in_progress():
                 assert backend.progress == "Building and starting the application"
             start.side_effect = starting
             backend.lifecycle("start")
-            start.assert_called_once()
+            start.assert_called_once_with()
 
 
 def test_native_validation_honors_models_and_integration_modes_from_yaml():
@@ -635,11 +706,11 @@ def test_native_validation_honors_models_and_integration_modes_from_yaml():
             "zoom": {"auth_mode": "s2s"},
             "calendar": {"default_provider": "google"},
         }})
-        backend.values.update(ZOOM_ENABLED="true", CALENDAR_ENABLED="true")
+        backend.values.update(AGENT_ZOOM_ENABLED="true", AGENT_CALENDAR_ENABLED="true")
         backend.credentials.update({
-            "ZOOM_CLIENT_ID": "client", "ZOOM_CLIENT_SECRET": "client-secret", "ZOOM_ACCOUNT_ID": "account",
-            "CALENDAR_GOOGLE_CLIENT_ID": "client", "CALENDAR_GOOGLE_CLIENT_SECRET": "client-secret",
-            "CALENDAR_GOOGLE_REFRESH_TOKEN": "refresh-token",
+            "AGENT_ZOOM_CLIENT_ID": "client", "AGENT_ZOOM_CLIENT_SECRET": "client-secret", "AGENT_ZOOM_ACCOUNT_ID": "account",
+            "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "client", "AGENT_CALENDAR_GOOGLE_CLIENT_SECRET": "client-secret",
+            "AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN": "refresh-token",
         })
         assert backend.problems() == []
 
@@ -649,14 +720,14 @@ def test_native_boolean_fields_preserve_supported_enabled_values_and_profiles(en
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
-        backend.values.update(TELEGRAM_ENABLED=enabled, COMPOSE_PROFILES="custom,telegram")
+        backend.values.update(AGENT_TELEGRAM_ENABLED=enabled, COMPOSE_PROFILES="custom,telegram")
         spec = GROUPS["telegram"][1][0]
         assert backend.value(spec) == "true"
         backend.stage("telegram", {field.key: backend.value(field) for field in GROUPS["telegram"][1]})
         assert not backend.dirty
-        assert backend.values["TELEGRAM_ENABLED"] == enabled
+        assert backend.values["AGENT_TELEGRAM_ENABLED"] == enabled
         assert backend.draft().values["COMPOSE_PROFILES"] == "custom,telegram"
-        assert any("TELEGRAM_BOT_TOKEN" in message for section, message in backend.problems()
+        assert any("AGENT_TELEGRAM_BOT_TOKEN" in message for section, message in backend.problems()
                    if section == "telegram")
 
 
@@ -665,13 +736,13 @@ def test_native_boolean_fields_preserve_supported_enabled_values_and_profiles(en
     ("models", {"AGENT_LLM_BASE_URL": "https://"}, "models", "valid HTTPS"),
     ("models", {"AGENT_LLM_BASE_URL": "https://api.example.com:invalid/v1"}, "models", "valid HTTPS"),
     ("models", {"AGENT_LLM_BASE_URL": "https://api.example.com?key=private"}, "models", "valid HTTPS"),
-    ("security", {"AGENT_SECURITY_DECISION_ENABLED": "true", "AGENT_SECURITY_DECISION_URL": "https://["},
+    ("security", {"AGENT_SECURITY_DECISION_MODEL_ENABLED": "true", "AGENT_SECURITY_DECISION_MODEL_URL": "https://["},
      "security", "HTTPS URL"),
-    ("transcription", {"TRANSCRIPTION_ENABLED": "true", "TRANSCRIPTION_LANGUAGE": "fr"}, "transcription", "auto, en or ar"),
-    ("email", {"SETUP_EMAIL_ENABLED": "true", "IMAP_HOST": "https://mail.example.com"}, "email", "hostname"),
-    ("identity", {"ADMIN_EMAIL": "not-an-email"}, "identity", "valid email"),
-    ("calendar", {"CALENDAR_ENABLED": "true", "CALENDAR_DEFAULT_PROVIDER": "typo"}, "calendar", "Default calendar provider"),
-    ("zoom", {"ZOOM_ENABLED": "true", "ZOOM_AUTH_MODE": "typo"}, "zoom", "authorization mode"),
+    ("transcription", {"AGENT_TRANSCRIPTION_ENABLED": "true", "AGENT_TRANSCRIPTION_LANGUAGE": "fr"}, "transcription", "auto, en or ar"),
+    ("email", {"SETUP_EMAIL_ENABLED": "true", "AGENT_EMAIL_IMAP_HOST": "https://mail.example.com"}, "email", "hostname"),
+    ("identity", {"AGENT_ADMIN_EMAIL": "not-an-email"}, "identity", "valid email"),
+    ("calendar", {"AGENT_CALENDAR_ENABLED": "true", "AGENT_CALENDAR_DEFAULT_PROVIDER": "typo"}, "calendar", "Default calendar provider"),
+    ("zoom", {"AGENT_ZOOM_ENABLED": "true", "AGENT_ZOOM_AUTH_MODE": "typo"}, "zoom", "authorization mode"),
 ])
 def test_each_native_form_reports_invalid_input_without_crashing_review(group, values, section, fragment):
     with tempfile.TemporaryDirectory() as root:
@@ -686,8 +757,8 @@ def test_each_native_form_reports_invalid_input_without_crashing_review(group, v
 
 
 @pytest.mark.parametrize("provider, expected", [
-    ("calendar", "CALENDAR_GOOGLE_CLIENT_ID"), ("zoom", "ZOOM_CLIENT_ID"),
-    ("dropbox", "DROPBOX_CLIENT_ID"), ("telegram", "TELEGRAM_BOT_TOKEN"),
+    ("calendar", "AGENT_CALENDAR_GOOGLE_CLIENT_ID"), ("zoom", "AGENT_ZOOM_CLIENT_ID"),
+    ("dropbox", "AGENT_DROPBOX_CLIENT_ID"), ("telegram", "AGENT_TELEGRAM_BOT_TOKEN"),
 ])
 def test_yaml_enabled_integrations_cannot_bypass_credential_validation(provider, expected):
     with tempfile.TemporaryDirectory() as root:
@@ -701,10 +772,10 @@ def test_extra_calendar_accounts_require_complete_credential_sets():
     with tempfile.TemporaryDirectory() as root:
         configured(root)
         backend = management(root)
-        backend.values.update(CALENDAR_ENABLED="true", CALENDAR_DEFAULT_PROVIDER="google_2")
+        backend.values.update(AGENT_CALENDAR_ENABLED="true", AGENT_CALENDAR_DEFAULT_PROVIDER="google_2")
         backend.credentials.update({
-            "CALENDAR_GOOGLE_2_CLIENT_ID": "client", "CALENDAR_GOOGLE_2_CLIENT_SECRET": "client-secret",
-            "CALENDAR_GOOGLE_2_REFRESH_TOKEN": "refresh-token", "CALENDAR_OUTLOOK_CLIENT_ID": "partial",
+            "AGENT_CALENDAR_GOOGLE_2_CLIENT_ID": "client", "AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET": "client-secret",
+            "AGENT_CALENDAR_GOOGLE_2_REFRESH_TOKEN": "refresh-token", "AGENT_CALENDAR_OUTLOOK_CLIENT_ID": "partial",
         })
         messages = [message for section, message in backend.problems() if section == "calendar"]
         assert len(messages) == 2
@@ -719,20 +790,21 @@ def test_failed_credential_save_preserves_the_saved_snapshot_and_can_be_retried(
         with patch.object(backend, "access"), \
                 patch("assistant_agent.setup.write_transaction", side_effect=SetupError("Write failed")):
             with pytest.raises(SetupError, match="Write failed"):
-                backend.replace_credential("OPENROUTER_API_KEY", "replacement")
+                backend.replace_credential("AGENT_LLM_OPENROUTER_API_KEY", "replacement")
         assert backend.installation.secret_values == saved
         assert backend.credentials == saved
         with patch.object(backend, "access"):
-            backend.replace_credential("OPENROUTER_API_KEY", "replacement")
-        assert Installation(root).secret_values["OPENROUTER_API_KEY"] == "replacement"
+            backend.replace_credential("AGENT_LLM_OPENROUTER_API_KEY", "replacement")
+        assert Installation(root).secret_values["AGENT_LLM_OPENROUTER_API_KEY"] == "replacement"
 
 
 @pytest.mark.parametrize("response", ["null", "[]", '"text"', "{}", '{"State": "running"}', "not json"])
 def test_invalid_component_status_is_an_actionable_error(response):
     with tempfile.TemporaryDirectory() as root:
         backend = management(root)
+        config = json.dumps({"services": {"task-agent": {"restart": "unless-stopped"}}})
         with patch.object(backend, "access"), patch.object(
-            backend.installation, "compose", side_effect=["task-agent", response]
+            backend.installation, "compose", side_effect=[config, response]
         ):
             if response == "[]":
                 assert backend.services()[0]["state"] == "not created"
@@ -819,7 +891,10 @@ def test_management_collections_details_and_mutations_persist_in_a_real_database
     identifier = job["id"]
     db.log_event(identifier, "tool_result", input_data={"request": "inspect"}, output_data={"answer": "verified"})
     assert request("tasks", query="Management audit")["rows"][0]["id"] == identifier
-    assert request("tasks", id=identifier)["total"] == 1
+    details = request("tasks", id=identifier)
+    assert details["total"] == 1
+    assert details["rows"][0]["workstream_id"] == job["workstream_id"]
+    assert details["rows"][0]["thread_id"] == job["thread_id"]
     event = request("task-events", id=identifier)["rows"][0]
     assert event["input_data"] == {"request": "inspect"}
     assert event["output_data"] == {"answer": "verified"}
@@ -841,6 +916,9 @@ def test_management_collections_details_and_mutations_persist_in_a_real_database
                    ('{"state": "suggested"}', memory_id))
         mutate(action, memory_id)
         assert request("memories", id=memory_id)["rows"][0]["metadata"]["state"] == expected
+    mutate("expire-memory", memory_id)
+    assert db.fetch_one("SELECT expires_at <= now() AS expired FROM agent_memories WHERE id = %s",
+                        (memory_id,))["expired"]
     mutate("delete-memory", memory_id)
     assert request("memories", id=memory_id)["rows"] == []
     reminder = db.fetch_one(

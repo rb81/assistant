@@ -72,6 +72,7 @@ CATEGORIES = {
         reason="workstreams own or retain all task data",
         notes="Also removes all task data; does not delete remote provider objects."),
 }
+KEEP_TABLES = {"schema_migrations", "client_channels"}
 
 def expand(selected):
     """Return (all categories to delete in CATEGORIES order, {added category: reason it was added})."""

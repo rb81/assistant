@@ -172,14 +172,13 @@ max_runs: 20
 
 Leave `model` blank to use the configured agent provider/model through a separate invocation.
 To choose a different model, enter its OpenRouter ID, such as
-`openai/gpt-sol-6.1`; this uses `OPENROUTER_API_KEY` and needs no preset.
+`openai/gpt-sol-6.1`; this uses `AGENT_LLM_OPENROUTER_API_KEY` and needs no preset.
 Presets and the literal `default` are not accepted as model IDs.
 Configure this in **`./run.sh` → Settings → Safety & screening → Development supervisor model ID**,
-or run `./run.sh --plain --section security`.
+or run `./run.sh --section security`.
 The environment override is `AGENT_SECURITY_DEVELOPMENT_MODEL`; an empty value
-also clears a model configured in YAML. This replaces the earlier
-`model_preset` / `AGENT_SECURITY_DEVELOPMENT_MODEL_PRESET` setting; re-enter any
-previous override as a model ID in the new field.
+also clears a model configured in YAML. Re-enter any
+earlier preset-based override as a model ID.
 Requested session limits cannot exceed these
 ceilings. Expiry starts when the admin approves, not when the agent requests.
 
@@ -487,15 +486,15 @@ A missing Docker runtime such as `runsc` raises
 
 ## Configuration Highlights
 
-Edit application settings in `data/config/agent.yaml`; repository defaults are
-in `src/config/agent.yaml`:
+Change these in `data/overrides.env` (for example
+`AGENT_SANDBOX_ENABLED=false`); defaults are in `src/config/agent.yaml`:
 
 - `agent.sandbox.enabled`
 - `agent.sandbox.base_url`
 - `agent.limits.tool_timeout_command_seconds`
 - `agent.sandbox.max_attempts`
 - `agent.sandbox.retry_backoff_seconds`
-- `agent.sandbox.network.allowed_hosts` (`AGENT_SANDBOX_ALLOWED_HOSTS`)
+- `agent.sandbox.network.allowed_hosts` (`AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS`)
 - `agent.reminders.script_check_interval_minutes` (scheduled script re-inspection, default 360)
 
 Compose reads these settings from `data/.env`:

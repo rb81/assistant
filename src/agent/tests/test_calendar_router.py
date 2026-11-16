@@ -103,17 +103,17 @@ class TestCalendarConfigured:
     def setup_method(self):
         # Clear any leftover env vars before each test.
         for key in (
-            "CALENDAR_GOOGLE_CLIENT_ID",
-            "CALENDAR_OUTLOOK_CLIENT_ID",
-            "CALENDAR_ZOHO_CLIENT_ID",
+            "AGENT_CALENDAR_GOOGLE_CLIENT_ID",
+            "AGENT_CALENDAR_OUTLOOK_CLIENT_ID",
+            "AGENT_CALENDAR_ZOHO_CLIENT_ID",
         ):
             os.environ.pop(key, None)
 
     def teardown_method(self):
         for key in (
-            "CALENDAR_GOOGLE_CLIENT_ID",
-            "CALENDAR_OUTLOOK_CLIENT_ID",
-            "CALENDAR_ZOHO_CLIENT_ID",
+            "AGENT_CALENDAR_GOOGLE_CLIENT_ID",
+            "AGENT_CALENDAR_OUTLOOK_CLIENT_ID",
+            "AGENT_CALENDAR_ZOHO_CLIENT_ID",
         ):
             os.environ.pop(key, None)
 
@@ -132,35 +132,35 @@ class TestCalendarConfigured:
     def test_google_provider_set(self):
         from assistant_agent.validation import calendar_configured
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "google-client-id"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "google-client-id"
         config = _make_config({"agent.calendar.enabled": True})
         assert calendar_configured(config) is True
 
     def test_outlook_provider_set(self):
         from assistant_agent.validation import calendar_configured
 
-        os.environ["CALENDAR_OUTLOOK_CLIENT_ID"] = "outlook-client-id"
+        os.environ["AGENT_CALENDAR_OUTLOOK_CLIENT_ID"] = "outlook-client-id"
         config = _make_config({"agent.calendar.enabled": True})
         assert calendar_configured(config) is True
 
     def test_zoho_provider_set(self):
         from assistant_agent.validation import calendar_configured
 
-        os.environ["CALENDAR_ZOHO_CLIENT_ID"] = "zoho-client-id"
+        os.environ["AGENT_CALENDAR_ZOHO_CLIENT_ID"] = "zoho-client-id"
         config = _make_config({"agent.calendar.enabled": True})
         assert calendar_configured(config) is True
 
     def test_empty_string_env_not_counted(self):
         from assistant_agent.validation import calendar_configured
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = ""
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = ""
         config = _make_config({"agent.calendar.enabled": True})
         assert calendar_configured(config) is False
 
     def test_placeholder_value_not_counted(self):
         from assistant_agent.validation import calendar_configured
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "change-me"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "change-me"
         config = _make_config({"agent.calendar.enabled": True})
         assert calendar_configured(config) is False
 
@@ -174,19 +174,19 @@ class TestLoadProviderConfigs:
     """_load_provider_configs should discover providers from env vars."""
 
     GOOGLE_VARS = {
-        "CALENDAR_GOOGLE_CLIENT_ID": "g-id",
-        "CALENDAR_GOOGLE_CLIENT_SECRET": "g-secret",
-        "CALENDAR_GOOGLE_REFRESH_TOKEN": "g-refresh",
+        "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "g-id",
+        "AGENT_CALENDAR_GOOGLE_CLIENT_SECRET": "g-secret",
+        "AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN": "g-refresh",
     }
     OUTLOOK_VARS = {
-        "CALENDAR_OUTLOOK_CLIENT_ID": "o-id",
-        "CALENDAR_OUTLOOK_CLIENT_SECRET": "o-secret",
-        "CALENDAR_OUTLOOK_REFRESH_TOKEN": "o-refresh",
+        "AGENT_CALENDAR_OUTLOOK_CLIENT_ID": "o-id",
+        "AGENT_CALENDAR_OUTLOOK_CLIENT_SECRET": "o-secret",
+        "AGENT_CALENDAR_OUTLOOK_REFRESH_TOKEN": "o-refresh",
     }
 
     def setup_method(self):
         for key in list(os.environ):
-            if key.startswith("CALENDAR_"):
+            if key.startswith("AGENT_CALENDAR_"):
                 os.environ.pop(key, None)
 
     teardown_method = setup_method
@@ -228,9 +228,9 @@ class TestLoadProviderConfigs:
 
         os.environ.update(self.GOOGLE_VARS)
         os.environ.update({
-            "CALENDAR_GOOGLE_2_CLIENT_ID": "g2-id",
-            "CALENDAR_GOOGLE_2_CLIENT_SECRET": "g2-secret",
-            "CALENDAR_GOOGLE_2_REFRESH_TOKEN": "g2-refresh",
+            "AGENT_CALENDAR_GOOGLE_2_CLIENT_ID": "g2-id",
+            "AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET": "g2-secret",
+            "AGENT_CALENDAR_GOOGLE_2_REFRESH_TOKEN": "g2-refresh",
         })
         configs = _load_provider_configs(_make_config())
         names = [c.name for c in configs]
@@ -240,7 +240,7 @@ class TestLoadProviderConfigs:
     def test_incomplete_google_vars_ignored(self):
         from assistant_agent.calendar.router import _load_provider_configs
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "g-id"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "g-id"
         # Missing CLIENT_SECRET and REFRESH_TOKEN
         assert _load_provider_configs(_make_config()) == []
 
@@ -248,9 +248,9 @@ class TestLoadProviderConfigs:
         from assistant_agent.calendar.router import _load_provider_configs
 
         os.environ.update({
-            "CALENDAR_ZOHO_CLIENT_ID": "z-id",
-            "CALENDAR_ZOHO_CLIENT_SECRET": "z-secret",
-            "CALENDAR_ZOHO_REFRESH_TOKEN": "z-refresh",
+            "AGENT_CALENDAR_ZOHO_CLIENT_ID": "z-id",
+            "AGENT_CALENDAR_ZOHO_CLIENT_SECRET": "z-secret",
+            "AGENT_CALENDAR_ZOHO_REFRESH_TOKEN": "z-refresh",
         })
         configs = _load_provider_configs(_make_config({
             "agent.calendar.zoho.api_base": "https://calendar.zoho.eu/api/v1",
@@ -272,9 +272,9 @@ def _make_router_with_mock_provider(provider_mock=None, env_vars: Optional[dict]
     CalendarRouter._token_store = None
 
     default_env = {
-        "CALENDAR_GOOGLE_CLIENT_ID": "test-id",
-        "CALENDAR_GOOGLE_CLIENT_SECRET": "test-secret",
-        "CALENDAR_GOOGLE_REFRESH_TOKEN": "test-refresh",
+        "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "test-id",
+        "AGENT_CALENDAR_GOOGLE_CLIENT_SECRET": "test-secret",
+        "AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN": "test-refresh",
     }
     if env_vars is not None:
         default_env = env_vars
@@ -331,10 +331,10 @@ class TestCalendarRouterConstruction:
         job = _make_job()
 
         env = {
-            "CALENDAR_GOOGLE_CLIENT_ID": "gid",
-            "CALENDAR_GOOGLE_CLIENT_SECRET": "gs",
-            "CALENDAR_GOOGLE_REFRESH_TOKEN": "gr",
-            "CALENDAR_DEFAULT_PROVIDER": "google",
+            "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "gid",
+            "AGENT_CALENDAR_GOOGLE_CLIENT_SECRET": "gs",
+            "AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN": "gr",
+            "AGENT_CALENDAR_DEFAULT_PROVIDER": "google",
         }
         mock_prov = MagicMock()
         with patch.dict(os.environ, env, clear=False):
@@ -415,6 +415,17 @@ class TestCalendarRouterListBusy:
 
         result = router.list_busy("2026-09-10T00:00:00+00:00", "2026-09-10T23:59:00+00:00")
         assert len(result["busy"]) == 1
+
+    def test_list_events_reports_provider_failure_without_leaking_details(self):
+        from assistant_agent.calendar.provider import CalendarError
+        provider = MagicMock()
+        provider.list_events.side_effect = CalendarError("PRIVATE-TOKEN-CANARY")
+        router, db, *_ = _make_router_with_mock_provider(provider)
+        db.fetch_all.return_value = []
+        result = router.list_events("2026-09-10T00:00:00+00:00", "2026-09-10T23:59:00+00:00")
+        assert not result["complete"]
+        assert result["errors"]
+        assert "PRIVATE-TOKEN-CANARY" not in repr(result)
 
     def test_list_busy_redacts_non_managed_title(self):
         mock_prov = MagicMock()
@@ -975,7 +986,7 @@ class TestCalendarRouterDeleteEvent:
 class TestToolStatusCalendarTools:
     def setup_method(self):
         for key in list(os.environ):
-            if key.startswith("CALENDAR_"):
+            if key.startswith("AGENT_CALENDAR_"):
                 os.environ.pop(key, None)
 
     teardown_method = setup_method
@@ -991,7 +1002,7 @@ class TestToolStatusCalendarTools:
     def test_calendar_tools_available_with_google_provider(self):
         from assistant_agent.validation import tool_status
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
         config = _make_config({"agent.calendar.enabled": True})
         status = tool_status(config)
         assert status["calendar_tools"]["available"] is True
@@ -1000,8 +1011,8 @@ class TestToolStatusCalendarTools:
     def test_calendar_tools_providers_list(self):
         from assistant_agent.validation import tool_status
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
-        os.environ["CALENDAR_ZOHO_CLIENT_ID"] = "zid"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
+        os.environ["AGENT_CALENDAR_ZOHO_CLIENT_ID"] = "zid"
         config = _make_config({"agent.calendar.enabled": True})
         status = tool_status(config)
         assert "google" in status["calendar_tools"]["providers"]
@@ -1011,7 +1022,7 @@ class TestToolStatusCalendarTools:
     def test_calendar_tools_include_list_calendars(self):
         from assistant_agent.validation import tool_status
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
         config = _make_config({"agent.calendar.enabled": True})
         status = tool_status(config)
         assert "calendar_list_calendars" in status["calendar_tools"]["tools"]
@@ -1019,7 +1030,7 @@ class TestToolStatusCalendarTools:
     def test_calendar_tools_exposes_provider_status_not_local_store(self):
         from assistant_agent.validation import tool_status
 
-        os.environ["CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
+        os.environ["AGENT_CALENDAR_GOOGLE_CLIENT_ID"] = "gid"
         config = _make_config({"agent.calendar.enabled": True})
         status = tool_status(config)
         cal = status["calendar_tools"]

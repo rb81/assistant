@@ -172,7 +172,7 @@ class ScriptPermissionDockerTest(unittest.TestCase):
                 time.sleep(0.1)
             else:
                 self.fail("execution did not start")
-            with patch.dict(os.environ, {"SANDBOX_API_TOKEN": "s" * 32}):
+            with patch.dict(os.environ, {"AGENT_SANDBOX_API_TOKEN": "s" * 32}):
                 result = server.revoke_permissions("Bearer " + "s" * 32)
             self.assertGreater(result["stopped_containers"], 0)
             response = future.result(timeout=10)
@@ -236,7 +236,7 @@ class SandboxBootstrapTest(unittest.TestCase):
                                 "-keyout", str(fixture / "sandbox.key"), "-out", str(fixture / "sandbox.crt"),
                                 "-subj", "/CN=sandbox", "-addext", "subjectAltName=DNS:sandbox"], check=True, capture_output=True)
                 for token_value in ("s" * 32, "s" * 32, "t" * 32):
-                    (fixture / "SANDBOX_API_TOKEN").write_text(token_value)
+                    (fixture / "AGENT_SANDBOX_API_TOKEN").write_text(token_value)
                     docker("run", "--rm", "--network", "none", "-v", str(fixture) + ":/fixture:ro",
                            "-v", source_volume + ":/source", "--entrypoint", "python", image, "-c",
                            "import os,shutil; from pathlib import Path; "
@@ -251,12 +251,12 @@ class SandboxBootstrapTest(unittest.TestCase):
                         "root=Path('/run/assistant/runtime/current'); "
                         "assert (root/'sandbox.key').stat().st_uid == 0; "
                         "assert (root/'sandbox.key').stat().st_mode & 0o777 == 0o600; "
-                        "assert (root/'SANDBOX_API_TOKEN').stat().st_mode & 0o777 == 0o600; "
-                        "os.environ['SANDBOX_API_TOKEN_FILE']=str(root/'SANDBOX_API_TOKEN'); "
+                        "assert (root/'AGENT_SANDBOX_API_TOKEN').stat().st_mode & 0o777 == 0o600; "
+                        "os.environ['AGENT_SANDBOX_API_TOKEN_FILE']=str(root/'AGENT_SANDBOX_API_TOKEN'); "
                         "process=subprocess.Popen(['uvicorn','server:app','--host','127.0.0.1','--port','8080',"
                         "'--ssl-certfile',str(root/'sandbox.crt'),'--ssl-keyfile',str(root/'sandbox.key'),'--timeout-graceful-shutdown','2']); "
                         "context=ssl.create_default_context(cafile=str(root/'sandbox.crt')); "
-                        "request=urllib.request.Request('https://sandbox:8080/health',headers={'Authorization':'Bearer '+(root/'SANDBOX_API_TOKEN').read_text()}); "
+                        "request=urllib.request.Request('https://sandbox:8080/health',headers={'Authorization':'Bearer '+(root/'AGENT_SANDBOX_API_TOKEN').read_text()}); "
                         "deadline=time.monotonic()+15\n"
                         "try:\n"
                         "    while time.monotonic() < deadline:\n"
@@ -308,7 +308,7 @@ class SandboxBootstrapTest(unittest.TestCase):
             with patch.object(bootstrap.ssl, "SSLContext"), patch.object(bootstrap.ssl, "create_default_context"):
                 bootstrap.stage(source, token, destination)
             current = (destination / "current").readlink()
-            self.assertEqual((destination / "current/SANDBOX_API_TOKEN").read_text(), "s" * 32)
+            self.assertEqual((destination / "current/AGENT_SANDBOX_API_TOKEN").read_text(), "s" * 32)
             self.assertEqual((destination / "current/sandbox.key").stat().st_mode & 0o777, 0o600)
             self.assertEqual((destination / "current/sandbox.crt").stat().st_mode & 0o777, 0o644)
             token.write_text("t" * 32)
@@ -317,7 +317,7 @@ class SandboxBootstrapTest(unittest.TestCase):
                 with self.assertRaises(bootstrap.ssl.SSLError):
                     bootstrap.stage(source, token, destination)
             self.assertEqual((destination / "current").readlink(), current)
-            self.assertEqual((destination / "current/SANDBOX_API_TOKEN").read_text(), "s" * 32)
+            self.assertEqual((destination / "current/AGENT_SANDBOX_API_TOKEN").read_text(), "s" * 32)
 
     def test_staging_rejects_symlink_source(self):
         import tempfile
@@ -350,7 +350,7 @@ class SandboxAuthenticationTest(unittest.TestCase):
         from unittest.mock import patch
         root = "s" * 32
         revoke = hmac.new(root.encode(), b"assistant-sandbox-revoke-v1", hashlib.sha256).hexdigest()
-        with patch.dict(os.environ, {"SANDBOX_API_TOKEN": root}, clear=True):
+        with patch.dict(os.environ, {"AGENT_SANDBOX_API_TOKEN": root}, clear=True):
             server.require_api_token("Bearer " + revoke, allow_revoke=True)
             with self.assertRaises(FakeHTTPException):
                 server.require_api_token("Bearer " + revoke)
@@ -358,7 +358,7 @@ class SandboxAuthenticationTest(unittest.TestCase):
     def test_bearer_token_is_required_and_compared_exactly(self) -> None:
         from unittest.mock import patch
 
-        with patch.dict("os.environ", {"SANDBOX_API_TOKEN": "s" * 32}, clear=True):
+        with patch.dict("os.environ", {"AGENT_SANDBOX_API_TOKEN": "s" * 32}, clear=True):
             with self.assertRaises(FakeHTTPException) as missing:
                 server.require_api_token("")
             self.assertEqual(missing.exception.status_code, 401)
@@ -382,7 +382,7 @@ class SandboxAuthenticationTest(unittest.TestCase):
         from unittest.mock import patch
 
         token = "s" * 32
-        with patch.dict("os.environ", {"SANDBOX_API_TOKEN": token}, clear=True), patch.object(
+        with patch.dict("os.environ", {"AGENT_SANDBOX_API_TOKEN": token}, clear=True), patch.object(
             server, "execution_identity", return_value="image"
         ):
             with self.assertRaises(FakeHTTPException):
@@ -424,6 +424,17 @@ class RunContainerConfigTest(unittest.TestCase):
         with patch.object(server, "SHARED_VOLUME_NAME", ""), patch.object(server, "SHARED_ROOT_HOST", ""):
             with self.assertRaisesRegex(RuntimeError, "required for container isolation"):
                 server.run_mounts()
+
+    def test_configured_shared_umask_is_forwarded_to_run_container(self):
+        from unittest.mock import patch
+        self.open_egress()
+        client = FakeDockerClient()
+        request = server.CommandRequest(command=["python", "--version"], timeout_seconds=5,
+                                        workdir=str(server.SHARED_ROOT))
+        with patch.object(server, "SHARED_VOLUME_NAME", "assistant-test-share"), \
+                patch.dict(os.environ, {"AGENT_FILESYSTEM_SHARED_FILE_UMASK": "0027"}):
+            server.create_run_container(client, "abc123", request, Path(server.SHARED_ROOT), "assistant-test-net")
+        self.assertIn("SHARED_FILE_UMASK=0027", client.requests[0]["body"]["Env"])
 
     @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DOCKER") == "1" and os.getenv("ASSISTANT_TEST_SANDBOX_IMAGE"), "requires disposable Docker test image")
     def test_real_command_container_has_workspace_without_host_documentation(self):
@@ -570,6 +581,14 @@ class EgressProxyBrokerTest(unittest.TestCase):
         removed = [path for method, path, body in client.calls if method == "DELETE"]
         self.assertEqual(removed[:2], ["/containers/run-1?force=1&v=1", "/containers/proxy-1?force=1&v=1"])
         self.assertEqual(len(removed), 4)
+
+    def test_proxy_receives_configured_limits(self):
+        from unittest.mock import patch
+        with patch.object(server, "PROXY_IDLE_TIMEOUT", 123), patch.object(server, "PROXY_MAX_CONNECTIONS", 17):
+            client, _ = self.run_command({"allow": ["pypi.org"], "block": []})
+        proxy, _ = client.created
+        self.assertIn("EGRESS_PROXY_IDLE_TIMEOUT=123", proxy["Env"])
+        self.assertIn("EGRESS_PROXY_MAX_CONNECTIONS=17", proxy["Env"])
 
     def test_run_without_policy_has_no_route_out(self):
         client, response = self.run_command(None)

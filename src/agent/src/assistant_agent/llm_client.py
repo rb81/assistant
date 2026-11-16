@@ -31,13 +31,13 @@ class LlmClient:
         self.base_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
         if "openrouter.ai" in self.base_url.lower():
-            api_key = read_secret("OPENROUTER_API_KEY")
+            api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         else:
-            api_key = read_secret("OPENAI_API_KEY") or read_secret("OPENROUTER_API_KEY")
+            api_key = read_secret("AGENT_LLM_OPENAI_API_KEY") or read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError("model API key is required for task-agent")
         self.api_key = api_key
-        self.model = model or config.get("agent.llm.model", "openai/gpt-4.1")
+        self.model = model or config.get("agent.llm.model", "anthropic/claude-sonnet-4.6")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds or 180

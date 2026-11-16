@@ -56,63 +56,63 @@ class AgentPromptPathTest(unittest.TestCase):
             config_dir = Path(temp_dir)
             agent_md = config_dir / "AGENT.md"
             agent_md.write_text("# Test", encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 result = agent_prompt_path(config)
                 self.assertEqual(result, agent_md.resolve())
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
     def test_falls_back_to_example_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)
             example = config_dir / "AGENT.md.example"
             example.write_text("# Example", encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 result = agent_prompt_path(config)
                 self.assertEqual(result, example.resolve())
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
 
 class ValidateAgentPromptTest(unittest.TestCase):
     def test_raises_when_file_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["AGENT_CONFIG"] = str(Path(temp_dir) / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(Path(temp_dir))
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 with self.assertRaisesRegex(RuntimeError, "not found"):
                     validate_agent_prompt(config)
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
     def test_raises_when_file_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)
             agent_md = config_dir / "AGENT.md"
             agent_md.write_text("", encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 with self.assertRaisesRegex(RuntimeError, "empty"):
                     validate_agent_prompt(config)
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
     def test_passes_when_file_has_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)
             agent_md = config_dir / "AGENT.md"
             agent_md.write_text("# Agent Prompt\nYou are an assistant.", encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 validate_agent_prompt(config)  # Should not raise
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
 
 class LoadAgentPromptTest(unittest.TestCase):
@@ -122,13 +122,13 @@ class LoadAgentPromptTest(unittest.TestCase):
             content = "# My Agent\n\nYou are helpful."
             agent_md = config_dir / "AGENT.md"
             agent_md.write_text(content, encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 result = load_agent_prompt(config)
                 self.assertEqual(result, content)
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
     def test_respects_max_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -136,13 +136,13 @@ class LoadAgentPromptTest(unittest.TestCase):
             content = "A" * 1000
             agent_md = config_dir / "AGENT.md"
             agent_md.write_text(content, encoding="utf-8")
-            os.environ["AGENT_CONFIG"] = str(config_dir / "agent.yaml")
+            os.environ["ASSISTANT_CONFIG_DIR"] = str(config_dir)
             try:
                 config = prompt_config(temp_dir, {"prompt": {"agent_file": "AGENT.md"}})
                 result = load_agent_prompt(config, max_bytes=50)
                 self.assertEqual(len(result), 50)
             finally:
-                del os.environ["AGENT_CONFIG"]
+                del os.environ["ASSISTANT_CONFIG_DIR"]
 
 
 class BuildPromptContextTest(unittest.TestCase):

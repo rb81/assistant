@@ -119,7 +119,7 @@ class MemorySteward:
 
         Uses LLM to synthesize candidates into a concise structured output.
         """
-        llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1200))
+        llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1600))
 
         task = self.task_query(job, emails, reminder, instructions)
         payload: dict[str, Any] = {
@@ -224,7 +224,7 @@ class MemorySteward:
             resolution = None
 
             memories = self.memories_to_store(job, messages, outcome, summary, resolution)
-            max_writes = self.config.get_int("agent.memory.steward.max_writes_per_job", 3)
+            max_writes = self.config.get_int("agent.memory.steward.max_writes_per_job", 5)
             min_importance = self.config.get_int("agent.memory.steward.min_importance", 4)
             min_confidence = self.config.get_float("agent.memory.steward.min_confidence", 0.55)
             created = []
@@ -302,9 +302,9 @@ class MemorySteward:
         summary: str,
         resolution: Any,
     ) -> list[dict[str, Any]]:
-        llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1000))
+        llm = self.llm(max_tokens=self.config.get_int("agent.memory.steward.max_tokens_per_call", 1600))
         transcript = compact_json(messages[-16:])
-        max_bytes = self.config.get_int("agent.memory.steward.max_transcript_bytes", 12000)
+        max_bytes = self.config.get_int("agent.memory.steward.max_transcript_bytes", 30000)
         if len(transcript) > max_bytes:
             transcript = "%s...[truncated]" % transcript[:max_bytes]
         response = llm.chat(

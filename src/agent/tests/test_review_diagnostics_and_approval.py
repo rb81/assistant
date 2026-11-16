@@ -309,10 +309,8 @@ class _ApprovalQueueDb:
 def _make_downloader(db: Any, extra_config: Optional[dict[str, Any]] = None) -> EmailDownloader:
     cfg: dict[str, Any] = {
         "agent": {
-            "supervisor": {
-                "admin_email": "admin@example.com",
-                "email_approval_increase_factor": 1.2,
-            },
+            "admin": {"email": "admin@example.com"},
+            "supervisor": {"email_approval_increase_factor": 1.2},
             "notifications": {},
             "limits": {"max_iterations_per_task": 50, "max_tokens_per_task": 1_000_000},
             "filesystem": {"shared_root": "/tmp"},

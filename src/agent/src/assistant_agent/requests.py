@@ -43,7 +43,7 @@ class RequestService:
             raise ValueError("request identity and task thread are required")
         with self.db.connect() as connection:
             database = TransactionDatabase(connection)
-            if request.channel in {"telegram", "email"}:
+            if request.channel in {"telegram", "email", "client"}:
                 database.execute(
                     "SELECT set_config('assistant.workstream_channel', %s, true)",
                     (request.channel,),

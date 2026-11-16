@@ -14,7 +14,7 @@ spec.loader.exec_module(server)
 
 @pytest.fixture
 def client():
-    with patch.dict(os.environ, {"TRANSCRIPTION_API_TOKEN": "x" * 32}), TestClient(server.app) as instance:
+    with patch.dict(os.environ, {"AGENT_TRANSCRIPTION_API_TOKEN": "x" * 32}), TestClient(server.app) as instance:
         yield instance
 
 

@@ -12,7 +12,9 @@ from psycopg.types.json import Jsonb
 from . import network_access
 from .requests import TransactionDatabase
 from .script_analysis import ScriptAnalyzer
-from .security_screening import MALICIOUS, SecurityScreener, notify_admin
+from .security_screening import (
+    MALICIOUS, SCREENING_CONTEXT_VERSION, SecurityScreener, notify_admin, screening_excerpt, screening_task_context,
+)
 
 
 DECISIONS = {
@@ -280,7 +282,7 @@ def final_request(runtime, version, hosts, purpose, scheduled=None):
                 "UPDATE sandbox_development_sessions SET status = 'finalizing' WHERE id = %s AND status = 'active'",
                 (session["id"],),
             )
-    finding = screen(runtime, version)
+    finding = screen(runtime, version, purpose)
     if finding.get("level") == MALICIOUS:
         raise PermissionDenied("Security screening classified this version as malicious; execution is blocked.")
     if session:
@@ -315,14 +317,22 @@ def final_request(runtime, version, hosts, purpose, scheduled=None):
     raise PermissionRequired(pending)
 
 
-def screen(runtime, version):
+def screen(runtime, version, purpose=None):
     screener = SecurityScreener(runtime.config)
-    profile = digest({
+    policy = {
         "decision_model": runtime.config.get("agent.security.decision_model", {}),
         "scripts": runtime.config.get("agent.security.scripts", {}),
-    })
+    }
     if not screener.enabled("scripts"):
-        return {"level": "not_configured", "summary": "Decision-model screening is not configured.", "profile": profile}
+        return {"level": "not_configured", "summary": "Decision-model screening is not configured.", "profile": digest(policy)}
+    context = screening_task_context(runtime.db, runtime.job)
+    purpose = screening_excerpt(purpose if purpose is not None else version.get("purpose"), 1000)
+    profile = digest({
+        **policy,
+        "context_version": SCREENING_CONTEXT_VERSION,
+        "application_context": context,
+        "purpose": purpose,
+    })
     with runtime.db.connect() as conn:
         db = TransactionDatabase(conn)
         current = db.fetch_one("SELECT screening FROM sandbox_script_versions WHERE id = %s FOR UPDATE",
@@ -332,7 +342,7 @@ def screen(runtime, version):
         previous = current.get("screening") or {}
         if previous.get("profile") == profile and not previous.get("error"):
             return previous
-        state = version["manifest"]
+        state = {**version["manifest"], "purpose": purpose, "application_context": context}
         signals = tuple(state["manifest"]["hard_signals"])
         result = screener.screen("scripts", state, signals)
         finding = {

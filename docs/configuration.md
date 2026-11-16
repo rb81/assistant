@@ -2,54 +2,44 @@
 
 ## Setup
 
-Install Python 3.12+ with virtual-environment support, Docker with Compose, and
-OpenSSL, then run the repository launcher from the repository root:
+Install with the root `install.sh` script, then run `./run.sh` from the
+installation directory to configure the instance. The setup forms write local
+configuration only after **Review & save** and confirmation.
+Saving settings and applying them to running services are separate steps.
 
-```bash
-./run.sh
-```
-
-The launcher resolves the repository root and forwards its arguments to
-`src/scripts/run.sh`; invoke it by its path if starting outside the repository.
-The native forms keep a session draft and create or update local configuration
-only after **Review & save** and confirmation. Navigation does not discard edits.
-Saving and applying changes to running services are separate actions.
-Common section commands include:
+Open a section directly when needed:
 
 ```bash
 ./run.sh --section email
 ./run.sh --section calendar
 ./run.sh --section telegram
 ./run.sh secrets status
-./run.sh secrets update OPENROUTER_API_KEY
+./run.sh secrets update AGENT_LLM_OPENROUTER_API_KEY
 ```
 
-Use the native Settings and Connections forms for managed settings and credentials. Do not edit tracked
-defaults to configure an installation.
+Use the forms for managed settings and credentials. Do not edit tracked defaults
+to configure an installation.
 
 ## Local and tracked files
 
 | Path | Purpose |
 |---|---|
-| `src/config/agent.yaml` | Tracked application defaults |
+| `src/config/agent.yaml` | Tracked application defaults, included in each image |
 | `src/config/AGENT.md.example` | Example agent instructions |
-| `data/.env` | Ignored deployment settings; includes an absolute `COMPOSE_FILE` |
-| `data/overrides.env` | Optional ignored expert runtime overrides |
-| `data/.secrets/` | Ignored credential files and setup metadata |
-| `data/.compose-secrets.yaml` | Generated ignored Compose secret mounts |
-| `data/config/agent.yaml` | Runtime defaults; copied from `src/config/agent.yaml` on first save if absent |
+| `data/.env` | Ignored deployment settings and Compose bootstrap, including the absolute `COMPOSE_FILE` |
+| `data/overrides.env` | Optional ignored expert application overrides |
+| `data/.secrets/` | Protected, ignored credential files and setup metadata |
+| `data/.compose-secrets.yaml` | Setup-generated Compose secret mounts |
 | `data/config/AGENT.md` | Local runtime instructions |
 | `data/.setup.lock`, `data/.venv-setup`, `data/backups/` | Setup state, environment, and local backups |
 
-Other mutable service state, including PostgreSQL, private files and the shared
-workspace, remains under `data/`. Do not commit any contents of that directory.
-Setup preserves existing `data/config/agent.yaml`; updating tracked defaults
-does not replace this runtime copy. Review differences when upgrading.
-Review and save the example instructions in Settings, or create a nonempty
-`data/config/AGENT.md` before starting the task agent.
+Other mutable state—including PostgreSQL, private files, and the shared
+workspace—lives under `data/`. Do not commit that directory. Defaults are read
+from the shipped `src/config/agent.yaml`; there is no runtime copy. Review and
+save the example instructions in Settings, or create a nonempty
+`data/config/AGENT.md` before starting task agents.
 
-The Compose stack reads `data/.env`; setup records the absolute stack path there.
-Start the stack from the repository root with:
+Start or rebuild the stack from the installation root:
 
 ```bash
 docker compose --env-file data/.env up -d --build
@@ -57,37 +47,31 @@ docker compose --env-file data/.env up -d --build
 
 ## Overrides
 
-The management forms handle routine settings. For supported expert settings, add
-one `NAME=value` per line to `data/overrides.env`. Compose loads this after
-`data/.env` into application containers, but a Compose `environment:` entry
-takes precedence. The overrides file is not used for Compose interpolation:
-deployment settings such as `TASK_AGENT_WORKERS` belong in `data/.env`.
-Setup rejects unknown, mistyped, wizard-managed, or Compose-managed override
-keys at review. Do not put credentials in the overrides file; use the `secrets`
-commands instead.
+Put supported non-secret expert settings in `data/overrides.env`, one
+`NAME=value` per line. Compose loads this file after `data/.env` into application
+containers, but explicit Compose `environment:` entries take precedence. This
+file is not used for Compose interpolation: settings such as
+`TASK_AGENT_WORKERS` belong in `data/.env`.
 
-The configuration loader maps environment names to YAML settings; runtime
-defaults are in `data/config/agent.yaml` and tracked defaults in
-`src/config/agent.yaml`. Setup creates a commented `data/overrides.env` template
-listing supported expert settings, and never rewrites it. See
-[environment overrides](env-overrides.md) for the documented override policy.
-After a configuration change, recreate affected services; setup provides the
-appropriate activation workflow.
+Setup rejects unknown, mistyped, wizard-managed, and Compose-managed override
+keys during review. Never put credentials in either environment file; use the
+`secrets` commands. Defaults and supported override rules are documented in
+[configuration files and overrides](env-overrides.md). Recreate affected
+services after changing runtime configuration.
 
 ## Credentials and safety
 
-Setup stores credentials in protected, gitignored files and grants only the
-services that need them read-only mounts. You can instead select a dedicated,
+Setup stores credentials in protected, gitignored files and grants only
+authorized services read-only mounts. Alternatively, select the dedicated
 unencrypted Docker credential volume in **Settings → Storage & recovery**.
-Back up that volume separately
-and retain `data/.secrets/state.json`. Docker Compose secret mounts are not
-encrypted storage. Protect the host, Docker daemon, disks, and backups. Never
-put credentials in the shared workspace, tracked files, shell arguments, or
-logs. See [security](security.md#docker-secrets).
+Back up that volume separately and retain `data/.secrets/state.json`.
+Compose secret mounts do not encrypt credentials; protect the host, Docker
+daemon, disks, and backups. Never put credentials in the shared workspace,
+tracked files, shell arguments, or logs. See [Docker secrets](security.md#docker-secrets).
 
-Use a dedicated assistant mailbox. Configure sender and recipient restrictions
-before enabling email intake or outbound email. See [email administration](email-administration.md)
-and [security](security.md).
+Use a dedicated assistant mailbox. Set sender and recipient restrictions before
+enabling email intake or outbound email. See
+[email administration](email-administration.md) and [security](security.md).
 
 ## Integrations
 
@@ -97,5 +81,5 @@ and [security](security.md).
 - [Memory and embeddings](memory-system.md)
 - [OpenRouter](openrouter.md)
 
-The project is a prerelease. A separate legacy conversion bundle is published
-at the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).
+The project is prerelease. A separate legacy conversion bundle is published in
+the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).

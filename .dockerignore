@@ -5,8 +5,15 @@ src/*
 src/agent/*
 !src/agent/Dockerfile
 !src/agent/requirements.txt
+!src/agent/requirements-setup.txt
 !src/agent/src/
 !src/agent/src/**
+!src/management/
+!src/management/**
+!src/config/
+src/config/*
+!src/config/agent.yaml
+!src/config/agent.schema.yaml
 !docs/
 !docs/**
 **/__pycache__/

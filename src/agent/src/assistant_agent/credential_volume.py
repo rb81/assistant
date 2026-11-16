@@ -1,6 +1,8 @@
 """Host-side access to a private Docker volume, without a long-running broker."""
 import hashlib
 import json
+import os
+from pathlib import Path
 
 
 HELPER_IMAGE = "python:3.12-slim"
@@ -96,6 +98,18 @@ class CredentialVolume:
         return "assistant-credentials-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
 
     def load(self, create=False):
+        mounted = os.environ.get("ASSISTANT_CREDENTIAL_STORE")
+        if mounted:
+            from .setup import SetupError, read_regular
+            if create:
+                raise SetupError("The management API cannot create credential volumes.")
+            content = read_regular(Path(mounted))
+            if content is None:
+                raise SetupError("Credential volume is not mounted into management; refresh credential grants.")
+            self.record = json.loads(content)
+            if not isinstance(self.record, dict) or not isinstance(self.record.get("values"), dict):
+                raise SetupError("Mounted credential store is invalid.")
+            return self.record
         if create:
             self.installation.docker(["volume", "create", self.name])
         else:

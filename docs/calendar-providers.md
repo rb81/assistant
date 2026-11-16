@@ -1,64 +1,75 @@
 # Calendar Providers
 
-Assistant connects to calendar services directly via OAuth 2.0 APIs. This document covers how to obtain credentials for each supported provider.
+Configure calendar accounts in `./run.sh --section calendar`. Assistant uses
+OAuth 2.0 APIs directly. Zoom is a separate conferencing integration.
+`AGENT_APP_TIMEZONE` sets the timezone for implicit calendar and reminder times.
 
 ## Supported providers
 
-Zoom is a separate conferencing integration. `AGENT_TIMEZONE` controls implicit calendar and reminder times. Request-time context includes local and UTC clocks.
+| Provider | ID | Required credentials |
+|---|---|---|
+| Google Calendar | `google` | `AGENT_CALENDAR_GOOGLE_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN` |
+| Outlook / Microsoft 365 | `outlook` | `AGENT_CALENDAR_OUTLOOK_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN` |
+| Zoho Calendar | `zoho` | `AGENT_CALENDAR_ZOHO_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN` |
 
-| Provider | Identifier | Required env vars |
-|----------|-----------|-------------------|
-| Google Calendar | `google` | `CALENDAR_GOOGLE_CLIENT_ID`, `CALENDAR_GOOGLE_CLIENT_SECRET`, `CALENDAR_GOOGLE_REFRESH_TOKEN` |
-| Microsoft Outlook / Microsoft 365 | `outlook` | `CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN` |
-| Zoho Calendar | `zoho` | `CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN` |
-
-Enable `CALENDAR_ENABLED=true` and supply all three credentials for each account.
-The tool-exposure check only requires an unnumbered provider client ID; incomplete
-credentials can expose tools without loading a usable provider, and numbered-only
-accounts do not pass that check. No edits to tracked defaults are required.
-Outlook's optional `CALENDAR_OUTLOOK_TENANT_ID` defaults to `common`; set it to
-your directory's tenant ID for a single-tenant app.
+Enable `AGENT_CALENDAR_ENABLED=true` and provide all three credentials for each
+account. Tool exposure checks for an unnumbered provider client ID; incomplete
+credentials may expose tools without a usable provider, and numbered-only
+accounts do not pass that check. Outlook's optional
+`AGENT_CALENDAR_OUTLOOK_TENANT_ID` defaults to `common`; use your directory's
+tenant ID for a single-tenant app.
 
 ## Zoom
 
-Set `ZOOM_ENABLED=true`, `ZOOM_AUTH_MODE=s2s`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`, and `ZOOM_ACCOUNT_ID` for an account-owned server-to-server app. `ZOOM_USER_ID` defaults to `me`. Alternatively use `ZOOM_AUTH_MODE=oauth` and `ZOOM_REFRESH_TOKEN` for a user-authorized app. Grant only meeting read/write scopes needed for the authorized host. Rotated refresh/access tokens persist in private database state, with serialized refresh and retry-after backoff.
+For an account-owned server-to-server app, set
+`AGENT_ZOOM_ENABLED=true`, `AGENT_ZOOM_AUTH_MODE=s2s`,
+`AGENT_ZOOM_CLIENT_ID`, `AGENT_ZOOM_CLIENT_SECRET`, and
+`AGENT_ZOOM_ACCOUNT_ID`. `AGENT_ZOOM_USER_ID` defaults to `me`. For a
+user-authorized app, use `AGENT_ZOOM_AUTH_MODE=oauth` and
+`AGENT_ZOOM_REFRESH_TOKEN` instead. Grant only the meeting read/write scopes
+needed for the authorized host. Rotated tokens are persisted in private database
+state; refresh is serialized and rate-limit backoff is retained.
 
-Tools: `zoom_create_meeting`, `zoom_read_meeting`, `zoom_list_meetings`, `zoom_update_meeting`, `zoom_delete_meeting`, and admin-only `zoom_reconcile_meeting`. Updates and deletions require local managed IDs. Host start URLs are neither returned nor stored. Creation requires a stable idempotency key. After an uncertain timeout, verify the authorized host's Zoom meeting and reconcile its provider ID with the existing request; never use a new key to create a duplicate.
+Available tools: `zoom_create_meeting`, `zoom_read_meeting`,
+`zoom_list_meetings`, `zoom_update_meeting`, `zoom_delete_meeting`, and
+admin-only `zoom_reconcile_meeting`. Updates and deletions require local managed
+IDs. Host start URLs are neither returned nor stored.
 
-Create Zoom first, then pass its local `zoom_meeting_id` to
-`calendar_create_event`. Start and duration must match. Creation appends
-`\n\nZoom: <participant join URL>` to the description and records the relationship;
-do not insert the link yourself. Description updates replace the text without
-reinserting the link, so preserve it when editing a linked event.
+To link a meeting, create the Zoom meeting first and pass its local
+`zoom_meeting_id` to `calendar_create_event` with the same start and duration.
+The calendar tool appends the participant join URL and records the relationship;
+do not add the link yourself. Description updates replace the text without
+reinserting the link, so preserve it when editing. Linked updates/deletions
+synchronize the other service.
 
-Linked edits/deletions synchronize the other service. After a partial failure,
-retry the same update/deletion, not creation. Recurring Zoom series, joining,
-recordings, and transcription are not implemented. Mocked API and database tests
-do not validate a live account's scopes or licensing.
+Creation requires a stable idempotency key. After an uncertain timeout, verify
+the authorized host's Zoom meeting and reconcile its provider ID with the
+existing local request; never create a duplicate with a new key. After partial
+failure, retry the same update/deletion, not creation. Recurring series,
+joining, recordings, and transcription are not implemented. Mocked tests do not
+validate live-account scopes or licensing.
 
 ## Multiple accounts per provider
 
-The first account has no suffix. Additional accounts use `_2` through `_9`
-between the provider name and setting:
+The first account has no suffix (`_1` is unsupported); additional accounts use
+`_2` through `_9`:
 
 ```env
-# First Google account (no suffix; _1 is not supported)
-CALENDAR_GOOGLE_CLIENT_ID=...
-CALENDAR_GOOGLE_CLIENT_SECRET=...
-CALENDAR_GOOGLE_REFRESH_TOKEN=...
+AGENT_CALENDAR_GOOGLE_CLIENT_ID=...
+AGENT_CALENDAR_GOOGLE_CLIENT_SECRET=...
+AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN=...
 
-# Second Google account
-CALENDAR_GOOGLE_2_CLIENT_ID=...
-CALENDAR_GOOGLE_2_CLIENT_SECRET=...
-CALENDAR_GOOGLE_2_REFRESH_TOKEN=...
-CALENDAR_GOOGLE_2_CALENDAR_ID=work@group.calendar.google.com
+AGENT_CALENDAR_GOOGLE_2_CLIENT_ID=...
+AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET=...
+AGENT_CALENDAR_GOOGLE_2_REFRESH_TOKEN=...
+AGENT_CALENDAR_GOOGLE_2_CALENDAR_ID=work@group.calendar.google.com
 ```
 
-The same suffix scheme works for Outlook and Zoho. Provider identifiers become
-`google_2`, `outlook_2`, etc. Numbered non-secret settings are environment-only;
-there are no numbered YAML paths. The wizard configures the first account per
-provider; manage additional credentials with `./run.sh secrets update NAME`
-and non-secret settings in `data/overrides.env`, then recreate affected services.
+The same suffix scheme applies to Outlook and Zoho; provider IDs become
+`google_2`, `outlook_2`, and so on. The wizard configures the first account per
+provider. Numbered credentials use `./run.sh secrets update NAME`; numbered
+non-secret values go in `data/overrides.env`. Recreate affected services after
+changes.
 
 ---
 
@@ -66,24 +77,20 @@ and non-secret settings in `data/overrides.env`, then recreate affected services
 
 ### Step 1 — Create a Google Cloud project
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a new project (or use an existing one).
-2. In the left menu, go to **APIs & Services → Library**.
-3. Search for **Google Calendar API** and click **Enable**.
+In [Google Cloud Console](https://console.cloud.google.com), create or select a
+project, open **APIs & Services → Library**, and enable **Google Calendar API**.
 
 ### Step 2 — Create OAuth 2.0 credentials
 
-1. Go to **APIs & Services → Credentials** and click **Create Credentials → OAuth client ID**.
-2. Choose **Desktop app** as the application type.
-3. Give it a name (e.g., "Assistant Calendar") and click **Create**.
-4. Note the **Client ID** and **Client Secret** shown in the confirmation dialog.
-
-> If this is your first time setting up OAuth on this project, you will also need to configure the **OAuth consent screen** (internal or external) and add the calendar scope `https://www.googleapis.com/auth/calendar` to the scopes list.
+Under **APIs & Services → Credentials**, create an OAuth client ID for a
+**Desktop app** and save its client ID and secret. Configure the consent screen
+and add `https://www.googleapis.com/auth/calendar` when prompted.
 
 ### Step 3 — Obtain a refresh token
 
-Use a loopback redirect, not Google's retired out-of-band (`oob`) flow.
-The OAuth examples below require Python 3, `curl` and `jq`. Keep token responses
-private. Run this on the machine with your browser; replace the placeholders:
+Use the loopback redirect flow below; Google's retired out-of-band (`oob`) flow
+does not work. Run this on a machine with a browser, Python 3, `curl`, and `jq`.
+Keep token responses private.
 
 ```bash
 CLIENT_ID="your-client-id"
@@ -91,16 +98,12 @@ CLIENT_SECRET="your-client-secret"
 SCOPE="https://www.googleapis.com/auth/calendar"
 REDIRECT_URI="http://127.0.0.1:8765"
 
-# Step 3a — Open this URL in a browser and authorize access
 echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=${SCOPE}&response_type=code&access_type=offline&prompt=consent"
 
-# Step 3b — The browser redirects to 127.0.0.1:8765 and may show a connection
-# error because no local server is listening. Copy the full redirect URL.
-# This extracts and URL-decodes its code parameter.
+# Authorize in the browser, then paste its full redirect URL.
 printf 'Paste redirect URL: ' >&2
 AUTH_CODE="$(python3 -c 'from urllib.parse import urlparse, parse_qs; print(parse_qs(urlparse(input()).query)["code"][0])')"
 
-# Step 3c — Exchange the code for tokens
 curl --silent --show-error --fail-with-body https://oauth2.googleapis.com/token \
   --data-urlencode "code=${AUTH_CODE}" \
   --data-urlencode "client_id=${CLIENT_ID}" \
@@ -109,24 +112,19 @@ curl --silent --show-error --fail-with-body https://oauth2.googleapis.com/token 
   --data-urlencode "grant_type=authorization_code" | jq .
 ```
 
-The response will contain `refresh_token`. Copy it.
-External OAuth apps left in **Testing** can receive refresh tokens that expire
-after seven days for Calendar scopes. Use an appropriate production consent
-configuration for a persistent installation.
+Copy `refresh_token` from the response. An external OAuth app left in **Testing**
+may issue Calendar refresh tokens that expire after seven days; use a suitable
+production consent configuration for a persistent installation.
 
 ### Step 4 — Store the credentials
 
-Enter them in `./run.sh --section calendar` (stored as protected secrets, not in `data/.env`), or update later with `./run.sh secrets update NAME`. The names are:
-
-```text
-CALENDAR_GOOGLE_CLIENT_ID
-CALENDAR_GOOGLE_CLIENT_SECRET
-CALENDAR_GOOGLE_REFRESH_TOKEN
-```
-
-The optional target calendar (defaults to `primary`) is the non-secret setting `CALENDAR_GOOGLE_CALENDAR_ID`, which the wizard writes to `data/.env`.
-
-The `CalendarRouter` will automatically refresh the access token when it expires using the stored refresh token.
+Enter credentials in `./run.sh --section calendar` or later with
+`./run.sh secrets update NAME`:
+`AGENT_CALENDAR_GOOGLE_CLIENT_ID`,
+`AGENT_CALENDAR_GOOGLE_CLIENT_SECRET`, and
+`AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN`. The optional
+`AGENT_CALENDAR_GOOGLE_CALENDAR_ID` defaults to `primary` and is a non-secret
+setting. Runtime refreshes access tokens as needed.
 
 ---
 
@@ -134,23 +132,21 @@ The `CalendarRouter` will automatically refresh the access token when it expires
 
 ### Step 1 — Register an application in Azure Entra ID
 
-1. Go to [Microsoft Entra admin center](https://entra.microsoft.com) → **Entra ID → App registrations → New registration**.
-2. Give it a name, select **Accounts in this organizational directory only** (or **Multitenant** if needed), and set the redirect URI to `http://localhost` (platform: **Web**, matching this client-secret flow).
-3. After registration, note the **Application (client) ID** and the **Directory (tenant) ID**.
+In [Microsoft Entra admin center](https://entra.microsoft.com), register an app
+under **Entra ID → App registrations**. Select single-tenant or multitenant
+access as required. Add `http://localhost` as a **Web** redirect URI and note
+the application (client) ID and directory (tenant) ID.
 
 ### Step 2 — Add API permissions
 
-1. Go to **API permissions → Add a permission → Microsoft Graph**.
-2. Choose **Delegated permissions** and add:
-   - `Calendars.ReadWrite`
-   - `offline_access`
-3. Click **Grant admin consent** if your tenant requires it.
+Under **API permissions**, add Microsoft Graph delegated permissions
+`Calendars.ReadWrite` and `offline_access`. Grant admin consent if required by
+your tenant.
 
 ### Step 3 — Create a client secret
 
-1. Go to **Certificates & secrets → New client secret**.
-2. Set an expiry and click **Add**.
-3. Copy the **Value** immediately — it is only shown once.
+Create a secret under **Certificates & secrets** and copy its **Value**
+immediately; it is displayed only once.
 
 ### Step 4 — Obtain a refresh token
 
@@ -160,17 +156,12 @@ CLIENT_ID="your-client-id"
 CLIENT_SECRET="your-client-secret"
 SCOPE="https://graph.microsoft.com/Calendars.ReadWrite offline_access"
 
-# Step 4a — Open this URL in a browser
 echo "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=http://localhost&scope=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${SCOPE}'))")&response_mode=query"
 
-# Step 4b — After authorizing, the browser redirects to http://localhost?code=...
-# A connection error is expected if no local server is listening.
-# Copy the full redirect URL to extract and URL-decode its code parameter.
-
+# Authorize, then paste the full localhost redirect URL.
 printf 'Paste redirect URL: ' >&2
 AUTH_CODE="$(python3 -c 'from urllib.parse import urlparse, parse_qs; print(parse_qs(urlparse(input()).query)["code"][0])')"
 
-# Step 4c — Exchange for tokens
 curl --silent --show-error --fail-with-body "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
   --data-urlencode "code=${AUTH_CODE}" \
   --data-urlencode "client_id=${CLIENT_ID}" \
@@ -184,14 +175,12 @@ Copy `refresh_token` from the response.
 
 ### Step 5 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./run.sh --section calendar` (stored as protected secrets), or update later with `./run.sh secrets update NAME` (`CALENDAR_OUTLOOK_CLIENT_ID`, `CALENDAR_OUTLOOK_CLIENT_SECRET`, `CALENDAR_OUTLOOK_REFRESH_TOKEN`). Non-secret settings go to `data/.env` through the wizard:
-
-```env
-CALENDAR_OUTLOOK_TENANT_ID=your-tenant-id
-
-# Optional: target a specific calendar (defaults to the user's default calendar)
-# CALENDAR_OUTLOOK_CALENDAR_ID=AAMkAGI2...
-```
+Use `./run.sh --section calendar` or
+`./run.sh secrets update AGENT_CALENDAR_OUTLOOK_CLIENT_ID`,
+`..._CLIENT_SECRET`, and `..._REFRESH_TOKEN`. The optional non-secret
+`AGENT_CALENDAR_OUTLOOK_TENANT_ID` selects the tenant; the calendar ID defaults
+to the user's default calendar and may be set with
+`AGENT_CALENDAR_OUTLOOK_CALENDAR_ID`.
 
 ---
 
@@ -199,20 +188,15 @@ CALENDAR_OUTLOOK_TENANT_ID=your-tenant-id
 
 ### Step 1 — Register a Zoho server-based application
 
-1. Go to [api-console.zoho.com](https://api-console.zoho.com) and click **Add Client**.
-2. Choose **Server-based Applications**.
-3. Set **Authorized Redirect URIs** to `http://localhost`.
-4. Note the **Client ID** and **Client Secret**.
+At [Zoho API Console](https://api-console.zoho.com), add a
+**Server-based Application**, set the redirect URI to `http://localhost`, and
+save the client ID and secret.
 
 ### Step 2 — Add scopes
 
-Use scopes that cover both calendar discovery and event writes. Recommended:
-
-- `ZohoCalendar.calendar.READ`
-- `ZohoCalendar.event.ALL`
-
-If your integration only has calendar scope (for example `ZohoCalendar.calendar.ALL`) and not
-event write scope, create/update calls will fail with `INVALID_OAUTHSCOPE`.
+Grant both calendar discovery and event writes:
+`ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`. Calendar-only scope
+can allow reads but makes writes fail with `INVALID_OAUTHSCOPE`.
 
 ### Step 3 — Obtain a refresh token
 
@@ -221,14 +205,12 @@ CLIENT_ID="your-client-id"
 CLIENT_SECRET="your-client-secret"
 SCOPE="ZohoCalendar.calendar.READ,ZohoCalendar.event.ALL"
 
-# Step 3a — Open this URL in a browser
 echo "https://accounts.zoho.com/oauth/v2/auth?scope=${SCOPE}&client_id=${CLIENT_ID}&response_type=code&redirect_uri=http://localhost&access_type=offline"
 
-# Step 3b — Copy the full redirect URL (a localhost connection error is expected).
+# Authorize, then paste the full localhost redirect URL.
 printf 'Paste redirect URL: ' >&2
 AUTH_CODE="$(python3 -c 'from urllib.parse import urlparse, parse_qs; print(parse_qs(urlparse(input()).query)["code"][0])')"
 
-# Step 3c — Exchange for tokens
 curl --silent --show-error --fail-with-body "https://accounts.zoho.com/oauth/v2/token" \
   --data-urlencode "code=${AUTH_CODE}" \
   --data-urlencode "client_id=${CLIENT_ID}" \
@@ -241,80 +223,58 @@ Copy `refresh_token` from the response.
 
 ### Step 4 — Store the credentials
 
-Enter the client ID, client secret and refresh token in `./run.sh --section calendar` (stored as protected secrets), or update later with `./run.sh secrets update NAME` (`CALENDAR_ZOHO_CLIENT_ID`, `CALENDAR_ZOHO_CLIENT_SECRET`, `CALENDAR_ZOHO_REFRESH_TOKEN`). Optional non-secret settings go to `data/.env` through the wizard:
+Use `./run.sh --section calendar` or
+`./run.sh secrets update AGENT_CALENDAR_ZOHO_CLIENT_ID`,
+`..._CLIENT_SECRET`, and `..._REFRESH_TOKEN`.
+`AGENT_CALENDAR_ZOHO_CALENDAR_ID` optionally selects a calendar UID; if reads
+are empty, use `calendar_list_calendars` to find the correct UID. The API base
+defaults to `https://calendar.zoho.com/api/v1`.
 
-```env
-# Optional: target a specific calendar UID. If omitted, the integration uses "default",
-# which may be empty if your events are stored in another Zoho calendar.
-# CALENDAR_ZOHO_CALENDAR_ID=849d6badb4e04acc91860c43db0fb109
-
-# Optional: setup writes this to data/.env; manual overrides belong in
-# data/overrides.env. Default: https://calendar.zoho.com/api/v1
-# CALENDAR_ZOHO_API_BASE=https://calendar.zoho.eu/api/v1
-```
-
-> **Zoho data center regions** use different API and Accounts hosts. Use the
-> matching Accounts host for authorization/token exchange above. However,
-> runtime token refresh currently uses `accounts.zoho.com` regardless of
-> `CALENDAR_ZOHO_API_BASE`. Setting a regional Calendar API (for example
-> `https://calendar.zoho.eu/api/v1`) does not change that token endpoint;
-> non-`.com` account refresh is not fully supported.
+> **Data centers:** Use the Accounts host matching your Zoho region during
+> authorization. Runtime refresh currently uses `accounts.zoho.com` regardless
+> of `AGENT_CALENDAR_ZOHO_API_BASE`; non-`.com` account refresh is not fully
+> supported. Setting a regional Calendar API URL does not change the token
+> endpoint.
 >
-> **Zoho calendar UIDs**: Zoho API requests are calendar-UID specific (`/calendars/<calendar_uid>/...`). If reads appear empty,
-> use the `calendar_list_calendars` tool to discover the correct UID, then set `CALENDAR_ZOHO_CALENDAR_ID` (or
-> `agent.calendar.zoho.calendar_id` in `agent.yaml`).
->
-> **OAuth scope changes**: If you change OAuth scopes after initial setup, regenerate the authorization code and refresh token.
-> Existing refresh tokens keep their originally granted scopes.
+> **Scopes:** If you change OAuth scopes, obtain consent and a new refresh token;
+> an existing token retains its original grants.
 
 ---
 
 ## Common environment variables
 
-These variables apply across all providers:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CALENDAR_ENABLED` | `false` | Enable the calendar tool-exposure check described above |
-| `AGENT_TIMEZONE` | `UTC` | Authoritative timezone for implicit event times and all-day boundaries (e.g. `America/New_York`) |
-| `CALENDAR_DEFAULT_PROVIDER` | first discovered | Which provider to use when the agent does not specify one |
-| `CALENDAR_DEFAULT_ALERT_MINUTES` | `30` | Minutes before each event to set a reminder alert (0 to suppress) |
-
----
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_CALENDAR_ENABLED` | `false` | Enables the calendar tool-exposure check |
+| `AGENT_APP_TIMEZONE` | `UTC` | Timezone for implicit event times and all-day boundaries |
+| `AGENT_CALENDAR_DEFAULT_PROVIDER` | First discovered | Provider used when a request does not specify one |
+| `AGENT_CALENDAR_DEFAULT_ALERT_MINUTES` | `30` | Reminder lead time; `0` suppresses alerts |
 
 ## Verifying configuration
 
-Run `./run.sh --section calendar`.
-The optional read-only verification uses a fresh access token and checks both
-calendar discovery and event access, without creating events or persisting the
-test token. Verification failure does not prevent saving an offline draft, and
-no credentials are automatically rotated.
+Run `./run.sh --section calendar`. Optional read-only verification obtains a
+fresh access token and checks calendar discovery and event access; it does not
+create events or persist the test token. Failure does not prevent saving an
+offline draft, and credentials are not automatically rotated. After saving,
+apply changes to affected services and check status with `./run.sh tools`.
 
-Zoho `.com` accounts use `https://accounts.zoho.com/oauth/v2/token` and
-`https://calendar.zoho.com/api/v1`. A persistent HTTP 401 after one token refresh is an authentication error,
-not proof of an empty calendar. If it persists after fixing the route, verify the
-client ID/secret and matching refresh token. `INVALID_OAUTHSCOPE` requires renewed
-consent for `ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`: token refresh
-cannot grant missing scopes. Use setup or `./run.sh secrets update`
-to store replacements, and explicitly activate/recreate affected consumers.
+A persistent Zoho HTTP 401 after one refresh is an authentication error, not
+proof that the calendar is empty. Check the regional endpoint and credentials.
+`INVALID_OAUTHSCOPE` requires new consent for
+`ZohoCalendar.calendar.READ` and `ZohoCalendar.event.ALL`; refreshing cannot add
+scopes.
 
-`calendar_list_busy` returns `status`, `complete`, and `provider_errors` alongside
-the existing windows. Only `complete=true` verifies availability. With failed
-providers, healthy-provider windows remain available but `status=degraded` and
-`complete=false`; an empty list is not evidence that the user is free. With no
-providers, `status=no_providers` and `complete=false`.
-
-After adding credentials and activating the affected services, check tool status
-with `./run.sh tools`. Calendar-provider requests use verified HTTPS; never
-use plain HTTP or disable certificate verification.
-
----
+`calendar_list_busy` reports `status`, `complete`, and `provider_errors` with
+its windows. Treat availability as reliable only when `complete=true`; a
+degraded or empty result does not mean the user is free. Calendar requests use
+verified HTTPS; do not use plain HTTP or disable certificate checks.
 
 ## Security notes
 
-- Refresh tokens grant long-lived access to your calendar. Store `data/.secrets/` securely and never commit it to source control.
-- The assistant can only create, update, and delete events that it created itself — it cannot modify third-party events.
-- `agent.calendar.policy.allow_read_event_details: false` (the default) hides
-  non-managed event details; busy-window titles become `Busy`. Assistant-managed
-  events remain visible. Busy-window details for other events require both this
-  setting and the call's `include_details=true`.
+- Refresh tokens grant long-lived calendar access. Protect `data/.secrets/` and
+  never commit it.
+- The assistant can modify only events it manages; it cannot change third-party
+  events.
+- `agent.calendar.policy.allow_read_event_details` defaults to `false` and hides
+  details of unmanaged events. Busy-window titles are shown as `Busy`; details
+  require this setting and the call's `include_details=true`.

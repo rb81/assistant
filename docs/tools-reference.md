@@ -80,8 +80,8 @@ A stale version is rejected; re-read before deciding whether to retry.
 Guardrails:
 
 - paths must resolve under shared root,
-- `.assistant` is protected from file-tool writes/deletes; only its `docs`
-  subtree is a read-only mount in command containers,
+- `.assistant` is protected from file-tool writes and deletes; command
+  containers receive the shared workspace, not a documentation mount,
 - cache/source-archive visibility is restricted,
 - file mutations attempt to update the workspace index; indexing failures are
   logged and do not necessarily fail the file operation.
@@ -97,7 +97,7 @@ Guardrails:
 	revision, only when explicitly requested by the requester.
 
 Tools are loadable only when Dropbox is configured and the workspace is available.
-Export is additionally hidden unless `DROPBOX_ALLOW_EXPORTS=true`. Retry an
+Export is additionally hidden unless `AGENT_DROPBOX_ALLOW_EXPORTS=true`. Retry an
 uncertain export using the same source and filename. Dropbox content is untrusted
 data. See [connection, limits and privacy](dropbox.md).
 
@@ -260,7 +260,7 @@ including supported image/audio generation and multimodal inputs. It does not
 inherit the assistant's context or tools and does not execute returned tool calls.
 
 Enable it with `./run.sh --section advanced` → **Model preset tool**.
-It requires `OPENROUTER_API_KEY` and an available shared workspace, even if the
+It requires `AGENT_LLM_OPENROUTER_API_KEY` and an available shared workspace, even if the
 main assistant uses a different model provider. It is disabled by default.
 Setup's **Advanced Settings → Model preset tool** also selects all models
 (default) or ZDR-only discovery and routing with `AGENT_MODEL_SERVICE_ZDR_ONLY`.
@@ -357,7 +357,7 @@ see [factory reset](running-assistant.md#factory-reset).
 `text_to_speech` is an independently enabled, loadable tool for dedicated
 OpenRouter `speech` models, not chat models advertising `audio`.
 Enable **Advanced Settings → Text-to-speech** with
-`./run.sh --section advanced`. It requires an internal `OPENROUTER_API_KEY`
+`./run.sh --section advanced`. It requires an internal `AGENT_LLM_OPENROUTER_API_KEY`
 and writable shared workspace, but not model presets, Telegram or transcription.
 Both enablement and the ZDR-only/all-model choice are independent of
 `llm_service`; defaults are disabled and all models.

@@ -7,7 +7,7 @@ Required OAuth2 scopes: ZohoCalendar.event.ALL ZohoCalendar.calendar.READ
 Token endpoint: https://accounts.zoho.com/oauth/v2/token
 
 Zoho Calendar uses a regional API base URL.  The default is .com but users
-in the EU/IN/AU/JP data centres must set CALENDAR_ZOHO_API_BASE to the
+in the EU/IN/AU/JP data centres must set AGENT_CALENDAR_ZOHO_API_BASE to the
 matching regional URL (e.g. https://calendar.zoho.eu/api/v1).
 
 To obtain a refresh token, follow the setup guide in docs/calendar-providers.md.

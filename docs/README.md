@@ -1,55 +1,55 @@
-# Documentation index
+# Assistant documentation
 
-This is the canonical documentation set for the current Assistant version.
-Use it as a task index; verify implementation details against the current source
-when contributing. For project overview and quick start, see the
-[root README](https://github.com/rb81/assistant#readme).
+New here? [Install Assistant](../README.md#install), then follow
+[Running Assistant](running-assistant.md) to finish setup.
 
-Source paths in contributor guides refer to a repository checkout. The application
-image bundles this documentation for help retrieval, not the host source tree.
+## Getting started
 
-## For agents
+| Guide | What you need it for |
+|---|---|
+| [Running Assistant](running-assistant.md) | Setup, everyday controls, backups, and reset |
+| [Configuration](configuration.md) | Settings, instructions, and credentials |
+| [Security](security.md) | Account isolation, permissions, approvals, and trust boundaries |
+| [macOS app](https://github.com/rb81/assistant-client) | Desktop installation, connections, and source builds |
 
-1. Read the task-relevant guide below.
-2. Read [tool reference](tools-reference.md) before using or describing tools.
-3. Use `help_search`, then `help_topic` with a returned topic ID and revision,
-   for your own functionality, capabilities, limitations and tool usage.
-   Use `runtime_capabilities` for live settings and limits. Help never grants
-   access to host files, secrets or service controls.
-4. See [sandbox execution](sandbox.md) for command environment and diagnostic limits.
+## Integrations
 
-## For operators
+| Guide | What it covers |
+|---|---|
+| [Email](email-and-artifacts.md) | Mailboxes, attachments, and replies |
+| [Email administration](email-administration.md) | Authenticated `/admin` commands |
+| [Telegram and voice](telegram-and-voice.md) | Bot setup, voice messages, and approvals |
+| [Calendars and meetings](calendar-providers.md) | Google, Outlook, Zoho, and Zoom |
+| [Dropbox](dropbox.md) | Scoped file import and export |
+| [OpenRouter](openrouter.md) | Models, provider settings, and hosted tools |
 
-- [Running Assistant](running-assistant.md) — setup, start, and local state.
-- [Configuration](configuration.md) — configuration files and credential handling.
-- [Advanced configuration](advanced-configuration.md) — model limits and worker scaling.
-- [Environment overrides](env-overrides.md) — supported expert settings and precedence.
-- [Security](security.md) — trust boundaries, approvals, and hardening.
-- [Script and website permissions](sandbox.md#script-versions-and-run-permissions) —
-  approval scopes, revocation, and an [upgrade/testing checklist](sandbox.md#upgrade-and-acceptance-checklist).
-- [Docker setup](docker-setup.md) — images, Compose services, mounts, and networks.
+## Operating Assistant
 
-## System and development
+- [Advanced configuration](advanced-configuration.md): limits, models, and scaling.
+- [Environment overrides](env-overrides.md): expert settings and precedence.
+- [Docker setup](docker-setup.md): services, mounts, networks, and troubleshooting.
+- [Sandbox](sandbox.md): code execution, network access, and script permissions.
+- [Memory system](memory-system.md): memories, embeddings, and workspace search.
 
-- [Architecture](architecture.md) — service topology and data flow.
-- [Agent loop](agent-loop.md) — job lifecycle and execution.
-- [Prompting](prompting.md) — prompt and context construction.
-- [Tools reference](tools-reference.md) — available tool groups and constraints.
-- [Extending tools](extending-tools.md) — implementation checklist.
-- [Codebase guide](codebase.md) — source layout and tests.
-- [Data model](data-model.md) — persistent records and ownership.
-- [Concurrent jobs](concurrent-job-processing.md) — task-agent workers.
+## Development and API reference
 
-## Integrations and operations
+- [Codebase guide](codebase.md): layout, contribution, and tests.
+- [Architecture](architecture.md) and [data model](data-model.md): system structure.
+- [Build a client](building-clients.md) and [Management API](management-api.md):
+  connection, schemas, reads, and safe writes.
+- [Agent loop](agent-loop.md), [prompting](prompting.md), and
+  [concurrent jobs](concurrent-job-processing.md): task execution.
+- [Tools reference](tools-reference.md) and [extending tools](extending-tools.md):
+  tool contracts and implementation.
 
-- [Email and artifacts](email-and-artifacts.md) — inbound email and attachment processing.
-- [Email administration](email-administration.md) — authenticated `/admin` commands.
-- [Calendar providers](calendar-providers.md) — Google, Outlook, Zoho, and Zoom.
-- [Dropbox](dropbox.md) — scoped file exchange.
-- [Telegram and voice](telegram-and-voice.md) — private messaging and transcription.
-- [Memory system](memory-system.md) — memory, embeddings, and workspace search.
-- [OpenRouter](openrouter.md) — model and hosted-tool integration.
-- [Sandbox](sandbox.md) — command execution boundaries.
+## Runtime help
 
-The project is a prerelease. For the separate legacy conversion bundle, see
-the [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).
+These pages ship with the application image. Agents should use `help_search`,
+then `help_topic` with a returned topic ID and revision; use
+`runtime_capabilities` for live settings and limits. Read the
+[tools reference](tools-reference.md) before describing or invoking tools.
+Help grants no access to host files, secrets, or service controls.
+
+Source paths refer to the server repository, not a mounted host checkout.
+V1 upgrade instructions live in the separate
+[layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition).

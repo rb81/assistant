@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from assistant_agent.config import AppConfig
+from assistant_agent.request_router import RoutingDecision
 from assistant_agent.email_approvals import (
     MARKER, ApprovalDeliveryError, EmailApprovals, admin_sender, approval_reply, send_admin_email,
     telegram_permission_summary,
@@ -30,6 +31,10 @@ class ApprovalReplyTest(unittest.TestCase):
         self.config = AppConfig({"agent": {"admin": {"email": "admin@example.com"},
                                            "security": {"email_authentication": {"enabled": False}}}})
         self.confirmation = "%s\nOTP: %s\nRequest hash: %s\n" % (MARKER, "a" * 32, "b" * 64)
+        self.enterContext(patch(
+            "assistant_agent.request_router.RequestRouter.route",
+            return_value=RoutingDecision("<reply@example.com>", "new", "New request"),
+        ))
 
     def test_extracts_only_new_guidance_from_plain_and_html_replies(self):
         for body, html in (
@@ -339,7 +344,7 @@ class ApprovalReplyTest(unittest.TestCase):
         message = reply("Prepare the report.")
         message.replace_header("Subject", "Script Testing")
         with patch.object(downloader, "resolve_thread_id", return_value="thread"), patch.object(
-            downloader, "is_actionable", return_value=True
+            downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"]}
         ), patch("assistant_agent.email_approvals.EmailApprovals.request") as request, patch(
             "assistant_agent.email_ingest.RequestService.receive_request"
         ) as receive:
@@ -364,7 +369,7 @@ class ApprovalReplyTest(unittest.TestCase):
         automated = reply("Run this task")
         automated["Auto-Submitted"] = "auto-generated"
         with patch.object(downloader, "resolve_thread_id", return_value="thread"), patch.object(
-            downloader, "is_actionable", return_value=True
+            downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"]}
         ), patch("assistant_agent.email_ingest.RequestService.receive_request") as receive:
             result = downloader.ingest_raw(automated.as_bytes())
         self.assertFalse(result.queued)
@@ -390,37 +395,27 @@ class ApprovalReplyTest(unittest.TestCase):
                 consume.assert_not_called()
                 receive.assert_not_called()
 
-    def test_agent_question_email_is_plain_and_reply_becomes_confirmed_instruction(self):
+    def test_agent_question_email_is_recorded_for_ordinary_replies(self):
         from assistant_agent.config import agent_name
-        from assistant_agent.email_ingest import EmailDownloader
         from assistant_agent.task_agent import TaskAgent
         agent = TaskAgent.__new__(TaskAgent)
         agent.config, agent.db = self.config, MagicMock()
         with patch("assistant_agent.task_agent.smtp_configured", return_value=True), patch(
-            "assistant_agent.email_approvals.send_admin_email"
+            "assistant_agent.email_approvals.send_admin_email", return_value="<question@example.com>"
         ) as send, patch("assistant_agent.email_approvals.EmailApprovals.request") as approval:
             self.assertTrue(agent.message_admin({"id": 12, "metadata": {}}, "Which account?"))
         approval.assert_not_called()
         subject, body = send.call_args.args[1:3]
         self.assertEqual(subject, "%s question for job #12" % agent_name(self.config))
         self.assertIn("Which account?", body)
-        self.assertIn("/admin instruct 12", body)
+        self.assertIn("Reply to this email with your answer.", body)
         self.assertNotIn(MARKER, body)
         self.assertIsNone(approval_reply(reply(body)))
-
-        downloader = EmailDownloader.__new__(EmailDownloader)
-        downloader.config, downloader.db = self.config, MagicMock()
-        downloader.db.fetch_one.return_value = None
-        message = reply("Use the work account.")
-        message.replace_header("Subject", "Re: " + subject)
-        with patch("assistant_agent.admin_commands.AdminCommands.handle", return_value=True) as handle, patch(
-            "assistant_agent.email_ingest.RequestService.receive_request"
-        ) as receive:
-            result = downloader.ingest_raw(message.as_bytes())
-        self.assertFalse(result.queued)
-        self.assertEqual(handle.call_args.args[1], "/admin instruct 12")
-        self.assertIn("Use the work account.", handle.call_args.args[2])
-        receive.assert_not_called()
+        self.assertIn("INSERT INTO outbound_email_logs", agent.db.execute.call_args.args[0])
+        self.assertEqual(
+            agent.db.execute.call_args.args[1],
+            (12, ["admin@example.com"], subject, body, "<question@example.com>"),
+        )
 
     def test_agent_question_on_telegram_is_plain_message_with_reply_buttons(self):
         from assistant_agent.task_agent import TaskAgent
@@ -494,6 +489,194 @@ class ApprovalReplyTest(unittest.TestCase):
         self.assertFalse(result.queued)
         execute.assert_called_once_with("/admin status", "", confirmed=True)
         send.assert_called_once_with(self.config, "Assistant admin response", "Status report")
+
+
+class AdminConversationPolicyTest(unittest.TestCase):
+    def setUp(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        self.downloader = EmailDownloader.__new__(EmailDownloader)
+        self.downloader.config = AppConfig({"agent": {
+            "admin": {"email": "admin@example.com"},
+            "email": {"actionable_senders": ["admin@example.com"]},
+            "security": {"email_authentication": {"enabled": False}},
+        }})
+        self.downloader.db = MagicMock()
+        self.downloader.db.fetch_one.side_effect = (
+            lambda sql, params=(): {"id": 5} if "INSERT INTO emails" in sql else None
+        )
+        self.root = self.enterContext(tempfile.TemporaryDirectory())
+        self.downloader.attachment_root = Path(self.root)
+        self.artifacts = self.enterContext(patch.object(self.downloader, "process_artifacts"))
+        self.screen = self.enterContext(patch.object(self.downloader, "screen_inbound", return_value=None))
+        self.history = self.enterContext(patch.object(
+            self.downloader, "sender_has_conversation_history", return_value=False,
+        ))
+        self.route = self.enterContext(patch(
+            "assistant_agent.request_router.RequestRouter.route",
+            return_value=RoutingDecision("<reply@example.com>", "new", "New request"),
+        ))
+        self.approve = self.enterContext(patch("assistant_agent.email_approvals.EmailApprovals.request"))
+        self.receive = self.enterContext(patch("assistant_agent.email_ingest.RequestService.receive_request"))
+        self.message = reply("Prepare the report.")
+        self.message.replace_header("Subject", "Report")
+
+    def ingest(self):
+        return self.downloader.ingest_raw(self.message.as_bytes())
+
+    def test_fresh_admin_task_is_held_without_saving_attachments(self):
+        self.message.add_attachment(b"report", maintype="application", subtype="pdf", filename="report.pdf")
+        result = self.ingest()
+        self.assertFalse(result.queued)
+        self.approve.assert_called_once()
+        self.screen.assert_called_once()
+        self.route.assert_called_once()
+        self.receive.assert_not_called()
+        self.assertEqual(list(Path(self.root).iterdir()), [])
+        self.assertEqual(self.route.call_args.args[0].attachments[0]["filename"], "report.pdf")
+
+    def test_disabled_setting_processes_fresh_email_without_admin_authority(self):
+        self.downloader.config.values["agent"]["security"]["confirm_new_admin_conversations"] = False
+        self.message.add_attachment(b"report", maintype="application", subtype="pdf", filename="report.pdf")
+        self.assertTrue(self.ingest().queued)
+        self.approve.assert_not_called()
+        self.screen.assert_called_once()
+        self.assertFalse(self.receive.call_args.kwargs["admin_authenticated"])
+        self.assertIsNone(self.receive.call_args.kwargs["review_override"])
+        attachment = self.artifacts.call_args.args[1][0]
+        self.assertEqual(Path(attachment["path"]).read_bytes(), b"report")
+
+    def test_stored_reply_with_sender_history_needs_no_confirmation_even_on_router_fallback(self):
+        self.message["In-Reply-To"] = "<assistant@example.com>"
+        self.history.return_value = True
+        self.route.return_value = RoutingDecision("thread", "continue", "Router unavailable", True, 7)
+        with patch.object(self.downloader, "resolve_thread_id", return_value="thread"):
+            self.assertTrue(self.ingest().queued)
+        self.approve.assert_not_called()
+        self.assertEqual(self.receive.call_args.args[0].thread_id, "thread")
+        self.assertFalse(self.receive.call_args.kwargs["admin_authenticated"])
+        self.assertIsNone(self.receive.call_args.kwargs["review_override"])
+        self.assertEqual(self.route.call_args.kwargs["reply_thread_id"], "thread")
+
+    def test_headerless_continuation_uses_router_and_sender_history(self):
+        self.route.return_value = RoutingDecision("thread", "continue", "Follow-up", workstream_id=7)
+        self.history.return_value = True
+        self.assertTrue(self.ingest().queued)
+        self.approve.assert_not_called()
+        self.history.assert_called_once_with("thread", ["admin@example.com"])
+        self.assertEqual(self.receive.call_args.args[0].thread_id, "thread")
+
+    def test_unrelated_task_still_needs_confirmation_despite_past_correspondence(self):
+        self.history.return_value = True
+        self.assertFalse(self.ingest().queued)
+        self.approve.assert_called_once()
+        self.history.assert_not_called()
+
+    def test_unknown_headers_and_subject_prefix_do_not_bypass_confirmation(self):
+        self.message.replace_header("Subject", "Re: Report")
+        self.message["In-Reply-To"] = "<unknown@example.com>"
+        self.message["References"] = "<also-unknown@example.com>"
+        self.assertFalse(self.ingest().queued)
+        self.approve.assert_called_once()
+        self.history.assert_not_called()
+
+    def test_existing_thread_without_sender_history_still_needs_confirmation(self):
+        self.message["In-Reply-To"] = "<assistant@example.com>"
+        self.route.return_value = RoutingDecision("thread", "continue", "Reply", workstream_id=7)
+        with patch.object(self.downloader, "resolve_thread_id", return_value="thread"):
+            self.assertFalse(self.ingest().queued)
+        self.approve.assert_called_once()
+        self.receive.assert_not_called()
+
+    def test_known_reply_can_start_a_new_task_without_reconfirming_sender(self):
+        self.message["References"] = "<assistant@example.com>"
+        self.history.return_value = True
+        with patch.object(self.downloader, "resolve_thread_id", return_value="thread"):
+            self.assertTrue(self.ingest().queued)
+        self.approve.assert_not_called()
+
+    def test_automated_admin_task_is_rejected_even_with_confirmation_disabled(self):
+        self.downloader.config.values["agent"]["security"]["confirm_new_admin_conversations"] = False
+        self.message["Auto-Submitted"] = "auto-generated"
+        self.assertFalse(self.ingest().queued)
+        self.route.assert_not_called()
+        self.receive.assert_not_called()
+
+    def test_spoofed_reply_is_rejected_before_history_or_routing(self):
+        from assistant_agent.email_authentication import AuthenticationVerdict
+        self.downloader.config.values["agent"]["security"]["email_authentication"]["enabled"] = True
+        self.message["In-Reply-To"] = "<assistant@example.com>"
+        self.history.return_value = True
+        with patch("assistant_agent.email_ingest.evaluate_authentication",
+                   return_value=AuthenticationVerdict(False, "Failed")), patch(
+            "assistant_agent.email_ingest.notify_admin"
+        ):
+            self.assertTrue(self.ingest().quarantine)
+        self.history.assert_not_called()
+        self.route.assert_not_called()
+        self.receive.assert_not_called()
+
+    def test_reply_to_plain_admin_question_is_guidance_not_a_command(self):
+        self.message.replace_header("Subject", "Re: Assistant question for job #12")
+        self.message["In-Reply-To"] = "<question@example.com>"
+        self.history.return_value = True
+        self.route.return_value = RoutingDecision("thread", "continue", "Answer", workstream_id=7)
+        with patch.object(self.downloader, "resolve_thread_id", return_value="thread"), patch(
+            "assistant_agent.admin_commands.AdminCommands.handle"
+        ) as command:
+            self.assertTrue(self.ingest().queued)
+        command.assert_not_called()
+        self.approve.assert_not_called()
+        self.assertIsNone(self.receive.call_args.kwargs["review_override"])
+
+    def test_follow_up_resumes_waiting_job_but_does_not_clear_a_safety_hold(self):
+        from assistant_agent.requests import RequestService
+        self.message["In-Reply-To"] = "<assistant@example.com>"
+        self.history.return_value = True
+        self.route.return_value = RoutingDecision("thread", "continue", "Follow-up", workstream_id=7)
+        for status in ("waiting", "needs_review"):
+            with self.subTest(status=status):
+                queue_db = MagicMock()
+                queue_db.fetch_one.return_value = {"id": 12, "status": status, "metadata": {}}
+
+                def queue(request, **options):
+                    RequestService(queue_db).queue_or_update_job(
+                        request.thread_id, "Report", request.email_id, body=request.body,
+                        admin_authenticated=options["admin_authenticated"],
+                        review_override=options["review_override"], resume_research=lambda _: None,
+                    )
+
+                self.receive.side_effect = queue
+                with patch.object(self.downloader, "resolve_thread_id", return_value="thread"):
+                    self.assertTrue(self.ingest().queued)
+                if status == "waiting":
+                    self.assertIn("SET status = 'queued'", queue_db.execute.call_args.args[0])
+                else:
+                    queue_db.execute.assert_not_called()
+        self.approve.assert_not_called()
+
+    def test_security_review_release_does_not_request_routine_confirmation(self):
+        result = self.downloader.ingest_raw(
+            self.message.as_bytes(), security_approved="", approved_thread_id="thread",
+        )
+        self.assertTrue(result.queued)
+        self.screen.assert_not_called()
+        self.approve.assert_not_called()
+        self.assertFalse(self.receive.call_args.kwargs["admin_authenticated"])
+
+    def test_disabling_confirmation_does_not_bypass_a_security_hold(self):
+        from assistant_agent.email_ingest import IngestResult
+        self.downloader.config.values["agent"]["security"]["confirm_new_admin_conversations"] = False
+        self.screen.return_value = IngestResult(False, False, "<reply@example.com>", quarantine=True)
+        self.assertTrue(self.ingest().quarantine)
+        self.approve.assert_not_called()
+        self.receive.assert_not_called()
+
+    def test_confirmation_setting_does_not_skip_explicit_command_approval(self):
+        self.downloader.config.values["agent"]["security"]["confirm_new_admin_conversations"] = False
+        self.message.replace_header("Subject", "/admin cancel 12")
+        self.assertFalse(self.ingest().queued)
+        self.assertEqual(self.approve.call_args.args[1]["kind"], "command")
+        self.receive.assert_not_called()
 
 
 @unittest.skipUnless(os.getenv("ASSISTANT_TEST_DATABASE_URL"), "requires disposable assistant_test database")
@@ -705,7 +888,7 @@ class ApprovalDatabaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             downloader.attachment_root = Path(root)
             with patch.object(downloader, "resolve_thread_id", return_value="original-thread"), patch.object(
-                downloader, "is_actionable", return_value=True
+                downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"]}
             ), patch.object(downloader, "process_artifacts") as artifacts, patch(
                 "assistant_agent.email_ingest.RequestService.receive_request"
             ) as receive, patch("assistant_agent.email_approvals.send_admin_email") as send:

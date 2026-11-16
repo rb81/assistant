@@ -53,28 +53,28 @@ def _load_provider_configs(config: AppConfig) -> list[ProviderConfig]:
     Discover provider configurations from environment variables and config.
 
     Pattern per provider type:
-      CALENDAR_GOOGLE_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only, credentials)
-      CALENDAR_GOOGLE_CALENDAR_ID (env or agent.calendar.google.calendar_id)
+      AGENT_CALENDAR_GOOGLE_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only, credentials)
+      AGENT_CALENDAR_GOOGLE_CALENDAR_ID (env or agent.calendar.google.calendar_id)
       
-      CALENDAR_OUTLOOK_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only)
-      CALENDAR_OUTLOOK_CALENDAR_ID (env or agent.calendar.outlook.calendar_id)
-      CALENDAR_OUTLOOK_TENANT_ID (env or agent.calendar.outlook.tenant_id)
+      AGENT_CALENDAR_OUTLOOK_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only)
+      AGENT_CALENDAR_OUTLOOK_CALENDAR_ID (env or agent.calendar.outlook.calendar_id)
+      AGENT_CALENDAR_OUTLOOK_TENANT_ID (env or agent.calendar.outlook.tenant_id)
       
-      CALENDAR_ZOHO_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only)
-      CALENDAR_ZOHO_CALENDAR_ID (env or agent.calendar.zoho.calendar_id)
-      CALENDAR_ZOHO_API_BASE (env or agent.calendar.zoho.api_base)
+      AGENT_CALENDAR_ZOHO_CLIENT_ID / _SECRET / _REFRESH_TOKEN (env only)
+      AGENT_CALENDAR_ZOHO_CALENDAR_ID (env or agent.calendar.zoho.calendar_id)
+      AGENT_CALENDAR_ZOHO_API_BASE (env or agent.calendar.zoho.api_base)
 
     Multiple instances of the same provider type can be configured by adding
     a numeric suffix (env-only for numbered instances):
-      CALENDAR_GOOGLE_2_CLIENT_ID / ...   → second Google provider
-      CALENDAR_GOOGLE_3_CLIENT_ID / ...   → third Google provider
+      AGENT_CALENDAR_GOOGLE_2_CLIENT_ID / ...   → second Google provider
+      AGENT_CALENDAR_GOOGLE_3_CLIENT_ID / ...   → third Google provider
 
     The logical name defaults to the provider type (e.g. "google"), or
     "google_2" / "google_3" for extra instances.
     """
     configs: list[ProviderConfig] = []
     for ptype in ("google", "outlook", "zoho"):
-        prefix = "CALENDAR_%s" % ptype.upper()
+        prefix = "AGENT_CALENDAR_%s" % ptype.upper()
         client_id = (read_secret("%s_CLIENT_ID" % prefix) or "").strip()
         client_secret = (read_secret("%s_CLIENT_SECRET" % prefix) or "").strip()
         refresh_token = (read_secret("%s_REFRESH_TOKEN" % prefix) or "").strip()
@@ -101,10 +101,10 @@ def _load_provider_configs(config: AppConfig) -> list[ProviderConfig]:
                 extra=extra,
             ))
 
-        # Support CALENDAR_GOOGLE_2_*, CALENDAR_GOOGLE_3_*, etc.
+        # Support AGENT_CALENDAR_GOOGLE_2_*, AGENT_CALENDAR_GOOGLE_3_*, etc.
         # For numbered instances, read all settings from env (no YAML path for dynamic suffixes)
         for suffix in range(2, 10):
-            pfx2 = "CALENDAR_%s_%d" % (ptype.upper(), suffix)
+            pfx2 = "AGENT_CALENDAR_%s_%d" % (ptype.upper(), suffix)
             cid2 = (read_secret("%s_CLIENT_ID" % pfx2) or "").strip()
             cs2 = (read_secret("%s_CLIENT_SECRET" % pfx2) or "").strip()
             rt2 = (read_secret("%s_REFRESH_TOKEN" % pfx2) or "").strip()
@@ -176,7 +176,7 @@ class CalendarRouter:
                 log.warning("could not register calendar provider %r: %s", pc.name, exc)
 
         self._default_provider_name = (
-            os.environ.get("CALENDAR_DEFAULT_PROVIDER", "").strip()
+            os.environ.get("AGENT_CALENDAR_DEFAULT_PROVIDER", "").strip()
             or self._config.get("agent.calendar.default_provider", "")
             or (next(iter(self._providers), None) or "")
         )
@@ -290,6 +290,7 @@ class CalendarRouter:
         allow_details = self._allow_details
         managed_by_provider_id = self._managed_by_provider_id()
         events: list[dict[str, Any]] = []
+        errors = []
 
         for name, provider in self._providers.items():
             pc = self._provider_config(name)
@@ -303,6 +304,7 @@ class CalendarRouter:
                 )
             except CalendarError as exc:
                 log.warning("list_events: provider %r error: %s", name, exc)
+                errors.append({"provider": name, "error": "Calendar provider could not return events"})
                 continue
             for ev in raw_events:
                 lookup_key = "%s:%s" % (name, ev.provider_event_id)
@@ -343,6 +345,8 @@ class CalendarRouter:
             "end": local_datetime_iso(range_end, self._config),
             "events": events,
             "providers": list(self._providers.keys()),
+            "complete": bool(self._providers) and not errors,
+            "errors": errors,
         }
 
     def create_event(

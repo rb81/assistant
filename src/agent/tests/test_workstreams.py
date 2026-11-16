@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import json
@@ -13,6 +14,7 @@ from psycopg.conninfo import make_conninfo
 
 from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
+from assistant_agent.management_operator import execute as execute_management
 from assistant_agent.requests import IncomingRequest, RequestService
 from assistant_agent.workstreams import WorkstreamError, WorkstreamStore, deletion_scope
 
@@ -23,6 +25,63 @@ def test_connected_scope_is_recursive_and_includes_descendants():
     assert deletion_scope(1, "preserve_shared", parents, attachments) == ({1, 2}, {12}, {10}, set())
     assert deletion_scope(1, "delete_objects", parents, attachments) == ({1, 2}, {10, 12}, {10}, {3})
     assert deletion_scope(1, "connected", parents, attachments) == ({1, 2, 3, 4, 5}, {10, 11, 12}, set(), set())
+
+
+def test_management_project_file_upload_listing_read_and_attach(store):
+    first_job = job(store, "First project")
+    second_job = job(store, "Second project")
+    first_project = first_job["workstream_id"]
+    second_project = second_job["workstream_id"]
+    (Path(store.config.get("agent.filesystem.shared_root")) / "deliverables").mkdir()
+    content = b"\x00binary project file"
+    def clean_scan(processor, path):
+        assert Path(path).read_bytes() == content
+        return {"status": "clean"}
+
+    with patch("assistant_agent.artifact_processor.ArtifactProcessor.scan_file",
+               autospec=True, side_effect=clean_scan):
+        uploaded = execute_management(store.db, store.config, {
+            "kind": "file.upload", "workstream_id": first_project, "path": "deliverables/report.bin",
+            "content_base64": base64.b64encode(content).decode("ascii"), "confirmed": True,
+        })
+    file_id = uploaded["file_id"]
+    listing = execute_management(store.db, store.config, {
+        "kind": "project-files", "id": first_project, "page": 0,
+    })
+    assert listing["files"][0]["id"] == file_id
+    assert listing["files"][0]["path"] == "workspace/deliverables/report.bin"
+    assert listing["files"][0]["available"]
+    with pytest.raises(ValueError, match="unavailable"):
+        execute_management(store.db, store.config, {
+            "kind": "project-file-content", "id": second_project, "file_id": file_id,
+        })
+    read = execute_management(store.db, store.config, {
+        "kind": "project-file-content", "id": first_project, "file_id": file_id,
+        "offset": 0, "limit": 4,
+    })
+    assert base64.b64decode(read["content_base64"]) == content[:4]
+    assert read["truncated"]
+    attached = execute_management(store.db, store.config, {
+        "kind": "file.attach", "workstream_id": second_project, "file_id": file_id, "confirmed": True,
+    })
+    assert attached["object_ids"]
+    second_listing = execute_management(store.db, store.config, {
+        "kind": "project-files", "id": second_project, "page": 0,
+    })
+    assert second_listing["files"][0]["id"] == file_id
+    assert second_listing["files"][0]["retaining_workstreams"] == 2
+    with patch("assistant_agent.artifact_processor.ArtifactProcessor.scan_file", return_value={"status": "infected"}):
+        with pytest.raises(ValueError, match="clean malware scan"):
+            execute_management(store.db, store.config, {
+                "kind": "file.upload", "workstream_id": first_project, "path": "deliverables/blocked.bin",
+                "content_base64": "eA==", "confirmed": True,
+            })
+    assert not (Path(store.config.get("agent.filesystem.shared_root")) / "deliverables/blocked.bin").exists()
+    with pytest.raises(ValueError, match="relative workspace path"):
+        execute_management(store.db, store.config, {
+            "kind": "file.upload", "workstream_id": first_project, "path": "../outside.txt",
+            "content_base64": "eA==", "confirmed": True,
+        })
 
 
 @pytest.fixture
@@ -970,6 +1029,7 @@ def test_workstreams_preserve_origin_metadata_when_continued_across_channels(sto
         "<email-reply@example.com>", "<telegram-sent@example.com>", [],
         "Re: Telegram workstream message", ["sender@example.com"],
     ) == "telegram:main"
+    assert ingestor.sender_has_conversation_history("telegram:main", ["agent@example.com"])
 
     outbound_job = store.db.fetch_one(
         "INSERT INTO jobs(thread_id, task_summary) VALUES ('telegram:main', 'Send the requested email') RETURNING id",
@@ -986,6 +1046,9 @@ def test_workstreams_preserve_origin_metadata_when_continued_across_channels(sto
         "Re: Requested details", ["sender@example.com"],
     )
     assert reply_thread == "telegram:main"
+    assert ingestor.sender_has_conversation_history(reply_thread, ["SENDER@example.com"])
+    assert not ingestor.sender_has_conversation_history(reply_thread, ["never-contacted@example.com"])
+    assert not ingestor.sender_has_conversation_history("unknown-thread", ["sender@example.com"])
     email_reply = RequestService(store.db).receive_request(IncomingRequest(
         "email", "<email-response@example.com>", reply_thread, "sender@example.com",
         reply_thread, "Here is my response",

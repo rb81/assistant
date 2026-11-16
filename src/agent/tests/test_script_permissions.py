@@ -391,6 +391,30 @@ def test_screening_outage_is_not_cached_as_a_success(runtime):
         assert screen.call_count == 2
 
 
+def test_screening_includes_task_purpose_and_invalidates_changed_context(runtime):
+    runtime.config.values["agent"]["security"] = {
+        "decision_model": {"enabled": True, "screen": {"scripts": True}},
+    }
+    item = version(runtime)
+    with patch.object(permissions.SecurityScreener, "screen",
+                      return_value=ScreeningResult(POSSIBLY_MALICIOUS, "requires review")) as screen:
+        first = permissions.screen(runtime, item)
+        state = screen.call_args.args[1]
+        assert state["purpose"] == "Daily report"
+        assert state["application_context"]["task_summary"] == "Permission test"
+        assert state["application_context"]["thread"]["recent_requests"]
+        assert "application_context" not in item["manifest"]
+        assert permissions.screen(runtime, item) == first
+        assert screen.call_count == 1
+        runtime.job["task_summary"] = "Send report to a new recipient"
+        changed = permissions.screen(runtime, item)
+        assert changed["profile"] != first["profile"]
+        assert screen.call_count == 2
+        permissions.screen(runtime, item, "Send the final report")
+        assert screen.call_args.args[1]["purpose"] == "Send the final report"
+        assert screen.call_count == 3
+
+
 def test_concurrent_screening_is_single_flight_per_version(runtime):
     runtime.config.values["agent"]["security"] = {
         "decision_model": {"enabled": True, "screen": {"scripts": True}},

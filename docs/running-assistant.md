@@ -2,219 +2,197 @@
 
 ## Requirements and setup
 
-Install Docker with Compose, Python 3.12+ with virtual-environment support, and
-OpenSSL. Setup offers to create `data/.venv-setup` and install its dependencies.
-You also need model API credentials and an email mailbox or Telegram bot for
-task intake. From the repository root, run:
+Use macOS or Linux with **Docker and Docker Compose running**, plus curl and tar.
+Your account must already have Docker access without sudo. The installer does
+not install Docker or change host permissions. No host Python, Node, Rust, or
+Git installation is needed.
 
-```bash
-./run.sh
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/assistant/main/install.sh | sh
+"$HOME/.local/bin/assistant"
 ```
 
-`run.sh` is the entry point for both setup and everyday administration.
-Existing `data/` settings and the `data/.venv-setup` environment are reused.
+The installer downloads source, builds images in Docker, and starts management
+and PostgreSQL. Fresh installations leave task workers stopped until setup is
+complete. A configured installation starts its configured services.
 
-The root launcher resolves the repository path; invoke it by its path if
-starting outside the repository. Configure identity, model
-access, and any enabled integrations in the native forms. It stores mutable settings,
-credentials, setup state, and runtime data beneath the gitignored `data/`
-directory. See [configuration](configuration.md).
+In the terminal interface:
 
-Setup opens a full-screen terminal interface. After initial setup, the home
-screen shows actual component health and links to **Services**, **Activity**,
-**Connections**, **Settings**, and **Help**. This is one persistent application:
-services and database records are native rows and detail views, not terminal
-command output or embedded setup menus. Startup checks the existing application
-image for management use; browsing records never builds images. If no image is
-available, **Services → Start app** explicitly builds and starts the application.
-Record requests use short-lived containers with the checkout's Python source
-mounted read-only, not a persistent background helper. Loading and failed reads
-are distinguished from a successfully loaded empty collection. Navigation stays
-available during reads; a page selected while another operation runs loads next.
+1. Configure identity, model credentials, and connections.
+2. Review **Settings > Assistant instructions** and keep your draft.
+3. **Review & save**, then choose **Services > Start app**.
 
-Use Tab/Shift-Tab or arrows to move, Enter to open an action, and Esc to go back.
-The compact, borderless layout keeps navigation at the top and page actions at
-the bottom. There is no repeated branding banner. The **About** panel above the
-content explains the focused menu option, field or action,
-including its purpose, input format and important consequences. **F1** opens
-the full explanation and page context in a read-only, scrollable help dialog.
-Esc closes help and restores focus without saving or discarding edits.
-Navigation, action buttons, pagination and contextual help stay outside the scrolling
-content. Status appears only when there is something to report. F5 refreshes the
-current view. Service health updates quietly every five
-seconds without flashing a loading indicator or rebuilding unchanged content.
-Failures still appear in the status area. Service logs have an in-place **Live**
-toggle with the same refresh interval.
-No shell is opened for service controls or logs.
+The task agent requires nonempty instructions in `data/config/AGENT.md`.
+Starting workers may process existing inbox messages: use an assistant-owned
+mailbox and restrict senders before starting.
 
-Settings and connection forms preserve a session draft across sections.
-Click a field to edit it; the focused field and insertion position are highlighted,
-with a beam cursor where the terminal supports it. In single-line
-fields, Up/Down or Tab/Shift-Tab move between controls and Enter advances.
-On checkbox fields, Space or Enter toggles the setting; arrows and Tab move
-between controls without changing it.
-Left/Right move the text cursor; multiline editors retain normal editing keys.
-Long single-line values scroll horizontally instead of hiding the edited portion.
-**Keep draft** retains form edits; **Discard this form** drops only the current
-form. **Review & save** (Ctrl-S) lists changes and validation problems before a
-confirmed save. Saving does not restart workers. Open a component under
-**Services** and choose **Apply settings** to recreate it from saved configuration.
-Connection labels describe the draft, not verified account connectivity.
-API keys are masked and existing values are never prefilled into visible fields.
-Telegram recipient mappings use a JSON object, for example
-`{"you@example.com": "123456"}`; each ID must be on the allowed-user list.
+The [macOS app](https://github.com/rb81/assistant-client) provides another
+interface to the same API. See [configuration](configuration.md) for settings
+and credentials, or [Docker troubleshooting](docker-setup.md#troubleshooting-local-administration)
+if administration will not open.
 
-**Activity** provides searchable, paginated tasks, memories, reminders, projects,
-and script permissions. Open records for details and available confirmed actions:
-retry/cancel/review tasks, add instructions, edit/pin/delete memories, cancel
-reminders, inspect project objects, preview project deletion, and revoke or
-block script permissions. Deletion previews retain shared objects and require a
-new confirmation if the inventory changes. Failed deletions keep writers stopped;
-use **Settings → Storage & recovery** to resume. After recovery, start any
-previously stopped writers from Services.
-Tab or click into long record details or deletion inventories, then use
-arrows or PgUp/PgDn to read all content. Live log updates preserve the active
-text control and cursor position. Invalid text or credential entries stay in
-their dialog for correction. Confirmed writes temporarily hold navigation
-until completion so a configuration reload cannot discard new edits; reads
-remain navigable.
+### Installation options
 
-First-run setup uses these same native forms: acknowledge the safety notice,
-configure identity and models, choose connections, review instructions, then
-review and save. In model settings, **Generate secure database password** adds
-a masked password to the form; keep the draft to retain it, or discard the form
-to drop it. Generation refuses existing PostgreSQL data. An existing database
-password must be rotated through **Settings → Credentials** instead.
+Default location: `~/.local/share/assistant`. To choose another path or source ref:
 
-The interface needs at least 76 columns and 24 rows. Smaller windows show a
-resize notice without losing the draft. `./run.sh --plain` is an explicit legacy
-line-oriented fallback; the native interface does not invoke those menus.
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/assistant/main/install.sh |
+  ASSISTANT_INSTALL_DIR="$HOME/assistant" ASSISTANT_VERSION=main sh
+```
 
-On Linux, if Docker requires sudo, setup asks permission before elevating.
-Cached authorization is reused. When authentication is needed, the interface
-yields to sudo's own terminal password prompt, then resumes; Assistant never
-reads or stores the password. There is no need to run `sudo -v` beforehand or
-run the entire setup as root. Expired authorization can be renewed at the next
-command. Cancellation leaves that command unexecuted; failed Docker operations
-are not automatically repeated. Sudo permissions and daemon availability are
-still enforced by the host.
+To register an existing source checkout:
 
-On macOS, start Docker Desktop (or your chosen Docker runtime) and wait until
-it is ready. `docker info` should succeed in the same terminal. Use
-`docker context ls` to check which daemon is selected; do not use sudo as a
-workaround for an unavailable Desktop daemon.
+```sh
+ASSISTANT_INSTALL_DIR="$PWD" sh install.sh
+```
 
-If credentials are stored in a Docker volume, opening administration also
-requires the original daemon: setup reads the saved credentials before showing
-the home screen. A stopped runtime, changed context, registry credential-helper
-failure, or missing volume can therefore prevent startup. The UI explains
-recognized failures with **Retry** and **Quit** buttons pinned below the error.
-Start Docker, wait until it is ready, then select **Retry**.
-Do not delete the volume or switch credential storage to bypass an error; see
-[Docker troubleshooting](docker-setup.md#troubleshooting-local-administration).
+Rerunning the installer preserves existing source and data; **it does not update
+them**. A conflicting launcher or unrelated destination is rejected.
+Add `~/.local/bin` to PATH to use `assistant` directly, or use the full path.
+In a checkout, `./run.sh` is equivalent.
 
-Open **Settings → Assistant instructions** to review the example or edit your
-own instructions, then keep the draft and save. You can also create a nonempty
-`data/config/AGENT.md` yourself. The task agent refuses to start without instructions.
+### Terminal controls
+
+Use a terminal at least **76 columns by 24 rows**.
+
+| Control | Action |
+|---|---|
+| Tab / Shift-Tab, arrows | Move between controls |
+| Enter | Open or confirm the focused action |
+| Space | Toggle a checkbox |
+| Esc | Go back or close help |
+| F1 | Explain the focused option |
+| F5 | Refresh |
+| Ctrl-S | Review and save |
+
+Forms retain a session draft. **Keep draft** does not write settings;
+**Review & save** validates and confirms changes. Saving alone does not restart
+workers: use **Services > Apply settings** on affected components.
+For saved credential changes, use **Settings > Credentials > Activate pending**.
+Restarts and activation can interrupt active work.
 
 ## Start and inspect
 
-Run Compose from the repository root, explicitly loading the local environment:
+From the installation root:
 
-```bash
-docker compose --env-file data/.env up -d --build
-docker compose --env-file data/.env ps
-docker compose --env-file data/.env logs -f task-agent
+```sh
+./run.sh                         # Open the terminal interface
+./run.sh server start            # Prepare saved deployment files and start services
+./run.sh server status
+./run.sh management health
+./run.sh management services
+./run.sh management logs task-agent
+./run.sh server stop             # Stop the whole stack; preserve data
 ```
 
-Setup writes an absolute `COMPOSE_FILE` setting in `data/.env`, pointing to
-`src/docker-compose.yml` and the generated secrets overlay. The `email`,
-`telegram`, and `voice` profiles are enabled by configuration when those
-integrations are selected. Run `./run.sh tools` for guided status, logs, and
-administration.
+The TUI's **Services > Stop app** stops workers but keeps management available.
+Closing a client never stops services. Docker restart policies keep started
+services running independently; Docker itself must start after a host reboot.
 
-Starting the stack enables workers and may process existing inbox messages.
-If you move the checkout, rerun setup to refresh its absolute deployment paths.
+**Activity** provides tasks, memories, reminders, projects, and script permissions.
+Record deletion uses a fresh preview and confirmation. If project deletion is
+interrupted, recover through **Settings > Storage & recovery**, then explicitly
+restart any writers that remain stopped.
+
+### What service health verifies
+
+Worker health verifies recent completed polling and an authenticated database
+read, **not successful jobs or working integrations**. Long jobs can report
+unverified progress without being cancelled or restarted. Inspect logs and actual
+task outcomes before treating a component as ready.
+
+ClamAV checks daemon responsiveness, not signature freshness; Ollama checks model
+inventory, not inference. One-shot services are evaluated by exit status.
+Disabled profiles are not failed services. See [Docker setup](docker-setup.md)
+for service details.
+
+### Noninteractive administration
+
+CLI, TUI, and desktop clients use the same Management API. Pass private JSON
+through stdin, not command-line arguments:
+
+```sh
+./run.sh management records tasks
+./run.sh management query < query.json
+./run.sh management operation < operation.json
+./run.sh management operation-status --operation-id OPERATION_ID
+```
+
+Writes require operation-specific confirmation; configuration saves also need a
+current preview and revision. Accepted writes are not necessarily complete:
+inspect their operation status. See the [API reference](management-api.md) and
+[client guide](building-clients.md) for contracts, polling, and recovery.
+
+### Updating or moving a source installation
+
+Back up first and stop the stack **before** moving or replacing source. Update
+from a reviewed server revision using your chosen source-download or Git workflow,
+preserving `data/`. The installer is not an updater.
+
+Run `./run.sh server start` from the updated location to regenerate absolute
+deployment paths, build management, and start the configured services. Rebuild
+application images through **Services > Start app** when source changes.
+If the checkout moved, rerun `ASSISTANT_INSTALL_DIR="$PWD" sh install.sh` to
+register its launcher; an existing launcher for the old location must be resolved
+first. Do not remove an unrelated installation's launcher.
 
 ## Data locations
 
-- `data/postgres/` — database files.
-- `data/share/` — shared files accessible to agent file tools and sandbox runs.
-- `data/private/` — artifacts, TLS material, and other private state.
-- `data/ollama/` — local embedding model cache.
-- `data/clamav/` — malware signatures.
-- `data/.env`, `data/overrides.env`, `data/.secrets/` — local configuration and credentials.
-- `data/.compose-secrets.yaml` — generated credential mounts.
-- `data/config/agent.yaml` — runtime defaults, initialized from `src/config/agent.yaml`.
-- `data/config/AGENT.md` — operator-maintained runtime instructions.
+| Path | Contents |
+|---|---|
+| `data/postgres/` | PostgreSQL data |
+| `data/share/` | Workspace files |
+| `data/private/` | Retained attachments, TLS material, and private state |
+| `data/ollama/`, `data/clamav/` | Model cache and malware signatures |
+| `data/.env`, `data/overrides.env` | Deployment variables and application overrides |
+| `data/.secrets/` | Protected credentials and setup state |
+| `data/.compose-secrets.yaml` | Generated credential mounts |
+| `data/.management-token` | Administrative API token; never commit or share |
+| `data/config/AGENT.md` | Assistant instructions |
 
-Tracked templates and defaults are under `src/config/`. Documentation is bundled
-with the application image and retrieved using `help_search` and `help_topic`;
-it is not mounted from the host or copied into the shared workspace.
-`runtime_capabilities` reports live settings and limits. Help does not grant
-access to host secrets, host source files or service controls.
+Tracked defaults are under `src/config/`. Documentation ships in the application
+image; it is not mounted from the host or copied into the workspace.
 
-Back up the database, shared files, private files, and local configuration and
-credentials. Stop the stack before taking filesystem copies that must be
-consistent. If using Docker-volume credential storage, back up that external
-volume separately along with `data/.secrets/state.json`; copying `data/` alone
-does not include those credentials. See [credential storage](security.md#optional-docker-volume-storage).
-Keep backups protected as confidential data.
+**Back up all of `data/` securely.** Stop the stack before filesystem copies that
+must be consistent. With optional Docker-volume credential storage, also back up
+that volume separately: `data/` alone does not contain its credentials. Retain
+`data/.secrets/state.json`. See [credential storage](security.md#optional-docker-volume-storage).
+Credential files and Docker volumes are not encrypted storage.
 
 ### Factory reset
 
-Run `./run.sh reset` to permanently destroy and recreate the bundled PostgreSQL
-cluster under `data/postgres/pgdata`. This deletes all databases and database
-state in that cluster, including rows, indexes, ID sequences, and migration
-history; startup recreates the schema and applies migrations. The reset makes
-no backup and does not offer a selective data reset.
+`./run.sh reset` permanently destroys and recreates the bundled PostgreSQL
+cluster: **all databases, records, indexes, sequences, and migration history**.
+It makes no backup. Custom database installations must reset their database
+separately. Confirmation requires `RESET`.
 
-The reset preserves configuration and settings (`data/.env`, `data/overrides.env`,
-`data/config/`), credentials (`data/.secrets/` or the optional credential Docker
-volume), and `data/config/AGENT.md`. By default, workspace files in `data/share/`
-and private attachments in `data/private/artifacts/` are also preserved.
+| Reset mode | Deletes | Preserves |
+|---|---|---|
+| Factory reset | Bundled database contents | Settings, credentials, instructions, workspace files, attachments |
+| **Storage & recovery > Clean install (also delete files)** | Database plus everything in `data/share/` and `data/private/artifacts/` | Settings, credentials, instructions, TLS, and other service data |
 
-For a clean install, choose **Settings → Storage & recovery → Clean install
-(also delete files)**. In the traditional menu (`./run.sh --plain reset`),
-answer yes to the clean-install option before typing `RESET`. This additionally
-deletes **everything** in `data/share/` and `data/private/artifacts/`, including
-shared and generated files, attachments, caches, archives and trash.
-Configuration, credentials, `AGENT.md`, TLS certificates and other persistent
-service data (such as downloaded models) remain untouched.
-
-Once PostgreSQL is ready, the workspace indexer starts. If workspace indexing is
-enabled in settings, it rebuilds its index from the preserved workspace files
-in the background.
-
-Factory reset refuses installations configured with a custom database; reset
-that database separately. Type `RESET` at the confirmation prompt to proceed.
-
-Both reset modes offer **Keep mailbox position (recommended)**, enabled by
-default. This preserves only the email UID checkpoints, not emails, tasks or
-approvals. Already handled emails are not downloaded again; messages beyond
-the checkpoint still arrive normally. Uncheck it to deliberately re-read the
-configured mailbox. The traditional menu asks the same question. If a previous
-reset already erased the checkpoint, it cannot be recovered by this option.
-
-Successfully handled emails are explicitly marked `\Seen` before being archived
-or quarantined. Intake uses UID checkpoints, not the read/unread flag; manually
-reading an email does not prevent the assistant from processing it.
+Both modes offer **Keep mailbox position (recommended)**, enabled by default.
+This keeps only email UID checkpoints, not messages or tasks. Turning it off
+re-reads the configured mailbox; already lost checkpoints cannot be recovered.
+Email intake follows UIDs, not read/unread flags.
 
 Telegram skips queued updates on its first post-reset poll. Remote email and
-Telegram chat history are not deleted. Rebuild the agent images when upgrading
-so receivers use this behavior. If reset cannot restore mailbox checkpoints or
-install its replay-prevention marker, application services remain stopped;
-resolve the error and rerun reset.
+Telegram history are not deleted. If replay-prevention state cannot be restored,
+application services remain stopped: resolve the error and rerun reset.
+Enabled workspace indexing rebuilds from preserved files.
 
 ## Operations
 
-```bash
+For direct Compose use from the installation root:
+
+```sh
+docker compose --env-file data/.env ps
+docker compose --env-file data/.env logs --tail=100 task-agent
 docker compose --env-file data/.env down
 docker compose --env-file data/.env up -d --build
-docker compose --env-file data/.env logs --tail=100 task-agent
 ```
 
-`down` does not remove bind-mounted `data/` files. Do not use
-`down --volumes` unless intentionally deleting Compose-managed volumes such as
-the transcription and sandbox runtime volumes. For service topology and trust
-boundaries, see [architecture](architecture.md) and [Docker setup](docker-setup.md).
+Setup writes `COMPOSE_FILE` and selected profiles into `data/.env`.
+`down` preserves bind-mounted data. Do not add `--volumes` unless deliberately
+removing Compose-managed runtime volumes. See [architecture](architecture.md)
+and [Docker setup](docker-setup.md) for topology and trust boundaries.

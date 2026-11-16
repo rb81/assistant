@@ -25,7 +25,7 @@ class DropboxFiles:
         self.client = DropboxClient(config, db)
         self.scanner = ArtifactProcessor(db, config)
         self.shared_root = Path(config.get("agent.filesystem.shared_root", "/data/share")).resolve()
-        self.private_root = (Path(config.get("agent.artifacts.raw_root", "/data/private/artifacts/raw")) / "dropbox").resolve()
+        self.private_root = (Path(config.get("agent.artifacts.raw_root", "/data/private/artifacts")) / "dropbox").resolve()
         if self.private_root == self.shared_root or self.shared_root in self.private_root.parents:
             raise DropboxError("Dropbox quarantine must be outside the shared workspace")
         if not isinstance(job.get("id"), int) or job["id"] < 1:

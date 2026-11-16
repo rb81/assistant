@@ -354,7 +354,8 @@ def test_hardened_compose_configuration():
             data = Path(directory) / "data"
             data.mkdir()
             environment = data / ".env"
-            environment.write_text("SANDBOX_SHARED_ROOT_HOST=" + str(data / "share") + "\n")
+            environment.write_text("SANDBOX_SHARED_ROOT_HOST=" + str(data / "share") + "\n"
+                                   "ASSISTANT_INSTALL_ROOT=" + directory + "\n")
             result = subprocess.run(["docker", "compose", "--project-directory", str(source),
                 "--env-file", str(environment),
                 "-f", str(root / "docker-compose.yml"), "--profile", "voice", "--profile", "telegram",
@@ -894,6 +895,29 @@ def test_new_telegram_workstream_uses_temporary_title_and_persists_selection(dat
     named = database.fetch_one("SELECT title, name_status FROM workstreams WHERE id = %s", (stream["id"],))
     assert named == {"title": "Dinner Plans", "name_status": "named"}
     llm.chat.assert_called_once()
+
+
+def test_legacy_named_placeholder_is_named_without_overwriting_manual_titles(database):
+    migrate(database)
+    job = database.create_manual_job("Dinner", "Plan a dinner")
+    database.execute(
+        """UPDATE workstreams SET title = 'New workstream', origin_channel = 'telegram',
+           name_status = 'named', name_attempts = 0 WHERE id = %s""", (job["workstream_id"],),
+    )
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config = database, config()
+    llm = MagicMock()
+    llm.chat.return_value = {"choices": [{"message": {"content": "Dinner Plans"}}]}
+    with patch("assistant_agent.task_agent.LlmClient", return_value=llm):
+        agent.name_pending_workstream(job, llm)
+    assert database.fetch_one("SELECT title FROM workstreams WHERE id = %s", (job["workstream_id"],))["title"] == "Dinner Plans"
+    database.execute(
+        "UPDATE workstreams SET title = 'My custom title', name_attempts = 0 WHERE id = %s",
+        (job["workstream_id"],),
+    )
+    with patch("assistant_agent.task_agent.LlmClient") as constructor:
+        agent.name_pending_workstream(job, llm)
+        constructor.assert_not_called()
 
 
 def test_clarification_resumes_the_matching_task(database):

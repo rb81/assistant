@@ -1,0 +1,1324 @@
+"""Versioned host management API."""
+import hmac
+from typing import Literal
+import hashlib
+import difflib
+import ipaddress
+import json
+import logging
+import math
+import os
+import re
+import secrets
+import stat
+import asyncio
+from datetime import datetime
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import httpx
+from fastapi import FastAPI, Header, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from .management import GROUPS, Field, Management
+from .management_contracts import (
+    ApprovalsResponse, ConfigurationCheckResponse, ConfigurationPreviewRequest, ConfigurationPreviewResponse,
+    ConfigurationResponse, CredentialsResponse, CredentialStorageStatusResponse, FullConfigurationResponse, FullHealthResponse,
+    GeneratedDatabasePasswordResponse, HealthResponse, LogsResponse, ManagementOperationRequest, ManagementOperationResponse,
+    ProjectFileContentResponse, ProjectFilesResponse, RecordPageResponse, ServicesResponse,
+    ConversationsResponse, TaskActivityResponse, TaskDeletionPreviewResponse, TaskMessagesResponse, TaskSummaryResponse,
+    ClientAcknowledgmentRequest, ClientAcknowledgmentResponse, ClientHistoryResponse, ClientPollResponse,
+    DomainReadRequest,
+)
+from . import settings_schema
+from .management_operations import OperationManager
+from .secret_store import is_secret_name
+from .management_help import FIELD_HELP, GROUP_HELP
+from .setup import (
+    PublicSetupError, SetupError, atomic_write, installation_lock, overrides_problems, parse_environment,
+    read_regular, render_environment, setup_failure_message,
+)
+
+
+LOGGER = logging.getLogger(__name__)
+API_VERSION = 1
+MAX_LOG_BYTES = 256 * 1024
+
+
+class ManagementExecutorUnavailable(SetupError):
+    pass
+
+
+SENSITIVE_KEY = re.compile(
+    r"password|secret|api[_-]?key|authorization|credential|private[_-]?key|"
+    r"signing[_-]?key|database[_-]?url|^dsn$|^token$|[_-]token$",
+    re.IGNORECASE,
+)
+DERIVED_SETTINGS = {
+    "AGENT_SANDBOX_REVOKE_TOKEN": "Derived from the sandbox API token; change that token instead.",
+    "ASSISTANT_INSTALL_ROOT": "Derived from the installation location.",
+    "SANDBOX_SHARED_ROOT_HOST": "Derived from the installation location.",
+    "ASSISTANT_UID": "Selected by server bootstrap to preserve filesystem ownership.",
+    "ASSISTANT_GID": "Selected by server bootstrap to preserve filesystem ownership.",
+    "ASSISTANT_DOCKER_SOCKET": "Selected by server bootstrap; changing it in-band can disconnect the executor.",
+    "ASSISTANT_MANAGEMENT_IMAGE": "Selected by server bootstrap; changing it in-band can disconnect the executor.",
+    "COMPOSE_PROJECT_NAME": "Changing the project name in-band would orphan the current installation.",
+}
+
+DEPLOYMENT_SETTINGS = (
+    Field("TASK_AGENT_WORKERS", "Task worker replicas", "1"),
+    Field("REQUEST_PREPROCESSOR_WORKERS", "Request screening replicas", "1"),
+    Field("LOG_LEVEL", "Agent log level", "INFO"),
+    Field("ASSISTANT_MANAGEMENT_PORT", "Management loopback port", "8765"),
+    Field("SANDBOX_IMAGE", "Sandbox image", "assistant-sandbox:latest"),
+    Field("SANDBOX_ISOLATION_MODE", "Sandbox isolation mode", "container"),
+    Field("SANDBOX_RUN_NETWORK_MODE", "Sandbox network mode", "per_run_bridge"),
+    Field("SANDBOX_RUN_NETWORK", "Existing sandbox network"),
+    Field("SANDBOX_EGRESS_MODE", "Sandbox egress policy", "proxy"),
+    Field("SANDBOX_RUN_CAP_DROP", "Sandbox dropped capabilities", "NET_RAW"),
+    Field("SANDBOX_RUN_CPUS", "Sandbox CPU limit", "2"),
+    Field("SANDBOX_RUN_MEMORY_BYTES", "Sandbox memory limit (bytes)", "2147483648"),
+    Field("SANDBOX_RUN_PIDS_LIMIT", "Sandbox process limit", "512"),
+    Field("SANDBOX_DEFAULT_TIMEOUT_SECONDS", "Default sandbox timeout (seconds)", "300"),
+    Field("SANDBOX_MAX_TIMEOUT_SECONDS", "Maximum sandbox timeout (seconds)", "300"),
+    Field("SANDBOX_PROXY_MEMORY_BYTES", "Sandbox proxy memory limit (bytes)", "268435456"),
+    Field("EGRESS_PROXY_IDLE_TIMEOUT", "Sandbox proxy idle timeout (seconds)", "300"),
+    Field("EGRESS_PROXY_MAX_CONNECTIONS", "Sandbox proxy maximum connections", "64"),
+    Field("SANDBOX_RUN_RUNTIME", "Sandbox container runtime"),
+    Field("SANDBOX_RUN_USER", "Sandbox container user"),
+    Field("SANDBOX_RUN_TMPFS_SIZE", "Sandbox temporary filesystem size", "512m"),
+    Field("SANDBOX_RUN_DNS_SERVERS", "Sandbox DNS servers"),
+    Field("SANDBOX_RUN_SECURITY_OPT", "Sandbox security options", "no-new-privileges:true"),
+    Field("SANDBOX_RUN_CONTAINER_PREFIX", "Sandbox container name prefix", "assistant-sandbox-run"),
+    Field("SANDBOX_RUN_NETWORK_PREFIX", "Sandbox network name prefix", "assistant-sandbox-net"),
+    Field("ASSISTANT_INSTALL_ROOT", "Installation root"),
+    Field("SANDBOX_SHARED_ROOT_HOST", "Sandbox shared root"),
+    Field("ASSISTANT_UID", "Installation user ID"),
+    Field("ASSISTANT_GID", "Installation group ID"),
+    Field("ASSISTANT_DOCKER_SOCKET", "Docker socket", "/var/run/docker.sock"),
+    Field("ASSISTANT_MANAGEMENT_IMAGE", "Management image", "assistant-management:local"),
+    Field("COMPOSE_PROJECT_NAME", "Compose project name", "assistant"),
+)
+
+DEPLOYMENT_TYPES = {
+    "TASK_AGENT_WORKERS": "integer", "REQUEST_PREPROCESSOR_WORKERS": "integer",
+    "ASSISTANT_MANAGEMENT_PORT": "integer", "SANDBOX_RUN_CPUS": "number",
+    "SANDBOX_RUN_MEMORY_BYTES": "integer", "SANDBOX_RUN_PIDS_LIMIT": "integer",
+    "SANDBOX_DEFAULT_TIMEOUT_SECONDS": "integer", "SANDBOX_MAX_TIMEOUT_SECONDS": "integer",
+    "SANDBOX_PROXY_MEMORY_BYTES": "integer", "EGRESS_PROXY_IDLE_TIMEOUT": "integer",
+    "EGRESS_PROXY_MAX_CONNECTIONS": "integer",
+}
+DEPLOYMENT_CHOICES = {
+    "LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+    "SANDBOX_ISOLATION_MODE": ("container", "process"),
+    "SANDBOX_RUN_NETWORK_MODE": ("per_run_bridge", "bridge", "none", "existing"),
+    "SANDBOX_EGRESS_MODE": ("proxy", "open"),
+}
+DEPLOYMENT_WARNINGS = {
+    "SANDBOX_ISOLATION_MODE": "Process mode removes per-command container isolation and is for development only.",
+    "SANDBOX_RUN_NETWORK_MODE": "Bridge or existing network mode can bypass the per-run network policy.",
+    "SANDBOX_EGRESS_MODE": "Open egress allows unrestricted outbound network access.",
+    "SANDBOX_RUN_CAP_DROP": "Reducing dropped capabilities weakens sandbox isolation.",
+    "SANDBOX_RUN_SECURITY_OPT": "Removing no-new-privileges weakens sandbox isolation.",
+    "SANDBOX_RUN_DNS_SERVERS": "Custom DNS is used only when the isolated egress proxy is not active.",
+    "ASSISTANT_MANAGEMENT_PORT": "Applying a port change interrupts the management connection.",
+}
+BASIC_SETTINGS = {
+    "AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_LLM_BASE_URL",
+    "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_ADMIN_EMAIL",
+    "SETUP_EMAIL_ENABLED", "AGENT_TELEGRAM_ENABLED", "AGENT_TELEGRAM_BOT_TOKEN",
+    "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_APPROVALS_CHANNEL",
+}
+
+
+# Catalog groups: title, the primary settings page they extend (None = their own advanced page), and help.
+CATALOG_GROUPS = {
+    "app": ("Application", "identity", "Name and referrer sent to model providers that attribute requests."),
+    "identity": ("Message identity", "identity", "How outgoing message identifiers are formed."),
+    "database": ("Database connection", None,
+                 "Where services find PostgreSQL. Change only when running an external database."),
+    "llm": ("Model behavior", "models", "Sampling settings applied to ordinary task models."),
+    "routing": ("Model routing", "models", "Which model screens and routes incoming requests, and fallback timing."),
+    "limits": ("Prompt & history limits", None, "Conversation history, prompt size, summarization, and retry pacing for tasks."),
+    "task_agent": ("Task worker", None, "How often the task worker checks for queued work."),
+    "email": ("Email limits", "email", "Mailbox timeouts and size limits for reading messages and attachments."),
+    "zoom": ("Zoom account", "zoom", "Which Zoom user the assistant acts as."),
+    "telegram": ("Telegram limits", "telegram", "Download size, rate limits, and task status messages."),
+    "transcription": ("Transcription service", "transcription", "The local speech-to-text service and its model."),
+    "supervisor": ("Health monitor", None, "When stalled tasks are flagged and how email approvals escalate."),
+    "filesystem": ("Shared files", None, "The shared folder the assistant can read and write, and its limits."),
+    "tool_result_cache": ("Tool result cache", None, "Stores large tool outputs on disk instead of in prompts."),
+    "artifacts": ("Attachments & malware scanning", "security",
+                  "Where attachments are stored, which types are accepted, and how they are scanned."),
+    "prompt": ("Instructions file", None, "Where the assistant's standing instructions are read from."),
+    "memory": ("Memory", None, "How long working context lasts and how the memory steward saves and prunes facts."),
+    "context": ("Related context", None, "How related records are found and added to each task's prompt."),
+    "workspace": ("Workspace indexing", None, "Which workspace files are converted and indexed for search."),
+    "conversion": ("Document conversion", None, "Tools and limits used to convert documents to text."),
+    "reminders": ("Reminders", None, "Reminder timezone, scheduling cadence, and script checks."),
+    "calendar": ("Calendar defaults", "calendar", "Timezone and default alert used for new events."),
+    "deep_research": ("Deep research", None, "Models, iteration limits, and timeouts for long research tasks."),
+    "client": ("Desktop clients", None, "How connected clients are polled and when deliveries fall back."),
+    "heartbeat": ("Heartbeat", None, "Periodic check-ins that detect stale tasks and research."),
+    "sandbox": ("Script sandbox", "security", "The isolated runner that executes scripts, and its network allowlist."),
+    "search": ("Search engine & limits", None, "Search engine, model, and result limits for web searches."),
+    "fusion": ("Multi-model analysis", None, "Ask several models and merge their answers for hard questions."),
+    "security": ("Screening thresholds", "security",
+                 "How requests and scripts are screened, and when risky actions need approval."),
+}
+ADVANCED_GROUP_PARENTS = {
+    "advanced:Calendar privacy": "calendar", "advanced:Email behavior": "email",
+    "advanced:Approvals and names": "identity",
+}
+CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
+SETTING_CHOICES = {
+    "AGENT_CALENDAR_DEFAULT_PROVIDER": ("google", "outlook", "zoho"),
+    "AGENT_ZOOM_AUTH_MODE": ("s2s", "oauth"),
+}
+
+
+def setting_presentation(group, spec):
+    """Label, section, and help a client should show for one setting."""
+    label, section = spec.label, None
+    provider = re.match(r"^AGENT_CALENDAR_(GOOGLE|OUTLOOK|ZOHO)_", spec.key)
+    if provider and group == "calendar":
+        section = CALENDAR_PROVIDERS[provider.group(1)]
+        prefix = provider.group(1).title() + " "
+        if label.startswith(prefix):
+            label = label[len(prefix):]
+            label = label[:1].upper() + label[1:]
+    elif group == "calendar":
+        section = "General"
+    label = re.sub(r" \((?:[a-z0-9]+(?:, | or ))+[a-z0-9]+\)$", "", label)
+    normalized = re.sub(r"^(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_[2-9]_", r"\1_", spec.key)
+    item = settings_schema.catalog_by_env().get(spec.key) or {}
+    explanation = FIELD_HELP.get(normalized) or (item.get("metadata") or {}).get("description")
+    if provider and explanation:
+        # The provider is already clear from the section or account heading.
+        explanation = re.sub(r"^(?:Google|Outlook|Zoho): ", "", explanation)
+    return label, section, explanation
+
+
+def configuration_group_details():
+    """Ordered group metadata so clients can build navigation without hard-coding names."""
+    details = []
+    for name, (title, specs) in configuration_groups().items():
+        parent, help_text, section = None, GROUP_HELP.get(name), None
+        if name.startswith("catalog:"):
+            title, parent, help_text = CATALOG_GROUPS.get(
+                name.removeprefix("catalog:"), (title.replace("_", " ").capitalize(), None, None))
+        elif name.startswith("calendar:"):
+            parent = "calendar"
+            section = CALENDAR_PROVIDERS[name.removeprefix("calendar:").split("_")[0].upper()]
+            help_text = "An additional " + title.rsplit(" ", 2)[0] + " calendar account. Leave blank if unused."
+        else:
+            parent = ADVANCED_GROUP_PARENTS.get(name)
+        details.append({
+            "id": name, "title": title, "help": help_text, "parent": parent, "section": section,
+            "basic": any(spec.key in BASIC_SETTINGS for spec in specs) or name in ESSENTIAL_GROUPS,
+        })
+    return details
+
+
+ESSENTIAL_GROUPS = (
+    "identity", "models", "email", "telegram", "calendar", "zoom", "dropbox", "transcription",
+    "embeddings", "security",
+)
+
+
+def configuration_groups():
+    groups = {name: (title, list(specs)) for name, (title, specs) in GROUPS.items()}
+    groups["deployment"] = ("Deployment and sandbox", list(DEPLOYMENT_SETTINGS))
+    known = {spec.key for _, specs in groups.values() for spec in specs}
+    for item in settings_schema.catalog():
+        if item["env"] in known:
+            continue
+        group = "catalog:" + item["path"].split(".")[1]
+        default = item["default"]
+        if default is None:
+            default = ""
+        elif isinstance(default, list):
+            default = ",".join(map(str, default))
+        elif isinstance(default, dict):
+            default = json.dumps(default)
+        else:
+            default = str(default).lower() if isinstance(default, bool) else str(default)
+        spec = Field(
+            item["env"], item["metadata"].get("label", item["path"]), default,
+            item["secret"], item["type"] is bool,
+        )
+        groups.setdefault(group, (group.removeprefix("catalog:"), []))[1].append(spec)
+    for provider in ("GOOGLE", "OUTLOOK", "ZOHO"):
+        for number in range(2, 10):
+            prefix = f"AGENT_CALENDAR_{provider}_{number}_"
+            group = f"calendar:{provider.lower()}_{number}"
+            fields = [
+                Field(prefix + "CLIENT_ID", "Client ID", secret=True),
+                Field(prefix + "CLIENT_SECRET", "Client secret", secret=True),
+                Field(prefix + "REFRESH_TOKEN", "Refresh token", secret=True),
+                Field(prefix + "CALENDAR_ID", "Calendar ID", "primary" if provider == "GOOGLE" else "default"),
+            ]
+            if provider == "OUTLOOK":
+                fields.append(Field(prefix + "TENANT_ID", "Tenant ID"))
+            if provider == "ZOHO":
+                fields.append(Field(prefix + "API_BASE", "Regional API URL"))
+            groups[group] = (f"{provider.title()} calendar {number}", fields)
+    return groups
+
+
+def token_path(root):
+    return Path(root) / "data/.management-token"
+
+
+def read_token(path):
+    path = Path(path)
+    content = read_regular(path)
+    if content is None:
+        raise PublicSetupError("Management token is missing. Start the management API on the server first.")
+    info = path.stat()
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise PublicSetupError("Management token must only be accessible to its owner (chmod 600).")
+    token = content.decode("ascii").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", token):
+        raise PublicSetupError("Management token is invalid; stop the API before replacing its token file.")
+    return token
+
+
+def ensure_token(root):
+    with installation_lock(Path(root)):
+        path = token_path(root)
+        if read_regular(path) is None:
+            atomic_write(path, (secrets.token_urlsafe(48) + "\n").encode())
+        return read_token(path)
+
+
+def ensure_instance_id(root, token):
+    with installation_lock(Path(root)):
+        path = Path(root) / "data/.management-instance-id"
+        content = read_regular(path)
+        if content is None:
+            content = (hashlib.sha256(token.encode()).hexdigest()[:32] + "\n").encode()
+            atomic_write(path, content)
+        try:
+            identifier = content.decode("ascii").strip()
+        except UnicodeDecodeError:
+            raise PublicSetupError("Management instance identity is invalid; preserve it for diagnosis.") from None
+        if not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            raise PublicSetupError("Management instance identity is invalid; preserve it for diagnosis.")
+        return identifier
+
+
+def redacted(value, backend):
+    if isinstance(value, dict):
+        return {
+            str(key): "[redacted]" if is_secret_name(str(key).upper().removesuffix("_FILE"))
+            or SENSITIVE_KEY.search(str(key)) else redacted(item, backend)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redacted(item, backend) for item in value]
+    if isinstance(value, str):
+        value = backend.redact(value)
+        value = re.sub(r"(?i)([a-z][a-z0-9+.-]{0,31}://)[^/\s@]+@", r"\1[redacted]@", value)
+        value = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1[redacted]", value)
+        return re.sub(
+            r"(?i)([?&](?:api_key|token|key|password|secret)=)[^&\s]+",
+            r"\1[redacted]", value,
+        )
+    return value
+
+
+class ManagementService:
+    """The API boundary uses the same operations as local administration."""
+
+    def __init__(self, root, backend_factory=Management, token=""):
+        self.root = Path(root).resolve()
+        self.backend_factory = backend_factory
+        self.preview_key = token.encode("utf-8")
+
+    def backend(self):
+        backend = self.backend_factory(self.root, lambda *args: False)
+        backend.load()
+        return backend
+
+    @staticmethod
+    def revision(installation):
+        digest = hashlib.sha256()
+        snapshots = (
+            ("env", installation.env_original),
+            ("overrides", installation.overrides_original),
+            ("state", installation.state_original),
+            ("overlay", installation.overlay_original),
+            ("instructions", installation.prompt_original),
+            ("defaults", read_regular(installation.source / "config/agent.yaml")),
+            ("settings-schema", read_regular(installation.source / "config/agent.schema.yaml")),
+            ("instruction-example", read_regular(installation.source / "config/AGENT.md.example")),
+        )
+        for label, content in snapshots:
+            digest.update(label.encode("ascii") + b"\0" + (content or b"") + b"\0")
+        for name, content in sorted(installation.snapshots.items()):
+            digest.update(name.encode("utf-8") + b"\0" + (content or b"") + b"\0")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _setting_specs():
+        return {
+            spec.key: (group, spec)
+            for group, (_, specs) in configuration_groups().items()
+            for spec in specs
+        }
+
+    def configuration_v2(self):
+        backend = self.backend()
+        installation = backend.installation
+        overrides, _ = parse_environment(
+            (read_regular(self.root / "data/overrides.env") or b"").decode("utf-8")
+        )
+        files = [
+            {"path": "src/config/agent.yaml", "format": "yaml", "values": installation.defaults.values},
+            {"path": "data/.env", "format": "env", "values": parse_environment(installation.env_text)[0]},
+            {"path": "data/overrides.env", "format": "env", "values": overrides},
+        ]
+        for file in files:
+            file["values"] = redacted(file["values"], backend)
+        catalog = {item["env"]: item for item in settings_schema.catalog()}
+        settings = [
+            {
+                "group": group, "key": spec.key, "label": presentation[0],
+                "value": backend.value(spec), "default": spec.default,
+                "secret": spec.secret, "boolean": spec.boolean,
+                "data_type": (
+                    "boolean" if spec.boolean else
+                    DEPLOYMENT_TYPES.get(spec.key) or {
+                        "int": "integer", "float": "number", "list": "list",
+                    }.get(getattr(catalog.get(spec.key, {}).get("type"), "__name__", ""), "string")
+                ),
+                "metadata": {
+                    **catalog.get(spec.key, {}).get("metadata", {}),
+                    "level": "basic" if spec.key in BASIC_SETTINGS else "advanced",
+                    **({"choices": list(DEPLOYMENT_CHOICES[spec.key])} if spec.key in DEPLOYMENT_CHOICES else {}),
+                    **({"choices": list(SETTING_CHOICES[spec.key])} if spec.key in SETTING_CHOICES else {}),
+                    **({"help": presentation[2]} if presentation[2] else {}),
+                    **({"section": presentation[1]} if presentation[1] else {}),
+                    **({"warning": DEPLOYMENT_WARNINGS[spec.key]} if spec.key in DEPLOYMENT_WARNINGS else {}),
+                },
+                "editable": spec.key not in DERIVED_SETTINGS,
+                "edit_restriction": DERIVED_SETTINGS.get(spec.key),
+            }
+            for group, (_, specs) in configuration_groups().items()
+            for spec in specs
+            for presentation in (setting_presentation(group, spec),)
+        ]
+        from .management_yaml import backups
+        source = installation.source / "config/agent.yaml"
+        return {
+            "api_version": 2, "revision": self.revision(installation),
+            "setup_complete": backend.accepted, "files": files, "settings": settings,
+            "groups": configuration_group_details(),
+            "credential_names": sorted(backend.credentials),
+            "instructions": backend.instruction_text(),
+            "agent_yaml": (read_regular(source) or b"").decode("utf-8"),
+            "agent_yaml_backups": backups(source.parent),
+            "setup_notice": (
+                "Use a dedicated mailbox. Models and integrations receive the data they need. "
+                "Assistant can take real actions. Keep backups and review permissions."
+            ),
+            "read_only": False,
+        }
+
+    def _configuration_draft(self, payload):
+        backend = self.backend()
+        current_revision = self.revision(backend.installation)
+        if payload.get("revision") != current_revision:
+            raise PublicSetupError("Saved configuration changed. Reload it before previewing or saving.")
+        initial_values = {
+            spec.key: backend.value(spec)
+            for _, specs in configuration_groups().values()
+            for spec in specs
+        }
+        initial_instructions = backend.instruction_text()
+        if payload.get("agent_yaml") is not None:
+            from .management_yaml import validate_yaml
+            backend.installation.defaults = validate_yaml(payload["agent_yaml"])
+            backend.installation.defaults_copy = payload["agent_yaml"].encode("utf-8")
+        values = payload.get("values")
+        if not isinstance(values, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str) for key, value in values.items()):
+            raise PublicSetupError("Configuration values must be string settings.")
+        try:
+            values_size = sum(len(key.encode("utf-8")) + len(value.encode("utf-8"))
+                              for key, value in values.items())
+        except UnicodeEncodeError:
+            raise PublicSetupError("Configuration values must contain valid Unicode text.") from None
+        if values_size > 512 * 1024:
+            raise PublicSetupError("Submitted configuration values exceed 512 KiB.")
+        specs = self._setting_specs()
+        unknown = set(values) - set(specs)
+        if unknown:
+            raise PublicSetupError("Unsupported settings were submitted: " + ", ".join(sorted(unknown)))
+        restricted = set(values) & DERIVED_SETTINGS.keys()
+        if restricted:
+            raise PublicSetupError("Derived settings cannot be edited directly: " + ", ".join(sorted(restricted)))
+        groups = configuration_groups()
+        grouped = {}
+        for key, value in values.items():
+            group, _ = specs[key]
+            grouped.setdefault(group, {})[key] = value
+        for group, group_values in grouped.items():
+            backend.stage_fields([field for field in groups[group][1] if field.key in group_values], group_values)
+        removals = payload.get("remove_credentials", [])
+        if (not isinstance(removals, list) or len(removals) > 512
+                or any(not isinstance(name, str) or not is_secret_name(name) for name in removals)
+                or len(set(removals)) != len(removals)):
+            raise PublicSetupError("Select valid, distinct credentials to remove.")
+        if set(removals) & set(values):
+            raise PublicSetupError("A credential cannot be replaced and removed in the same draft.")
+        protected = {"AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", *DERIVED_SETTINGS}
+        if set(removals) & protected:
+            raise PublicSetupError("Required or derived credentials cannot be removed.")
+        if set(removals) - set(backend.credentials):
+            raise PublicSetupError("A selected credential is no longer configured. Reload the configuration.")
+        for name in removals:
+            del backend.credentials[name]
+            backend.dirty = True
+        instructions = payload.get("instructions")
+        if instructions is not None:
+            if not isinstance(instructions, str):
+                raise PublicSetupError("Assistant instructions must be valid text no larger than 512 KiB.")
+            try:
+                encoded_instructions = instructions.encode("utf-8")
+            except UnicodeEncodeError:
+                raise PublicSetupError("Assistant instructions must contain valid Unicode text.") from None
+            if len(encoded_instructions) > 512 * 1024:
+                raise PublicSetupError("Assistant instructions must be valid text no larger than 512 KiB.")
+            backend.instructions = encoded_instructions
+        backend.accepted = backend.accepted or payload.get("acknowledge") is True
+        return backend, initial_values, initial_instructions
+
+    def preview_configuration(self, payload):
+        backend, initial_values, initial_instructions = self._configuration_draft(payload)
+        problems = [redacted(message, backend) for _, message in backend.problems()]
+        catalog = {item["env"]: item for item in settings_schema.catalog()}
+        changes_to_check = {
+            key: value for key, value in payload.get("values", {}).items()
+            if key in catalog and not catalog[key]["secret"]
+        }
+        problems.extend(overrides_problems(render_environment("", changes_to_check, set())))
+        for key, value in changes_to_check.items():
+            if key.startswith("AGENT_CLIENT_") and catalog[key]["type"] is int:
+                try:
+                    if int(value) < 1:
+                        problems.append(key + " must be a positive integer")
+                except ValueError:
+                    problems.append(key + " must be a positive integer")
+            if catalog[key]["type"] is float and value.strip():
+                try:
+                    finite = math.isfinite(float(value))
+                except ValueError:
+                    continue
+                if not finite:
+                    problems.append(key + " must be a finite number")
+        for key, value in payload.get("values", {}).items():
+            clean = value.strip()
+            if not clean:
+                continue
+            if key in DEPLOYMENT_CHOICES and clean not in DEPLOYMENT_CHOICES[key]:
+                problems.append(key + " must be one of: " + ", ".join(DEPLOYMENT_CHOICES[key]))
+            if key == "AGENT_FILESYSTEM_SHARED_FILE_UMASK":
+                from .filesystem_permissions import parse_umask
+                try:
+                    parse_umask(clean)
+                except ValueError as error:
+                    problems.append(key + " " + str(error))
+            if key in DEPLOYMENT_TYPES:
+                try:
+                    number = float(clean) if DEPLOYMENT_TYPES[key] == "number" else int(clean)
+                    if not math.isfinite(number) or number < 0:
+                        raise ValueError
+                    if key not in {"TASK_AGENT_WORKERS", "REQUEST_PREPROCESSOR_WORKERS"} and number == 0:
+                        raise ValueError
+                    if key == "ASSISTANT_MANAGEMENT_PORT" and number > 65535:
+                        raise ValueError
+                    if key == "SANDBOX_RUN_CPUS" and not 1e-9 <= number <= (2**63 - 1) / 1_000_000_000:
+                        raise ValueError
+                    if key in {"SANDBOX_RUN_MEMORY_BYTES", "SANDBOX_RUN_PIDS_LIMIT",
+                               "SANDBOX_PROXY_MEMORY_BYTES"} and number > 2**63 - 1:
+                        raise ValueError
+                    if key in {"SANDBOX_DEFAULT_TIMEOUT_SECONDS", "SANDBOX_MAX_TIMEOUT_SECONDS",
+                               "EGRESS_PROXY_IDLE_TIMEOUT", "EGRESS_PROXY_MAX_CONNECTIONS"} and number > 2**31 - 1:
+                        raise ValueError
+                except (ValueError, OverflowError):
+                    problems.append(key + " must be a valid " + DEPLOYMENT_TYPES[key])
+            if key == "SANDBOX_RUN_DNS_SERVERS":
+                try:
+                    for address in clean.split(","):
+                        ipaddress.ip_address(address.strip())
+                except ValueError:
+                    problems.append(key + " must contain comma-separated IP addresses")
+            if key == "SANDBOX_RUN_TMPFS_SIZE" and not re.fullmatch(r"[1-9][0-9]*[kKmMgG]?", clean):
+                problems.append(key + " must be a positive size such as 512m")
+            if key in {"SANDBOX_RUN_CONTAINER_PREFIX", "SANDBOX_RUN_NETWORK_PREFIX"} and not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", clean):
+                problems.append(key + " must be a valid Docker name prefix")
+        specs = self._setting_specs()
+        network_mode = backend.value(specs["SANDBOX_RUN_NETWORK_MODE"][1]) or "per_run_bridge"
+        if network_mode == "existing" and not backend.value(specs["SANDBOX_RUN_NETWORK"][1]).strip():
+            problems.append("SANDBOX_RUN_NETWORK is required when the network mode is existing")
+        changes = []
+        for key, value in payload.get("values", {}).items():
+            _, spec = self._setting_specs()[key]
+            old_value = initial_values[key]
+            if spec.secret:
+                if value:
+                    changes.append({"key": key, "before": "configured" if key in backend.installation.secret_values else "not configured",
+                                    "after": "[redacted]"})
+            elif value != old_value:
+                changes.append({"key": key, "before": old_value, "after": value})
+        for key in payload.get("remove_credentials", []):
+            changes.append({"key": key, "before": "configured", "after": "not configured"})
+        if payload.get("instructions") is not None:
+            if payload["instructions"] != initial_instructions:
+                changes.append({"key": "instructions", "before": "[content]", "after": "[content]"})
+        if payload.get("agent_yaml") is not None:
+            original = backend.installation.defaults_original or b""
+            if payload["agent_yaml"].encode("utf-8") != original:
+                changes.append({
+                    "key": "agent.yaml", "before": "[source file]", "after": "[edited; backup retained]",
+                    "diff": "\n".join(difflib.unified_diff(
+                        original.decode("utf-8").splitlines(), payload["agent_yaml"].splitlines(),
+                        fromfile="Saved agent.yaml", tofile="Draft agent.yaml", lineterm="",
+                    )),
+                })
+        revision = self.revision(backend.installation)
+        signed_payload = {
+            key: payload.get(key)
+            for key in ("revision", "values", "remove_credentials", "instructions", "acknowledge", "agent_yaml")
+        }
+        signed = json.dumps(
+            signed_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")
+        preview_id = hmac.new(self.preview_key, revision.encode() + b"\0" + signed, hashlib.sha256).hexdigest()
+        return {
+            "valid": not problems, "revision": revision, "preview_id": preview_id,
+            "problems": problems, "changes": changes,
+        }
+
+    def save_configuration(self, payload):
+        preview = self.preview_configuration(payload)
+        if not hmac.compare_digest(str(payload.get("preview_id", "")), preview["preview_id"]):
+            raise PublicSetupError("Configuration preview does not match these changes. Review and confirm again.")
+        if not preview["valid"]:
+            raise PublicSetupError("Configuration is invalid: " + "; ".join(preview["problems"]))
+        backend, _, _ = self._configuration_draft(payload)
+        backend.save()
+        if payload.get("apply") and preview["changes"]:
+            backend.lifecycle("start" if any(change["key"] == "agent.yaml" for change in preview["changes"])
+                              else "apply", preserve_management=True)
+
+    def yaml_backup(self, name):
+        from .management_yaml import BACKUP_PATTERN, backups
+        directory = self.backend().installation.source / "config"
+        if not BACKUP_PATTERN.fullmatch(name) or name not in backups(directory):
+            raise PublicSetupError("Select an available agent.yaml backup.")
+        return {"content": read_regular(directory / name).decode("utf-8")}
+
+    def execute_operation(self, operation_id, action, payload, report):
+        executor_url = os.environ.get("ASSISTANT_MANAGEMENT_EXECUTOR_URL")
+        if executor_url:
+            if executor_url != "http://management-docker:2376":
+                raise PublicSetupError("Management executor address is invalid.")
+            report("Starting isolated management operation")
+            try:
+                token = read_token(token_path(self.root))
+                with httpx.Client(timeout=3600, trust_env=False, follow_redirects=False) as client:
+                    response = client.post(
+                        executor_url + "/v1/execute",
+                        headers={"Authorization": "Bearer " + token},
+                        json={"operation_id": operation_id, "operation": {"operation": action, **payload}},
+                    )
+                body = response.json() if response.status_code == 200 else {}
+                if not isinstance(body, dict) or body.get("ok") is not True:
+                    raise PublicSetupError("The isolated management executor did not confirm completion.")
+                return body.get("result")
+            except httpx.HTTPError:
+                raise PublicSetupError("The isolated management executor is unavailable; refresh operation status.") from None
+            except ValueError:
+                raise PublicSetupError("The isolated management executor returned an invalid response.") from None
+        return self._execute_operation_local(action, payload, report, operation_id=operation_id)
+
+    def _execute_operation_local(self, action, payload, report, *, operation_id=None):
+        if action == "configuration.save":
+            report("Saving reviewed configuration")
+            return self.save_configuration(payload)
+        backend = self.backend()
+        if action == "service.lifecycle":
+            report(payload["action"].title() + " " + (payload.get("service") or "application"))
+            return backend.lifecycle(payload["action"], payload.get("service"), preserve_management=True)
+        if action == "credential.replace":
+            if payload["name"] in DERIVED_SETTINGS:
+                raise PublicSetupError(DERIVED_SETTINGS[payload["name"]])
+            report("Saving replacement credential")
+            return backend.replace_credential(payload["name"], payload["value"])
+        if action == "credential.apply":
+            report("Activating saved credentials")
+            return backend.apply_credentials(payload.get("name"))
+        if action == "database.reset":
+            if payload.get("confirmation") != "RESET":
+                raise PublicSetupError("Type RESET to confirm this destructive operation.")
+            report("Resetting database and selected files")
+            return backend.reset(
+                clean_install=payload.get("clean_install", False),
+                keep_mailbox_position=payload.get("keep_mailbox_position", True),
+            )
+        if action == "database.recover":
+            report("Recovering database credentials")
+            return backend.recover()
+        if action == "credential-storage.move":
+            report("Moving credential storage")
+            return backend.storage(payload["use_volume"])
+        if action == "search.maintenance":
+            if payload.get("action") == "reindex" and payload.get("confirmed") is not True:
+                raise PublicSetupError("Explicit confirmation is required to reindex search.")
+            report("Running search maintenance")
+            return backend.embeddings(payload["action"])
+        if action == "record.mutate":
+            report("Applying confirmed record change")
+            return backend.mutate(payload["action"], payload.get("record_id"), payload.get("body", ""))
+        if action in {"client.register", "client.unregister", "client.delivery-resolve"}:
+            report("Updating registered client channel")
+            return backend.request({"kind": action, **payload, "request_key": operation_id})
+        if action == "domain.mutate":
+            report("Applying confirmed " + payload["action"])
+            return backend.request({"kind": action, **payload, "request_key": operation_id})
+        if action in {"task.start", "task.reply", "research.start"}:
+            if not isinstance(operation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", operation_id):
+                raise PublicSetupError("Task operation identifier is invalid.")
+            report("Starting research" if action == "research.start" else "Submitting task message")
+            return backend.request({"kind": action, **payload, "request_key": operation_id})
+        if action == "task.delete":
+            report("Deleting the previewed task")
+            return backend.request({"kind": action, **payload})
+        if action == "permission.control":
+            report("Updating sandbox permissions")
+            return backend.request({"kind": action, **payload})
+        if action == "approval.decide":
+            report("Applying reviewed approval decision")
+            return backend.request({"kind": action, **payload})
+        if action in {"file.upload", "file.attach"}:
+            report("Uploading and attaching a project file" if action == "file.upload"
+                   else "Attaching a workspace file to a project")
+            return backend.request({"kind": action, **payload})
+        if action == "project.delete":
+            report("Deleting the previewed project")
+            return backend.delete_project(payload["project_id"], payload["preview_digest"])
+        if action == "project.resume":
+            report("Resuming project deletion")
+            return backend.resume_deletion(payload["deletion_id"])
+        raise PublicSetupError("Unsupported management operation.")
+
+    def configuration(self):
+        backend = self.backend()
+        overrides, _ = parse_environment(
+            (read_regular(self.root / "data/overrides.env") or b"").decode("utf-8")
+        )
+        yaml_source = "src/config/agent.yaml"
+        files = [
+            {"path": yaml_source, "format": "yaml", "values": backend.installation.defaults.values},
+            {"path": "data/.env", "format": "env", "values": backend.installation.values},
+            {"path": "data/overrides.env", "format": "env", "values": overrides},
+        ]
+        for file in files:
+            file["values"] = redacted(file["values"], backend)
+        return {
+            "setup_complete": backend.accepted,
+            "files": files,
+            "credential_names": sorted(backend.credentials),
+            "read_only": True,
+        }
+
+    def configuration_check(self, runtime=False):
+        """Saved files always; running containers only with full Docker access (the API's proxy cannot exec)."""
+        if runtime:
+            delegated = self._executor_read({"request": "configuration.check", "runtime": True})
+            if delegated is not None:
+                return delegated
+        from .config_check import check
+        problems, checked = check(self.backend().installation, runtime)
+        catalog = settings_schema.catalog()
+        return {
+            "ok": not problems, "problems": problems, "runtime_checked": runtime, "containers_checked": checked,
+            "settings": len(catalog), "credentials": sum(item["secret"] for item in catalog),
+        }
+
+    def services(self, details=False):
+        backend = self.backend()
+        return {"services": redacted(backend.services(include_uptime=True) if details else backend.services(), backend)}
+
+    def logs(self, service):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service):
+            raise PublicSetupError("Select a configured service.")
+        backend = self.backend()
+        content = redacted(backend.logs(service), backend).encode("utf-8")
+        return {
+            "service": service,
+            "content": content[-MAX_LOG_BYTES:].decode("utf-8", errors="replace"),
+            "truncated": len(content) > MAX_LOG_BYTES,
+            "tail": 150,
+        }
+
+    def credentials(self):
+        backend = self.backend()
+        pending = set(backend.installation.state.get("pending", []))
+        removed = set(backend.installation.state.get("removed", []))
+        return {
+            "credentials": [
+                {"name": name, "status": (
+                    "removal pending" if name in removed else "activation pending" if name in pending else "configured"
+                )}
+                for name in sorted(set(backend.installation.secret_values) | removed)
+            ],
+        }
+
+    def credential_storage(self):
+        installation = self.backend().installation
+        return {"mode": "volume" if installation.use_credential_volume else "host-files",
+                "retirement_pending": bool(installation.state.get("previous_credential_volume"))}
+
+    def _executor_read(self, request):
+        executor_url = os.environ.get("ASSISTANT_MANAGEMENT_EXECUTOR_URL")
+        if not executor_url:
+            return None
+        if executor_url != "http://management-docker:2376":
+            raise PublicSetupError("Management executor address is invalid.")
+        try:
+            token = read_token(token_path(self.root))
+            with httpx.Client(timeout=180, trust_env=False, follow_redirects=False) as client:
+                response = client.post(
+                    executor_url + "/v1/read",
+                    headers={"Authorization": "Bearer " + token},
+                    json=request,
+                )
+            if response.status_code == 503:
+                raise ManagementExecutorUnavailable("Management executor is busy or unavailable; retry.")
+            if response.status_code == 409:
+                failure_body = response.json()
+                if isinstance(failure_body, dict) and failure_body.get("public") is True \
+                        and isinstance(failure_body.get("error"), str):
+                    raise PublicSetupError(failure_body["error"])
+            if response.status_code != 200:
+                raise PublicSetupError("The isolated management executor could not complete the read. "
+                                       "Check the management-docker service logs.")
+            body = response.json()
+            if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
+                raise PublicSetupError("The isolated management executor returned an invalid response.")
+            return body["result"]
+        except httpx.HTTPError:
+            raise PublicSetupError("The isolated management executor is unavailable; retry the read.") from None
+        except ValueError:
+            raise PublicSetupError("The isolated management executor returned an invalid response.") from None
+
+    def records(self, collection, page=0, query=""):
+        if collection not in {"tasks", "memories", "reminders", "projects", "scripts", "research"}:
+            raise PublicSetupError("Select a supported management record collection.")
+        if type(page) is not int or not 0 <= page <= 1_000_000:
+            raise PublicSetupError("Management record page is out of range.")
+        if not isinstance(query, str) or len(query) > 500:
+            raise PublicSetupError("Search must be at most 500 characters.")
+        delegated = self._executor_read({
+            "request": "records.list", "collection": collection, "page": page, "query": query,
+        })
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": collection, "page": page, "query": query})
+
+    def record(self, collection, identifier):
+        if collection not in {"tasks", "memories", "reminders", "projects", "scripts", "research"}:
+            raise PublicSetupError("Select a supported management record.")
+        if type(identifier) is not int or identifier <= 0:
+            raise PublicSetupError("Select a supported record.")
+        delegated = self._executor_read({
+            "request": "records.read", "collection": collection, "record_id": identifier,
+        })
+        if delegated is not None:
+            return delegated
+        if collection == "scripts":
+            payload = {"kind": "script", "id": identifier}
+        elif collection in {"tasks", "memories", "reminders", "projects", "research"}:
+            payload = {"kind": collection, "id": identifier}
+        else:
+            raise PublicSetupError("Select a supported management record.")
+        return self.backend().request(payload)
+
+    def record_children(self, collection, identifier, page=0):
+        kind = {"tasks": "task-events", "projects": "project-objects", "research": "research-events"}.get(collection)
+        if kind is None or type(identifier) is not int or identifier <= 0:
+            raise PublicSetupError("Select a supported record.")
+        if type(page) is not int or not 0 <= page <= 1_000_000:
+            raise PublicSetupError("Management record page is out of range.")
+        delegated = self._executor_read({
+            "request": "records.children", "collection": collection, "record_id": identifier, "page": page,
+        })
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": kind, "id": identifier, "page": page})
+
+    def task_messages(self, identifier, page=0):
+        if type(identifier) is not int or identifier <= 0 or type(page) is not int or not 0 <= page <= 1_000_000:
+            raise PublicSetupError("Select a supported task and page.")
+        delegated = self._executor_read({"request": "tasks.messages", "task_id": identifier, "page": page})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "task-messages", "id": identifier, "page": page})
+
+    def task_activity(self, identifier, since=None):
+        if type(identifier) is not int or identifier <= 0 or not (
+                since is None or (isinstance(since, str) and len(since) <= 40)):
+            raise PublicSetupError("Select a supported task and start time.")
+        if since is not None:
+            try:
+                datetime.fromisoformat(since.replace("Z", "+00:00"))
+            except ValueError:
+                raise PublicSetupError("Activity start time must be an ISO 8601 timestamp.") from None
+        delegated = self._executor_read({"request": "tasks.activity", "task_id": identifier, "since": since})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "task-activity", "id": identifier, "since": since})
+
+    def conversations(self, page=0, query="", channel=""):
+        if type(page) is not int or not 0 <= page <= 1_000_000 or not isinstance(query, str) or len(query) > 200 \
+                or channel not in {"", "client", "telegram", "email"}:
+            raise PublicSetupError("Select a supported conversation page, search, and channel.")
+        delegated = self._executor_read({"request": "conversations.list", "page": page, "query": query,
+                                         "channel": channel})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "conversations", "page": page, "query": query, "channel": channel})
+
+    def client_channels(self, action, client_id=None, message_ids=None, before_id=None):
+        payload = {"request": "clients.read", "action": action, "client_id": client_id,
+                   "message_ids": message_ids or [], "before_id": before_id}
+        delegated = self._executor_read(payload)
+        if delegated is not None:
+            return delegated
+        return self.backend().request({**payload, "kind": "clients.read"})
+
+    def domain_read(self, payload):
+        delegated = self._executor_read(payload)
+        if delegated is not None:
+            return delegated
+        return self.backend().request({**payload, "kind": "domain.read"})
+
+    def task_summary(self):
+        delegated = self._executor_read({"request": "tasks.summary"})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "summary"})
+
+    def task_deletion_preview(self, identifier):
+        if type(identifier) is not int or identifier <= 0:
+            raise PublicSetupError("Select a supported task.")
+        delegated = self._executor_read({"request": "tasks.deletion-preview", "task_id": identifier})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "task.deletion-preview", "id": identifier})
+
+    def generate_database_password(self):
+        delegated = self._executor_read({"request": "credentials.generate-database-password"})
+        if delegated is not None:
+            return delegated
+        return {"password": self.backend().generate_database_password()}
+
+    def permissions(self, view):
+        if view not in {"hosts", "history"}:
+            raise PublicSetupError("Select a supported permission view.")
+        delegated = self._executor_read({"request": "permissions.read", "view": view})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "permissions.read", "view": view})
+
+    def approvals(self, limit=50, offset=0):
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise PublicSetupError("Select a valid approval page.")
+        delegated = self._executor_read({"request": "approvals.list", "limit": limit, "offset": offset})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "approvals.list", "limit": limit, "offset": offset})
+
+    def project_files(self, identifier, page=0):
+        if type(identifier) is not int or identifier <= 0 or type(page) is not int or not 0 <= page <= 1_000_000:
+            raise PublicSetupError("Select a supported project and file page.")
+        delegated = self._executor_read({"request": "projects.files", "project_id": identifier, "page": page})
+        if delegated is not None:
+            return delegated
+        return self.backend().request({"kind": "project-files", "id": identifier, "page": page})
+
+    def project_file_content(self, identifier, file_id, offset=0, limit=1_048_576):
+        if (type(identifier) is not int or identifier <= 0 or type(file_id) is not int or file_id <= 0
+                or type(offset) is not int or offset < 0 or type(limit) is not int
+                or not 1 <= limit <= 1_048_576):
+            raise PublicSetupError("Select a supported project file range.")
+        delegated = self._executor_read({
+            "request": "projects.file-content", "project_id": identifier,
+            "file_id": file_id, "offset": offset, "limit": limit,
+        })
+        if delegated is not None:
+            return delegated
+        return self.backend().request({
+            "kind": "project-file-content", "id": identifier,
+            "file_id": file_id, "offset": offset, "limit": limit,
+        })
+
+    def project_deletion_preview(self, identifier):
+        if type(identifier) is not int or identifier <= 0:
+            raise PublicSetupError("Select a supported project.")
+        delegated = self._executor_read({"request": "projects.deletion-preview", "project_id": identifier})
+        if delegated is not None:
+            return delegated
+        return self.backend().preview_project(identifier)
+
+    def pending_deletions(self):
+        delegated = self._executor_read({"request": "projects.pending-deletions"})
+        if delegated is not None:
+            return delegated
+        return {"deletions": self.backend().pending_deletions()}
+
+
+def create_app(root, token, service=None):
+    service = service or ManagementService(root, token=token)
+    instance_id = ensure_instance_id(root, token)
+    @asynccontextmanager
+    async def lifespan(app):
+        async def reconcile():
+            while True:
+                interval = 15
+                try:
+                    result = await asyncio.to_thread(service.client_channels, "reconcile")
+                    interval = result["reconciliation_interval_seconds"]
+                    if type(interval) is not int or interval <= 0:
+                        raise ValueError("Invalid client reconciliation interval")
+                    if result["processed"] > 0:
+                        interval = 0
+                except Exception:
+                    LOGGER.exception("Client channel delivery reconciliation failed")
+                await asyncio.sleep(interval)
+        task = asyncio.create_task(reconcile())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            app.state.management_operations.executor.shutdown(wait=True)
+    app = FastAPI(
+        title="Assistant management", version="2.0.0",
+        docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan,
+    )
+    operations = OperationManager(root, service.execute_operation)
+    app.state.management_operations = operations
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+
+    def failure(status, code, message):
+        return JSONResponse(
+            status_code=status, content={"error": {"code": code, "message": message}},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.middleware("http")
+    async def protect(request, call_next):
+        authorized = not request.headers.get("origin") and hmac.compare_digest(
+            request.headers.get("authorization", "").encode(), ("Bearer " + token).encode()
+        )
+        if not authorized:
+            return failure(401, "unauthorized", "A management token is required; browser origins are not allowed.")
+        try:
+            response = await call_next(request)
+        except Exception as error:
+            LOGGER.error("%s", setup_failure_message(error, "management " + request.url.path))
+            return failure(500, "internal_error",
+                           "Management request failed. Check server configuration and permissions.")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.exception_handler(ManagementExecutorUnavailable)
+    async def executor_unavailable(request, error):
+        response = failure(503, "executor_unavailable", "Management executor is busy or unavailable; retry.")
+        response.headers["Retry-After"] = "1"
+        return response
+
+    @app.exception_handler(SetupError)
+    async def operation_failed(request, error):
+        if isinstance(error, PublicSetupError):
+            LOGGER.warning("Management operation failed (%s): %s", type(error).__name__, request.url.path)
+            return failure(409, "management_failed", str(error))
+        # Unreviewed messages may carry configuration values; log them server-side under a reference.
+        reference = secrets.token_hex(4)
+        LOGGER.warning("Management operation failed [%s] (%s): %s", reference, type(error).__name__,
+                       request.url.path)
+        return failure(409, "management_failed",
+                       "Management operation failed. Check Docker access, saved configuration, "
+                       "and server diagnostics; review current state before retrying. "
+                       "Server log reference: " + reference + ".")
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, error):
+        return failure(422, "invalid_request", "Invalid management request.")
+
+    @app.get("/v1/health", response_model=HealthResponse)
+    def health():
+        return {
+            "api_version": API_VERSION, "name": "Assistant",
+            "instance_id": instance_id,
+            "capabilities": ["configuration.read", "configuration.check", "services.read", "logs.read"],
+            "read_only": True,
+        }
+
+    @app.get("/v2/health", response_model=FullHealthResponse)
+    def health_v2():
+        return {
+            "api_version": 2, "name": "Assistant",
+            "instance_id": instance_id,
+            "capabilities": [
+                "configuration.read", "configuration.preview", "configuration.write",
+                "configuration.source.write", "configuration.source.backups",
+                "configuration.check", "services.read", "services.logs", "services.lifecycle",
+                "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
+                "projects.files.read", "projects.files.upload", "projects.files.attach",
+                "database.reset", "database.recover", "search.maintenance",
+                "tasks.submit", "clients.register", "clients.poll", "clients.acknowledge",
+                "tasks.messages", "tasks.activity", "conversations.read", "tasks.summary", "tasks.delete", "research.start",
+                "domains.read", "domains.mutate", "workspace.manage", "contacts.manage",
+                "calendar.manage", "reminders.manage", "integrations.manage",
+                "permissions.read", "permissions.control", "approvals.read", "approvals.decide",
+            ],
+            "read_only": False,
+        }
+
+    @app.get("/v2/configuration", response_model=FullConfigurationResponse)
+    def configuration_v2():
+        return service.configuration_v2()
+
+    @app.get("/v2/configuration/agent-yaml/backups/{name}")
+    def yaml_backup_v2(name: str):
+        return service.yaml_backup(name)
+
+    @app.get("/v2/configuration/check", response_model=ConfigurationCheckResponse)
+    def configuration_check_v2(runtime: bool = False):
+        return service.configuration_check(runtime)
+
+    @app.get("/v2/services", response_model=ServicesResponse)
+    def services_v2(details: bool = False):
+        return service.services(details=True) if details else service.services()
+
+    @app.get("/v2/services/{service_id}/logs", response_model=LogsResponse)
+    def logs_v2(service_id: str):
+        return service.logs(service_id)
+
+    @app.get("/v2/credentials", response_model=CredentialsResponse)
+    def credentials_v2():
+        return service.credentials()
+
+    @app.get("/v2/credentials/storage", response_model=CredentialStorageStatusResponse)
+    def credential_storage_v2():
+        return service.credential_storage()
+
+    @app.post("/v2/credentials/database-password/generate", response_model=GeneratedDatabasePasswordResponse)
+    def generate_database_password_v2():
+        return service.generate_database_password()
+
+    @app.get("/v2/records/{collection}", response_model=RecordPageResponse)
+    def records_v2(collection: str, page: int = 0, query: str = ""):
+        return service.records(collection, page, query)
+
+    @app.get("/v2/records/{collection}/{identifier}")
+    def record_v2(collection: str, identifier: int):
+        return service.record(collection, identifier)
+
+    @app.get("/v2/records/{collection}/{identifier}/children", response_model=RecordPageResponse)
+    def record_children_v2(collection: str, identifier: int, page: int = 0):
+        return service.record_children(collection, identifier, page)
+
+    @app.get("/v2/conversations", response_model=ConversationsResponse)
+    def conversations_v2(page: int = Query(0, ge=0, le=1_000_000), query: str = Query("", max_length=200),
+                         channel: Literal["", "client", "telegram", "email"] = ""):
+        return service.conversations(page, query, channel)
+
+    @app.get("/v2/tasks/{identifier}/activity", response_model=TaskActivityResponse)
+    def task_activity_v2(identifier: int, since: str | None = Query(None, max_length=40)):
+        return service.task_activity(identifier, since)
+
+    @app.get("/v2/tasks/{identifier}/messages", response_model=TaskMessagesResponse)
+    def task_messages_v2(identifier: int, page: int = 0):
+        return service.task_messages(identifier, page)
+
+    @app.get("/v2/clients")
+    def clients_v2():
+        return service.client_channels("list")
+
+    @app.get("/v2/domains")
+    def domains_v2():
+        return service.domain_read(DomainReadRequest(action="catalog").model_dump())
+
+    @app.post("/v2/query")
+    def domain_query_v2(request: DomainReadRequest):
+        return service.domain_read(request.model_dump())
+
+    @app.get("/v2/clients/{client_id}/messages", response_model=ClientPollResponse)
+    def client_messages_v2(client_id: str):
+        if not re.fullmatch(r"[a-f0-9]{32}", client_id):
+            raise PublicSetupError("Select a registered client channel.")
+        return service.client_channels("poll", client_id)
+
+    @app.get("/v2/clients/{client_id}/history", response_model=ClientHistoryResponse)
+    def client_history_v2(client_id: str, before_id: int | None = Query(default=None, gt=0)):
+        if not re.fullmatch(r"[a-f0-9]{32}", client_id):
+            raise PublicSetupError("Select a registered client channel.")
+        return service.client_channels("history", client_id, before_id=before_id)
+
+    @app.post("/v2/clients/{client_id}/acknowledgments", response_model=ClientAcknowledgmentResponse)
+    def client_acknowledgments_v2(client_id: str, request: ClientAcknowledgmentRequest):
+        if not re.fullmatch(r"[a-f0-9]{32}", client_id):
+            raise PublicSetupError("Select a registered client channel.")
+        return service.client_channels("acknowledge", client_id, request.message_ids)
+
+    @app.get("/v2/tasks/summary", response_model=TaskSummaryResponse)
+    def task_summary_v2():
+        return service.task_summary()
+
+    @app.get("/v2/tasks/{identifier}/deletion-preview", response_model=TaskDeletionPreviewResponse)
+    def task_deletion_preview_v2(identifier: int):
+        return service.task_deletion_preview(identifier)
+
+    @app.get("/v2/permissions/{view}")
+    def permissions_v2(view: str):
+        return service.permissions(view)
+
+    @app.get("/v2/approvals", response_model=ApprovalsResponse)
+    def approvals_v2(limit: int = 50, offset: int = 0):
+        return service.approvals(limit, offset)
+
+    @app.get("/v2/projects/{identifier}/deletion-preview")
+    def project_deletion_preview_v2(identifier: int):
+        return service.project_deletion_preview(identifier)
+
+    @app.get("/v2/projects/pending-deletions")
+    def pending_deletions_v2():
+        return service.pending_deletions()
+
+    @app.get("/v2/projects/{identifier}/files", response_model=ProjectFilesResponse)
+    def project_files_v2(identifier: int, page: int = 0):
+        if not 0 <= page <= 1_000_000:
+            raise PublicSetupError("Project file page is out of range.")
+        return service.project_files(identifier, page)
+
+    @app.get("/v2/projects/{identifier}/files/{file_id}/content", response_model=ProjectFileContentResponse)
+    def project_file_content_v2(
+        identifier: int, file_id: int,
+        offset: int = Query(default=0, ge=0, le=2**63 - 1),
+        limit: int = Query(default=1_048_576, ge=1, le=1_048_576),
+    ):
+        return service.project_file_content(identifier, file_id, offset, limit)
+
+    @app.post("/v2/configuration/preview", response_model=ConfigurationPreviewResponse)
+    def configuration_preview(request: ConfigurationPreviewRequest):
+        return service.preview_configuration(request.model_dump())
+
+    @app.post(
+        "/v2/operations", response_model=ManagementOperationResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def submit_operation(
+        operation: ManagementOperationRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ):
+        payload = operation.model_dump()
+        action = payload.pop("operation")
+        def preflight():
+            preview = service.preview_configuration(payload)
+            if not hmac.compare_digest(str(payload.get("preview_id", "")), preview["preview_id"]):
+                raise PublicSetupError("Configuration preview does not match these changes. Review and confirm again.")
+            if not preview["valid"]:
+                raise PublicSetupError("Configuration is invalid: " + "; ".join(preview["problems"]))
+        audit_action = action
+        if action == "service.lifecycle":
+            audit_action = "service." + payload["action"] + "." + (payload.get("service") or "application")
+        elif action == "credential.replace":
+            audit_action = "credential.replace." + payload["name"]
+        elif action == "credential.apply":
+            audit_action = "credential.apply." + (payload.get("name") or "all-pending")
+        elif action == "credential-storage.move":
+            audit_action = "credential-storage.move." + ("volume" if payload["use_volume"] else "host-files")
+        elif action == "record.mutate":
+            audit_action = "record." + payload["action"] + "." + str(payload.get("record_id") or "new")
+        elif action == "domain.mutate":
+            audit_action = "domain." + payload["action"]
+        elif action == "search.maintenance":
+            audit_action = "search." + payload["action"]
+        elif action == "project.delete":
+            audit_action = "project.delete." + str(payload["project_id"])
+        elif action == "project.resume":
+            audit_action = "project.resume." + str(payload["deletion_id"])
+        elif action in {"file.upload", "file.attach"}:
+            audit_action = action + ".project." + str(payload["workstream_id"])
+        if action == "database.reset" and payload.get("clean_install"):
+            audit_action = "database.reset.clean-install"
+        elif action == "configuration.save":
+            fields = sorted(payload.get("values", {}))
+            fields.extend("remove:" + name for name in sorted(payload.get("remove_credentials", [])))
+            if payload.get("instructions") is not None:
+                fields.append("instructions")
+            audit_action = "configuration.save." + (",".join(fields)[:160] or "no-field-list")
+        return operations.submit(action, payload, idempotency_key, audit_action,
+                                 preflight=preflight if action == "configuration.save" else None)
+
+    @app.get("/v2/operations", response_model=list[ManagementOperationResponse])
+    def list_operations(limit: int = 50):
+        if not 1 <= limit <= 100:
+            raise PublicSetupError("Operation limit must be between 1 and 100.")
+        return operations.list(limit)
+
+    @app.get("/v2/operations/{operation_id}", response_model=ManagementOperationResponse)
+    def get_operation(operation_id: str):
+        return operations.get(operation_id)
+
+    @app.get("/v1/configuration", response_model=ConfigurationResponse)
+    def configuration():
+        return service.configuration()
+
+    @app.get("/v1/configuration/check", response_model=ConfigurationCheckResponse)
+    def configuration_check():
+        return service.configuration_check()
+
+    @app.get("/v1/services", response_model=ServicesResponse)
+    def services():
+        return service.services()
+
+    @app.get("/v1/services/{service_id}/logs", response_model=LogsResponse)
+    def logs(service_id: str):
+        return service.logs(service_id)
+
+    @app.get("/v1/schema")
+    def schema():
+        contract = app.openapi()
+        contract.setdefault("components", {})["securitySchemes"] = {
+            "ManagementToken": {"type": "http", "scheme": "bearer"},
+        }
+        contract["security"] = [{"ManagementToken": []}]
+        return contract
+
+    return app
+
+
+def serve(root, port):
+    import uvicorn
+
+    if not 1 <= port <= 65535:
+        raise PublicSetupError("Management port must be between 1 and 65535.")
+    token = ensure_token(root)
+    print(f"Assistant management API: http://127.0.0.1:{port}")
+    print("Token stored in data/.management-token; do not share it or publish this port.")
+    uvicorn.run(create_app(root, token), host="127.0.0.1", port=port, access_log=False)

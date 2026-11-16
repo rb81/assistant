@@ -4,9 +4,9 @@
 
 Open `./run.sh` -> **Activity → Projects & workstreams**. Select a project
 to inspect its relationships or **Preview deletion**. The native interface
-exposes only the preserve-shared policy. Other policies and explicit contact/file
-attachments remain available through the legacy compatibility interface:
-`./run.sh --plain tools` -> **Workstreams and data deletion**.
+exposes only the preserve-shared policy. Other deletion policies use the shared
+Management API's preview and confirmed deletion operations. Explicit contact/file
+attachments use the `projects.attach` domain action.
 
 New explicit adoption is restricted to contacts and files. Inspection or edits
 do not create retaining links. There are three deletion policies:
@@ -158,7 +158,7 @@ in `data/share/` and `data/private/artifacts/`, including attachments, generated
 files, caches and trash. TLS certificates and other persistent service data
 are untouched in either mode. After PostgreSQL starts, the workspace indexer
 starts and, when enabled in settings, rebuilds its index from the preserved files in the
-background. A custom `DATABASE_URL` or custom database settings are refused;
+background. A custom `AGENT_DATABASE_URL` or custom database settings are refused;
 reset that database separately. The reset requires typing `RESET` to confirm.
 
 Back up the credential volume **and** `data/.secrets/state.json`, `data/.env` and
@@ -218,7 +218,7 @@ removal does not retract remote files or revoke Dropbox authorization. See the
 ```bash
 ./run.sh secrets status
 ./run.sh secrets update
-./run.sh secrets update OPENROUTER_API_KEY
+./run.sh secrets update AGENT_LLM_OPENROUTER_API_KEY
 ./run.sh secrets apply
 ```
 
@@ -251,7 +251,7 @@ them, then revoke the old credentials. The CLI does not rotate keys at providers
 
 Database-password updates use a coordinated maintenance flow: stop consumers,
 alter the database role, replace the file, verify network authentication, and
-recreate consumers. `POSTGRES_PASSWORD_FILE` alone only controls initialization,
+recreate consumers. `AGENT_DATABASE_PASSWORD_FILE` alone only controls initialization,
 not the password in an existing database. If interrupted, use
 `./run.sh secrets recover` to restore the previous credential and resume
 the recorded services. Recovery data is protected locally; database and filesystem
@@ -321,14 +321,14 @@ can reach it.
 
 ### Mail quarantine
 
-Fresh mail from a sender that is not accepted (not in `EMAIL_ACTIONABLE_SENDERS`,
+Fresh mail from a sender that is not accepted (not in `AGENT_EMAIL_ACTIONABLE_SENDERS`,
 not replying on an open job's thread, and not a recipient of mail the assistant
 sent on that thread) is moved to the quarantine folder
-without storing an email record. The folder is `IMAP_QUARANTINE_FOLDER`
+without storing an email record. The folder is `AGENT_EMAIL_IMAP_QUARANTINE_FOLDER`
 (default `Quarantine`, created if missing). Rejected and held mail goes there
 too. The task agent does not receive
 it unless an administrator approves held mail. Screening itself sends accepted
-non-admin content to the decision provider; held mail is retained in the pending
+task email content, including admin email, to the decision provider; held mail is retained in the pending
 approval payload, and notices can include a content preview. Quarantine is not
 a promise that no copy is stored or sent externally. If a move fails, the error
 is logged and the message stays in the inbox; the polling cursor still advances.
@@ -339,10 +339,10 @@ preserved reliably.
 
 This check is recommended and **on by default**
 (`agent.security.email_authentication.enabled: true`, or
-`AGENT_SECURITY_EMAIL_AUTH_ENABLED`). Turn it off in `./run.sh` under
+`AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED`). Turn it off in `./run.sh` under
 **Security** only if your admin mail provider cannot pass DKIM or SPF for your
 address. When enabled, only email whose From
-includes `ADMIN_EMAIL`, including OTP approval replies, must pass sender
+includes `AGENT_ADMIN_EMAIL`, including OTP approval replies, must pass sender
 authentication. The downloader checks it itself through DNS. It does not trust
 `Authentication-Results` headers. The email passes if either check below passes
 for a domain aligned with its single From address:
@@ -363,8 +363,14 @@ sends from SPF-authorized servers; otherwise your own email is quarantined.
 
 A failure is quarantined before any OTP is issued, and the admin is notified.
 Notices are rate limited by `notify_max_per_hour` and never contain an OTP.
-Other senders are unaffected. Authentication proves a domain, not a person, and
-never replaces the OTP. Alignment uses a simple parent-domain match, not the
+For accepted non-admin email, these checks also supply evidence to enabled
+decision-model screening; a failed check alone does not quarantine it.
+Authentication proves a domain, not a person. Explicit administrative actions
+still require approval. Ordinary task replies and established continuations
+do not require routine confirmation; fresh admin conversations require it only
+when `agent.security.confirm_new_admin_conversations` is enabled (default: true).
+Disabling that setting does not disable authentication, content screening or
+privileged-action approvals. Alignment uses a simple parent-domain match, not the
 public-suffix list.
 
 ### Decision-model screening
@@ -375,9 +381,34 @@ question plus two yes/no risk flags.
 
 | Target | Setting | What is screened |
 |---|---|---|
-| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders, replies on open threads and replies from recipients of assistant-sent mail. Covers selected headers, text, HTML and attachment names and types. |
+| Inbound email | always on while the decision model is enabled | Accepted non-admin email: when `AGENT_EMAIL_ACTIONABLE_SENDERS` is `*`, all accepted non-admin mail; otherwise listed senders, replies on open threads and replies from recipients of assistant-sent mail. Covers selected headers, text, HTML and attachment names and types. |
 | Outbound email | `screen.outbound_email` (off) | `email_send` calls with any external recipient. |
-| Scripts | `screen.scripts` (off) | Registered script versions before run approval; cached per version/policy. |
+| Scripts | `screen.scripts` (off) | Registered script versions before run approval; cached per version, policy and screening context. |
+
+Screening includes application-recorded context, not just the proposed content:
+
+- Inbound email includes explicit sender-policy matches (separate from `*`),
+  open-thread task context, whether the assistant previously emailed the sender
+  on that thread, and DNS-verified authentication results (or an explicit
+  unchecked status when authentication is disabled).
+- Approving a held email records a **message-only** review in its request
+  metadata. Future screening can see that a previous message from the claimed
+  sender was approved, including on another thread. This is not a sender grant
+  or identity verification; older approvals are not backfilled.
+- Inbound and outbound email and scripts include bounded conversation excerpts
+  from the relevant thread: up to three requests and two sent emails, with
+  message bodies limited to 2,000 characters each. Outbound email and scripts
+  also include the task summary, current request's admin-authentication state
+  and reply route. Scripts include their stated purpose.
+
+These excerpts are sent to the configured decision provider along with the
+content. Attachment bytes, pending approval records and OTP credentials are not
+added to screening context. Bodies, summaries and script purposes remain
+untrusted evidence, not authority. Ordinary requests to use the assistant's
+tools within a legitimate task are not, by themselves, prompt injection.
+Sender policies, prior message approvals and expected replies never bypass
+screening or authorize new effects. Script cache keys include context and prompt
+revision so a finding is not reused for different task evidence.
 
 - **Not malicious:** processed normally.
 - **Possibly malicious:**
@@ -473,11 +504,11 @@ not an arbitrary chat model; the configured default is
 `perplexity/pplx-decider-v1.2`. Check current provider availability with
 `GET https://openrouter.ai/api/v1/models?output_modalities=decisions`. Pin a
 version rather than a `~...-latest` alias so thresholds stay calibrated. This
-route reuses `OPENROUTER_API_KEY`. Setup already grants the model keys to the
+route reuses `AGENT_LLM_OPENROUTER_API_KEY`. Setup already grants the model keys to the
 downloader and Telegram receiver for intent routing, for both `data/.secrets`
 files and the credential volume.
 
-Direct provider APIs are optional and use the `SECURITY_DECISION_API_KEY`
+Direct provider APIs are optional and use the `AGENT_SECURITY_DECISION_MODEL_API_KEY`
 credential:
 
 | `provider` | Format | Default endpoint / model |

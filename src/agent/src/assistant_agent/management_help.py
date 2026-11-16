@@ -250,6 +250,104 @@ ACTION_HELP = {
 ACTION_HELP["Recover database credential"] = ACTION_HELP["Recover an interrupted database password rotation"]
 
 FIELD_HELP = {
+    "TASK_AGENT_WORKERS": "Number of task-worker replicas started by Compose. More workers can "
+                          "process tasks concurrently but increase memory use and simultaneous model "
+                          "spending; zero pauses task processing.",
+    "REQUEST_PREPROCESSOR_WORKERS": "Number of request-preprocessor replicas started by Compose. "
+                                    "Increase for intake backlogs, allowing for more database "
+                                    "activity and concurrent screening calls; zero pauses "
+                                    "preprocessing.",
+    "LOG_LEVEL": "Minimum severity written to application logs. Use DEBUG temporarily for "
+                 "troubleshooting; detailed logs may contain sensitive task information and require "
+                 "more disk space.",
+    "ASSISTANT_MANAGEMENT_PORT": "Host TCP port for the loopback-only management API. Choose an "
+                                 "unused port; applying a change interrupts the management connection "
+                                 "and clients must reconnect to the new port.",
+    "SANDBOX_IMAGE": "Docker image used for the sandbox broker and per-command containers. Use a "
+                     "trusted, compatible image; its code runs commands and the broker has powerful "
+                     "Docker access.",
+    "SANDBOX_ISOLATION_MODE": "Use container for per-command container isolation. Process mode runs "
+                              "commands as broker subprocesses without that isolation and is for "
+                              "development only; it weakens security substantially.",
+    "SANDBOX_RUN_NETWORK_MODE": "Network mode for command containers. per_run_bridge supports "
+                                "isolated per-run proxy policy; none disables networking, while "
+                                "bridge or existing can bypass that policy and weaken isolation.",
+    "SANDBOX_RUN_NETWORK": "Name of an existing Docker network to join when network mode is existing. "
+                           "Use only a trusted network; shared connectivity can expose other "
+                           "containers and bypass isolated proxy policy.",
+    "SANDBOX_EGRESS_MODE": "Outbound policy for per-run bridge networking. proxy uses a restricted "
+                           "egress proxy; open allows unrestricted outbound traffic and weakens "
+                           "script network controls.",
+    "SANDBOX_RUN_CAP_DROP": "Comma-separated Linux capabilities removed from command containers. "
+                            "Dropping more reduces kernel privileges but may break commands; removing "
+                            "restrictions weakens isolation.",
+    "SANDBOX_RUN_CPUS": "CPU quota for each command container, measured in CPU cores and allowing "
+                        "fractions. Lower to protect host capacity; higher values can speed CPU-heavy "
+                        "scripts but increase contention.",
+    "SANDBOX_RUN_MEMORY_BYTES": "Memory limit in bytes for each command container. Raise for "
+                                "memory-heavy scripts; too low can terminate commands, while higher "
+                                "limits leave less memory for the host and other services.",
+    "SANDBOX_RUN_PIDS_LIMIT": "Maximum processes and threads allowed in each command container. Keep "
+                              "bounded to limit process exhaustion; raise only for scripts that need "
+                              "more parallel workers.",
+    "SANDBOX_DEFAULT_TIMEOUT_SECONDS": "Default command runtime in seconds when a broker request "
+                                       "omits a timeout, still capped by the maximum timeout. Longer "
+                                       "runtimes keep sandbox resources occupied longer.",
+    "SANDBOX_MAX_TIMEOUT_SECONDS": "Upper bound in seconds for each command's runtime, even when a "
+                                   "longer timeout is requested. Raise only for trusted long-running "
+                                   "work; lower bounds reduce resource exposure.",
+    "SANDBOX_PROXY_MEMORY_BYTES": "Memory limit in bytes for each per-run egress proxy container. "
+                                  "Raise if legitimate traffic exhausts the proxy; higher limits "
+                                  "increase memory needed for concurrent runs.",
+    "EGRESS_PROXY_IDLE_TIMEOUT": "Seconds without data before an egress proxy connection closes. "
+                                 "Increase for legitimate long pauses; longer waits retain idle "
+                                 "connections and proxy resources.",
+    "EGRESS_PROXY_MAX_CONNECTIONS": "Maximum concurrent connections handled by each run's egress "
+                                    "proxy. Raise for scripts with many parallel requests, allowing "
+                                    "for more network and proxy resource use.",
+    "SANDBOX_RUN_RUNTIME": "Optional Docker runtime for command containers, such as an installed "
+                           "isolation runtime. Blank uses Docker's default; a named runtime must "
+                           "already be installed on the host.",
+    "SANDBOX_RUN_USER": "User or UID:GID passed to command containers. Blank uses the image's "
+                        "configured user; choose a least-privileged identity with workspace access to "
+                        "avoid permission errors and unnecessary privileges.",
+    "SANDBOX_RUN_TMPFS_SIZE": "Size limit for each temporary filesystem mounted in command "
+                              "containers, using Docker units such as m or g. Larger limits support "
+                              "bigger temporary files but can consume more host memory.",
+    "SANDBOX_RUN_DNS_SERVERS": "Comma-separated DNS server addresses for command containers when "
+                               "isolated proxy egress is inactive. Proxy mode overrides DNS; use "
+                               "trusted resolvers because DNS can expose queried hostnames.",
+    "SANDBOX_RUN_SECURITY_OPT": "Comma-separated Docker security options for command containers. Keep "
+                                "no-new-privileges enabled to prevent privilege gains; removing "
+                                "safeguards weakens sandbox isolation.",
+    "SANDBOX_RUN_CONTAINER_PREFIX": "Name prefix for temporary command and proxy containers. Use a "
+                                    "recognizable prefix for operations and troubleshooting; changing "
+                                    "it does not rename existing containers.",
+    "SANDBOX_RUN_NETWORK_PREFIX": "Name prefix for temporary per-run and egress Docker networks. Use "
+                                  "a recognizable prefix to distinguish sandbox resources; changing "
+                                  "it does not rename existing networks.",
+    "ASSISTANT_INSTALL_ROOT": "Absolute host path to this installation, selected by bootstrap for "
+                              "management mounts and operations. It is not editable in-band; changing "
+                              "it externally can disconnect management from its files.",
+    "SANDBOX_SHARED_ROOT_HOST": "Host workspace path mounted into sandbox runs, derived from the "
+                                "installation location. It is not editable in-band; pointing it "
+                                "elsewhere can expose unrelated host files to scripts.",
+    "ASSISTANT_UID": "Host user ID selected by bootstrap to preserve file ownership for "
+                     "administration. It is not editable in-band; mismatched IDs can make "
+                     "configuration and credential files inaccessible.",
+    "ASSISTANT_GID": "Host group ID selected by bootstrap to preserve file ownership for "
+                     "administration. It is not editable in-band; mismatched IDs can break "
+                     "shared-file access or expose files to the wrong group.",
+    "ASSISTANT_DOCKER_SOCKET": "Host Docker socket mounted into the management executor, selected by "
+                               "bootstrap. It is not editable in-band; socket access is highly "
+                               "privileged and a wrong path can disable service management.",
+    "ASSISTANT_MANAGEMENT_IMAGE": "Docker image used for the management API and executor, selected "
+                                  "during bootstrap. It is not editable in-band; use only trusted "
+                                  "images because the executor has privileged installation and Docker "
+                                  "access.",
+    "COMPOSE_PROJECT_NAME": "Compose project name that identifies this installation's containers and "
+                            "resources. It is not editable in-band; changing it externally can orphan "
+                            "existing resources rather than migrate them.",
     "AGENT_SECURITY_DEVELOPMENT_MODEL": "Leave blank to reuse the agent model, provider and credential. "
                                             "Otherwise enter an OpenRouter model ID such as openai/gpt-sol-6.1; "
                                             "this requires an OpenRouter API key under Models & access. "
@@ -259,15 +357,15 @@ FIELD_HELP = {
                                            "for a development session. Expiry stops further development execution.",
     "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "Positive integer limiting the executions an administrator may authorize "
                                         "per development session. Each dispatched attempt consumes one run.",
-    "AGENT_NAME": "The name used for the assistant's identity in prompts and communications.",
-    "AGENT_TIMEZONE": "Timezone for local dates and scheduling. Use an IANA name such as Europe/London or "
+    "AGENT_IDENTITY_NAME": "The name used for the assistant's identity in prompts and communications.",
+    "AGENT_APP_TIMEZONE": "Timezone for local dates and scheduling. Use an IANA name such as Europe/London or "
                       "America/New_York, or UTC; not a city abbreviation such as EST.",
-    "ADMIN_NAME": "The administrator's display name, used as identity context for the assistant.",
-    "ADMIN_EMAIL": "The administrator address used for approvals and administrative messages. For Telegram "
+    "AGENT_ADMIN_NAME": "The administrator's display name, used as identity context for the assistant.",
+    "AGENT_ADMIN_EMAIL": "The administrator address used for approvals and administrative messages. For Telegram "
                    "approvals, map this exact email to an allowed numeric Telegram user ID.",
-    "ORG_NAME": "Organization name supplied as context to the assistant. Leave blank if not applicable.",
-    "ORG_SECURITY_EMAIL": "Security contact supplied as organizational context. This is not a separate mailbox login.",
-    "ORG_INTERNAL_EMAIL_DOMAINS": "Domains the assistant should recognize as internal, separated by commas "
+    "AGENT_ORG_NAME": "Organization name supplied as context to the assistant. Leave blank if not applicable.",
+    "AGENT_ORG_SECURITY_EMAIL": "Security contact supplied as organizational context. This is not a separate mailbox login.",
+    "AGENT_ORG_INTERNAL_EMAIL_DOMAINS": "Domains the assistant should recognize as internal, separated by commas "
                                   "(example: example.com,subsidiary.com). This is not the outgoing-recipient allowlist.",
     "AGENT_LLM_BASE_URL": "HTTPS base URL of the OpenAI-compatible chat API, such as "
                          "https://openrouter.ai/api/v1. Do not include an API key, query string or chat/completions suffix.",
@@ -275,75 +373,75 @@ FIELD_HELP = {
                       "on OpenRouter. It must be available to your configured provider account.",
     "AGENT_LLM_FALLBACK_MODEL": "Alternative model used when the primary model cannot complete a request. "
                                "Choose one available through the same provider endpoint.",
-    "OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
+    "AGENT_LLM_OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
                           "Create it in your provider account; set account-level spending limits there.",
-    "OPENAI_API_KEY": "Credential for a non-OpenRouter OpenAI-compatible provider. It must match your Provider API URL.",
-    "POSTGRES_PASSWORD": "Password for the bundled PostgreSQL database. Generate one only for a fresh install. "
+    "AGENT_LLM_OPENAI_API_KEY": "Credential for a non-OpenRouter OpenAI-compatible provider. It must match your Provider API URL.",
+    "AGENT_DATABASE_PASSWORD": "Password for the bundled PostgreSQL database. Generate one only for a fresh install. "
                          "For existing data, use its current password; change it through Credentials to coordinate rotation.",
     "SETUP_EMAIL_ENABLED": "Start email intake as part of the app. It can process existing messages and move "
                            "them between folders. Configure a dedicated mailbox and narrow access rules first.",
-    "IMAP_HOST": "Hostname of the provider's incoming-mail server, for example imap.example.com. "
+    "AGENT_EMAIL_IMAP_HOST": "Hostname of the provider's incoming-mail server, for example imap.example.com. "
                  "Use a hostname, not a URL or an email address.",
-    "IMAP_PORT": "Incoming-mail server port (1-65535). The default 993 uses implicit TLS; "
+    "AGENT_EMAIL_IMAP_PORT": "Incoming-mail server port (1-65535). The default 993 uses implicit TLS; "
                  "use the port required by your mail provider.",
-    "IMAP_USERNAME": "Login for the assistant-owned mailbox, often its complete email address.",
-    "IMAP_PASSWORD": "Incoming-mail password or app-specific password from your email provider.",
-    "IMAP_FOLDER": "Folder watched for new requests, usually INBOX. Existing messages here can be processed at startup.",
-    "IMAP_ARCHIVE_FOLDER": "Folder where processed incoming messages are moved. Use the provider's exact folder name.",
-    "IMAP_QUARANTINE_FOLDER": "Folder for rejected, held or unaccepted incoming messages. These are moved out of "
+    "AGENT_EMAIL_IMAP_USERNAME": "Login for the assistant-owned mailbox, often its complete email address.",
+    "AGENT_EMAIL_IMAP_PASSWORD": "Incoming-mail password or app-specific password from your email provider.",
+    "AGENT_EMAIL_IMAP_FOLDER": "Folder watched for new requests, usually INBOX. Existing messages here can be processed at startup.",
+    "AGENT_EMAIL_IMAP_ARCHIVE_FOLDER": "Folder where processed incoming messages are moved. Use the provider's exact folder name.",
+    "AGENT_EMAIL_IMAP_QUARANTINE_FOLDER": "Folder for rejected, held or unaccepted incoming messages. These are moved out of "
                               "intake rather than treated as tasks. Use the provider's exact folder name.",
-    "IMAP_SENT_FOLDER": "Mailbox folder used for copies of sent messages when Advanced > Email behavior > "
+    "AGENT_EMAIL_IMAP_SENT_FOLDER": "Mailbox folder used for copies of sent messages when Advanced > Email behavior > "
                         "Save outgoing email is enabled. Folder names vary by provider.",
-    "SMTP_HOST": "Hostname of the outgoing-mail server, for example smtp.example.com. Use a hostname, not a URL.",
-    "SMTP_PORT": "Outgoing-mail server port (1-65535). Usually 587 for STARTTLS or 465 for implicit TLS; "
+    "AGENT_EMAIL_SMTP_HOST": "Hostname of the outgoing-mail server, for example smtp.example.com. Use a hostname, not a URL.",
+    "AGENT_EMAIL_SMTP_PORT": "Outgoing-mail server port (1-65535). Usually 587 for STARTTLS or 465 for implicit TLS; "
                  "follow your provider's instructions.",
-    "SMTP_USERNAME": "Login authorized to send from this mailbox. It may be the same as the incoming-mail login.",
-    "SMTP_PASSWORD": "Outgoing-mail password or app-specific password. Supply it even if it matches the IMAP password.",
-    "SMTP_FROM": "Sender address placed on outgoing mail. Your SMTP provider must permit this address.",
-    "AGENT_EMAIL": "The assistant's email identity. Normally use the dedicated mailbox address, "
+    "AGENT_EMAIL_SMTP_USERNAME": "Login authorized to send from this mailbox. It may be the same as the incoming-mail login.",
+    "AGENT_EMAIL_SMTP_PASSWORD": "Outgoing-mail password or app-specific password. Supply it even if it matches the IMAP password.",
+    "AGENT_EMAIL_SMTP_FROM": "Sender address placed on outgoing mail. Your SMTP provider must permit this address.",
+    "AGENT_IDENTITY_EMAIL": "The assistant's email identity. Normally use the dedicated mailbox address, "
                    "not the administrator's approval address.",
-    "EMAIL_ACTIONABLE_SENDERS": "Comma-separated sender rules allowed to create tasks, such as you@example.com. "
+    "AGENT_EMAIL_ACTIONABLE_SENDERS": "Comma-separated sender rules allowed to create tasks, such as you@example.com. "
                                 "Required when email is enabled. A single * allows everyone. Keep this narrow; sender matching "
                                 "alone does not prove a sender's identity.",
-    "EMAIL_ALLOWED_RECIPIENT_DOMAINS": "Comma-separated domains to which outgoing mail may be sent, such as "
+    "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS": "Comma-separated domains to which outgoing mail may be sent, such as "
                                       "example.com. Required when email is enabled; * permits any domain. "
                                       "The administrator email remains allowed. This controls real outbound data sharing.",
-    "TELEGRAM_ENABLED": "Start the Telegram receiver for the configured bot. Only allowlisted numeric users "
+    "AGENT_TELEGRAM_ENABLED": "Start the Telegram receiver for the configured bot. Only allowlisted numeric users "
                         "may use it; enabling the checkbox alone does not verify connectivity.",
-    "TELEGRAM_BOT_TOKEN": "Bot API token issued by Telegram's BotFather. Treat it as a password for the bot.",
-    "TELEGRAM_ALLOWED_USER_IDS": "Comma-separated positive numeric Telegram user IDs, such as 123456789. "
+    "AGENT_TELEGRAM_BOT_TOKEN": "Bot API token issued by Telegram's BotFather. Treat it as a password for the bot.",
+    "AGENT_TELEGRAM_ALLOWED_USER_IDS": "Comma-separated positive numeric Telegram user IDs, such as 123456789. "
                                  "Use IDs, not usernames or phone numbers. Only listed users can submit requests.",
-    "TELEGRAM_RECIPIENTS": 'JSON object mapping verified emails to numeric Telegram IDs, for example '
+    "AGENT_TELEGRAM_RECIPIENTS": 'JSON object mapping verified emails to numeric Telegram IDs, for example '
                            '{"you@example.com":"123456789"}. Verify each mapping yourself. Administrator approvals '
                            "require the admin email to map to an allowlisted ID.",
-    "CALENDAR_ENABLED": "Allow calendar tools using the configured accounts. Complete the selected provider's "
+    "AGENT_CALENDAR_ENABLED": "Allow calendar tools using the configured accounts. Complete the selected provider's "
                         "OAuth credentials first. Actions can change real calendars.",
-    "CALENDAR_DEFAULT_PROVIDER": "Provider used when a calendar request does not select an account: google, "
+    "AGENT_CALENDAR_DEFAULT_PROVIDER": "Provider used when a calendar request does not select an account: google, "
                                  "outlook or zoho. Numbered accounts configured outside this form may also be selected, "
                                  "for example google_2.",
-    "CALENDAR_OUTLOOK_TENANT_ID": "Microsoft tenant used for OAuth, usually common for supported personal and "
+    "AGENT_CALENDAR_OUTLOOK_TENANT_ID": "Microsoft tenant used for OAuth, usually common for supported personal and "
                                  "organizational accounts, or your directory's tenant ID.",
-    "CALENDAR_ZOHO_API_BASE": "HTTPS Calendar API URL for your Zoho region. Match the region used for the OAuth "
+    "AGENT_CALENDAR_ZOHO_API_BASE": "HTTPS Calendar API URL for your Zoho region. Match the region used for the OAuth "
                              "account; the default is https://calendar.zoho.com/api/v1.",
-    "ZOOM_ENABLED": "Allow meeting-management tools to use your Zoom app. This grants access to real meetings.",
-    "ZOOM_AUTH_MODE": "Use s2s for Server-to-Server OAuth (requires account ID), or oauth for a "
+    "AGENT_ZOOM_ENABLED": "Allow meeting-management tools to use your Zoom app. This grants access to real meetings.",
+    "AGENT_ZOOM_AUTH_MODE": "Use s2s for Server-to-Server OAuth (requires account ID), or oauth for a "
                       "user-authorized app (requires refresh token). Both need client ID and client secret.",
-    "ZOOM_CLIENT_ID": "Client ID from the Zoom app matching your selected authorization mode.",
-    "ZOOM_CLIENT_SECRET": "Client secret from your Zoom app. Keep it private; it is used to obtain access tokens.",
-    "ZOOM_ACCOUNT_ID": "Zoom account ID required for server-to-server (s2s) authorization; not a meeting ID.",
-    "ZOOM_REFRESH_TOKEN": "Refresh token from user-authorized Zoom OAuth. Required for oauth mode, not s2s mode.",
-    "DROPBOX_ENABLED": "Allow explicit file exchange with the app's private Dropbox App Folder. This does not "
+    "AGENT_ZOOM_CLIENT_ID": "Client ID from the Zoom app matching your selected authorization mode.",
+    "AGENT_ZOOM_CLIENT_SECRET": "Client secret from your Zoom app. Keep it private; it is used to obtain access tokens.",
+    "AGENT_ZOOM_ACCOUNT_ID": "Zoom account ID required for server-to-server (s2s) authorization; not a meeting ID.",
+    "AGENT_ZOOM_REFRESH_TOKEN": "Refresh token from user-authorized Zoom OAuth. Required for oauth mode, not s2s mode.",
+    "AGENT_DROPBOX_ENABLED": "Allow explicit file exchange with the app's private Dropbox App Folder. This does not "
                        "grant access to your entire Dropbox or automatically publish workspace files.",
-    "DROPBOX_ALLOW_EXPORTS": "Standing permission for any task to export eligible local files to the Dropbox "
+    "AGENT_DROPBOX_ALLOW_EXPORTS": "Standing permission for any task to export eligible local files to the Dropbox "
                              "App Folder without extra per-upload confirmation. Leave off for import-only use.",
-    "DROPBOX_MAX_FILE_BYTES": "Maximum size of an exchanged file, in bytes. Default 26214400 is 25 MiB. "
+    "AGENT_DROPBOX_MAX_FILE_BYTES": "Maximum size of an exchanged file, in bytes. Default 26214400 is 25 MiB. "
                               "Larger files are refused; choose a positive limit.",
-    "DROPBOX_CLIENT_ID": "App key/client ID for a Dropbox app configured with App Folder access, not Full Dropbox.",
-    "DROPBOX_REFRESH_TOKEN": "Offline-access OAuth refresh token for the Dropbox App Folder app. "
+    "AGENT_DROPBOX_CLIENT_ID": "App key/client ID for a Dropbox app configured with App Folder access, not Full Dropbox.",
+    "AGENT_DROPBOX_REFRESH_TOKEN": "Offline-access OAuth refresh token for the Dropbox App Folder app. "
                              "It must belong to the configured client ID.",
-    "TRANSCRIPTION_ENABLED": "Run the local speech-recognition service for incoming voice messages. "
+    "AGENT_TRANSCRIPTION_ENABLED": "Run the local speech-recognition service for incoming voice messages. "
                              "It consumes local compute and downloads its model; it does not generate spoken replies.",
-    "TRANSCRIPTION_LANGUAGE": "Use auto to detect the language, en for English, or ar for Arabic. "
+    "AGENT_TRANSCRIPTION_LANGUAGE": "Use auto to detect the language, en for English, or ar for Arabic. "
                               "These are the supported choices; other language codes are not accepted.",
     "AGENT_EMBEDDINGS_ENABLED": "Generate vectors for semantic retrieval. With this disabled, vector search is "
                                "unavailable; keyword retrieval can still be used. File indexing has its own switch.",
@@ -355,37 +453,41 @@ FIELD_HELP = {
                                   "supports 128, 256, 512 or 768. Other models must support the requested size.",
     "AGENT_EMBEDDINGS_TIMEOUT_SECONDS": "Positive time limit in seconds for an embedding request. Raise it if "
                                        "your local model is too slow; it is not a limit on the whole reindex operation.",
-    "AGENT_SECURITY_EMAIL_AUTH_ENABLED": "Recommended; on by default. Email claiming your admin address must pass "
+    "AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED": "Recommended; on by default. Email claiming your admin address must pass "
                                          "an aligned DKIM signature or SPF check, or it is quarantined. A matching From "
                                          "address alone does not prove ownership. Turn off only if your mail provider "
                                          "cannot pass either check.",
-    "AGENT_SECURITY_DECISION_ENABLED": "Send configured content to the screening provider for a safety decision. "
+    "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS": "Confirm fresh admin task emails with no established reply "
+                                                     "or conversation history. Replies and continuations from known "
+                                                     "participants proceed without routine confirmation. Turning this "
+                                                     "off does not disable sender checks, screening or action approvals.",
+    "AGENT_SECURITY_DECISION_MODEL_ENABLED": "Send configured content to the screening provider for a safety decision. "
                                        "This may share sensitive text and incur charges. It does not replace approvals.",
-    "AGENT_SECURITY_DECISION_PROVIDER": "Screening adapter to use: openrouter, perplexity, jev, clef, openai or custom. "
+    "AGENT_SECURITY_DECISION_MODEL_PROVIDER": "Screening adapter to use: openrouter, perplexity, jev, clef, openai or custom. "
                                         "Its endpoint, model and API credential must match the chosen provider.",
-    "AGENT_SECURITY_DECISION_URL": "HTTPS screening endpoint. Leave blank to use the selected provider's default "
+    "AGENT_SECURITY_DECISION_MODEL_URL": "HTTPS screening endpoint. Leave blank to use the selected provider's default "
                                    "when available. Custom providers need their own compatible endpoint.",
-    "AGENT_SECURITY_DECISION_MODEL": "Model used for the screening decision, separate from the primary task model. "
+    "AGENT_SECURITY_DECISION_MODEL_MODEL": "Model used for the screening decision, separate from the primary task model. "
                                      "Use an identifier supported by the selected screening provider.",
-    "AGENT_SECURITY_DECISION_ON_ERROR": "What to do when screening fails: review pauses for human attention, "
+    "AGENT_SECURITY_DECISION_MODEL_ON_ERROR": "What to do when screening fails: review pauses for human attention, "
                                         "reject refuses, and allow proceeds without a successful screen. "
                                         "Use review or reject if bypassing screening is unacceptable.",
-    "AGENT_SECURITY_SCREEN_OUTBOUND_EMAIL": "Include outgoing email in enabled content screening before sending. "
+    "AGENT_SECURITY_DECISION_MODEL_SCREEN_OUTBOUND_EMAIL": "Include outgoing email in enabled content screening before sending. "
                                             "Screening provider access and error policy still apply.",
-    "AGENT_SECURITY_SCREEN_SCRIPTS": "Include script content in enabled screening. Human script permissions "
+    "AGENT_SECURITY_DECISION_MODEL_SCREEN_SCRIPTS": "Include script content in enabled screening. Human script permissions "
                                      "are still required, and malicious screening findings remain blocked.",
-    "AGENT_SECURITY_SCRIPT_ALLOWED_DOMAINS": "Comma-separated trusted domains used by script-source screening. "
+    "AGENT_SECURITY_SCRIPTS_ALLOWED_DOMAINS": "Comma-separated trusted domains used by script-source screening. "
                                             "This is not the sandbox network allowlist and does not grant execution permission.",
-    "SECURITY_DECISION_API_KEY": "Credential for the selected screening provider, separate from normal task "
+    "AGENT_SECURITY_DECISION_MODEL_API_KEY": "Credential for the selected screening provider, separate from normal task "
                                  "model access. Enter a key authorized for the screening endpoint.",
-    "DATABASE_URL": "Connection URL for an external or custom PostgreSQL database, including its access "
+    "AGENT_DATABASE_URL": "Connection URL for an external or custom PostgreSQL database, including its access "
                     "credentials. It overrides the bundled database connection. Use a valid PostgreSQL URL "
                     "with the required TLS settings; the bundled database reset does not support custom databases.",
-    "SANDBOX_API_TOKEN": "Internal credential authorizing access to the script-runner broker. Normally generated "
+    "AGENT_SANDBOX_API_TOKEN": "Internal credential authorizing access to the script-runner broker. Normally generated "
                          "during setup; manual replacement must also be activated in all affected services.",
-    "SANDBOX_REVOKE_TOKEN": "Restricted internal credential used to stop active sandbox runs when permissions "
+    "AGENT_SANDBOX_REVOKE_TOKEN": "Restricted internal credential used to stop active sandbox runs when permissions "
                             "are revoked. Normally generated during setup; keep its consumer services in sync.",
-    "TRANSCRIPTION_API_TOKEN": "Internal credential protecting the local voice-transcription API. Normally "
+    "AGENT_TRANSCRIPTION_API_TOKEN": "Internal credential protecting the local voice-transcription API. Normally "
                                "generated during setup; activate a replacement in both the service and its consumers.",
     "AGENT_CALENDAR_POLICY_ALLOW_READ_EVENT_DETAILS": "Off protects existing event titles, descriptions, locations "
                                                      "and attendees from detail-reading tools. On permits reading "
@@ -401,9 +503,9 @@ FIELD_HELP = {
                                                  "not an undo of external actions.",
     "AGENT_EMAIL_SAVE_TO_SENT": "Append copies of outgoing mail to the configured Sent folder. Some providers "
                                 "already save sent messages; enabling both can produce duplicate copies.",
-    "AGENT_IMAP_POLL_INTERVAL": "Seconds between checks for incoming email. A shorter interval reduces latency "
+    "AGENT_EMAIL_IMAP_POLL_INTERVAL_SECONDS": "Seconds between checks for incoming email. A shorter interval reduces latency "
                                 "but increases mailbox traffic; use a positive value.",
-    "AGENT_MAX_EMAILS_PER_HOUR": "Rate limit for outgoing messages. It limits email volume, not model spending "
+    "AGENT_LIMITS_MAX_EMAILS_PER_HOUR": "Rate limit for outgoing messages. It limits email volume, not model spending "
                                 "or the number of tasks accepted.",
     "AGENT_EMAIL_MAX_ATTACHMENT_COUNT": "Maximum attachments per outgoing email. Zero disables attachments, "
                                          "not email itself. Separate byte-size limits also apply.",
@@ -423,11 +525,11 @@ FIELD_HELP = {
                                      "any domain. This is a search filter, not a sandbox network permission.",
     "AGENT_SEARCH_EXCLUDED_DOMAINS": "Comma-separated domains excluded from web search; blank excludes none. "
                                       "This does not remove existing records or block sandbox networking.",
-    "AGENT_SANDBOX_ALLOWED_HOSTS": "Comma-separated HTTPS hosts sandbox commands can reach without approval. "
+    "AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS": "Comma-separated HTTPS hosts sandbox commands can reach without approval. "
                                   "*.example.com covers subdomains, not the bare domain. Avoid broad entries; "
                                   "this grants network access, not script execution permission.",
     "AGENT_MODEL_SERVICE_ENABLED": "Enable optional OpenRouter preset tools for text, images and audio. "
-                                     "Requires OPENROUTER_API_KEY. Ordinary task-model access is configured separately.",
+                                     "Requires AGENT_LLM_OPENROUTER_API_KEY. Ordinary task-model access is configured separately.",
     "AGENT_MODEL_SERVICE_ZDR_ONLY": "Restrict preset-model selection and routing to supported Zero Data Retention "
                                       "options. This is a provider routing policy, not a claim that data stays local.",
     "AGENT_MODEL_SERVICE_BUDGET_USD": "Rolling USD threshold shared by preset tools and text-to-speech. Checked "
@@ -435,7 +537,7 @@ FIELD_HELP = {
                                        "ordinary task calls; set hard account limits with your provider.",
     "AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS": "Rolling accounting window for the shared preset/speech budget, "
                                                "from 1 to 365 days. This is not a calendar-month reset.",
-    "AGENT_TTS_ENABLED": "Allow dedicated text-to-speech through OpenRouter. Requires OPENROUTER_API_KEY "
+    "AGENT_TTS_ENABLED": "Allow dedicated text-to-speech through OpenRouter. Requires AGENT_LLM_OPENROUTER_API_KEY "
                          "and uses the shared preset/speech budget. Text leaves this computer for synthesis.",
     "AGENT_TTS_ZDR_ONLY": "Require supported Zero Data Retention speech models and routing. "
                           "This restricts provider use; speech synthesis is still remote.",
@@ -443,7 +545,7 @@ FIELD_HELP = {
                        "List choices with python -m assistant_agent.tts voices in the runtime environment.",
     "AGENT_TTS_VOICE": "Voice identifier supported by the chosen speech model. Voice names are model-specific, "
                        "not arbitrary descriptions such as 'friendly'.",
-    "AGENT_APPROVAL_CHANNEL": "Deliver human approval requests by email, telegram or both. Telegram needs "
+    "AGENT_APPROVALS_CHANNEL": "Deliver human approval requests by email, telegram or both. Telegram needs "
                               "a bot token and the admin email mapped to an allowlisted numeric ID. "
                               "Choose a channel you will actually monitor.",
     "AGENT_NAMING_MODEL": "Model for generating short job and workstream names, not for performing the main "
@@ -464,24 +566,28 @@ for provider in ("GOOGLE", "OUTLOOK", "ZOHO"):
         "CALENDAR_ID": "Calendar identifier within the authorized account, not its OAuth client ID. "
                        "Use primary for the main Google calendar, or the provider's applicable calendar ID.",
     }.items():
-        FIELD_HELP[f"CALENDAR_{provider}_{suffix}"] = f"{provider.title()}: {explanation}"
+        FIELD_HELP[f"AGENT_CALENDAR_{provider}_{suffix}"] = f"{provider.title()}: {explanation}"
 
 
 def page_help(route):
     if route.startswith(("Form:", "Connection:")):
-        return GROUP_HELP[route.split(":", 1)[1]]
+        key = route.split(":", 1)[1]
+        if key == "deployment" or key.startswith(("catalog:", "calendar:")):
+            return "Advanced configuration from the server catalog. Review defaults and deployment restrictions before saving. Changes may require restarting the affected services."
+        return GROUP_HELP[key]
     return PAGE_HELP[route]
 
 
 def field_help(spec):
-    explanation = FIELD_HELP[spec.key]
+    normalized = re.sub(r"^(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_[2-9]_", r"\1_", spec.key)
+    explanation = FIELD_HELP.get(normalized, spec.label + " (" + spec.key + "). Review this advanced setting before saving.")
     if spec.secret:
         return explanation + " Input is masked. Blank keeps an existing credential; saved values are never shown."
     return explanation + (" Default: " + spec.default + "." if spec.default else "")
 
 
 def credential_help(name):
-    match = re.fullmatch(r"(CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_([2-9])_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name)
+    match = re.fullmatch(r"(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_([2-9])_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name)
     if match:
         return f"Calendar account {match[2]}. " + FIELD_HELP[match[1] + "_" + match[3]]
     return FIELD_HELP[name]

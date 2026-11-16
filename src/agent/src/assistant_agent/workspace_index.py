@@ -18,6 +18,7 @@ from .embedding_scheduler import EmbeddingScheduler
 from .memory_store import cosine_similarity
 from .threading import safe_filename
 from .workstream_files import WorkstreamFileTracker
+from .worker_health import poll_cycle, polling_failed
 
 
 LOGGER = logging.getLogger("assistant.workspace_index")
@@ -560,12 +561,14 @@ class WorkspaceIndex:
                     count = self.run_once(should_yield=scheduler.startup_waiting)
                     LOGGER.info("workspace indexer processed %s file(s)", count)
                 except Exception:
+                    polling_failed()
                     LOGGER.exception("workspace indexer loop failed")
             if scheduler.startup_waiting():
                 return count
             try:
                 self.refresh_embeddings()
             except Exception:
+                polling_failed()
                 LOGGER.exception("automatic embedding refresh loop failed; will retry")
             return count
 
@@ -577,7 +580,8 @@ class WorkspaceIndex:
             connection.execute("LISTEN assistant_embeddings")
             while not should_stop():
                 scan = time.monotonic() >= next_scan
-                self.run_idle_once(scan=scan)
+                with poll_cycle(interval):
+                    self.run_idle_once(scan=scan)
                 if scan:
                     next_scan = time.monotonic() + interval
                 # Notifications wake indexing quickly; polling recovers missed events.

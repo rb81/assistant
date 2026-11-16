@@ -31,7 +31,7 @@ class ContextStore:
         self.embedding_client = EmbeddingClient(config)
 
     def search_days(self) -> int:
-        return self.config.get_int("agent.context.search_days", 30)
+        return self.config.get_int("agent.context.search_days", 90)
 
     def max_results_per_source(self) -> int:
         return self.config.get_int("agent.context.max_results_per_source", 5)

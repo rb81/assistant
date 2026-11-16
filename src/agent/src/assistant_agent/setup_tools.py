@@ -230,7 +230,7 @@ def custom_database(instance):
     configured = configured or any(instance.defaults.get("agent.database." + key, default) != default
                                    for key, default in (("host", "postgres"), ("name", "assistant"),
                                                         ("user", "assistant"), ("port", 5432)))
-    return "DATABASE_URL" in instance.secret_values or configured
+    return "AGENT_DATABASE_URL" in instance.secret_values or configured
 
 
 def factory_reset_menu(instance, answer, confirm, console):
@@ -288,7 +288,7 @@ def run_factory_reset(instance, console, *, clean_install=False, keep_mailbox_po
             raise SetupError(label + " failed; see the output above")
 
     running = sorted(set(instance.compose(["ps", "--status", "running", "--services"]).split()))
-    writers = sorted(set(running) - {"postgres"})
+    writers = sorted(set(running) - {"postgres", "management", "management-docker"})
     if writers:
         step("Stopping services before destroying the database", ["stop", *writers])
     resume_services = True

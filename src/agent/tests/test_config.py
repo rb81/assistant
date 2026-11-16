@@ -28,12 +28,23 @@ from assistant_agent.secret_store import read_secret
 
 
 class ConfigTest(unittest.TestCase):
+    def test_new_admin_conversation_confirmation_environment_override(self):
+        for enabled in ("true", "false"):
+            with self.subTest(enabled=enabled), patch.dict(
+                os.environ, {"AGENT_CONFIG": "/missing",
+                             "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS": enabled}, clear=True,
+            ):
+                self.assertEqual(
+                    load_config().get_bool("agent.security.confirm_new_admin_conversations"),
+                    enabled == "true",
+                )
+
     def test_inactive_global_network_allowlist_defaults_empty_but_legacy_override_loads(self):
         defaults = Path(__file__).resolve().parents[2] / "config/agent.yaml"
         with patch.dict(os.environ, {"AGENT_CONFIG": str(defaults)}, clear=True):
             self.assertEqual(load_config().get_list("agent.sandbox.network.allowed_hosts"), [])
         with patch.dict(os.environ, {"AGENT_CONFIG": str(defaults),
-                                    "AGENT_SANDBOX_ALLOWED_HOSTS": "legacy.example"}, clear=True):
+                                    "AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS": "legacy.example"}, clear=True):
             self.assertEqual(load_config().get_list("agent.sandbox.network.allowed_hosts"), ["legacy.example"])
 
     def test_obsolete_environment_overrides_are_ignored(self):
@@ -76,13 +87,13 @@ class ConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             secret = Path(root) / "credential"
             secret.write_text("safe$#'\\credential\n", encoding="utf-8")
-            with patch.dict(os.environ, {"AGENT_CONFIG": root + "/missing", "SMTP_PASSWORD_FILE": str(secret), "POSTGRES_PASSWORD_FILE": str(secret)}, clear=True):
+            with patch.dict(os.environ, {"AGENT_CONFIG": root + "/missing", "AGENT_EMAIL_SMTP_PASSWORD_FILE": str(secret), "AGENT_DATABASE_PASSWORD_FILE": str(secret)}, clear=True):
                 config = load_config()
                 self.assertEqual(config.get("agent.email.smtp_password"), "safe$#'\\credential")
                 self.assertIn("safe%24%23%27%5Ccredential", database_url(config))
                 self.assertIn("sslmode=verify-full", database_url(config))
                 self.assertIn("sslrootcert=%2Frun%2Fassistant%2Ftls%2Fpostgres.crt", database_url(config))
-                self.assertNotIn("SMTP_PASSWORD", os.environ)
+                self.assertNotIn("AGENT_EMAIL_SMTP_PASSWORD", os.environ)
 
     def test_custom_database_url_must_verify_server_certificate(self):
         config = AppConfig({})
@@ -91,11 +102,11 @@ class ConfigTest(unittest.TestCase):
             "postgres://user:password@database.example/assistant?sslmode=require",
             "postgres://user:password@database.example/assistant?sslmode=verify-full",
         ):
-            with self.subTest(value=value), patch.dict(os.environ, {"DATABASE_URL": value}, clear=True):
+            with self.subTest(value=value), patch.dict(os.environ, {"AGENT_DATABASE_URL": value}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "sslmode=verify-full and provide sslrootcert"):
                     database_url(config)
         secure = "postgres://user:password@database.example/assistant?sslmode=verify-full&sslrootcert=%2Fetc%2Fssl%2Fdb.crt"
-        with patch.dict(os.environ, {"DATABASE_URL": secure}, clear=True):
+        with patch.dict(os.environ, {"AGENT_DATABASE_URL": secure}, clear=True):
             self.assertEqual(database_url(config), secure)
 
     def test_file_secrets_fail_closed_and_redact_errors(self):
@@ -103,12 +114,12 @@ class ConfigTest(unittest.TestCase):
             path = Path(root) / "secret"
             path.write_text("", encoding="utf-8")
             for pointer in (str(path), root + "/missing", ""):
-                with patch.dict(os.environ, {"OPENROUTER_API_KEY_FILE": pointer}, clear=True):
-                    with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY_FILE"):
-                        read_secret("OPENROUTER_API_KEY")
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "PRIVATE-CANARY", "OPENROUTER_API_KEY_FILE": str(path)}, clear=True):
+                with patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY_FILE": pointer}, clear=True):
+                    with self.assertRaisesRegex(RuntimeError, "AGENT_LLM_OPENROUTER_API_KEY_FILE"):
+                        read_secret("AGENT_LLM_OPENROUTER_API_KEY")
+            with patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY": "PRIVATE-CANARY", "AGENT_LLM_OPENROUTER_API_KEY_FILE": str(path)}, clear=True):
                 with self.assertRaises(RuntimeError) as raised:
-                    read_secret("OPENROUTER_API_KEY")
+                    read_secret("AGENT_LLM_OPENROUTER_API_KEY")
                 self.assertNotIn("PRIVATE-CANARY", str(raised.exception))
 
     def test_missing_config_file_loads_empty(self) -> None:
@@ -138,9 +149,9 @@ class ConfigTest(unittest.TestCase):
 
             env = {
                 "AGENT_CONFIG": config_file.name,
-                "ORG_NAME": "Acme Inc.",
-                "ORG_SECURITY_EMAIL": "hello@acme.example",
-                "ORG_INTERNAL_EMAIL_DOMAINS": "acme.example,example.org",
+                "AGENT_ORG_NAME": "Acme Inc.",
+                "AGENT_ORG_SECURITY_EMAIL": "hello@acme.example",
+                "AGENT_ORG_INTERNAL_EMAIL_DOMAINS": "acme.example,example.org",
             }
             with patch.dict(os.environ, env, clear=True):
                 config = load_config()
@@ -174,8 +185,8 @@ class ConfigTest(unittest.TestCase):
             env = {
                 "AGENT_CONFIG": config_file.name,
                 "AGENT_APP_NAME": "assistant",
-                "AGENT_NAME": "Agent",
-                "AGENT_EMAIL": "agent@acme.example",
+                "AGENT_IDENTITY_NAME": "Agent",
+                "AGENT_IDENTITY_EMAIL": "agent@acme.example",
             }
             with patch.dict(os.environ, env, clear=True):
                 config = load_config()
@@ -192,7 +203,7 @@ class ConfigTest(unittest.TestCase):
             env = {
                 "AGENT_CONFIG": config_file.name,
                 "AGENT_LLM_MODEL": "",
-                "AGENT_TIMEZONE": "",
+                "AGENT_APP_TIMEZONE": "",
             }
             loaded_values = {"agent": {"llm": {"model": "anthropic/claude-sonnet-4.6"}, "app": {"timezone": "UTC"}}}
             with (
@@ -211,13 +222,13 @@ class ConfigTest(unittest.TestCase):
 
             env = {
                 "AGENT_CONFIG": config_file.name,
-                "CALENDAR_ENABLED": "true",
-                "CALENDAR_TIMEZONE": "America/New_York",
-                "CALENDAR_DEFAULT_PROVIDER": "google",
-                "CALENDAR_DEFAULT_ALERT_MINUTES": "15",
-                "CALENDAR_GOOGLE_CLIENT_ID": "google-client-id",
-                "CALENDAR_GOOGLE_CLIENT_SECRET": "google-client-secret",
-                "CALENDAR_GOOGLE_REFRESH_TOKEN": "google-refresh-token",
+                "AGENT_CALENDAR_ENABLED": "true",
+                "AGENT_CALENDAR_TIMEZONE": "America/New_York",
+                "AGENT_CALENDAR_DEFAULT_PROVIDER": "google",
+                "AGENT_CALENDAR_DEFAULT_ALERT_MINUTES": "15",
+                "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "google-client-id",
+                "AGENT_CALENDAR_GOOGLE_CLIENT_SECRET": "google-client-secret",
+                "AGENT_CALENDAR_GOOGLE_REFRESH_TOKEN": "google-refresh-token",
             }
             with patch.dict(os.environ, env, clear=True):
                 config = load_config()
@@ -226,9 +237,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.get("agent.calendar.timezone"), "America/New_York")
         self.assertEqual(config.get("agent.calendar.default_provider"), "google")
         self.assertEqual(config.get_int("agent.calendar.default_alert_minutes", 30), 15)
-        # Provider OAuth credentials are consumed by CalendarRouter from the
-        # environment; they are not copied into agent.yaml config paths.
-        self.assertIsNone(config.get("agent.calendar.google.client_id"))
+        self.assertEqual(config.get("agent.calendar.google.client_id"), "google-client-id")
         self.assertIsNone(config.get("agent.calendar.providers"))
 
 

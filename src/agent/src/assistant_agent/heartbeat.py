@@ -7,6 +7,7 @@ from psycopg.types.json import Jsonb
 from .config import AppConfig, worker_id
 from .database import Database, json_safe
 from .notifications import notify_admin_job_failure
+from .worker_health import poll_cycle
 
 
 LOGGER = logging.getLogger("assistant.heartbeat")
@@ -27,7 +28,8 @@ class Heartbeat:
         )
         while not stop_requested():
             try:
-                count = self.run_once()
+                with poll_cycle(interval):
+                    count = self.run_once()
                 LOGGER.info("heartbeat completed with %s rule action(s)", count)
             except Exception:
                 LOGGER.exception("heartbeat loop failed")

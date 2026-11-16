@@ -41,7 +41,9 @@ def is_admin_subject(subject: str) -> bool:
 
 def redact_secrets(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: "[redacted]" if any(term in key.lower() for term in ("password", "secret", "api_key", "authorization", "token", "signing_key", "start_url")) else redact_secrets(item) for key, item in value.items()}
+        return {key: item if key == "max_tokens_per_task" and type(item) is int else
+                "[redacted]" if any(term in key.lower() for term in ("password", "secret", "api_key", "authorization", "token", "signing_key", "start_url")) else
+                redact_secrets(item) for key, item in value.items()}
     if isinstance(value, list):
         return [redact_secrets(item) for item in value]
     if isinstance(value, str):

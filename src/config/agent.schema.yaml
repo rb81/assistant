@@ -1,0 +1,575 @@
+# Metadata sidecar for agent.yaml. agent.yaml defines which settings exist and their
+# defaults; this file only adds what cannot be inferred. Every key is optional.
+#
+#   type:             bool | int | float | list | str. Needed only when the default is
+#                     blank/null and the type cannot be inferred.
+#   secret:           true for credentials. They are stored by setup in the credential
+#                     store (never in .env or overrides.env) and exposed to containers
+#                     through <NAME>_FILE variables.
+#   label, description, group, enum, restart_required: presentation and apply hints.
+#
+# Keys must match agent.yaml paths exactly; entries with no matching path are ignored
+# and an info notice is logged.
+settings:
+  agent.approvals.channel:
+    enum: [email, telegram, both, client]
+    description: Approval notices use the selected channels; client decisions use the Management API.
+  agent.client.poll_interval_seconds:
+    label: Client polling interval
+    description: "Recommended interval in seconds between client polls. Shorter intervals improve message pickup but add requests; keep availability timeouts long enough for normal polling."
+  agent.client.availability_timeout_seconds:
+    label: Client availability timeout
+    description: A client becomes unavailable after this many seconds without polling.
+  agent.client.delivery_timeout_seconds:
+    label: Client acknowledgement timeout
+    description: Route an offered but unacknowledged message to a fallback channel after this many seconds.
+  agent.embeddings.dimensions:
+    type: int
+  agent.fusion.max_completion_tokens:
+    label: Fusion output token limit
+    type: int
+    description: "Optional completion-token limit sent to OpenRouter's fusion tool. Leave blank for provider behavior; higher limits allow longer output and potentially higher charges."
+  agent.fusion.temperature:
+    label: Fusion temperature
+    type: float
+    description: "Optional sampling temperature sent to OpenRouter's fusion tool. Leave blank for provider behavior; lower values generally favor less varied output where supported."
+  agent.database.password:
+    secret: true
+  agent.database.url:
+    label: Custom database URL
+    secret: true
+    description: "Connection URL for a custom PostgreSQL database, including credentials; overrides the separate database fields. Use sslmode=verify-full and sslrootcert for certificate verification; bundled database reset does not support custom databases."
+  agent.llm.openrouter_api_key:
+    secret: true
+  agent.llm.openai_api_key:
+    secret: true
+  agent.email.imap_password:
+    secret: true
+  agent.email.smtp_password:
+    secret: true
+  agent.zoom.client_id:
+    secret: true
+  agent.zoom.client_secret:
+    secret: true
+  agent.zoom.account_id:
+    secret: true
+  agent.zoom.refresh_token:
+    secret: true
+  agent.dropbox.client_id:
+    secret: true
+  agent.dropbox.refresh_token:
+    secret: true
+  agent.telegram.bot_token:
+    secret: true
+  agent.transcription.api_token:
+    label: Transcription API token
+    secret: true
+    description: "Internal credential protecting the local voice-transcription API. Normally generated during setup; activate a replacement in both the service and its consumers."
+  agent.sandbox.api_token:
+    label: Sandbox API token
+    secret: true
+    description: "Internal credential authorizing access to the script-runner broker. Normally generated during setup; manual replacement must also be activated in all affected services."
+  agent.sandbox.revoke_token:
+    label: Sandbox revocation token
+    secret: true
+    description: "Restricted internal credential used to stop active sandbox runs when permissions are revoked. Derived from the sandbox API token during setup; rotate that token instead of editing this value directly."
+  agent.security.decision_model.api_key:
+    secret: true
+  agent.calendar.google.client_id:
+    secret: true
+  agent.calendar.google.client_secret:
+    secret: true
+  agent.calendar.google.refresh_token:
+    secret: true
+  agent.calendar.outlook.client_id:
+    secret: true
+  agent.calendar.outlook.client_secret:
+    secret: true
+  agent.calendar.outlook.refresh_token:
+    secret: true
+  agent.calendar.zoho.client_id:
+    secret: true
+  agent.calendar.zoho.client_secret:
+    secret: true
+  agent.calendar.zoho.refresh_token:
+    secret: true
+
+  # App
+  agent.app.name:
+    label: Application name
+    description: "Names the application in model-provider headers and supplies the assistant name when no identity name is set. Use a short name you are comfortable sharing with providers."
+  agent.app.referer_url:
+    label: Application website
+    description: "Website sent in the HTTP-Referer header of model requests to identify this application. Use a public URL without private information or credentials."
+
+  # Identity
+  agent.identity.message_id_domain:
+    label: Email message ID domain
+    description: "Domain used when generating email Message-IDs. Leave blank to derive it from the assistant's email address; change only if your mail setup needs a specific domain."
+
+  # Database
+  agent.database.host:
+    label: Database host
+    description: "PostgreSQL server hostname, used unless a custom database URL is supplied. Change only when connecting to a different database server."
+  agent.database.port:
+    label: Database port
+    description: "PostgreSQL TCP port, used unless a custom database URL is supplied. Match the database server's listening port."
+  agent.database.name:
+    label: Database name
+    description: "PostgreSQL database to open unless a custom database URL is supplied. Changing it selects different records; it does not move existing data."
+  agent.database.user:
+    label: Database user
+    description: "PostgreSQL login role, used unless a custom database URL is supplied. Match the server's credentials and permissions; changing it does not create a role."
+
+  # Language model
+  agent.llm.temperature:
+    label: Model temperature
+    description: "Sampling temperature sent to the task model. Lower values favor predictable replies; higher values allow more variation, where supported by the provider."
+
+  # Routing
+  agent.routing.model:
+    label: Request routing model
+    description: "Model used to decide whether incoming requests start new work or continue a conversation. Choose an available model; routing adds provider calls and cost."
+  agent.routing.timeout_seconds:
+    label: Request routing timeout
+    description: "Maximum seconds to wait for a routing decision before using fallback rules. Increase for a slow provider, at the cost of delayed intake."
+  agent.routing.fallback_continue_minutes:
+    label: Fallback conversation window
+    description: "Minutes to look back for a recent Telegram conversation when model routing fails. Zero disables this fallback; longer windows may connect unrelated requests."
+
+  # Limits
+  agent.limits.message_history_window:
+    label: Message history window
+    description: "Number of recent conversation turns kept as full messages for model calls; older history is summarized. Increase for more detail at the cost of larger prompts."
+  agent.limits.max_prompt_chars:
+    label: Prompt size limit
+    description: "Character threshold that triggers model-based history compaction. Lower for smaller context windows; summarization can lose details and adds model calls."
+  agent.limits.summarization_model:
+    label: History summary model
+    description: "Model used to compact older task history when prompts grow too large. Choose one that preserves important details; summarization uses provider tokens."
+  agent.limits.summarization_max_tokens:
+    label: History summary token limit
+    description: "Maximum output tokens requested for a history summary. Larger summaries preserve more detail but consume more tokens in subsequent prompts."
+  agent.limits.summarization_timeout_seconds:
+    label: History summary timeout
+    description: "Seconds allowed for the history-summary model call. Failures use a rule-based summary; increase only if slow summaries are worth the wait."
+  agent.limits.summarization_keep_recent:
+    label: Recent messages kept in full
+    description: "Number of recent messages retained without model summarization during prompt compaction. Increase to preserve exact recent details, using more prompt space."
+  agent.limits.summarization_max_input_chars:
+    label: History summary input limit
+    description: "Maximum transcript characters sent to the history-summary model. Older content is truncated when exceeded; increasing it costs more input tokens."
+  agent.limits.tool_timeout_command_seconds:
+    label: Command tool timeout
+    description: "Default timeout in seconds for sandbox commands when the tool call gives none. Longer commands still face the sandbox service's maximum timeout."
+  agent.limits.limit_approach_factor:
+    label: Task wrap-up threshold
+    description: "Fraction of task limits at which the agent is told to wrap up and can request more capacity. Lower it to leave more room for finishing safely."
+  agent.limits.rate_limit_backoff_seconds:
+    label: Rate-limit retry delay
+    description: "Seconds to wait before retrying after a model rate-limit error. Increase to reduce repeated failures, at the cost of slower recovery."
+  agent.limits.poll_interval_seconds:
+    label: General polling interval
+    description: "Seconds between general worker checks, also a fallback for some role-specific intervals. Shorter waits improve responsiveness but increase database activity."
+
+  # Task agent
+  agent.task_agent.poll_interval_seconds:
+    label: Task queue polling interval
+    description: "Seconds between checks for queued tasks. Lower for faster pickup; higher values reduce idle database activity."
+
+  # Email
+  agent.email.imap_timeout_seconds:
+    label: Mailbox connection timeout
+    description: "Socket timeout in seconds for incoming-mail connections and mailbox tool operations. Increase for slow servers, but failed connections may take longer to release."
+  agent.email.read_max_body_chars:
+    label: Email read character limit
+    description: "Maximum body characters returned by an email-read tool call. Raise when messages are cut short; larger reads add more text to model context."
+  agent.email.read_max_body_lines:
+    label: Email read line limit
+    description: "Maximum body lines returned by an email-read tool call. Raise for long messages, keeping the separate character limit in mind."
+  agent.email.max_attachment_bytes:
+    label: Outgoing attachment size limit
+    description: "Maximum bytes allowed for one outgoing email attachment. Keep within your mail provider's limits; larger files increase transfer and memory use."
+  agent.email.max_total_attachment_bytes:
+    label: Outgoing attachments total limit
+    description: "Maximum combined attachment bytes for an outgoing email. Keep below your provider's message-size limit, allowing room for email encoding overhead."
+  agent.email.context_body_preview_chars:
+    label: Email context preview length
+    description: "Number of body characters included in an email preview in task context. Larger previews give more background but increase prompt size."
+  agent.email.initial_context_prior_full_body_char_limit:
+    label: Earlier email full-body threshold
+    description: "Earlier email bodies at or below this character count can appear in full in initial context; longer ones use previews. Lower to keep prompts compact."
+  agent.email.max_initial_context_body_chars:
+    label: Initial email body limit
+    description: "Maximum characters from each email body included in initial task context. A value below one removes this truncation; large bodies increase model input and cost."
+
+  # Zoom
+  agent.zoom.user_id:
+    label: Zoom meeting host
+    description: "Zoom user identifier used by meeting operations, such as a user ID, email address or me. The authorized Zoom app must have access to that user."
+
+  # Telegram
+  agent.telegram.max_download_bytes:
+    label: Telegram download size limit
+    description: "Maximum bytes for a Telegram file download, capped by the client's built-in download ceiling. Lower to reduce resource use and reject larger incoming files."
+  agent.telegram.max_messages_per_hour:
+    label: Telegram hourly sending limit
+    description: "Caps outgoing Telegram deliveries counted over the past hour. Lower to limit message volume; reaching it can delay replies and notifications."
+  agent.telegram.show_task_status:
+    label: Show Telegram task status
+    description: "Send and update a task-status message in Telegram conversations. Enable for visible progress; it adds bot messages and may use the sending allowance."
+
+  # Transcription
+  agent.transcription.base_url:
+    label: Transcription service URL
+    description: "Base URL of the voice-transcription service. Incoming audio is sent there; use only a trusted endpoint with the matching API credential."
+  agent.transcription.model_path:
+    label: Transcription model file
+    description: "Path to the whisper.cpp model inside the transcription container. The file must be provisioned there; changing the path alone does not download a model."
+  agent.transcription.threads:
+    label: Transcription CPU threads
+    description: "CPU threads passed to whisper.cpp, limited to one through four by the service. More threads can speed recognition but compete with other services for CPU."
+
+  # Supervisor
+  agent.supervisor.stall_threshold_minutes:
+    label: Supervisor stall threshold
+    description: "Minutes without task progress before the supervisor flags a running task for review. Increase for legitimately long operations to avoid premature intervention."
+  agent.supervisor.email_approval_increase_factor:
+    label: Approved task limit multiplier
+    description: "Multiplier applied to task iteration and token limits when an administrator approves more capacity. Larger increases allow more work and potentially higher provider charges."
+
+  # Filesystem
+  agent.filesystem.shared_root:
+    label: Shared workspace folder
+    description: "Root folder for workspace files inside the application containers. Keep aligned with mounted storage; changing it does not move existing files."
+  agent.filesystem.require_mount:
+    label: Require mounted workspace
+    description: "Require the shared workspace to be a filesystem mount during validation. Keep enabled to catch missing mounts; disabling risks container-local writes."
+  agent.filesystem.shared_file_umask:
+    label: Shared file permission mask
+    description: "Octal permission mask applied when creating shared files and folders. Match your host group needs; permissive masks can expose files to other local users."
+  agent.filesystem.max_read_bytes:
+    label: File read size limit
+    description: "Maximum bytes returned by a file-read tool call. Increase for larger text reads, with higher memory use and larger model context."
+  agent.filesystem.trash_directory:
+    label: Workspace trash folder
+    description: "Folder used to retain workspace files moved to trash. Keep under shared storage so removed files remain available for recovery."
+
+  # Tool result cache
+  agent.tool_result_cache.enabled:
+    label: Cache large tool results
+    description: "Save eligible tool results as workspace files and return compact previews. This reduces prompt size but retains potentially sensitive tool output on disk."
+  agent.tool_result_cache.root:
+    label: Tool result cache folder
+    description: "Cache folder for saved tool output; relative paths resolve under the shared workspace. Keep private and allow enough disk space for retained results."
+  agent.tool_result_cache.min_bytes:
+    label: Tool result cache threshold
+    description: "Serialized output size in bytes at which eligible results are cached; some tools are always cached. Lower to keep prompts smaller while writing more cache files."
+  agent.tool_result_cache.retention_days:
+    label: Tool result retention
+    description: "Days to retain cached tool results before cleanup. Shorter retention saves disk space but makes older cached output unavailable sooner."
+
+  # Artifacts
+  agent.artifacts.enabled:
+    label: Process incoming attachments
+    description: "Enable the attachment-processing pipeline that scans and converts supported incoming files. Disabling skips this pipeline, including its scanning and text extraction."
+  agent.artifacts.raw_root:
+    label: Private attachment folder
+    description: "Private storage root for original incoming attachments. Keep on persistent storage and restrict host access because files may contain sensitive or unsafe content."
+  agent.artifacts.processed_root:
+    label: Processed attachment folder
+    description: "Folder for converted attachment text, relative to the shared workspace unless absolute. It must remain inside that workspace; extracted text may be sensitive."
+  agent.artifacts.max_attachment_bytes:
+    label: Attachment processing size limit
+    description: "Maximum bytes for an attachment to enter document processing. Raise only if larger documents are needed and scanning and conversion have enough resources."
+  agent.artifacts.allowed_attachment_extensions:
+    label: Processable attachment extensions
+    description: "Extensions eligible for attachment processing, entered as a list. A blank list uses built-in extensions; an allowed extension does not prove a file is safe."
+  agent.artifacts.clamav.enabled:
+    label: Scan attachments for malware
+    description: "Scan attachments with ClamAV before conversion. Disabling skips this safeguard; scanning reduces risk but cannot guarantee a file is safe."
+  agent.artifacts.clamav.required:
+    label: Require successful malware scans
+    description: "Block conversion if the malware scanner fails or returns an unusable result. Keep enabled for safer failure handling; detected malware always blocks conversion."
+  agent.artifacts.clamav.host:
+    label: Malware scanner host
+    description: "Hostname of the ClamAV service that receives attachment contents for scanning. Use a trusted service reachable from the application containers."
+  agent.artifacts.clamav.port:
+    label: Malware scanner port
+    description: "TCP port of the ClamAV scanning service. Match its listening port; a wrong port can block processing when scans are required."
+  agent.artifacts.clamav.timeout_seconds:
+    label: Malware scan timeout
+    description: "Socket timeout in seconds for connecting to and communicating with ClamAV. Increase for slower scans; required scans block conversion on timeout."
+
+  # Prompt
+  agent.prompt.agent_file:
+    label: Standing instructions filename
+    description: "Filename of the assistant's standing instructions in the configuration folder. Changing it selects a different instruction file; instructions guide the model but do not grant security permissions."
+  agent.prompt.max_context_file_bytes:
+    label: Instruction file read limit
+    description: "Maximum bytes read from a context instruction file for prompts. Larger limits include more instruction text but increase model input size and cost."
+
+  # Memory
+  agent.memory.working_context_days:
+    label: Working memory lifetime
+    description: "Days before new working-context memories expire when no expiry is supplied. Longer lifetimes retain temporary details longer and may surface outdated context."
+  agent.memory.steward.model:
+    label: Memory steward model
+    description: "Model used to select recalled context and propose memories after tasks. Choose a capable, economical model; memory upkeep makes additional provider calls."
+  agent.memory.steward.mode:
+    label: Memory failure handling
+    description: "Use best_effort to continue when memory recall or consolidation fails, or required to propagate those failures. Required mode makes memory-service problems interrupt work."
+  agent.memory.steward.timeout_seconds:
+    label: Memory model timeout
+    description: "Seconds allowed for a memory steward model request. Increase for a slow provider; failures follow the selected memory failure-handling mode."
+  agent.memory.steward.max_tokens_per_call:
+    label: Memory model token limit
+    description: "Maximum output tokens requested for a memory steward call. More tokens allow longer recall or memory proposals but can increase provider cost."
+  agent.memory.steward.max_writes_per_job:
+    label: Memories saved per task
+    description: "Maximum proposed memories automatically saved after one task. Lower to reduce automatic retention of task details; zero prevents these writes."
+  agent.memory.steward.max_transcript_bytes:
+    label: Memory transcript length limit
+    description: "Caps the recent transcript sent for memory consolidation; despite the setting name, current code counts characters, not bytes. Lower to send less task content to the memory model."
+  agent.memory.steward.min_importance:
+    label: Minimum memory importance
+    description: "Minimum importance score, from one to five, for automatically saving a proposed memory unless the user explicitly requested it. Raise to reduce low-value memory retention."
+  agent.memory.steward.min_confidence:
+    label: Minimum memory confidence
+    description: "Minimum confidence score, from zero to one, for automatically saving a proposed memory unless the user explicitly requested it. Raise to filter uncertain facts more strictly."
+  agent.memory.steward.reap_after_days:
+    label: Unused memory expiry age
+    description: "Days without access before an unpinned, low-importance memory is eligible for expiry. Expiry hides it from active recall without deleting the stored record."
+  agent.memory.steward.reap_max_importance:
+    label: Memory cleanup importance ceiling
+    description: "Highest importance score, on a one-to-five scale, eligible for unused-memory expiry. Raise cautiously, as more significant unpinned memories may stop appearing in recall."
+  agent.memory.steward.reap_interval_hours:
+    label: Memory cleanup interval
+    description: "Hours between unused-memory cleanup checks performed by the heartbeat. A value at or below zero disables this cleanup; longer intervals retain stale memories longer."
+  agent.memory.steward.conflict_detection_enabled:
+    label: Check memory conflicts
+    description: "Check new memories against similar existing memories of the same kind using embeddings. Possible conflicts become suggestions rather than immediately active memories."
+  agent.memory.steward.conflict_similarity_threshold:
+    label: Memory conflict similarity
+    description: "Similarity score above which existing memories of the same kind are treated as possible conflicts. Lower to flag more proposals, including more false matches."
+  agent.memory.embeddings.min_similarity:
+    label: Minimum memory similarity
+    description: "Minimum cosine similarity for semantic memory matches before recency boosts. Raise for stricter relevance; lower to retrieve more loosely related memories."
+  agent.memory.embeddings.recency_boost_max:
+    label: Recent memory score boost
+    description: "Maximum score added to favor recently updated memories in semantic ranking. Larger boosts favor newer information over older semantic matches."
+  agent.memory.embeddings.recency_boost_days:
+    label: Memory recency boost duration
+    description: "Days over which the recent-memory score boost declines to zero. Increase to favor newer memories for longer."
+  agent.memory.embeddings.candidate_limit:
+    label: Memory search candidate limit
+    description: "Maximum stored memory candidates considered for semantic ranking, subject to built-in bounds. Increase for wider recall at the cost of more database and scoring work."
+
+  # Context
+  agent.context.enabled:
+    label: Recall related task context
+    description: "Allow the memory steward to retrieve related context from other stored sources. Disabling removes this background source without disabling memory storage itself."
+  agent.context.embedding_text_limit:
+    label: Context embedding text limit
+    description: "Maximum text characters used when building context embeddings. Longer text can capture more detail but sends more content to the embedding endpoint."
+  agent.context.keyword_boost:
+    label: Exact-match context score boost
+    description: "Score added when the query appears literally in searchable context text. Increase to favor exact wording over semantic similarity."
+  agent.context.max_results_per_source:
+    label: Context results per source
+    description: "Maximum related-context results returned from each source. Higher limits provide broader background but can increase prompt size and retrieval work."
+  agent.context.min_score:
+    label: Minimum context relevance score
+    description: "Minimum relevance score for context search results, including applicable keyword boosts. Raise to filter weak matches; lower for broader recall."
+  agent.context.steward_max_candidates:
+    label: Memory steward context candidates
+    description: "Maximum related-context candidates offered to the memory steward during recall. Larger pools may improve recall but increase model input and cost."
+
+  # Workspace
+  agent.workspace.max_conversion_bytes:
+    label: Workspace conversion size limit
+    description: "Maximum source-file bytes accepted for workspace document-to-Markdown conversion. Increase only if conversion has enough memory and processing time."
+  agent.workspace.normalize_documents:
+    label: Legacy document normalization
+    description: "Legacy normalization flag; the current workspace path does not use it to automatically convert documents. Changing it does not enable automatic conversion."
+  agent.workspace.source_archive_root:
+    label: Source document archive folder
+    description: "Reserved source-document archive folder under the shared workspace, excluded from normal indexing and file listings. Changing it does not move files or automatically archive originals."
+  agent.workspace.text_extensions:
+    label: Workspace text extensions
+    description: "Extensions treated as directly readable text for workspace extraction. Leave blank for the built-in list; avoid marking binary formats as text."
+  agent.workspace.convertible_document_extensions:
+    label: Convertible document extensions
+    description: "Extensions treated as documents eligible for text conversion. A blank list uses built-in formats; enabling an extension does not install a converter."
+  agent.workspace.index.poll_interval_seconds:
+    label: Workspace indexing interval
+    description: "Seconds between periodic workspace scans; notifications may wake indexing sooner. Lower for fresher search results at the cost of more filesystem activity."
+  agent.workspace.index.chunk_chars:
+    label: Workspace search chunk size
+    description: "Maximum characters per text chunk stored for workspace search. Smaller chunks provide finer matches but create more index entries and embedding work."
+  agent.workspace.index.candidate_limit:
+    label: Workspace search candidate limit
+    description: "Maximum indexed chunks considered for semantic workspace search, subject to built-in bounds. Larger values broaden search but require more database and scoring work."
+
+  # Conversion
+  agent.conversion.pandoc_path:
+    label: Pandoc executable path
+    description: "Executable name or path used for Pandoc conversion. It must exist inside the application container; changing this value does not install Pandoc."
+  agent.conversion.pdf_engine:
+    label: PDF conversion engine
+    description: "PDF engine passed to Pandoc when generating PDFs. Choose an engine installed in the application container and compatible with your documents."
+  agent.conversion.timeout_seconds:
+    label: Document conversion timeout
+    description: "Seconds allowed for a document-conversion subprocess. Increase for complex files; longer limits let resource-heavy conversions run longer."
+  agent.conversion.max_input_bytes:
+    label: Document conversion input limit
+    description: "Maximum input-file bytes accepted by the file-conversion tool. Raise only when larger documents are needed and the converter has sufficient resources."
+
+  # Reminders
+  agent.reminders.default_timezone:
+    label: Legacy reminder timezone
+    description: "Deprecated and ignored; reminders use the assistant timezone. Change the assistant timezone instead to affect local scheduling."
+  agent.reminders.scheduler_poll_interval_seconds:
+    label: Reminder polling interval
+    description: "Seconds between checks for due reminders. Shorter intervals reduce scheduling delay but increase database activity."
+  agent.reminders.max_due_per_tick:
+    label: Reminders processed per check
+    description: "Maximum due reminders processed in one scheduler pass. Increase for large backlogs, allowing for the resulting burst of queued tasks."
+  agent.reminders.script_check_interval_minutes:
+    label: Scheduled script recheck interval
+    description: "Minutes between integrity and permission rechecks for scheduled scripts. Shorter intervals discover changes sooner but add inspection work."
+
+  # Calendar
+  agent.calendar.timezone:
+    label: Legacy calendar timezone
+    description: "Deprecated and ignored; calendar operations use the assistant timezone. Change the assistant timezone instead to affect local calendar times."
+  agent.calendar.default_alert_minutes:
+    label: Calendar alert lead time
+    description: "Default number of minutes before an event for a calendar alert when none is specified. Adjust for more or less advance notice."
+
+  # Deep research
+  agent.deep_research.model:
+    label: Deep research model
+    description: "Model used by the deep-research worker; blank reuses the main task model. Research may make many calls, so consider model cost as well as reasoning quality."
+  agent.deep_research.search_model:
+    label: Research web search model
+    description: "Model used for web-search calls within deep research. Choose a supported search-capable model; each search can incur provider charges."
+  agent.deep_research.max_iterations:
+    label: Deep research iteration limit
+    description: "Maximum model iterations in a deep-research run. Increase for more extensive research, with higher potential token usage and completion time."
+  agent.deep_research.poll_interval_seconds:
+    label: Research queue polling interval
+    description: "Seconds between checks for queued deep-research work. Lower values pick up new research sooner but increase idle database activity."
+  agent.deep_research.timeout_seconds:
+    label: Research model call timeout
+    description: "Timeout in seconds for each deep-research model request, not the whole run. Increase for slow responses, allowing stalled calls to hold a worker longer."
+
+  # Client
+  agent.client.reconciliation_interval_seconds:
+    label: Client fallback check interval
+    description: "Seconds used to schedule client-delivery reconciliation checks. Shorter intervals can route overdue messages to fallback channels sooner but add database work."
+  agent.client.retry_interval_seconds:
+    label: Client fallback retry delay
+    description: "Seconds before retrying failed client fallback delivery when a retry is safe. Increase to reduce repeated failures; uncertain external sends are not automatically retried."
+  agent.client.claim_timeout_seconds:
+    label: Client delivery claim timeout
+    description: "Seconds before an interrupted fallback send is marked uncertain for review. Allow time for normal sends; this does not automatically retry possibly delivered messages."
+
+  # Heartbeat
+  agent.heartbeat.enabled:
+    label: Enable background health checks
+    description: "Run heartbeat checks for stalled or failed work and periodic memory maintenance. Disabling stops these checks and their associated failure notifications and cleanup."
+  agent.heartbeat.poll_interval_seconds:
+    label: Background health check interval
+    description: "Seconds between heartbeat checks. Shorter intervals detect issues sooner but increase monitoring and database activity."
+  agent.heartbeat.stale_threshold_minutes:
+    label: Task inactivity review threshold
+    description: "Minutes without progress before the heartbeat marks a running task as needing review and notifies the administrator. Increase for long silent operations."
+  agent.heartbeat.deep_research_stale_minutes:
+    label: Research inactivity failure threshold
+    description: "Minutes without updates before the heartbeat marks running deep research as failed and notifies the administrator. Increase if valid steps take longer without updates."
+
+  # Sandbox
+  agent.sandbox.enabled:
+    label: Enable sandbox commands
+    description: "Allow sandbox command tools when the broker is configured. Disabling removes those tools; stop the sandbox service separately to remove its Docker-socket exposure."
+  agent.sandbox.base_url:
+    label: Sandbox broker URL
+    description: "Base URL for the script-runner broker. Use the trusted HTTPS broker endpoint; it receives command requests and the internal authorization credential."
+  agent.sandbox.max_attempts:
+    label: Sandbox request attempt limit
+    description: "Maximum attempts for eligible sandbox requests after transient failures. Higher limits improve resilience but delay failure reporting; not every command failure is retried."
+  agent.sandbox.retry_backoff_seconds:
+    label: Sandbox retry delay
+    description: "Base delay in seconds between retryable sandbox request failures. Increase to give an unavailable broker more time to recover, with slower error reporting."
+
+  # Search
+  agent.search.model:
+    label: Web search model
+    description: "Model used by the web-search tool to answer queries with search results. Select a supported model; searches send query text to the provider and can incur charges."
+  agent.search.engine:
+    label: Web search engine
+    description: "Search-engine selector passed to OpenRouter's web-search tool. Use a value supported by OpenRouter; engine choice can affect availability, results and pricing."
+  agent.search.max_total_results:
+    label: Web search total result limit
+    description: "Total result limit passed to OpenRouter search and used to cap requested web-search results. Larger values provide broader evidence with more context and cost."
+  agent.search.max_tokens:
+    label: Web search output token limit
+    description: "Maximum output tokens requested for a web-search response. Increase for fuller answers, with higher potential provider cost and more task context."
+  agent.search.timeout_seconds:
+    label: Web search timeout
+    description: "Seconds allowed for a web-search model request. Increase for slower searches, allowing a task to wait longer before reporting failure."
+  agent.search.search_context_size:
+    label: Web search context size
+    description: "Search context size requested from the provider, such as low, medium or high where supported. More context may improve coverage but increase cost."
+
+  # Fusion
+  agent.fusion.enabled:
+    label: Enable multi-model fusion
+    description: "Expose OpenRouter's fusion tool when OpenRouter is configured. Fusion can use multiple models and additional provider tokens; enable only if needed."
+  agent.fusion.analysis_models:
+    label: Fusion analysis models
+    description: "List of model IDs passed to OpenRouter for fusion analysis. Leave blank for provider choices; additional or larger models can increase charges."
+  agent.fusion.model:
+    label: Fusion synthesis model
+    description: "Model ID passed to OpenRouter to combine fusion analyses. Leave blank for provider selection; choose a supported model with suitable quality and cost."
+  agent.fusion.max_tool_calls:
+    label: Fusion tool-call limit
+    description: "Tool-call limit sent to OpenRouter's fusion tool. Higher values allow more tool work and potentially higher cost; zero omits this parameter rather than prohibiting calls."
+
+  # Security
+  agent.security.notify_max_per_hour:
+    label: Security notice hourly limit
+    description: "Maximum security notification emails sent to the administrator per hour. Lower to reduce alert volume, at the risk of missing timely notices about individual events."
+  agent.security.allow_possibly_malicious:
+    label: Allow suspicious email without review
+    description: "Let email rated possibly malicious proceed without human review. This weakens intake screening; malicious verdicts and mandatory script permissions remain separate safeguards."
+  agent.security.script_yolo:
+    label: Skip script approval and supervision
+    description: "Allow scripts and public-network use without usual approval and development-supervisor checks. This is high risk; sandbox, credential, filesystem and network safety restrictions still apply."
+  agent.security.decision_model.timeout_seconds:
+    label: Content screening timeout
+    description: "Seconds allowed for a decision-model screening request. A timeout uses the configured screening error policy; increase for slow providers rather than weakening that policy."
+  agent.security.decision_model.approval_ttl_minutes:
+    label: Email review approval lifetime
+    description: "Minutes before a held email's administrator review approval expires. Longer lifetimes allow more review time but keep old approval requests usable for longer."
+  agent.security.decision_model.malicious_threshold:
+    label: Malicious verdict threshold
+    description: "Malicious probability, from zero to one, that triggers a malicious verdict. Raising it makes this verdict less likely and can let more dangerous content reach review or proceed."
+  agent.security.decision_model.possibly_malicious_threshold:
+    label: Suspicious verdict threshold
+    description: "Combined malicious and possibly malicious probability, from zero to one, that triggers a suspicious verdict. Lower for more cautious screening and more human reviews."
+  agent.security.decision_model.flag_threshold:
+    label: Security signal threshold
+    description: "Probability, from zero to one, at which an individual security signal triggers a suspicious verdict. Lower to flag more concerns, including more false positives."
+  agent.security.decision_model.max_field_chars:
+    label: Screening field character limit
+    description: "Maximum characters from each text field sent to the decision model; longer fields are truncated. Lower limits reduce input cost but may hide harmful content later in a field."
+  agent.security.scripts.max_files:
+    label: Script inspection file limit
+    description: "Maximum files examined when building a script's inspection manifest. Raise for larger script bundles, allowing for more inspection work and review material."
+
+  # Sandbox
+  agent.sandbox.network.allowed_hosts:
+    label: Legacy sandbox host allowlist
+    description: "Inactive legacy global allowlist; script execution uses per-version host approvals instead. Changing this list does not grant network access to scripts."

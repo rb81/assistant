@@ -1,39 +1,5 @@
 name: assistant
 
-x-agent-secrets: &agent-secrets
-  AGENT_NAME: ${AGENT_NAME:-}
-  AGENT_EMAIL: ${AGENT_EMAIL:-}
-  ADMIN_NAME: ${ADMIN_NAME:-}
-  ADMIN_EMAIL: ${ADMIN_EMAIL:-}
-  ORG_NAME: ${ORG_NAME:-}
-  ORG_SECURITY_EMAIL: ${ORG_SECURITY_EMAIL:-}
-  ORG_INTERNAL_EMAIL_DOMAINS: ${ORG_INTERNAL_EMAIL_DOMAINS:-}
-  AGENT_TIMEZONE: ${AGENT_TIMEZONE:-}
-  AGENT_LLM_MODEL: ${AGENT_LLM_MODEL:-}
-  AGENT_LLM_FALLBACK_MODEL: ${AGENT_LLM_FALLBACK_MODEL:-}
-  AGENT_MAX_EMAILS_PER_HOUR: ${AGENT_MAX_EMAILS_PER_HOUR:-}
-  AGENT_IMAP_POLL_INTERVAL: ${AGENT_IMAP_POLL_INTERVAL:-}
-  CALENDAR_ENABLED: ${CALENDAR_ENABLED:-}
-  CALENDAR_TIMEZONE: ${CALENDAR_TIMEZONE:-}
-  CALENDAR_DEFAULT_PROVIDER: ${CALENDAR_DEFAULT_PROVIDER:-}
-  CALENDAR_DEFAULT_ALERT_MINUTES: ${CALENDAR_DEFAULT_ALERT_MINUTES:-}
-  CALENDAR_GOOGLE_CALENDAR_ID: ${CALENDAR_GOOGLE_CALENDAR_ID:-primary}
-  CALENDAR_OUTLOOK_TENANT_ID: ${CALENDAR_OUTLOOK_TENANT_ID:-common}
-  CALENDAR_ZOHO_API_BASE: ${CALENDAR_ZOHO_API_BASE:-}
-  IMAP_HOST: ${IMAP_HOST:-}
-  IMAP_PORT: ${IMAP_PORT:-993}
-  IMAP_USERNAME: ${IMAP_USERNAME:-}
-  IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
-  IMAP_ARCHIVE_FOLDER: ${IMAP_ARCHIVE_FOLDER:-Archive}
-  IMAP_QUARANTINE_FOLDER: ${IMAP_QUARANTINE_FOLDER:-Quarantine}
-  IMAP_SENT_FOLDER: ${IMAP_SENT_FOLDER:-Sent}
-  SMTP_HOST: ${SMTP_HOST:-}
-  SMTP_PORT: ${SMTP_PORT:-587}
-  SMTP_USERNAME: ${SMTP_USERNAME:-}
-  SMTP_FROM: ${SMTP_FROM:-}
-  EMAIL_ALLOWED_RECIPIENT_DOMAINS: ${EMAIL_ALLOWED_RECIPIENT_DOMAINS:-}
-  EMAIL_ACTIONABLE_SENDERS: ${EMAIL_ACTIONABLE_SENDERS:-}
-
 x-agent-config-volume: &agent-config-volume
   type: bind
   source: ../data/config
@@ -66,18 +32,22 @@ x-agent-common: &agent-common
   read_only: true
   tmpfs:
     - /tmp:rw,nosuid,nodev,size=512m
+    - /run/assistant-health:rw,nosuid,nodev,noexec,size=1m,mode=0700
+  healthcheck:
+    test: ["CMD", "python", "-m", "assistant_agent.worker_health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 120s
   security_opt:
     - no-new-privileges:true
   cap_drop:
     - NET_RAW
   env_file:
     - path: ../data/.env
-    # Hand-edited overrides; keys set in an environment: block below still take precedence.
+    # Settings (agent.yaml overrides) written by setup and the management API; an environment: block below still takes precedence.
     - path: ../data/overrides.env
       required: false
-  environment:
-    <<: *agent-secrets
-    AGENT_CONFIG: /app/config/agent.yaml
   volumes:
     - *agent-config-volume
     - *postgres-tls-volume
@@ -87,13 +57,105 @@ x-agent-common: &agent-common
     - egress_net
 
 services:
+  management-docker:
+    image: ${ASSISTANT_MANAGEMENT_IMAGE:-assistant-management:local}
+    build:
+      context: ..
+      dockerfile: src/management/Dockerfile
+    command: ["python", "-m", "assistant_agent.management_docker"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 256m
+    environment:
+      ASSISTANT_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-assistant}
+      ASSISTANT_INSTALL_ROOT: ${ASSISTANT_INSTALL_ROOT:?Use ./run.sh server start to prepare the installation}
+      ASSISTANT_CONTAINER_ADMIN: "1"
+      ASSISTANT_MANAGEMENT_EXECUTOR: "1"
+      GOMAXPROCS: "2"
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        read_only: true
+      - type: bind
+        source: ${ASSISTANT_INSTALL_ROOT}
+        target: ${ASSISTANT_INSTALL_ROOT}
+        read_only: true
+      - type: bind
+        source: ${ASSISTANT_INSTALL_ROOT}/data
+        target: ${ASSISTANT_INSTALL_ROOT}/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ASSISTANT_INSTALL_ROOT}/src/config
+        target: ${ASSISTANT_INSTALL_ROOT}/src/config
+        bind:
+          create_host_path: false
+    networks:
+      - management_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; [socket.create_connection(('127.0.0.1', port), timeout=2).close() for port in (2375, 2376)]"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  management:
+    image: ${ASSISTANT_MANAGEMENT_IMAGE:-assistant-management:local}
+    build:
+      context: ..
+      dockerfile: src/management/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    pids_limit: 128
+    mem_limit: 512m
+    depends_on:
+      - management-docker
+    environment:
+      ASSISTANT_INSTALL_ROOT: ${ASSISTANT_INSTALL_ROOT:?Use ./run.sh server start to prepare the installation}
+      ASSISTANT_MANAGEMENT_PORT: ${ASSISTANT_MANAGEMENT_PORT:-8765}
+      ASSISTANT_UID: ${ASSISTANT_UID:-0}
+      ASSISTANT_GID: ${ASSISTANT_GID:-0}
+      ASSISTANT_CONTAINER_ADMIN: "1"
+      ASSISTANT_CREDENTIAL_STORE: /run/assistant/credentials/store.json
+      ASSISTANT_MANAGEMENT_EXECUTOR_URL: http://management-docker:2376
+      DOCKER_HOST: tcp://management-docker:2375
+    ports:
+      - "127.0.0.1:${ASSISTANT_MANAGEMENT_PORT:-8765}:8765"
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_INSTALL_ROOT}
+        target: ${ASSISTANT_INSTALL_ROOT}
+        read_only: true
+      - type: bind
+        source: ${ASSISTANT_INSTALL_ROOT}/data
+        target: ${ASSISTANT_INSTALL_ROOT}/data
+        bind:
+          create_host_path: false
+    networks:
+      - management_net
+      - management_access_net
+    healthcheck:
+      test: ["CMD", "python", "-m", "assistant_agent.management_server", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   postgres:
     image: postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_DB: assistant
       POSTGRES_USER: assistant
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       PGDATA: /var/lib/postgresql/data/pgdata
     entrypoint: ["/bin/sh", "-ec"]
     command:
@@ -137,6 +199,12 @@ services:
     image: clamav/clamav:stable_base
     platform: linux/amd64
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping=1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     volumes:
       - ../data/clamav:/var/lib/clamav
     networks:
@@ -152,8 +220,6 @@ services:
       clamav:
         condition: service_started
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: downloader
     volumes:
       - ../data/share:/data/share
@@ -178,8 +244,6 @@ services:
       ollama:
         condition: service_started
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: task-agent
     volumes:
       - ../data/share:/data/share
@@ -204,8 +268,6 @@ services:
       ollama:
         condition: service_started
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: workspace-indexer
     volumes:
       - ../data/share:/data/share
@@ -223,8 +285,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: reminder-scheduler
     networks:
       - database_net
@@ -237,7 +297,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: telegram-receiver
     networks:
       - database_net
@@ -253,7 +312,6 @@ services:
       clamav:
         condition: service_started
     environment:
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: request-preprocessor
     volumes:
       - ../data/share:/data/share
@@ -307,8 +365,9 @@ services:
     mem_limit: 2g
     cpus: 2
     environment:
-      TRANSCRIPTION_API_TOKEN_FILE: /runtime/token
-      WHISPER_THREADS: "2"
+      AGENT_TRANSCRIPTION_API_TOKEN_FILE: /runtime/token
+      AGENT_TRANSCRIPTION_THREADS: ${AGENT_TRANSCRIPTION_THREADS:-2}
+      AGENT_TRANSCRIPTION_MODEL_PATH: ${AGENT_TRANSCRIPTION_MODEL_PATH:-/models/ggml-small.bin}
     volumes:
       - whisper-models:/models:ro
       - transcription-runtime:/runtime:ro
@@ -327,8 +386,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: deep-research-agent
     volumes:
       - ../data/share:/data/share
@@ -347,8 +404,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: supervisor
     networks:
       - database_net
@@ -361,8 +416,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      <<: *agent-secrets
-      AGENT_CONFIG: /app/config/agent.yaml
       AGENT_ROLE: heartbeat
     networks:
       - database_net
@@ -373,6 +426,12 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     volumes:
       - ../data/ollama:/root/.ollama
     networks:
@@ -387,7 +446,7 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
       AGENT_EMBEDDINGS_ENABLED: ${AGENT_EMBEDDINGS_ENABLED:-true}
-      AGENT_EMBEDDINGS_MODEL: ${AGENT_EMBEDDINGS_MODEL:-${MEMORY_EMBEDDING_MODEL:-embeddinggemma}}
+      AGENT_EMBEDDINGS_MODEL: ${AGENT_EMBEDDINGS_MODEL:-embeddinggemma}
       AGENT_EMBEDDINGS_BASE_URL: ${AGENT_EMBEDDINGS_BASE_URL:-http://ollama:11434}
     entrypoint: ["/bin/sh"]
     command:
@@ -449,6 +508,9 @@ services:
     image: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
     build: ./sandbox
     restart: unless-stopped
+    env_file:
+      - path: ../data/overrides.env
+        required: false
     depends_on:
       sandbox-init:
         condition: service_completed_successfully
@@ -457,16 +519,28 @@ services:
       SANDBOX_SHARED_ROOT_HOST: ${SANDBOX_SHARED_ROOT_HOST:?Run ./run.sh first}
       SANDBOX_TLS_CERT_FILE: /run/assistant/runtime/current/sandbox.crt
       SANDBOX_TLS_KEY_FILE: /run/assistant/runtime/current/sandbox.key
-      SANDBOX_API_TOKEN_FILE: /run/assistant/runtime/current/SANDBOX_API_TOKEN
+      AGENT_SANDBOX_API_TOKEN_FILE: /run/assistant/runtime/current/AGENT_SANDBOX_API_TOKEN
       SANDBOX_ISOLATION_MODE: ${SANDBOX_ISOLATION_MODE:-container}
       SANDBOX_RUN_IMAGE: ${SANDBOX_IMAGE:-assistant-sandbox:latest}
       SANDBOX_RUN_NETWORK_MODE: ${SANDBOX_RUN_NETWORK_MODE:-per_run_bridge}
+      SANDBOX_RUN_NETWORK: ${SANDBOX_RUN_NETWORK:-}
       SANDBOX_EGRESS_MODE: ${SANDBOX_EGRESS_MODE:-proxy}
       SANDBOX_RUN_CAP_DROP: ${SANDBOX_RUN_CAP_DROP:-NET_RAW}
       SANDBOX_RUN_CPUS: ${SANDBOX_RUN_CPUS:-2}
       SANDBOX_RUN_MEMORY_BYTES: ${SANDBOX_RUN_MEMORY_BYTES:-2147483648}
       SANDBOX_RUN_PIDS_LIMIT: ${SANDBOX_RUN_PIDS_LIMIT:-512}
-      SHARED_FILE_UMASK: "0002"
+      SANDBOX_DEFAULT_TIMEOUT_SECONDS: ${SANDBOX_DEFAULT_TIMEOUT_SECONDS:-300}
+      SANDBOX_MAX_TIMEOUT_SECONDS: ${SANDBOX_MAX_TIMEOUT_SECONDS:-300}
+      SANDBOX_PROXY_MEMORY_BYTES: ${SANDBOX_PROXY_MEMORY_BYTES:-268435456}
+      EGRESS_PROXY_IDLE_TIMEOUT: ${EGRESS_PROXY_IDLE_TIMEOUT:-300}
+      EGRESS_PROXY_MAX_CONNECTIONS: ${EGRESS_PROXY_MAX_CONNECTIONS:-64}
+      SANDBOX_RUN_RUNTIME: ${SANDBOX_RUN_RUNTIME:-}
+      SANDBOX_RUN_USER: ${SANDBOX_RUN_USER:-}
+      SANDBOX_RUN_TMPFS_SIZE: ${SANDBOX_RUN_TMPFS_SIZE:-512m}
+      SANDBOX_RUN_DNS_SERVERS: ${SANDBOX_RUN_DNS_SERVERS:-}
+      SANDBOX_RUN_SECURITY_OPT: ${SANDBOX_RUN_SECURITY_OPT:-no-new-privileges:true}
+      SANDBOX_RUN_CONTAINER_PREFIX: ${SANDBOX_RUN_CONTAINER_PREFIX:-assistant-sandbox-run}
+      SANDBOX_RUN_NETWORK_PREFIX: ${SANDBOX_RUN_NETWORK_PREFIX:-assistant-sandbox-net}
     read_only: true
     tmpfs:
       - /tmp
@@ -479,7 +553,7 @@ services:
         - CMD
         - python
         - -c
-        - "import ssl,urllib.request; from pathlib import Path; root=Path('/run/assistant/runtime/current'); context=ssl.create_default_context(cafile=str(root/'sandbox.crt')); request=urllib.request.Request('https://sandbox:8080/health',headers={'Authorization':'Bearer '+(root/'SANDBOX_API_TOKEN').read_text().strip()}); response=urllib.request.urlopen(request,context=context,timeout=4); assert response.status == 200"
+        - "import ssl,urllib.request; from pathlib import Path; root=Path('/run/assistant/runtime/current'); context=ssl.create_default_context(cafile=str(root/'sandbox.crt')); request=urllib.request.Request('https://sandbox:8080/health',headers={'Authorization':'Bearer '+(root/'AGENT_SANDBOX_API_TOKEN').read_text().strip()}); response=urllib.request.urlopen(request,context=context,timeout=4); assert response.status == 200"
       interval: 5s
       timeout: 5s
       retries: 12
@@ -504,6 +578,11 @@ volumes:
   sandbox-runtime:
 
 networks:
+  management_net:
+    internal: true
+  management_access_net:
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
   transcription_net:
     internal: true
   database_net:

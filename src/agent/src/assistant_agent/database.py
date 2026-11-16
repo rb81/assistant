@@ -510,26 +510,28 @@ class Database:
                 messages.append({**request, "context_type": "request", "direction": "inbound",
                                  "thread_item_id": "request:%s" % request["id"]})
 
-        delivery_filter, delivery_cursor_params = self._thread_cursor_filter(
-            cursor, "COALESCE(d.sent_at, d.created_at)", "d.id", "telegram-delivery:",
-        )
-        delivery_query = """
-            SELECT d.* FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
-            WHERE j.thread_id = %s AND d.channel = 'telegram' AND d.status = 'sent'
-        """
-        delivery_params: tuple[Any, ...] = (thread_id,)
-        if delivery_filter:
-            delivery_query += " AND " + delivery_filter
-            delivery_params += delivery_cursor_params
-        delivery_query += """
-            ORDER BY COALESCE(d.sent_at, d.created_at) DESC, d.id DESC
-            LIMIT %s
-        """
-        deliveries = self.fetch_all(delivery_query, (*delivery_params, clean_limit))
-        for delivery in deliveries:
-            if delivery.get("channel") == "telegram":
-                messages.append({**delivery, "context_type": "outbound_telegram", "direction": "outbound",
-                                 "thread_item_id": "telegram-delivery:%s" % delivery["id"],
+        for channel in ("telegram", "client"):
+            prefix = channel + "-delivery:"
+            delivery_filter, delivery_cursor_params = self._thread_cursor_filter(
+                cursor, "COALESCE(d.sent_at, d.created_at)", "d.id", prefix,
+            )
+            delivery_query = """
+                SELECT d.* FROM channel_deliveries d JOIN jobs j ON j.id = d.job_id
+                WHERE j.thread_id = %s AND d.channel = %s
+                  AND (d.status = 'sent' OR (d.channel = 'client' AND d.status = 'pending'))
+            """
+            delivery_params: tuple[Any, ...] = (thread_id, channel)
+            if delivery_filter:
+                delivery_query += " AND " + delivery_filter
+                delivery_params += delivery_cursor_params
+            delivery_query += """
+                ORDER BY COALESCE(d.sent_at, d.created_at) DESC, d.id DESC
+                LIMIT %s
+            """
+            deliveries = self.fetch_all(delivery_query, (*delivery_params, clean_limit))
+            for delivery in deliveries:
+                messages.append({**delivery, "context_type": "outbound_" + channel, "direction": "outbound",
+                                 "thread_item_id": prefix + str(delivery["id"]),
                                  "received_at": delivery.get("sent_at") or delivery["created_at"]})
         messages.sort(key=self.thread_message_sort_key)
         return messages[-clean_limit:]

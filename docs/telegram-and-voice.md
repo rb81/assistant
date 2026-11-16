@@ -1,258 +1,242 @@
 # Telegram and Local Voice
 
-Telegram is an optional private messaging channel for the same agent that receives email.
-All requests enter `RequestService.receive_request`; channel-specific code does not run a
-separate agent or bypass tool permissions. `ReplyRouter` delivers normal answers and
-clarifications. New email requests use the same router; historical email jobs retain
-their original completion requirements.
-An explicit sent email or Telegram message to the requester satisfies final delivery:
-task completion records its response without sending a second "I sent it" receipt.
-Messages sent only to third parties do not suppress the requester's final answer.
+Telegram is an optional private channel for the same assistant that receives
+email. Requests use the shared job and permission system; Telegram does not run a
+separate agent or bypass tool permissions. Normal answers and clarifications use
+`ReplyRouter`.
+
+An explicit email or Telegram message to the requester satisfies final delivery,
+so task completion does not send a duplicate “I sent it” receipt. Messages sent
+only to third parties do not replace the requester's final answer.
 
 ## Setup
 
-1. Create a bot using Telegram's BotFather and keep its token private.
-2. Run `./run.sh --section telegram` on an already configured installation,
-   or select Telegram during initial setup. Enter the bot token through the masked prompt.
-3. Supply an explicit allowlist of numeric Telegram user IDs. Private chats only are
-   accepted; empty allowlists grant nobody access. `/start` never grants admin rights.
-4. Enter verified identity mappings as JSON, for example
-   `{"owner@example.net":123456789}`. Confirm the numeric ID with that person outside
-   an untrusted forwarded message. The mapped IDs must also be allowlisted.
-5. Optionally run `./run.sh --section transcription`. This generates a
-   protected internal token and enables the managed multilingual English/Arabic service.
-6. Review and save, then, from the repository root, start or recreate services with
-   `sudo docker compose --env-file data/.env up -d --build`. Setup selects the
-   `telegram` and `voice` profiles when those features are enabled. The generated
-   `data/.env` supplies `COMPOSE_FILE` with the base file and secret overlay;
-   do not omit that overlay by substituting only `-f src/docker-compose.yml`.
+1. Create a bot with Telegram's BotFather and keep its token private.
+2. On an installation configured with `./run.sh`, run
+   `./run.sh --section telegram` (or select Telegram during initial setup).
+3. Enter an explicit allowlist of numeric Telegram user IDs. Private chats only
+   are accepted; an empty allowlist authorizes nobody. `/start` never grants
+   admin rights.
+4. Optionally add verified email-to-Telegram identity mappings as JSON, e.g.
+   `{"owner@example.net":123456789}`. Verify each ID with its owner outside an
+   untrusted forwarded message. Mapped IDs must also be allowlisted.
+5. To enable local voice transcription, run
+   `./run.sh --section transcription`. Setup generates a protected internal
+   token and enables the managed English/Arabic service.
+6. Review and save, then apply the enabled profiles from the installation root:
 
-No public Telegram webhook or transcription port is necessary. The receiver uses long
-polling with a durable cursor and a single-receiver database lock. Preprocessors and
-task agents can be replicated independently. Use the managed roles rather than
-sequential `AGENT_ROLE=all` with Telegram enabled.
+   ```bash
+   docker compose --env-file data/.env up -d --build
+   ```
 
-Relevant overrides are `TELEGRAM_ENABLED`, `TELEGRAM_ALLOWED_USER_IDS`,
-`TELEGRAM_RECIPIENTS`, `TELEGRAM_MAX_MESSAGES_PER_HOUR`, `TRANSCRIPTION_ENABLED`,
-`TRANSCRIPTION_BASE_URL`, and `TRANSCRIPTION_LANGUAGE` (`auto`, `en`, or `ar`).
-`TELEGRAM_BOT_TOKEN` and `TRANSCRIPTION_API_TOKEN` are protected file-backed secrets,
-not ordinary overrides. Setup generates the Compose secret overlay when saving
-configuration.
-The runtime token copy is owned by the unprivileged inference user; the decoder cannot
-read the initialization container's original secret mount.
+   Setup selects `telegram` and `voice` profiles as needed. `data/.env`
+   supplies the base Compose file and credential overlay; do not replace it
+   with only `-f src/docker-compose.yml`.
+
+The receiver uses long polling, a durable cursor, and a single-receiver database
+lock. No public webhook or transcription port is needed. Replicate preprocessors
+and task agents independently; do not run sequential `AGENT_ROLE=all` with
+Telegram enabled.
+
+Relevant settings include `AGENT_TELEGRAM_ENABLED`,
+`AGENT_TELEGRAM_ALLOWED_USER_IDS`, `AGENT_TELEGRAM_RECIPIENTS`,
+`AGENT_TELEGRAM_MAX_MESSAGES_PER_HOUR`, `AGENT_TRANSCRIPTION_ENABLED`,
+`AGENT_TRANSCRIPTION_BASE_URL`, and `AGENT_TRANSCRIPTION_LANGUAGE` (`auto`,
+`en`, or `ar`). Bot and transcription API tokens are protected file-backed
+secrets, not ordinary overrides. Setup generates the Compose secret overlay.
+The runtime transcription-token copy is owned by the unprivileged inference
+user; the decoder cannot read the initialization container's original secret.
 
 ## Conversations and Files
 
-- Incoming messages use the shared intent router to choose a new or existing
-  workstream, including conversations started by email. Reply text and its recent
-  conversation receive extra weight, not automatic continuation. Standalone
-  messages contain no absent-thread hints. Albums share their first message's
-  routing decision; unrelated messages are not grouped just because they arrive
-  close together.
-- `/menu` opens **Conversations | Tasks**, with paginated lists and status cards.
-  Viewing a card does not change the selected conversation; **Continue here**
-  sends a reply prompt associated with that conversation. Quote that prompt to
-  supply context to the router. Saved browser selections do not route ordinary
-  messages. Email-created workstreams are browsable too.
-- Outbound task messages and approval cards retain their associated
-  workstream for the recipient. Quoted replies to approval cards resolve back to
-  that task, including tasks originally received by email. Administrative input
-  prompts accept the next plain-text message without forcing Telegram's quote UI;
-  explicit replies remain supported. Text guidance does not grant script approval.
-- Reply to a task message or its status message to provide that task's context,
-  including after completion. If routing is unavailable, busy, invalid or times out,
-  known active replies continue their thread. Non-replies continue the sender's most
-  recent active Telegram conversation in the same chat if it had a message within
-  `agent.routing.fallback_continue_minutes` (default 180; `0` disables); otherwise
-  they, and unknown/deleted replies, start new workstreams. Fallback is logged and persisted; late responses cannot
-  move a message after routing. See [email routing](email-and-artifacts.md#thread-resolution)
-  for model and deadline settings.
-- Voice/audio is scanned and transcribed before routing; the same transcript is
-  reused during artifact processing. If audio context is unavailable, deterministic
-  routing is used and normal preprocessing retries/error reporting still apply.
-- `/new` is removed. Say "start a separate workstream" in an ordinary message instead.
-  A new Telegram conversation's temporary title is **New workstream**. After three user messages
-  the runtime requests a concise name; naming retries up to three times on failure,
-  and shorter conversations keep the temporary title.
-- `/tasks` opens the task browser directly, including recent history.
-  `/permissions` opens script and website management for administrators only.
-  The receiver registers `/menu` and `/tasks` in the command menu at
-  startup and adds `/permissions` to the verified administrator's private-chat
-  menu. Non-admin users cannot access it, even by typing the command.
-  `/list` is removed, not an alias. Unknown commands such as `/status` and
-  `/cancel` receive a hint and open the main menu. `/start` provides onboarding
-  and opens the menu. Task cards show status; administrators can cancel tasks there.
-- Normal replies contain just the answer, without automatic task-number or completion
-  notifications. Cards in `/tasks` show task IDs when needed. Set
-  `agent.telegram.show_task_status: true` in the YAML configuration to restore one
-  editable progress message per task. There is no token stream or disclosure of
-  internal reasoning.
-- Assistant Markdown is converted to Telegram's supported HTML formatting for
-  bold, italics, strikethrough, links, quotations, and code. Headings become bold
-  text; lists and tables use readable text separators. Long replies are split with
-  balanced formatting, and literal HTML is escaped rather than executed.
-- Documents and photos are downloaded into private storage, scanned, and processed by
-  the existing artifact pipeline. Conversion limitations are reported in task context.
-- `telegram_send(text, recipient="me", attachments=...)` is a loadable tool, even in
-  an email task. `me` means the requester's configured identity. Named recipients must
-  be configured email-to-Telegram mappings, never arbitrary chat IDs.
-- Outbound attachments accept `path` inside the shared workspace, inline `content`
-  with a filename, or a clean `artifact_id` from the current conversation thread.
-  Exact outbound bytes are scanned. The batch is capped at 50 MiB and ten attachments.
-- Attachments default to documents. Set `voice_note: true` on an attachment to send
-  it as a native Telegram voice message. MP3, M4A and Ogg/Opus are accepted and
-  converted to Ogg/Opus with ffmpeg in the task-agent image (Telegram shows only
-  Ogg/Opus as a voice bubble). Voice notes carry no caption. WAV/PCM is rejected.
-  Existing recipient authorization, scanning, rate limits and uncertain-delivery
-  protection still apply. `text` is optional when attachments are present.
+- The intent router chooses a new or existing workstream across email and
+  Telegram. Reply context gets extra weight but does not force continuation.
+  Album items share the first item's routing decision; nearby unrelated
+  messages are not grouped.
+- `/menu` opens **Conversations | Tasks**. Status cards and paginated lists
+  include email workstreams. Viewing a card does not select it; **Continue
+  here** sends a reply prompt associated with that conversation. Quoting that
+  prompt supplies routing context. Saved browser selections do not route
+  ordinary messages.
+- Reply to a task or status message to add context, including after completion.
+  On router failure or timeout, a known active reply continues its thread.
+  Non-replies may continue the sender's most recent active Telegram conversation
+  in that chat within `agent.routing.fallback_continue_minutes` (default 180;
+  `0` disables this); otherwise they start a new workstream. Unknown/deleted
+  replies start new workstreams. Fallback is persisted and logged; a late model
+  response cannot change routing. See [email routing](email-and-artifacts.md#thread-resolution).
+- `/new` is removed. Ask to start a separate workstream instead. New workstreams
+  temporarily use **New workstream**; after three user messages the runtime
+  requests a concise title, retrying up to three times. Short conversations
+  keep the temporary title.
+- `/tasks` opens recent task history. `/permissions` opens script and website
+  management for verified administrators only. Startup registers `/menu` and
+  `/tasks`; `/permissions` is added to the administrator's private-chat menu.
+  `/list` is removed. Unknown commands such as `/status` and `/cancel` get a
+  hint and open the menu. `/start` provides onboarding, not privileges.
+- Normal replies contain the answer without automatic task-number or completion
+  notices. Set `agent.telegram.show_task_status=true` to restore one editable
+  progress message per task. No token stream or internal reasoning is exposed.
+- Assistant Markdown is converted to Telegram-supported HTML. Headings become
+  bold; lists and tables use readable separators. Long messages split with
+  balanced formatting and literal HTML is escaped.
+- Documents and photos are downloaded privately, scanned, and processed by the
+  artifact pipeline. Voice/audio is scanned and transcribed before routing; the
+  same transcript is reused for artifact processing.
+- `telegram_send(text, recipient="me", attachments=...)` is available even in
+  email tasks. `me` means the requester's configured identity. Named recipients
+  must be configured email-to-Telegram mappings, never arbitrary chat IDs.
+- Outbound attachment inputs may be a workspace `path`, inline `content` with
+  filename, or a clean `artifact_id` from the current conversation. Exact
+  bytes are scanned; each batch is limited to 50 MiB and ten attachments.
 
-For example, after a separate synthesis tool returns an MP3 workspace path:
+Attachments are documents by default. To send a voice bubble, set
+`voice_note: true`; MP3, M4A, and Ogg/Opus are converted with ffmpeg to
+Ogg/Opus. Voice notes have no caption; WAV/PCM is rejected. Existing recipient
+authorization, scanning, rate limits, and uncertain-delivery protection still
+apply. `text` is optional when attachments are present:
 
 ```json
 {"attachments":[{"path":"outputs/job-12/example-0.mp3","voice_note":true}]}
 ```
 
-The agent then calls `task_complete` with `already_delivered: true`, so the voice
-note is not followed by a text reply. That flag is accepted only after a
-`telegram_send` or `email_send` actually succeeded for the current request.
-The system prompt asks the agent to pick the channel by content (Telegram for
-short messages and voice notes, email for long or document-style replies, the
-requester's choice when named) and never to announce or summarize a voice note.
+After a successful send, `task_complete` may use `already_delivered: true` to
+avoid a second response. This is accepted only if `telegram_send` or
+`email_send` succeeded for the current request. The system prompt chooses a
+channel by content (short message/voice note to Telegram, long or document-style
+reply to email, or the requester's named preference) and does not announce a
+voice note.
 
-Speech generation is independently enabled through **Advanced Settings →
-Text-to-speech** and does not require Telegram or local transcription.
-Choose a model with MP3 output for voice notes; PCM-only models produce WAV
-files, which can still be sent as ordinary documents. See
-[text-to-speech](tools-reference.md#text-to-speech-tool).
+Speech generation is independently enabled in **Advanced Settings →
+Text-to-speech**; it does not require Telegram or local transcription. Choose
+an MP3-output model for voice notes. PCM-only output is WAV and can be sent only
+as an ordinary document. See [text-to-speech](tools-reference.md#text-to-speech-tool).
 
-Hosted Bot API downloads are limited to 20 MB; larger incoming files need another
-channel such as Dropbox. New document uploads are limited to 50 MB. Sending an image
-as a document preserves its original bytes; Telegram's photo mode can resize images.
-Bots receive only messages addressed to them, not a user's entire Telegram history.
-Telegram keeps unreceived updates for at most 24 hours, so a longer receiver outage
-can lose updates. Bot chats are not end-to-end encrypted.
-Allowlisted people share the same assistant and memory trust domain; the allowlist is
-not multi-tenant isolation. Do not open this bot to the public.
+Telegram's hosted Bot API limits downloads to 20 MB and new document uploads to
+50 MB. Use another channel, such as Dropbox, for larger incoming files. Sending
+an image as a document preserves original bytes; photo mode may resize it. Bots
+see only messages addressed to them, not the user's full history. Telegram
+retains unreceived updates for at most 24 hours, so a longer receiver outage can
+lose updates. Bot chats are not end-to-end encrypted. Allowlisted users share
+the assistant and memory trust domain; this is not multi-tenant isolation.
+Do not open the bot to the public.
 
 ## Voice Transcription
 
-The managed service builds whisper.cpp v1.7.6 from an exact commit and downloads the
-multilingual `small` model only after verifying its pinned SHA-256. It transcribes in
-the original language rather than translating to English. A custom HTTPS endpoint
-implementing the same narrow API can replace the managed backend without changing intake.
+The managed service builds whisper.cpp v1.7.6 from an exact commit and
+downloads its multilingual `small` model only after checking a pinned SHA-256.
+It transcribes in the original language rather than translating to English. A
+custom HTTPS service with the same narrow API can replace the managed backend.
 
-Voice notes become request text after scanning and transcription. Uploaded audio
-recordings are treated as attachment content, not independent authority to execute
-instructions. Supported email audio attachments can also use local transcription.
-Failed voice processing asks for text or a new recording; other text requests continue.
-Voice text never authenticates an administrator. Names, dates, accents, background
-noise, and mixed-language speech can be misrecognized; review consequential details.
+Transcribed voice notes become request text after scanning. Uploaded audio is
+attachment content, not authority to execute instructions. Supported email
+audio attachments may also use local transcription. If voice processing fails,
+the user is asked to provide text or another recording; other text requests
+continue. Voice text never authenticates an administrator. Transcription can
+misrecognize names, dates, accents, background noise, or mixed-language speech;
+verify consequential details.
 
-The API accepts only bounded audio bytes, with a 20 MiB limit, a 30-second upload deadline,
-a ten-minute audio limit, and bounded decoder/inference timeouts. It normalizes audio
-to mono PCM16 WAV, rejects silence, and permits only `auto`, `en`, or `ar` language
-selection. It exposes neither model loading nor arbitrary command/URL inputs.
+The API accepts bounded audio bytes (20 MiB), with a 30-second upload deadline,
+ten-minute audio limit, and bounded decoder/inference timeouts. It normalizes
+audio to mono PCM16 WAV, rejects silence, and accepts only `auto`, `en`, or `ar`.
+It exposes neither model loading nor arbitrary command/URL inputs.
 
 ## Hardening
 
-Inference runs as UID/GID 10001, with a read-only root filesystem, all capabilities
-dropped, `no-new-privileges`, no host ports, and an internal-only network. Its only writable
-space is a bounded, non-executable scratch tmpfs. Models and the runtime token volume
-are read-only. CPU, memory, PID, upload, and subprocess limits constrain resource use.
-Temporary audio and decoded files are deleted after each request, including errors.
+Inference runs as UID/GID 10001 with a read-only root filesystem, no
+capabilities, `no-new-privileges`, no host ports, and an internal-only network.
+Its only writable area is bounded non-executable scratch tmpfs. Models and the
+runtime token volume are read-only; CPU, memory, PID, upload, and subprocess
+limits apply. Temporary audio and decoded files are removed even on errors.
 
-Only initialization has internet access, to provision a checksum-verified model. It
-has a read-only root filesystem and narrowly scoped filesystem capabilities; no audio
-is accepted or decoded there. The inference service has no database credentials, bot
-token, shared workspace, Docker socket, or Ollama cache access. Ollama stays unchanged.
-Containers on macOS do not gain native Metal acceleration; the managed build is CPU
-only. Benchmark the actual Ubuntu host before increasing transcription worker counts.
+Only initialization has internet access to provision the checksum-verified
+model. It has a read-only root filesystem and narrowly scoped filesystem
+capabilities, and accepts/decodes no audio. Inference has no database
+credentials, bot token, shared workspace, Docker socket, or Ollama cache.
+Ollama is unchanged. The managed build is CPU-only, including on macOS; benchmark
+the Ubuntu host before increasing worker counts.
 
 ## Reminders and Delivery
 
-New reminders use the initiating channel when available, otherwise prefer the
-requester's linked Telegram destination, then email.
-The destination is saved when scheduling, not inferred again from a later active chat.
-Use `notification_channel="email"` or `"telegram"` to override; an explicit Telegram
-selection does not silently fall back to email. Automatic selection can fall back to
-email after a definite Telegram failure. It never does so after an ambiguous timeout.
-Use `execution="notify"` for simple notifications that need no model invocation;
-`agent_task` and `script` reminders execute ordinary jobs and route their final results.
+Reminders use the initiating channel when available, otherwise prefer the
+requester's linked Telegram identity and then email. The destination is saved
+when scheduling, not inferred from a later active chat. Use
+`notification_channel="email"` or `"telegram"` to override. Explicit Telegram
+does not silently fall back; automatic selection may use email after a definite
+Telegram failure, never an ambiguous timeout. `execution="notify"` sends a
+simple notification without a model call; `agent_task` and `script` execute
+jobs and route results.
+
 Reminder occurrences and research runs use system threads in their owning
-workstream, not new workstreams. Input requests keep an explicit source-task
-link, so guidance resumes that task rather than repeating completed tool calls.
+workstream, not new workstreams. Guidance retains an explicit source-task link
+so it resumes the task rather than repeating completed tool calls.
 
-Accepted message/file parts are recorded individually. Retrying the same send skips
-accepted parts and respects Telegram backoff. Pending final reply content is kept
-stable across delivery retries. A timeout after sending is `uncertain`, not proof of
-failure: inspect the recipient chat and ledger before retrying. Review-required jobs
-remain paused. A Telegram reply is not an administrative approval.
-
-Normal final replies must be accepted by the transport before the task completes.
-Transport acceptance is not a read receipt. Notification retries do not repeat the
-scheduled task's side effects. Historical reminders without a saved recipient keep
-their previous behavior rather than being redirected to an inferred user.
+Accepted message/file parts are recorded individually. Retrying a send skips
+accepted parts and respects Telegram backoff; pending final-reply content stays
+stable across retries. A timeout after sending is `uncertain`, not proof of
+failure—check the chat and ledger before retrying. Notification retries do not
+repeat the scheduled task's side effects. Review-required jobs stay paused, and
+a Telegram reply is not administrative approval. Final replies must be accepted
+by the transport before completion; acceptance is not a read receipt.
+Historical reminders without a saved recipient keep their prior behavior.
 
 ## Management and recovery
 
-Configure **Advanced Settings → Approvals and names** with `telegram` (recommended)
-or `both`. Administrator identity reuses the verified email-to-Telegram mapping
-for `ADMIN_EMAIL`; no separate administrator list is required. The mapped numeric
-ID must be allowlisted. Other recipient mappings and the general allowlist do not
-grant administrator permission. Existing installations remain email-only until changed.
-See [approval channels](email-administration.md#approval-channels). Sandbox
-script requests offer **Approve once**, **Approve always**, **Deny** and optional
-feedback. Website requests use **Always...** to choose this script version or all
-approved scripts; broad grants require confirmation. Once means one execution.
+Set approval delivery in **Advanced Settings → Approvals and names** to
+`telegram` or `both`. Admin identity uses the verified
+`AGENT_ADMIN_EMAIL` mapping described in [approval channels](email-administration.md#approval-channels).
+The mapped ID must also be allowlisted.
 
-Other approval notifications show the request context and decision buttons
-immediately, without a separate review/confirmation step. A held safety-check
-action offers **Approve once**; execution-limit reviews offer **Resume task**.
-**Deny & cancel task** cancels the paused task without undoing completed actions.
-Email confirmations offer **Confirm & start** and **Deny**; denying leaves the
-email unprocessed. **Details** remains optional for longer requests.
-Approvals remain administrator-only, expiring, single-use and bound to the task
-version that requested them.
+Administrators can use `/menu` for **Needs attention**, **Archived**, and
+**Permissions**, or `/permissions` for script and website management. The
+permissions browser shows scripts, versions, downloadable code/diffs, host
+grants, legacy rules, pending requests, and history. Revoke a grant or block a
+script/host; confirmed changes stop active sandbox runs.
 
-Administrators see **Needs attention**, **Archived** and **Permissions** in `/menu`.
-`/permissions` opens the same permissions browser directly.
-Permissions lists scripts, versions, downloadable code/diffs, host grants, legacy
-rules, pending requests and history. Revoke a grant or block a script/host here;
-confirmed permission changes stop active sandbox runs. Job cards offer
-status, error details, results when available, rename, guidance, and state-specific
-actions. **Resend approval** on a held job sends a fresh one-use approval (the
-pending network request if any, otherwise the review confirmation); **Run again** is offered only for
+Approval cards expose the relevant decision directly: script requests offer
+**Approve once**, **Approve always**, and **Deny**; website requests also let an
+administrator select the script-version or all-approved-scripts scope. Once
+means one execution. Other approvals show request context and buttons;
+safety-check holds offer **Approve once**, and execution-limit reviews offer
+**Resume task**. **Deny & cancel task** cancels the paused task but does not undo
+completed actions. Email confirmations offer **Confirm & start** and **Deny**.
+Approvals are administrator-only, expiring, single-use, and bound to the task
+version.
+
+Job cards show status, errors, available results, rename, guidance, and
+state-specific actions. **Resend approval** sends a fresh one-use approval for
+the pending network request or review. **Run again** is offered only for
 finished, failed, or cancelled jobs and warns that external actions may repeat.
-Cancellation cannot undo completed actions. Changes use one-use confirmations and
-reject stale task versions.
+Cancellation cannot undo completed actions. Changes use one-use confirmations
+and reject stale task versions.
 
-Agent questions arrive as plain messages with **Reply** and **Open task**
-buttons, not as approvals. Reply directly to the question message, or tap
-**Reply** and send your answer; the task resumes with it as guidance, without
-changing permissions or limits. **Guidance** on any job card works the same
-way. Guidance on a safety-held task leaves it paused and requires a separate
-approval. Reply to the bot's specific reply prompt, not an unrelated message;
-**Reply**/guidance prompts expire after fifteen minutes.
+Agent questions are plain messages with **Reply** and **Open task**, not
+approvals. Reply to the question or use **Guidance** to resume with context;
+this does not change permissions or limits. Safety-held tasks remain paused
+until separately approved. Reply to the specific prompt, not an unrelated
+message; reply/guidance prompts expire after fifteen minutes.
 
-Idle workstreams can be archived and restored without deleting data. Active tasks,
-child workstreams, scheduled reminders, pending intake, and unresolved deliveries or
-charges must be resolved first. Restore a parent before its child, and restore an
-archived conversation before continuing it. Archived workstreams still retain
-shared objects during deletion elsewhere. Permanent deletion remains in the local
-setup workflow with stopped writers and a verified inventory, not a Telegram button.
+Idle workstreams can be archived and restored without deleting data. Resolve
+active tasks, child workstreams, reminders, pending intake, and unresolved
+deliveries/charges first. Restore a parent before its child and restore an
+archived conversation before continuing. Permanent deletion is only in local
+setup, after writers stop and inventory is verified.
 
-Task titles and eligible workstream names use `AGENT_NAMING_MODEL`, defaulting to
-`openai/gpt-4.1-mini`, with a fifteen-second request timeout and no expensive-model
-fallback. Naming does not change task instructions. A failed task-naming request
-keeps a readable summary; manually chosen names are preserved. Naming runs during
-task startup, not in the Telegram receiver.
+Task and workstream titles use `AGENT_NAMING_MODEL` (default
+`openai/gpt-4.1-mini`), with a 15-second timeout and no expensive-model
+fallback. Naming does not change instructions. Failed naming keeps a readable
+summary; manually selected names are preserved. Naming runs at task startup,
+not in the Telegram receiver.
 
 ## History and Erasure
 
-Native messages, transcripts, artifacts, and sent Telegram parts are included in
-thread history and task context. Unified context search includes keyword matches for
-native requests without duplicating email projections. Current message embeddings are
-not stored separately; ordinary jobs and memories retain existing semantic indexing.
-The received-message reset category includes private raw and processed attachments.
-Job erasure removes eligible local native message/artifact records while respecting
-shared-thread history. It does not delete remote Telegram messages or model caches.
+Telegram messages, transcripts, artifacts, and sent parts appear in thread
+history and task context. Context search includes native-message keyword
+matches without duplicating email projections. Current message embeddings are
+not stored separately; ordinary jobs and memories retain existing semantic
+indexing.
+
+The received-message reset category includes private raw and processed
+attachments. Job erasure removes eligible local native message/artifact records
+while respecting shared-thread history. It cannot delete remote Telegram
+messages or model caches.

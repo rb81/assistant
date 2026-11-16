@@ -55,6 +55,8 @@ RUN_NETWORK_PREFIX = os.getenv("SANDBOX_RUN_NETWORK_PREFIX", "assistant-sandbox-
 EGRESS_MODE = os.getenv("SANDBOX_EGRESS_MODE", "proxy").strip().lower()
 PROXY_PORT = 3128
 PROXY_MEMORY_BYTES = int(os.getenv("SANDBOX_PROXY_MEMORY_BYTES", str(256 * 1024 * 1024)))
+PROXY_IDLE_TIMEOUT = int(os.getenv("EGRESS_PROXY_IDLE_TIMEOUT", "300"))
+PROXY_MAX_CONNECTIONS = int(os.getenv("EGRESS_PROXY_MAX_CONNECTIONS", "64"))
 PROXY_READY_SECONDS = 10.0
 # Unroutable TEST-NET address: run containers on internal networks must not
 # resolve names through Docker's embedded DNS forwarding (a DNS exfiltration channel).
@@ -82,7 +84,11 @@ def parse_umask(value: str) -> int:
     return parsed
 
 
-os.umask(parse_umask(os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK)))
+def configured_umask() -> str:
+    return os.getenv("AGENT_FILESYSTEM_SHARED_FILE_UMASK") or os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK)
+
+
+os.umask(parse_umask(configured_umask()))
 
 app = FastAPI(title="Assistant Sandbox")
 
@@ -192,7 +198,7 @@ def child_workdir(workdir: Path) -> str:
 
 
 def command_with_umask(command: list[str]) -> list[str]:
-    umask_value = os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK)
+    umask_value = configured_umask()
     return ["/bin/sh", "-lc", "umask %s; exec \"$@\"" % umask_value, "sandbox-command", *command]
 
 
@@ -286,7 +292,11 @@ def start_egress_proxy(client: DockerClient, run_id: str, run_network: str, egre
         {
             "Image": RUN_IMAGE,
             "Cmd": ["python", "/app/egress_proxy.py"],
-            "Env": ["EGRESS_POLICY=%s" % json.dumps(policy, separators=(",", ":"))],
+            "Env": [
+                "EGRESS_POLICY=%s" % json.dumps(policy, separators=(",", ":")),
+                "EGRESS_PROXY_IDLE_TIMEOUT=%s" % PROXY_IDLE_TIMEOUT,
+                "EGRESS_PROXY_MAX_CONNECTIONS=%s" % PROXY_MAX_CONNECTIONS,
+            ],
             "User": "65534:65534",
             "Labels": run_labels(run_id),
             "HostConfig": {
@@ -409,7 +419,7 @@ def create_run_container(client: DockerClient, run_id: str, request: CommandRequ
         "Env": [
             "PIP_CACHE_DIR=/tmp/pip-cache",
             "NPM_CONFIG_CACHE=/tmp/npm-cache",
-            "SHARED_FILE_UMASK=%s" % os.getenv("SHARED_FILE_UMASK", DEFAULT_SHARED_FILE_UMASK),
+            "SHARED_FILE_UMASK=%s" % configured_umask(),
             *(["PYTHONPATH=/approved-code/%s:/approved-code" % workdir.relative_to(SHARED_ROOT)]
               if getattr(request, "approved_files", None) is not None else []),
             *proxy_environment(proxy_address),
@@ -639,8 +649,8 @@ def authorization_remaining(request: CommandRequest) -> Optional[float]:
 
 
 def require_api_token(authorization: str, *, allow_revoke: bool = False) -> None:
-    token = os.getenv("SANDBOX_API_TOKEN", "")
-    token_file = os.getenv("SANDBOX_API_TOKEN_FILE", "")
+    token = os.getenv("AGENT_SANDBOX_API_TOKEN", "")
+    token_file = os.getenv("AGENT_SANDBOX_API_TOKEN_FILE", "")
     if token and token_file:
         raise HTTPException(status_code=503, detail="sandbox authentication is misconfigured")
     if token_file:

@@ -2,22 +2,16 @@ import os
 import re
 from pathlib import Path
 
+from .settings_schema import secret_settings
 
-SECRET_NAMES = frozenset({
-    "POSTGRES_PASSWORD", "DATABASE_URL", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
-    "IMAP_PASSWORD", "SMTP_PASSWORD",
-    "SANDBOX_API_TOKEN", "SANDBOX_REVOKE_TOKEN",
-    "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_ACCOUNT_ID", "ZOOM_REFRESH_TOKEN",
-    "DROPBOX_CLIENT_ID", "DROPBOX_REFRESH_TOKEN",
-    "TELEGRAM_BOT_TOKEN", "TRANSCRIPTION_API_TOKEN", "SECURITY_DECISION_API_KEY",
-    *{f"CALENDAR_{provider}_{field}" for provider in ("GOOGLE", "OUTLOOK", "ZOHO")
-      for field in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")},
-})
+
+# Credentials are the agent.yaml settings flagged `secret: true` in agent.schema.yaml.
+SECRET_NAMES = frozenset(secret_settings())
 
 
 def is_secret_name(name: str) -> bool:
     return name in SECRET_NAMES or bool(re.fullmatch(
-        r"CALENDAR_(GOOGLE|OUTLOOK|ZOHO)_[2-9]_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name
+        r"AGENT_CALENDAR_(GOOGLE|OUTLOOK|ZOHO)_[2-9]_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN)", name
     ))
 
 

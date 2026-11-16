@@ -26,12 +26,15 @@ def notify_admin_job_failure(
     clean_reason = str(reason or "unknown failure").strip() or "unknown failure"
     clean_source = str(source or "system").strip() or "system"
     fingerprint = _fingerprint(job_id, clean_status, clean_reason, clean_source)
+    client_failure = clean_status != "needs_review" and (
+        ((job.get("metadata") or {}).get("reply_route") or {}).get("channel") == "client"
+    )
 
     try:
         if _already_sent(db, job_id, fingerprint, clean_status, clean_reason):
             return
-        if (not approvals_configured(config) if clean_status == "needs_review"
-                else not admin_configured(config) or not smtp_configured(config)):
+        if not client_failure and (not approvals_configured(config) if clean_status == "needs_review"
+                                  else not admin_configured(config) or not smtp_configured(config)):
             db.log_event(
                 job_id,
                 "supervisor_note",
@@ -80,6 +83,11 @@ def notify_admin_job_failure(
                 review_summary(review_job, _body(db, config, review_job, clean_status, clean_reason, clean_source)),
             )
             result = {"status": "sent" if sent else "already_requested"}
+        elif client_failure:
+            from .replies import ReplyRouter
+            result = ReplyRouter(ToolRuntime(db, config, job)).send(
+                _body(db, config, job, clean_status, clean_reason, clean_source), purpose="failure_notice",
+            )
         else:
             result = ToolRuntime(db, config, job).email_send(
                 to=[config.get("agent.admin.email")],
@@ -87,7 +95,8 @@ def notify_admin_job_failure(
                 body=_body(db, config, job, clean_status, clean_reason, clean_source),
                 new_thread=True,
             )
-        sent = result.get("status") == "sent"
+        from .client_channels import delivery_accepted
+        sent = delivery_accepted(result)
         db.log_event(
             job_id,
             "supervisor_note",

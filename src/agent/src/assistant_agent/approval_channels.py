@@ -7,8 +7,8 @@ modules (Telegram delivery, database) are imported inside functions.
 
 def channels(config):
     value = str(config.get("agent.approvals.channel", "email")).strip().lower()
-    if value not in {"email", "telegram", "both"}:
-        raise ValueError("Approval channel must be email, telegram or both")
+    if value not in {"email", "telegram", "both", "client"}:
+        raise ValueError("Approval channel must be email, telegram, both or client")
     return value
 
 
@@ -31,6 +31,8 @@ def approvals_configured(config):
     from .telegram_config import telegram_configured
     from .validation import smtp_configured
     mode = channels(config)
+    if mode == "client":
+        return True
     if mode in {"telegram", "both"}:
         if not telegram_admins(config):
             return False

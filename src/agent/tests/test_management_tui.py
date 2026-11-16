@@ -4,6 +4,7 @@ import fcntl
 import os
 import pty
 import select
+import socket
 import shutil
 import struct
 import subprocess
@@ -57,7 +58,7 @@ async def running(root):
         backend = Management(root, Mock(return_value=False))
         backend.load()
         backend.installation.state["setup_complete"] = True
-        backend.values.update(AGENT_NAME="Assistant", AGENT_TIMEZONE="UTC")
+        backend.values.update(AGENT_IDENTITY_NAME="Assistant", AGENT_APP_TIMEZONE="UTC")
         ui = ManagementApp(root, input=pipe, output=TerminalOutput(), backend=backend)
         ui.loaded = True
         ui.loop = asyncio.get_running_loop()
@@ -131,17 +132,17 @@ def test_native_form_navigation_preserves_a_draft_and_hides_api_keys():
             pipe.send_text("\x01\x0bNew assistant")
             await asyncio.sleep(0.08)
             ui.go("Connections")
-            assert ui.backend.values["AGENT_NAME"] == "New assistant"
+            assert ui.backend.values["AGENT_IDENTITY_NAME"] == "New assistant"
             assert ui.backend.dirty
             ui.go("Form:identity")
-            assert ui.form["AGENT_NAME"].text == "New assistant"
+            assert ui.form["AGENT_IDENTITY_NAME"].text == "New assistant"
             ui.go("Form:models")
-            ui.app.layout.focus(ui.form["OPENROUTER_API_KEY"])
+            ui.app.layout.focus(ui.form["AGENT_LLM_OPENROUTER_API_KEY"])
             pipe.send_text("PRIVATE-API-KEY")
             await asyncio.sleep(0.08)
             assert "PRIVATE-API-KEY" not in "\n".join(snapshot(ui))
             ui.go("Settings")
-            assert ui.backend.credentials["OPENROUTER_API_KEY"] == "PRIVATE-API-KEY"
+            assert ui.backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] == "PRIVATE-API-KEY"
             assert ui.backend.installation.env_original == original
             assert not Path(root, "data/.env").exists()
     with tempfile.TemporaryDirectory() as root:
@@ -168,9 +169,9 @@ def test_model_field_accepts_mouse_focus_and_typing():
 def test_keyboard_model_edit_review_and_save_preserves_other_fields_and_existing_credentials():
     async def scenario(root):
         instance = Installation(root)
-        instance.values.update(AGENT_NAME="Assistant", AGENT_TIMEZONE="UTC", AGENT_LLM_MODEL="old-model",
+        instance.values.update(AGENT_IDENTITY_NAME="Assistant", AGENT_APP_TIMEZONE="UTC", AGENT_LLM_MODEL="old-model",
                                AGENT_LLM_BASE_URL="https://openrouter.ai/api/v1")
-        instance.secret_values.update(POSTGRES_PASSWORD="database-password", OPENROUTER_API_KEY="existing-key")
+        instance.secret_values.update(AGENT_DATABASE_PASSWORD="database-password", AGENT_LLM_OPENROUTER_API_KEY="existing-key")
         instance.state["setup_complete"] = True
         instance.prompt_copy = b"Ask for approval before taking external actions."
         instance.save()
@@ -203,7 +204,7 @@ def test_keyboard_model_edit_review_and_save_preserves_other_fields_and_existing
             assert saved.values["AGENT_LLM_MODEL"] == "new-model"
             assert saved.values["AGENT_LLM_FALLBACK_MODEL"] == "fallback-model"
             assert saved.values["AGENT_LLM_BASE_URL"] == "https://openrouter.ai/api/v1"
-            assert saved.secret_values["OPENROUTER_API_KEY"] == "existing-key"
+            assert saved.secret_values["AGENT_LLM_OPENROUTER_API_KEY"] == "existing-key"
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -279,7 +280,7 @@ def test_minimum_size_keeps_fixed_footer_and_resize_keeps_the_draft():
         async with running(root) as (ui, pipe):
             ui.app.output.size = Size(rows=24, columns=76)
             ui.go("Form:email")
-            ui.form["IMAP_HOST"].text = "mail.example.test"
+            ui.form["AGENT_EMAIL_IMAP_HOST"].text = "mail.example.test"
             ui.app.invalidate()
             await asyncio.sleep(0.08)
             assert "Keep draft" in "\n".join(snapshot(ui)[-10:])
@@ -291,7 +292,7 @@ def test_minimum_size_keeps_fixed_footer_and_resize_keeps_the_draft():
             ui.app.output.size = Size(rows=28, columns=100)
             ui.app.invalidate()
             await asyncio.sleep(0.08)
-            assert ui.form["IMAP_HOST"].text == "mail.example.test"
+            assert ui.form["AGENT_EMAIL_IMAP_HOST"].text == "mail.example.test"
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -456,7 +457,7 @@ def test_all_modal_widgets_have_explicit_readable_colors():
             assert_contrast(ui)
             pipe.send_text("\x1b")
             await wait_for(lambda: not ui.floats.floats)
-            ui.credential("OPENROUTER_API_KEY")
+            ui.credential("AGENT_LLM_OPENROUTER_API_KEY")
             await wait_for(lambda: bool(ui.floats.floats))
             pipe.send_text("private-key")
             await asyncio.sleep(0.08)
@@ -556,11 +557,11 @@ def test_first_run_native_forms_review_and_confirm_save_persist_without_running_
             await asyncio.sleep(0.05)
             ui.go("Form:models")
             ui.form["AGENT_LLM_MODEL"].text = "chosen-model"
-            ui.form["OPENROUTER_API_KEY"].text = "PRIVATE-MODEL-KEY"
+            ui.form["AGENT_LLM_OPENROUTER_API_KEY"].text = "PRIVATE-MODEL-KEY"
             ui.app.layout.focus(next(action.window for action in ui.actions
                                      if action.label == "Generate secure database password"))
             pipe.send_text("\r")
-            await wait_for(lambda: bool(ui.form["POSTGRES_PASSWORD"].text))
+            await wait_for(lambda: bool(ui.form["AGENT_DATABASE_PASSWORD"].text))
             ui.go("Instructions")
             ui.form["instructions"].text = "Use clear answers and request approval before external actions."
             ui.review()
@@ -580,9 +581,9 @@ def test_first_run_native_forms_review_and_confirm_save_persist_without_running_
                 pipe.send_text("\t\r")
                 await wait_for(lambda: not ui.busy and (root / "data/.env").exists())
             reopened = Installation(root)
-            assert reopened.values["AGENT_NAME"] == "Native assistant"
+            assert reopened.values["AGENT_IDENTITY_NAME"] == "Native assistant"
             assert reopened.values["AGENT_LLM_MODEL"] == "chosen-model"
-            assert reopened.secret_values["OPENROUTER_API_KEY"] == "PRIVATE-MODEL-KEY"
+            assert reopened.secret_values["AGENT_LLM_OPENROUTER_API_KEY"] == "PRIVATE-MODEL-KEY"
             assert reopened.prompt_original.startswith(b"Use clear answers")
             assert not ui.backend.dirty
     with tempfile.TemporaryDirectory() as root:
@@ -612,7 +613,7 @@ def test_service_refresh_preserves_the_selected_control_without_stealing_navigat
 def test_native_log_live_toggle_refreshes_in_place_masks_secrets_and_can_pause():
     async def scenario(root):
         async with running(root) as (ui, pipe):
-            ui.backend.credentials["OPENROUTER_API_KEY"] = "PRIVATE-KEY"
+            ui.backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] = "PRIVATE-KEY"
             with patch.object(ui.backend, "logs", side_effect=[
                 "First log line PRIVATE-KEY", "Second log line",
             ]) as logs:
@@ -849,7 +850,7 @@ def test_insertion_marker_tracks_partial_edits_and_horizontal_scrolling_without_
             point = screen.cursor_positions[ui.app.layout.current_window]
             assert 0 <= point.x < 76 and 0 <= point.y < 24
             assert "class:input.cursor" in screen.data_buffer[point.y][point.x].style
-            ui.app.layout.focus(ui.form["OPENROUTER_API_KEY"])
+            ui.app.layout.focus(ui.form["AGENT_LLM_OPENROUTER_API_KEY"])
             pipe.send_text("PRIVATE-KEY\x1b[D")
             await asyncio.sleep(0.08)
             screen = ui.app.renderer._last_screen
@@ -1050,11 +1051,11 @@ def test_discarding_model_form_also_discards_its_generated_password():
         async with running(root) as (ui, pipe):
             ui.go("Form:models")
             ui.generate_password()
-            assert ui.form["POSTGRES_PASSWORD"].text
-            assert "POSTGRES_PASSWORD" not in ui.backend.credentials
+            assert ui.form["AGENT_DATABASE_PASSWORD"].text
+            assert "AGENT_DATABASE_PASSWORD" not in ui.backend.credentials
             ui.discard_form()
             assert not ui.backend.dirty
-            assert "POSTGRES_PASSWORD" not in ui.backend.credentials
+            assert "AGENT_DATABASE_PASSWORD" not in ui.backend.credentials
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -1080,6 +1081,8 @@ def test_old_script_version_refresh_cannot_replace_the_newly_selected_version():
 
 
 def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
+    import uvicorn
+    from assistant_agent.management_api import create_app, ensure_token
     repository = Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -1090,12 +1093,25 @@ def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
         shutil.copy2(repository / "src/scripts/run.sh", root / "src/scripts/run.sh")
         (root / "src/agent/src").symlink_to(repository / "src/agent/src", target_is_directory=True)
         (root / "data/.venv-setup").symlink_to(sys.prefix, target_is_directory=True)
+        token = ensure_token(root)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(create_app(root, token), lifespan="off", log_level="error"))
+        api_thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]})
+        api_thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
         process = subprocess.Popen(
             [str(root / "run.sh"), "--section", "models"], cwd=root,
             stdin=slave, stdout=slave, stderr=slave,
-            env=dict(os.environ, PYTHON=sys.executable, TERM="xterm-256color"),
+            env=dict(os.environ, PYTHON=sys.executable, TERM="xterm-256color", ASSISTANT_HOST_ADMIN="1",
+                     ASSISTANT_MANAGEMENT_URL=f"http://127.0.0.1:{port}"),
         )
         os.close(slave)
         transcript = b""
@@ -1127,6 +1143,9 @@ def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
                 process.kill()
                 process.wait(timeout=5)
             os.close(master)
+            server.should_exit = True
+            api_thread.join(timeout=5)
+            listener.close()
 
 
 def test_every_screen_and_form_renders_at_minimum_size_with_reachable_controls():
@@ -1251,7 +1270,7 @@ def test_context_help_explains_every_field_and_keeps_secret_values_out_of_help()
             for item in ui.nav:
                 ui.app.layout.focus(item.window)
                 assert ui.context_topic() == (item.label, page_help(item.label))
-            for name in sorted(SECRET_NAMES | {"CALENDAR_GOOGLE_2_REFRESH_TOKEN"}):
+            for name in sorted(SECRET_NAMES | {"AGENT_CALENDAR_GOOGLE_2_REFRESH_TOKEN"}):
                 ui.backend.installation.secret_values = {name: "private-credential-not-for-help"}
                 ui.go("Credentials")
                 ui.render()
@@ -1536,7 +1555,7 @@ def test_credential_replacement_and_database_rotation_require_confirmation_and_m
     async def scenario(root):
         async with running(root) as (ui, pipe):
             ui.go("Credentials")
-            for name in ("OPENROUTER_API_KEY", "POSTGRES_PASSWORD"):
+            for name in ("AGENT_LLM_OPENROUTER_API_KEY", "AGENT_DATABASE_PASSWORD"):
                 with patch.object(ui.backend, "replace_credential") as replace:
                     ui.credential(name)
                     await wait_for(lambda: bool(ui.floats.floats))

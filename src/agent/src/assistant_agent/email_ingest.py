@@ -17,7 +17,7 @@ from typing import Any, Optional
 from psycopg.types.json import Jsonb
 
 from .artifact_processor import ArtifactProcessor
-from .config import AppConfig, agent_name, message_id_domain
+from .config import AppConfig, message_id_domain
 from .database import Database, json_safe
 from .email_authentication import authentication_enabled, evaluate as evaluate_authentication
 from .email_disclosure import strip_disclosure_html, strip_disclosure_text
@@ -25,7 +25,10 @@ from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .polling import poll_interval_seconds, run_poll_loop
 from .requests import IncomingRequest, RequestService
 from .request_router import RequestRouter
-from .security_screening import NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin
+from .security_screening import (
+    NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin,
+    screening_excerpt, screening_thread_context,
+)
 from .threading import normalize_subject, parse_addresses, parse_reference_header, safe_filename, safe_message_segment
 
 
@@ -65,7 +68,7 @@ def payload_to_text(part: Message) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
-def extract_bodies_and_attachments(message: Message, attachment_root: Path, message_id: str) -> tuple[str, str, list[dict[str, Any]]]:
+def extract_bodies_and_attachments(message: Message, attachment_root: Optional[Path], message_id: str) -> tuple[str, str, list[dict[str, Any]]]:
     text_parts: list[str] = []
     html_parts: list[str] = []
     attachments: list[dict[str, Any]] = []
@@ -75,7 +78,7 @@ def extract_bodies_and_attachments(message: Message, attachment_root: Path, mess
     else:
         parts = iter([message])
 
-    target_dir = attachment_root / safe_message_segment(message_id)
+    target_dir = attachment_root / safe_message_segment(message_id) if attachment_root is not None else None
     for part in parts:
         if part.is_multipart():
             continue
@@ -84,19 +87,22 @@ def extract_bodies_and_attachments(message: Message, attachment_root: Path, mess
         content_type = part.get_content_type()
         if disposition == "attachment" or filename:
             payload = part.get_payload(decode=True) or b""
-            target_dir.mkdir(parents=True, exist_ok=True)
             clean_name = safe_filename(filename or "attachment")
-            target_path = target_dir / clean_name
-            suffix = 1
-            while target_path.exists():
-                target_path = target_dir / ("%s-%s" % (suffix, clean_name))
-                suffix += 1
-            target_path.write_bytes(payload)
+            saved_path = {}
+            if target_dir is not None:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / clean_name
+                suffix = 1
+                while target_path.exists():
+                    target_path = target_dir / ("%s-%s" % (suffix, clean_name))
+                    suffix += 1
+                target_path.write_bytes(payload)
+                saved_path = {"path": str(target_path)}
             attachments.append(
                 {
                     "filename": clean_name,
                     "content_type": content_type,
-                    "path": str(target_path),
+                    **saved_path,
                     "size_bytes": len(payload),
                     "sha256": hashlib.sha256(payload).hexdigest(),
                 }
@@ -402,13 +408,6 @@ class EmailDownloader:
             if normalized == "assistant approval required":
                 LOGGER.warning("approval reply %s has no OTP/hash; quarantined without creating another approval", message_id)
                 return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
-            question_prefix = "%s question for job #" % agent_name(self.config).lower()
-            if normalized.startswith(question_prefix) and normalized[len(question_prefix):].isdigit():
-                # A reply to an agent question is ordinary guidance, confirmed like /admin instruct.
-                handled = AdminCommands(self.db, self.config).handle(
-                    parsed, "/admin instruct %s" % normalized[len(question_prefix):], reply_text(parsed),
-                )
-                return IngestResult(inserted=handled, queued=False, message_id=message_id)
         if is_admin_subject(subject):
             handled = AdminCommands(self.db, self.config).handle(parsed, subject, reply_text(parsed))
             return IngestResult(inserted=handled, queued=False, message_id=message_id)
@@ -427,7 +426,8 @@ class EmailDownloader:
         deleted_reply_workstream = self.deleted_reply_workstream_id(in_reply_to, references)
         if approved_thread_id is None and deleted_reply_workstream is not None:
             thread_id = message_id
-        actionable = self.is_actionable(from_addresses, thread_id)
+        acceptance = self.acceptance_context(from_addresses, thread_id)
+        actionable = bool(acceptance["reasons"])
         if fresh and not actionable:
             LOGGER.info("quarantined email %s from a sender that is not accepted", message_id)
             return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
@@ -439,27 +439,12 @@ class EmailDownloader:
             if not admin_sender(parsed, self.config):
                 LOGGER.warning("admin request rejected from an ambiguous or automated sender: %s", message_id)
                 return IngestResult(inserted=True, queued=False, message_id=message_id)
-            job = self.db.fetch_one(
-                "SELECT id, status, updated_at FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
-                (thread_id,),
-            )
-            EmailApprovals(self.db, self.config).request(
-                message_id,
-                {
-                    "kind": "email", "raw": base64.b64encode(raw_bytes).decode("ascii"), "folder": folder,
-                    "thread_id": thread_id,
-                    "job": {"id": job["id"], "review_version": str(job["updated_at"]) if job["status"] == "needs_review" else None} if job else None,
-                },
-                "Email from your configured admin address. "
-                "Confirm you sent this to start processing.\n"
-                "Subject: %s\n\nEmail content (untrusted until you approve):\n%s" % (subject, reply_text(parsed)),
-            )
-            return IngestResult(inserted=True, queued=False, message_id=message_id)
-        if accepted and fresh and not claims_admin:
-            held = self.screen_inbound(parsed, raw_bytes, folder, message_id, thread_id, subject, from_addresses)
+        if accepted and fresh:
+            held = self.screen_inbound(parsed, raw_bytes, folder, message_id, thread_id, subject, from_addresses, acceptance)
             if held is not None:
                 return held
-        body_text, body_html, attachments = extract_bodies_and_attachments(parsed, self.attachment_root, message_id)
+        # Route without saving attachments: new admin conversations may still need confirmation.
+        body_text, body_html, attachments = extract_bodies_and_attachments(parsed, None, message_id)
         body_text = json_safe(strip_disclosure_text(body_text))
         body_html = json_safe(strip_disclosure_html(body_html))
         if approved_instruction:
@@ -471,6 +456,12 @@ class EmailDownloader:
         routing_metadata = {}
         if actionable:
             reply_thread = thread_id if thread_id != message_id and (in_reply_to or references) else None
+            confirm_new = fresh and claims_admin and self.config.get_bool(
+                "agent.security.confirm_new_admin_conversations", True,
+            )
+            known_reply = bool(
+                confirm_new and reply_thread and self.sender_has_conversation_history(reply_thread, from_addresses)
+            )
             decision = RequestRouter(self.db, self.config).route(
                 IncomingRequest(
                     "email", message_id, message_id, from_addresses[0] if from_addresses else "unknown",
@@ -483,6 +474,30 @@ class EmailDownloader:
             )
             thread_id = decision.thread_id
             routing_metadata = decision.metadata()
+            continuation = bool(
+                confirm_new and not known_reply and decision.action == "continue"
+                and self.sender_has_conversation_history(thread_id, from_addresses)
+            )
+            if confirm_new and not known_reply and not continuation:
+                job = self.db.fetch_one(
+                    "SELECT id, status, updated_at FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
+                    (thread_id,),
+                )
+                EmailApprovals(self.db, self.config).request(
+                    message_id,
+                    {
+                        "kind": "email", "raw": base64.b64encode(raw_bytes).decode("ascii"), "folder": folder,
+                        "thread_id": thread_id,
+                        "job": {"id": job["id"], "review_version": str(job["updated_at"]) if job["status"] == "needs_review" else None} if job else None,
+                    },
+                    "Email from your configured admin address. "
+                    "Confirm you sent this to start processing.\n"
+                    "Subject: %s\n\nEmail content (untrusted until you approve):\n%s" % (subject, reply_text(parsed)),
+                )
+                return IngestResult(inserted=True, queued=False, message_id=message_id)
+
+        if attachments:
+            _, _, attachments = extract_bodies_and_attachments(parsed, self.attachment_root, message_id)
 
         row = self.db.fetch_one(
             """
@@ -538,7 +553,10 @@ class EmailDownloader:
                     thread_id=thread_id, body=body_text, email_id=row["id"],
                     reply_route={"channel": "email", "to": from_addresses[0] if from_addresses else "",
                                  "in_reply_to": message_id, "subject": subject or "Reply"},
-                    metadata={**routing_metadata, **({"new_conversation_after_deleted_reply": True}
+                    metadata={**routing_metadata,
+                              **({"security_review": {"approved": True, "scope": "message"}}
+                                 if security_approved is not None else {}),
+                              **({"new_conversation_after_deleted_reply": True}
                               if deleted_reply_workstream is not None and decision.action == "new" else {})},
                 ),
                 summary=subject, admin_authenticated=verified_admin,
@@ -558,13 +576,30 @@ class EmailDownloader:
 
     def screen_inbound(
         self, parsed: Message, raw_bytes: bytes, folder: str, message_id: str, thread_id: str,
-        subject: str, from_addresses: list[str],
+        subject: str, from_addresses: list[str], acceptance: dict[str, Any],
     ) -> Optional[IngestResult]:
         """Quarantine an accepted email the decision model flags; None lets it proceed."""
         screener = SecurityScreener(self.config)
         if not screener.enabled("inbound_email"):
             return None
-        state = inbound_email_state(parsed, None)
+        authentication = (
+            evaluate_authentication(raw_bytes, self.config).summary()
+            if authentication_enabled(self.config)
+            else {"status": "not_checked", "reason": "sender authentication is disabled"}
+        )
+        state = inbound_email_state(parsed, authentication)
+        prior_approval = self.db.fetch_one(
+            """SELECT 1 FROM emails e JOIN request_messages r ON r.email_id = e.id
+               WHERE e.from_address = ANY(%s)
+                 AND r.metadata @> '{"security_review":{"approved":true,"scope":"message"}}'::jsonb
+               LIMIT 1""",
+            ([address.lower() for address in from_addresses],),
+        )
+        state["application_context"] = {
+            "acceptance": acceptance,
+            "previous_message_approval": {"found": bool(prior_approval), "scope": "message_only"},
+            "thread": screening_thread_context(self.db, thread_id),
+        }
         result = screener.screen("inbound_email", state)
         if result.level == NOT_MALICIOUS:
             return None
@@ -668,6 +703,25 @@ class EmailDownloader:
         )
         return not row or row["status"] == "active"
 
+    def sender_has_conversation_history(self, thread_id: str, from_addresses: list[str]) -> bool:
+        return bool(self.db.fetch_one(
+            """WITH conversation_threads AS (
+                 SELECT thread_id FROM workstream_threads
+                 WHERE workstream_id = (SELECT workstream_id FROM workstream_threads WHERE thread_id = %s)
+                 UNION SELECT %s::text
+               )
+               SELECT 1 FROM emails e
+               WHERE e.thread_id IN (SELECT thread_id FROM conversation_threads)
+                 AND lower(e.from_address) = ANY(%s)
+               UNION ALL
+               SELECT 1 FROM outbound_email_logs o JOIN jobs j ON j.id = o.job_id
+               WHERE j.thread_id IN (SELECT thread_id FROM conversation_threads) AND o.status = 'sent'
+                 AND EXISTS (SELECT 1 FROM unnest(o.to_addresses || o.cc_addresses) a WHERE lower(a) = ANY(%s))
+               LIMIT 1""",
+            (thread_id, thread_id, [address.lower() for address in from_addresses],
+             [address.lower() for address in from_addresses]),
+        ))
+
     def thread_candidate_message_ids(self, in_reply_to: Optional[str], references: list[str]) -> list[str]:
         candidates = []
         if in_reply_to:
@@ -693,35 +747,42 @@ class EmailDownloader:
         )
         return row is not None
 
-    def is_actionable(self, from_addresses: list[str], thread_id: str) -> bool:
+    def acceptance_context(self, from_addresses: list[str], thread_id: str) -> dict[str, Any]:
         open_job = self.db.fetch_one(
-            "SELECT id FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
+            "SELECT id, task_summary FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
             (thread_id,),
         )
-        if open_job:
-            return True
-
         allowed = [item.lower() for item in self.config.get_list("agent.email.actionable_senders")]
-        if "*" in allowed:
-            return True
-        if any(address.lower() in allowed for address in from_addresses):
-            return True
+        explicit = [address.lower() for address in from_addresses if address.lower() in allowed]
         # A recipient answering mail the assistant sent on this thread is expected, even after the job finished.
-        return bool(self.db.fetch_one(
+        expected_reply = bool(self.db.fetch_one(
             """SELECT 1 FROM outbound_email_logs o JOIN jobs j ON j.id = o.job_id
                WHERE j.thread_id = %s AND o.status = 'sent'
                  AND EXISTS (SELECT 1 FROM unnest(o.to_addresses || o.cc_addresses) a WHERE lower(a) = ANY(%s))
                LIMIT 1""",
             (thread_id, [address.lower() for address in from_addresses]),
         ))
+        reasons = []
+        if open_job:
+            reasons.append("open_job_on_thread")
+        if "*" in allowed:
+            reasons.append("wildcard_sender_policy")
+        if explicit:
+            reasons.append("explicit_sender_policy")
+        if expected_reply:
+            reasons.append("previously_contacted_on_thread")
+        return {
+            "reasons": reasons,
+            "explicitly_allowed_senders": explicit,
+            "wildcard_sender_policy": "*" in allowed,
+            "previously_contacted_on_thread": expected_reply,
+            "open_job": {"id": open_job["id"], "task_summary": screening_excerpt(open_job.get("task_summary"))}
+            if open_job else None,
+        }
 
     def is_admin_sender(self, from_addresses: list[str]) -> bool:
         """Return True if any sender in from_addresses matches the configured admin email."""
-        admin_email = (
-            self.config.get("agent.supervisor.admin_email")
-            or self.config.get("agent.notifications.email_to")
-            or ""
-        ).lower().strip()
+        admin_email = str(self.config.get("agent.admin.email") or "").lower().strip()
         if not admin_email:
             return False
         return any(addr.lower().strip() == admin_email for addr in from_addresses)

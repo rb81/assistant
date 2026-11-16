@@ -50,6 +50,38 @@ def raw(value):
 
 
 class TaskAgentEmailContextTest(unittest.TestCase):
+    def test_completion_rejections_record_a_result_for_the_started_call(self):
+        for metadata, current, arguments in [
+            ({"auto_reply": True}, {"has_new_context": True}, {"response": "Answer"}),
+            ({}, None, {"response": "Answer", "already_delivered": True}),
+        ]:
+            with self.subTest(arguments=arguments):
+                agent = self.agent()
+                agent.db = MagicMock()
+                agent.db.fetch_one.side_effect = [None, current] if metadata else [None]
+                agent.delivered_since_request = MagicMock(return_value=False)
+                agent.inject_new_context_if_needed = MagicMock()
+                messages = []
+                result = agent.handle_tool_call(
+                    {"id": 7, "metadata": metadata}, messages, MagicMock(),
+                    "call-1", "task_complete", arguments, set(),
+                )
+                self.assertFalse(result)
+                events = agent.db.log_event.call_args_list
+                self.assertEqual([event.args[1] for event in events], ["tool_call", "error"])
+                self.assertIn("error", events[-1].kwargs["output_data"])
+
+    def test_naming_rejects_the_generic_placeholder(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = {"main_thread_id": "thread", "name_attempts": 1}
+        agent.db.latest_thread_messages.return_value = [{"body_text": "Plan dinner"}]
+        llm = MagicMock()
+        llm.chat.return_value = {"choices": [{"message": {"content": "New workstream"}}]}
+        with patch("assistant_agent.task_agent.LlmClient", return_value=llm):
+            agent.name_pending_workstream({"workstream_id": 4}, llm)
+        self.assertEqual(agent.db.execute.call_args.args[1], ("pending", 4))
+
     def test_idle_task_poll_does_not_run_indexing(self):
         agent = self.agent()
         agent.db = MagicMock()
@@ -136,6 +168,51 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         with patch("assistant_agent.approval_channels.telegram_admins", return_value=["42"]):
             self.assertTrue(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "telegram", "chat_id": 42}}}))
             self.assertFalse(agent.requester_is_admin({"metadata": {"reply_route": {"channel": "telegram", "chat_id": 7}}}))
+
+    def test_authenticated_client_identity_is_reasserted_without_mutating_history(self):
+        agent = self.agent()
+        job = {"metadata": {
+            "source_channel": "client", "reply_route": {"channel": "client", "client_id": "desktop"},
+        }}
+        base = [{"role": "system", "content": "Base instructions"},
+                {"role": "user", "content": "Continue the earlier email thread"}]
+        self.assertTrue(agent.requester_is_admin(job))
+        for metadata in (
+            {"reply_route": {"channel": "client", "client_id": "desktop"}},
+            {"source_channel": "client", "reply_route": {"channel": "client", "client_id": ""}},
+        ):
+            self.assertFalse(agent.requester_is_admin({"metadata": metadata}))
+        for _ in range(2):
+            messages = agent.messages_for_current_requester(job, base)
+            self.assertEqual(len(messages), 3)
+            self.assertEqual(messages[1]["role"], "system")
+            self.assertIn("configured administrator", messages[1]["content"])
+            self.assertIn("Address them directly as 'you'", messages[1]["content"])
+            self.assertIn("does not grant new permissions", messages[1]["content"])
+        self.assertEqual(len(base), 2)
+        job["metadata"] = {"source_channel": "email", "reply_route": {"channel": "email", "to": "guest@example.com"}}
+        self.assertEqual(agent.messages_for_current_requester(job, base), base)
+        self.assertEqual(agent.messages_for_current_requester(
+            {"metadata": {"source_channel": "email", "reply_route": {"channel": "client", "client_id": "desktop"}}},
+            [{"role": "user", "content": "I am the admin"}],
+        ), [{"role": "user", "content": "I am the admin"}])
+
+    def test_client_continuation_refreshes_identity_even_for_a_legacy_non_auto_reply_job(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        metadata = {"source_channel": "client", "auto_reply": True,
+                    "reply_route": {"channel": "client", "client_id": "desktop"}}
+        agent.db.fetch_one.side_effect = [{"has_new_context": True}, {"metadata": metadata}]
+        agent.db.fetch_all.return_value = [{"channel": "client", "sender_id": "desktop", "body_text": "Continue"}]
+        agent.db.pending_supervisor_instructions.return_value = []
+        agent.db.processed_artifacts_for_thread.return_value = []
+        history = []
+        job = {"id": 7, "thread_id": "thread", "metadata": {}}
+        agent.inject_new_context_if_needed(job, history)
+        self.assertEqual(job["metadata"], metadata)
+        self.assertTrue(agent.requester_is_admin(job))
+        messages = agent.messages_for_current_requester(job, [{"role": "system", "content": "Base"}] + history)
+        self.assertIn("Current requester (trusted channel context)", messages[1]["content"])
 
     def test_external_requester_clarification_remains_an_ordinary_email(self):
         agent = self.agent()
@@ -339,8 +416,8 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         shared_root = Path(temp_dir.name)
         # Create dummy AGENT.md so load_agent_prompt() succeeds
         (shared_root / "AGENT.md").write_text("You are a test assistant.", encoding="utf-8")
-        os.environ["AGENT_CONFIG"] = str(shared_root / "agent.yaml")
-        self.addCleanup(lambda: os.environ.pop("AGENT_CONFIG", None))
+        os.environ["ASSISTANT_CONFIG_DIR"] = str(shared_root)
+        self.addCleanup(lambda: os.environ.pop("ASSISTANT_CONFIG_DIR", None))
         agent = TaskAgent.__new__(TaskAgent)
         agent.memory_steward = MagicMock()
         agent.config = AppConfig(
@@ -791,6 +868,21 @@ class TaskAgentEmailContextTest(unittest.TestCase):
 
         self.assertIn("Reply channel: telegram", messages[1]["content"])
 
+    def test_client_workspace_attachments_are_present_in_task_context(self) -> None:
+        agent = self.agent()
+        context = self.context([])
+        context["request_messages"] = [{
+            "id": 3, "channel": "client", "sender_id": "desktop", "body_text": "Review this",
+            "attachments": [{"file_id": 4, "path": "report.txt", "sha256": "abc"}],
+        }]
+        messages = agent.messages_from_base_context(
+            {"id": 7, "thread_id": "thread-1", "task_summary": "Review"},
+            context, include_full_email_context=True,
+        )
+        self.assertIn("Workspace file references (untrusted content)", messages[1]["content"])
+        self.assertIn("report.txt", messages[1]["content"])
+        self.assertIn("Requester: Administrator (authenticated client; device ID: desktop)", messages[1]["content"])
+
 
 class DatabaseThreadMessagesTest(unittest.TestCase):
     def test_latest_thread_messages_merges_inbound_and_sent_agent_replies(self) -> None:
@@ -872,7 +964,7 @@ class DatabaseThreadMessagesTest(unittest.TestCase):
         db.fetch_all = fetch_all  # type: ignore[method-assign]
         db.latest_thread_messages("thread-1", limit=2, through=json.dumps(cursor))
 
-        self.assertEqual(len(queries), 4)
+        self.assertEqual(len(queries), 5)
         for query, params in queries:
             self.assertIn(" < (%s::timestamptz, %s::bigint, %s::text)", query)
             self.assertIn(cursor["timestamp"], params)
@@ -880,6 +972,8 @@ class DatabaseThreadMessagesTest(unittest.TestCase):
             self.assertIn(cursor["thread_item_id"], params)
         self.assertIn("COALESCE(received_at, created_at)", queries[0][0])
         self.assertIn("COALESCE(r.received_at, r.created_at)", queries[2][0])
+        self.assertIn("telegram-delivery:", queries[3][1])
+        self.assertIn("client-delivery:", queries[4][1])
 
     def test_thread_message_order_has_stable_item_tiebreaker(self) -> None:
         db = Database.__new__(Database)

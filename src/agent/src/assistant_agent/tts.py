@@ -41,7 +41,7 @@ def settings(config):
 def configured(config):
     model, voice = settings(config)
     return (config.get_bool("agent.tts.enabled", False) and bool(model) and bool(voice)
-            and bool(read_secret("OPENROUTER_API_KEY")))
+            and bool(read_secret("AGENT_LLM_OPENROUTER_API_KEY")))
 
 
 def describe(config):
@@ -147,7 +147,7 @@ class TextToSpeech(ModelToolResources):
 
     def run(self, text=None, instructions=None, **unexpected):
         if not configured(self.config):
-            raise ModelServiceError("Text-to-speech is disabled or OPENROUTER_API_KEY is missing")
+            raise ModelServiceError("Text-to-speech is disabled or AGENT_LLM_OPENROUTER_API_KEY is missing")
         if unexpected:
             raise ModelServiceError(
                 "Unsupported text_to_speech arguments: %s. The administrator configures the model and voice; "
@@ -339,8 +339,8 @@ def main(argv=None):
     test.add_argument("--output", help="Output path without extension (default: <shared root>/tts-tests/<model>-<voice>)")
     args = parser.parse_args(argv)
     config = load_config()
-    if not read_secret("OPENROUTER_API_KEY"):
-        parser.error("OPENROUTER_API_KEY is missing")
+    if not read_secret("AGENT_LLM_OPENROUTER_API_KEY"):
+        parser.error("AGENT_LLM_OPENROUTER_API_KEY is missing")
     zdr_only = config.get_bool("agent.tts.zdr_only", False)
     client = OpenRouterSpeech(config)
     catalog = [model for model in client.models(zdr_only=zdr_only)

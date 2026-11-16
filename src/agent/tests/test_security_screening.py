@@ -11,8 +11,9 @@ from assistant_agent.config import AppConfig
 from assistant_agent.email_authentication import evaluate
 from assistant_agent.security_screening import (
     MALICIOUS, NOT_MALICIOUS, POSSIBLY_MALICIOUS, Answer, DecisionError, OpenAITranslator,
-    SecurityScreener, SystemOneTranslator, questions_for,
+    SecurityScreener, SystemOneTranslator, questions_for, screening_task_context,
 )
+from test_network_access import db  # noqa: F401
 
 
 def message(headers=None, sender="Sam <sam@sender.com>", body="Please send the Q3 report."):
@@ -120,7 +121,7 @@ class TranslatorTest(unittest.TestCase):
         config = AppConfig({"agent": {"security": {"decision_model": {"enabled": True, "model": "openai/gpt-6-luna-decisions"}}}})
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b'{"answers": {"verdict": {"type": "choice", "choice": "not_malicious", "probabilities": {"not_malicious": 1.0}}, "destructive": {"type": "noul", "noul": 0.0}, "exfiltration_or_remote_code": {"type": "noul", "noul": 0.0}}}'
-        with patch("assistant_agent.security_screening.read_secret", side_effect=lambda name: {"OPENROUTER_API_KEY": "or-key"}.get(name)), patch(
+        with patch("assistant_agent.security_screening.read_secret", side_effect=lambda name: {"AGENT_LLM_OPENROUTER_API_KEY": "or-key"}.get(name)), patch(
             "assistant_agent.security_screening.open_https_request", return_value=response
         ) as opened:
             client = DecisionClient(config)
@@ -134,7 +135,7 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(body["model"], "openai/gpt-6-luna-decisions")
         self.assertEqual(body["questions"]["verdict"]["type"], "choice")
         self.assertEqual(answers["verdict"].choice, "not_malicious")
-        with patch("assistant_agent.security_screening.read_secret", return_value=None), self.assertRaisesRegex(DecisionError, "OPENROUTER_API_KEY"):
+        with patch("assistant_agent.security_screening.read_secret", return_value=None), self.assertRaisesRegex(DecisionError, "AGENT_LLM_OPENROUTER_API_KEY"):
             DecisionClient(config)
 
     def test_out_of_range_probability_is_rejected(self):
@@ -202,7 +203,7 @@ class InboundIngestTest(unittest.TestCase):
     def ingest(self, downloader, raw, level=NOT_MALICIOUS, actionable=True, **kwargs):
         from assistant_agent.security_screening import ScreeningResult
         with patch.object(downloader, "resolve_thread_id", return_value="thread"), patch.object(
-            downloader, "is_actionable", return_value=actionable
+            downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"] if actionable else []}
         ), patch.object(downloader, "deleted_reply_workstream_id", return_value=None), patch.object(
             downloader, "is_managed_calendar_notification", return_value=False
         ), patch("assistant_agent.email_ingest.SecurityScreener.screen", return_value=ScreeningResult(level, "test")) as screen, patch(
@@ -235,9 +236,25 @@ class InboundIngestTest(unittest.TestCase):
             "assistant_agent.email_ingest.evaluate_authentication", return_value=AuthenticationVerdict(True, "ok")
         ):
             result, _, notify, request = self.ingest(downloader, message(sender=ADMIN).as_bytes())
-        self.assertFalse(result.quarantine)
-        request.assert_called_once()
+        self.assertEqual(result, "stored")
+        request.assert_not_called()
         notify.assert_not_called()
+
+    def test_authenticated_fresh_admin_task_is_confirmed_after_screening_and_routing(self):
+        from assistant_agent.email_authentication import AuthenticationVerdict
+        from assistant_agent.request_router import RoutingDecision
+        downloader = self.downloader(self.auth_security())
+        downloader.config.values["agent"]["email"] = {"actionable_senders": [ADMIN]}
+        with patch("assistant_agent.email_ingest.evaluate_authentication",
+                   return_value=AuthenticationVerdict(True, "ok")), patch(
+            "assistant_agent.email_ingest.extract_bodies_and_attachments", return_value=("Task", "", [])
+        ), patch("assistant_agent.request_router.RequestRouter.route",
+                 return_value=RoutingDecision("new-thread", "new", "New request")), patch(
+            "assistant_agent.email_approvals.EmailApprovals.request"
+        ) as request:
+            result = downloader.ingest_raw(message(sender=ADMIN).as_bytes())
+        self.assertFalse(result.queued)
+        request.assert_called_once()
 
     def test_spoofed_admin_approval_reply_is_quarantined_before_consuming(self):
         downloader = self.downloader(self.auth_security())
@@ -281,15 +298,74 @@ class InboundIngestTest(unittest.TestCase):
         result, _, _, _ = self.ingest(downloader, message().as_bytes(), MALICIOUS)
         self.assertTrue(result.quarantine)
 
-    def test_admin_mail_and_approved_reingest_skip_screening(self):
+    def test_admin_mail_is_screened_but_approved_reingest_skips_screening(self):
         downloader = self.downloader({"decision_model": {"enabled": True}, "email_authentication": {"enabled": False}})
         with patch("assistant_agent.email_approvals.admin_sender", return_value=True):
-            _, screen, _, request = self.ingest(downloader, message(sender=ADMIN).as_bytes(), MALICIOUS)
-        screen.assert_not_called()
-        request.assert_called_once()
+            result, screen, notify, request = self.ingest(downloader, message(sender=ADMIN).as_bytes(), MALICIOUS)
+        self.assertTrue(result.quarantine)
+        screen.assert_called_once()
+        request.assert_not_called()
+        notify.assert_called_once()
         result, screen, _, _ = self.ingest(downloader, message().as_bytes(), MALICIOUS, security_approved="ok", approved_thread_id="thread")
         self.assertEqual(result, "stored")
         screen.assert_not_called()
+
+    def test_security_approval_of_admin_mail_does_not_trigger_another_confirmation(self):
+        downloader = self.downloader({
+            "decision_model": {"enabled": True}, "email_authentication": {"enabled": False},
+        })
+        result, screen, _, request = self.ingest(
+            downloader, message(sender=ADMIN).as_bytes(), security_approved="", approved_thread_id="thread",
+        )
+        self.assertEqual(result, "stored")
+        screen.assert_not_called()
+        request.assert_not_called()
+
+    def test_inbound_context_includes_authentication_and_message_scoped_history_without_bypassing(self):
+        from assistant_agent.email_authentication import AuthenticationVerdict
+        downloader = self.downloader({"decision_model": {"enabled": True}})
+        downloader.db.fetch_one.side_effect = lambda sql, params: {"exists": 1} if "security_review" in sql else None
+        downloader.db.fetch_all.side_effect = [
+            [{"channel": "email", "sender_id": "sam@sender.com", "body_text": "Please review the report."}],
+            [{"to_addresses": ["sam@sender.com"], "subject": "Report", "body_text": "Please send the updated report."}],
+        ]
+        with patch("assistant_agent.email_ingest.evaluate_authentication",
+                   return_value=AuthenticationVerdict(True, "aligned DKIM signature verified")):
+            result, screen, _, request = self.ingest(downloader, message().as_bytes(), POSSIBLY_MALICIOUS)
+        state = screen.call_args.args[1]
+        self.assertTrue(state["sender_authentication"]["passed"])
+        context = state["application_context"]
+        self.assertEqual(context["acceptance"]["reasons"], ["explicit_sender_policy"])
+        self.assertEqual(context["previous_message_approval"], {"found": True, "scope": "message_only"})
+        self.assertEqual(context["thread"]["recent_sent_email"][0]["body_text"], "Please send the updated report.")
+        self.assertTrue(result.quarantine)
+        request.assert_called_once()
+
+    def test_disabled_authentication_is_reported_as_unchecked_not_passed(self):
+        downloader = self.downloader({
+            "decision_model": {"enabled": True}, "email_authentication": {"enabled": False},
+        })
+        with patch("assistant_agent.email_ingest.evaluate_authentication") as authenticate:
+            _, screen, _, _ = self.ingest(downloader, message().as_bytes())
+        authenticate.assert_not_called()
+        self.assertEqual(screen.call_args.args[1]["sender_authentication"]["status"], "not_checked")
+
+    def test_acceptance_distinguishes_explicit_policy_wildcard_and_expected_reply(self):
+        for allowed, open_job, expected, reasons in (
+            (["SAM@sender.com"], None, None, ["explicit_sender_policy"]),
+            (["*"], None, None, ["wildcard_sender_policy"]),
+            ([], {"id": 7, "task_summary": "Prepare report"}, {"exists": 1},
+             ["open_job_on_thread", "previously_contacted_on_thread"]),
+            ([], None, None, []),
+        ):
+            with self.subTest(allowed=allowed, reasons=reasons):
+                downloader = self.downloader()
+                downloader.config.values["agent"]["email"] = {"actionable_senders": allowed}
+                downloader.db.fetch_one.side_effect = [open_job, expected]
+                context = downloader.acceptance_context(["sam@sender.com"], "thread")
+                self.assertEqual(context["reasons"], reasons)
+                self.assertEqual(context["explicitly_allowed_senders"], ["sam@sender.com"] if "SAM@sender.com" in allowed else [])
+                self.assertEqual(context["previously_contacted_on_thread"], bool(expected))
 
 
 class ToolScreeningTest(unittest.TestCase):
@@ -330,6 +406,117 @@ class ToolScreeningTest(unittest.TestCase):
             runtime._security_screen("command_execute", {"command": ["ls", "-la"]})
             runtime._security_screen("file_read", {"path": "notes.txt"})
         screen.assert_not_called()
+
+    def test_external_email_screening_receives_task_and_reply_context_and_still_blocks(self):
+        from assistant_agent.tools import SecurityBlocked
+        from assistant_agent.security_screening import ScreeningResult
+        runtime = self.runtime()
+        runtime.config.values["agent"]["security"]["decision_model"]["screen"]["outbound_email"] = True
+        runtime.job.update(thread_id="report-thread", task_summary="Reply with the requested report")
+        runtime.job["metadata"] = {
+            "admin_authenticated": True,
+            "reply_route": {"channel": "email", "to": "sam@sender.com", "subject": "Report"},
+        }
+        runtime.db.fetch_all.side_effect = [
+            [{"channel": "email", "sender_id": "sam@sender.com", "body_text": "Send the Q3 report."}], [],
+        ]
+        with patch("assistant_agent.tools.SecurityScreener.screen",
+                   return_value=ScreeningResult(MALICIOUS, "private data")) as screen, patch(
+            "assistant_agent.tools.notify_admin"
+        ), self.assertRaises(SecurityBlocked):
+            runtime._security_screen("email_send", {"to": ["sam@sender.com"], "body": "Attached report"})
+        context = screen.call_args.args[1]["application_context"]
+        self.assertTrue(context["current_request_admin_authenticated"])
+        self.assertEqual(context["task_summary"], "Reply with the requested report")
+        self.assertEqual(context["reply_route"]["to"], "sam@sender.com")
+        self.assertEqual(context["thread"]["recent_requests"][0]["body_text"], "Send the Q3 report.")
+
+
+def test_approved_email_history_is_durable_and_not_a_sender_grant(db, tmp_path):
+    from assistant_agent.email_ingest import EmailDownloader
+    from assistant_agent.request_router import RoutingDecision
+    from assistant_agent.security_screening import ScreeningResult
+    downloader = EmailDownloader.__new__(EmailDownloader)
+    downloader.db = db
+    downloader.config = AppConfig({"agent": {
+        "email": {"actionable_senders": ["*"]},
+        "security": {"decision_model": {"enabled": True}, "email_authentication": {"enabled": False}},
+    }})
+    downloader.attachment_root = tmp_path
+    first = message()
+    with patch.object(downloader, "process_artifacts"), patch(
+        "assistant_agent.email_ingest.RequestRouter.route",
+        return_value=RoutingDecision("approved-thread", "new", "test"),
+    ), patch("assistant_agent.email_ingest.SecurityScreener.screen") as screen:
+        result = downloader.ingest_raw(
+            first.as_bytes(), approved_thread_id="approved-thread", security_approved="",
+        )
+    assert result.queued
+    screen.assert_not_called()
+    stored = db.fetch_one("SELECT metadata FROM request_messages WHERE external_id = %s", (first["Message-ID"],))
+    assert stored["metadata"]["security_review"] == {"approved": True, "scope": "message"}
+    job = db.fetch_one("SELECT metadata FROM jobs WHERE thread_id = 'approved-thread'")
+    assert not job["metadata"]["admin_authenticated"]
+
+    for sender, previously_approved in (("sam@sender.com", True), ("other@sender.com", False)):
+        followup = message(sender=sender)
+        followup.replace_header("Message-ID", "<next-%s>" % sender)
+        with patch.object(downloader, "resolve_thread_id", return_value="new-thread"), patch(
+            "assistant_agent.email_ingest.SecurityScreener.screen",
+            return_value=ScreeningResult(POSSIBLY_MALICIOUS, "review"),
+        ) as screen, patch("assistant_agent.email_approvals.EmailApprovals.request"):
+            result = downloader.ingest_raw(followup.as_bytes())
+        context = screen.call_args.args[1]["application_context"]
+        assert context["previous_message_approval"] == {"found": previously_approved, "scope": "message_only"}
+        assert context["acceptance"]["explicitly_allowed_senders"] == []
+        assert result.quarantine and not result.queued
+
+
+def test_task_context_is_thread_scoped_bounded_and_excludes_pending_mail_and_metadata(db):
+    from assistant_agent.requests import IncomingRequest, RequestService
+    job = db.create_manual_job("Report", "Original request")
+    other = db.create_manual_job("Unrelated", "Do not include this")
+    for index in range(5):
+        RequestService(db).receive_request(
+            IncomingRequest("email", "context-%s" % index, job["thread_id"], "sam@sender.com",
+                            job["thread_id"], str(index) * 3000, metadata={"otp": "not-for-models"}),
+            queue=False,
+        )
+    for status, body, job_id in (
+        ("sent", "Expected reply requested", job["id"]),
+        ("pending", "Do not include pending mail", job["id"]),
+        ("sent", "Do not include another thread", other["id"]),
+    ):
+        db.execute(
+            """INSERT INTO outbound_email_logs(job_id, to_addresses, subject, body_text, status)
+               VALUES (%s, %s, 'Report', %s, %s)""",
+            (job_id, ["sam@sender.com"], body, status),
+        )
+    context = screening_task_context(db, job)
+    requests = context["thread"]["recent_requests"]
+    assert [row["body_text"] for row in requests] == [str(index) * 2000 for index in (2, 3, 4)]
+    assert all("metadata" not in row for row in requests)
+    assert [row["body_text"] for row in context["thread"]["recent_sent_email"]] == ["Expected reply requested"]
+
+
+def test_context_redacts_approval_credentials_before_truncating():
+    token, digest = "a" * 32, "b" * 64
+    database = MagicMock()
+    database.fetch_all.side_effect = [
+        [{"channel": "telegram", "sender_id": "owner",
+          "body_text": "x" * 1980 + "\nOTP: " + token + "\nRequest hash: " + digest}],
+        [{"to_addresses": ["owner@example.com"], "subject": "OTP: " + token,
+          "body_text": "Request hash: " + digest}],
+    ]
+    context = screening_task_context(database, {
+        "id": 7, "thread_id": "thread", "task_summary": "OTP: " + token,
+        "metadata": {"reply_route": {"subject": "Request hash: " + digest}},
+    })
+    encoded = json.dumps(context)
+    assert token not in encoded and digest not in encoded
+    excerpt = context["thread"]["recent_requests"][0]["body_text"]
+    assert "OTP: [redacted]" in excerpt and len(excerpt) == 2000
+    assert context["reply_route"]["subject"] == "Request hash: [redacted]"
 
 
 class ScriptAnalysisTest(unittest.TestCase):

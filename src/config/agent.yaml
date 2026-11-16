@@ -2,17 +2,18 @@
 # Assistant — Application Configuration
 # =============================================================================
 #
-# This tracked file contains all operational defaults. You should not need to
-# edit it for normal deployments. Setup copies it to data/config/agent.yaml;
-# configure credentials and identity through ./run.sh.
+# This tracked file contains all operational defaults. Edit it directly, or
+# through the macOS client's reviewed source editor, for core behavior changes.
+# Changed source requires rebuilding application images. The client keeps the
+# last three versions; credentials belong in the credential store, not here.
 #
 # Settings can be overridden through setup or data/overrides.env.
 # See docs/env-overrides.md for the complete list of available overrides.
 #
 # Override precedence (highest wins):
-#   1. Environment variable (from data/.env and data/overrides.env via Compose)
-#   2. Local configuration (data/config/agent.yaml)
-#   3. Code-level fallback defaults
+#   1. Compose environment, then data/overrides.env
+#   2. This source file, baked into the application images
+#   3. Code-level fallback defaults (matching the shipped source defaults)
 #
 # =============================================================================
 
@@ -22,20 +23,22 @@ agent:
     referer_url: https://github.com/rb81/assistant
     timezone: UTC
 
-  # Agent identity — override via AGENT_NAME / AGENT_EMAIL env vars.
+  # Agent identity — override via AGENT_IDENTITY_NAME / AGENT_IDENTITY_EMAIL env vars.
   # When blank, name defaults to capitalized app name ("Assistant") and
-  # email is derived from SMTP_FROM → SMTP_USERNAME → "assistant@local".
+  # email is derived from AGENT_EMAIL_SMTP_FROM → AGENT_EMAIL_SMTP_USERNAME → "assistant@local".
   identity:
     name:
     email:
+    # Domain for generated Message-IDs; blank derives it from the agent address.
+    message_id_domain:
 
-  # Admin contact — override via ADMIN_NAME / ADMIN_EMAIL env vars.
+  # Admin contact — override via AGENT_ADMIN_NAME / AGENT_ADMIN_EMAIL env vars.
   admin:
     name:
     email:
 
-  # Organization details — override via ORG_NAME / ORG_SECURITY_EMAIL /
-  # ORG_INTERNAL_EMAIL_DOMAINS env vars.
+  # Organization details — override via AGENT_ORG_NAME / AGENT_ORG_SECURITY_EMAIL /
+  # AGENT_ORG_INTERNAL_EMAIL_DOMAINS env vars.
   org:
     name:
     security_email:
@@ -46,6 +49,9 @@ agent:
     port: 5432
     name: assistant
     user: assistant
+    # Credentials (secret: true in agent.schema.yaml): stored by setup, never in this file.
+    password:
+    url:
 
   llm:
     model: anthropic/claude-sonnet-4.6
@@ -53,6 +59,8 @@ agent:
     base_url: https://openrouter.ai/api/v1
     temperature: 0.2
     max_tokens_per_call: 4096
+    openrouter_api_key:
+    openai_api_key:
 
   model_service:
     enabled: false
@@ -89,6 +97,9 @@ agent:
     summarization_max_input_chars: 80000
     tool_timeout_command_seconds: 300
     max_emails_per_hour: 10
+    # Fraction of a limit at which the agent starts wrapping up.
+    limit_approach_factor: 0.80
+    rate_limit_backoff_seconds: 30
     poll_interval_seconds: 60
 
   task_agent:
@@ -107,6 +118,9 @@ agent:
     imap_quarantine_folder: Quarantine
     imap_sent_folder: Sent
     imap_poll_interval_seconds: 60
+    imap_timeout_seconds: 60
+    read_max_body_chars: 20000
+    read_max_body_lines: 200
     smtp_host:
     smtp_port: 587
     smtp_username:
@@ -122,6 +136,16 @@ agent:
     max_initial_context_body_chars: 20000
     actionable_senders: []
 
+  zoom:
+    enabled: false
+    # s2s or oauth; blank selects s2s when account_id is set, otherwise oauth.
+    auth_mode:
+    client_id:
+    client_secret:
+    account_id:
+    refresh_token:
+    user_id: me
+
   dropbox:
     enabled: false
     client_id:
@@ -136,16 +160,20 @@ agent:
     recipients: {}
     max_download_bytes: 20971520
     max_messages_per_hour: 120
+    show_task_status: false
 
   transcription:
     enabled: false
     base_url: http://transcription:8080
     api_token:
     language: auto
+    model_path: /models/ggml-small.bin
+    threads: 2
 
   supervisor:
     stall_threshold_minutes: 15
     max_task_duration_minutes: 60
+    email_approval_increase_factor: 1.2
 
   filesystem:
     shared_root: /data/share
@@ -212,9 +240,16 @@ agent:
       min_similarity: 0.45
       recency_boost_max: 0.1
       recency_boost_days: 365
+      candidate_limit: 500
 
   context:
+    enabled: true
     search_days: 90
+    embedding_text_limit: 1500
+    keyword_boost: 0.25
+    max_results_per_source: 5
+    min_score: 0.20
+    steward_max_candidates: 10
 
   embeddings:
     enabled: true
@@ -225,6 +260,10 @@ agent:
 
   workspace:
     max_conversion_bytes: 26214400
+    normalize_documents: true
+    source_archive_root: .assistant/archive/source-documents
+    # Blank uses the built-in list of text file extensions.
+    text_extensions: []
     convertible_document_extensions:
       - .doc
       - .docx
@@ -253,28 +292,38 @@ agent:
     default_timezone:
     scheduler_poll_interval_seconds: 2
     max_due_per_tick: 25
+    script_check_interval_minutes: 360
 
   calendar:
     enabled: false
     timezone:
     # Default provider when not specified per-call (google, outlook, or zoho).
-    # Override via CALENDAR_DEFAULT_PROVIDER env var.
+    # Override via AGENT_CALENDAR_DEFAULT_PROVIDER env var.
     default_provider:
     # Default reminder alert in minutes before an event. Override via
-    # CALENDAR_DEFAULT_ALERT_MINUTES env var.
+    # AGENT_CALENDAR_DEFAULT_ALERT_MINUTES env var.
     default_alert_minutes: 30
     policy:
       allow_read_event_details: false
     # Provider-specific settings. Configure OAuth credentials through setup;
     # calendar_id and regional options can be set here or overridden via env vars.
     google:
-      calendar_id:
+      calendar_id: primary
+      client_id:
+      client_secret:
+      refresh_token:
     outlook:
       calendar_id:
-      tenant_id:
+      tenant_id: common
+      client_id:
+      client_secret:
+      refresh_token:
     zoho:
       calendar_id:
       api_base:
+      client_id:
+      client_secret:
+      refresh_token:
 
   deep_research:
     enabled: true
@@ -284,6 +333,14 @@ agent:
     max_iterations: 30
     poll_interval_seconds: 2
     timeout_seconds: 180
+
+  client:
+    poll_interval_seconds: 15
+    availability_timeout_seconds: 60
+    delivery_timeout_seconds: 60
+    reconciliation_interval_seconds: 15
+    retry_interval_seconds: 60
+    claim_timeout_seconds: 3600
 
   heartbeat:
     enabled: true
@@ -295,6 +352,8 @@ agent:
   sandbox:
     enabled: true
     base_url: https://sandbox:8080
+    api_token:
+    revoke_token:
     max_attempts: 3
     retry_backoff_seconds: 1
     network:
@@ -308,6 +367,8 @@ agent:
     engine: auto
     max_results: 5
     max_total_results: 15
+    max_tokens: 3000
+    timeout_seconds: 90
     search_context_size: medium
     allowed_domains: []
     excluded_domains: []
@@ -331,26 +392,31 @@ agent:
     script_yolo: false
     development:
       # Blank reuses agent.llm provider/model and its existing credential.
-      # Use an OpenRouter provider/model ID to select another model (OPENROUTER_API_KEY).
+      # Use an OpenRouter provider/model ID to select another model (AGENT_LLM_OPENROUTER_API_KEY).
       # Presets are not used; the supervisor has its own instructions.
       model: ""
       max_minutes: 30
       max_runs: 20
+    # Confirm fresh admin task emails only; established replies and continuations proceed without confirmation.
+    # Does not disable sender authentication, content screening or privileged-action approvals.
+    confirm_new_admin_conversations: true
     email_authentication:
-      # Applies only to email whose From is the admin address (tasks, /admin commands, OTP replies).
+      # Required for email whose From is the admin address (tasks, /admin commands, OTP replies).
+      # Also supplies evidence for non-admin decision-model screening; it does not gate those senders.
       # Verified via DNS: an aligned DKIM signature or an aligned SPF pass is required.
       # Recommended; disable only if your admin mail provider cannot pass DKIM or SPF.
       enabled: true
     decision_model:
-      # When enabled, all accepted non-admin inbound email is always screened.
+      # When enabled, all accepted inbound task email (including admin email) is screened.
       enabled: false
-      # openrouter (default): OpenRouter's normalized Decisions API with OPENROUTER_API_KEY; model is any
+      # openrouter (default): OpenRouter's normalized Decisions API with AGENT_LLM_OPENROUTER_API_KEY; model is any
       # decision model slug (default perplexity/pplx-decider-v1.2).
-      # Optional direct provider APIs (SECURITY_DECISION_API_KEY): perplexity, jev, clef, openai, or custom
+      # Optional direct provider APIs (AGENT_SECURITY_DECISION_MODEL_API_KEY): perplexity, jev, clef, openai, or custom
       # (System One-compatible endpoint; set url and model).
       provider: openrouter
       url:
       model:
+      api_key:
       timeout_seconds: 20
       # review (hold for admin), reject, or allow when the decision model is unavailable
       on_error: review

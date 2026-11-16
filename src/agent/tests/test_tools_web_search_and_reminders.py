@@ -312,7 +312,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
     def test_calendar_tools_are_loadable_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = calendar_enabled_config(temp_dir)
-            env = {"CALENDAR_GOOGLE_CLIENT_ID": "test-google-client-id"}
+            env = {"AGENT_CALENDAR_GOOGLE_CLIENT_ID": "test-google-client-id"}
             with patch.dict(os.environ, env, clear=False):
                 available = available_function_names(config, {"id": 7, "thread_id": "thread"})
                 self.assertIn("calendar_list_busy", available)
@@ -380,7 +380,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
                 runtime.contact_read(created["id"])
 
     def test_web_search_tool_is_loadable_when_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY": "test-key"}):
             config = search_config(temp_dir)
             self.assertIn("web_search", available_function_names(config, {"id": 7, "thread_id": "thread"}))
             self.assertIn("web_search", tool_catalog(config, {"id": 7, "thread_id": "thread"}))
@@ -394,7 +394,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
             self.assertIn("web_search", enabled)
 
     def test_openrouter_server_tool_is_not_loadable_directly(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY": "test-key"}):
             config = search_config(temp_dir)
             agent = TaskAgent.__new__(TaskAgent)
             agent.config = config
@@ -410,7 +410,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
         self.assertEqual(tool_name({"type": "openrouter:web_search"}), "openrouter:web_search")
 
     def test_deep_research_tools_include_web_search_function_only(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY": "test-key"}):
             tools = research_tools(search_config(temp_dir))
             names = [tool_name(item) for item in tools]
 
@@ -418,7 +418,7 @@ class ToolWebSearchAndReminderTest(unittest.TestCase):
             self.assertNotIn("openrouter:web_search", names)
 
     def test_deep_research_request_accepts_question_alias(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"AGENT_LLM_OPENROUTER_API_KEY": "test-key"}):
             runtime = ToolRuntime(
                 FakeResearchDatabase(),  # type: ignore[arg-type]
                 search_config(temp_dir),

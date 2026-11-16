@@ -5,125 +5,99 @@
 <h1 align="center">Assistant</h1>
 
 <p align="center">
-  A self-hosted AI assistant you use through email or Telegram.
+  Your own AI assistant. Your server. Your choice of models.
 </p>
 
-Assistant can research a topic, work with files, run code, set reminders, and
-manage calendars and meetings. It runs in Docker on your computer or server.
-You choose the models and which integrations it can use.
+Assistant is a self-hosted AI assistant that researches, works with files, runs
+code, and helps manage your day. Talk to it through email, Telegram, or the
+[macOS app](https://github.com/rb81/assistant-client). It runs in Docker on
+your computer or server and keeps working while your client is closed.
 
-> **V2 is a prerelease.** Keep backups and test it before relying on it for important work.
-> Upgrading from V1? Follow the [transition guide](https://github.com/rb81/assistant/releases/tag/layout-transition) first.
+> **V2 is a prerelease.** Back up your data and test before relying on it for
+> important work. Upgrading from V1? Start with the
+> [transition guide](https://github.com/rb81/assistant/releases/tag/layout-transition).
 
-## Before you install
+## What it can do
 
-Have these ready:
+- **Research and write:** ask questions, investigate topics, and produce reports.
+- **Work with files:** read documents, process attachments, and create new files.
+- **Run code:** execute scripts in an isolated sandbox, with approval controls.
+- **Manage your day:** set reminders and connect calendars and meetings.
+- **Keep context:** organize related work and retain searchable memories.
+- **Meet you where you are:** use email, Telegram with voice support, or the
+  native macOS app.
 
-- **Docker with Docker Compose.** On macOS, start Docker Desktop and wait for it to be ready. On Linux, make sure your Docker daemon is running.
-- **Python 3.12 or newer**, with virtual-environment support, plus **Git** and **OpenSSL**.
-- **A model API key.** OpenRouter is the default; an OpenAI-compatible provider is also supported. API usage may cost money.
-- **A way to message your assistant:** a dedicated email account with IMAP/SMTP access, a Telegram bot token, or both. For Telegram, you also need your numeric user ID.
+For more advanced use, configure models for different jobs, schedule scripts,
+connect Dropbox, run concurrent workers, or build your own client using the
+[Management API](docs/building-clients.md).
 
-Use a terminal at least **76 columns wide and 24 rows tall**. An internet
-connection is needed to install dependencies, download images and models, and
-contact your chosen providers.
+## Requirements
 
-> [!WARNING]
-> **Use an assistant-owned mailbox, not your personal inbox.** Email intake can move
-> messages between folders. Restrict who can send requests and which domains can
-> receive replies. Starting the app may process messages already in that mailbox.
+- **macOS or Linux**, with Docker and Docker Compose installed and running.
+  Your account needs Docker access without `sudo`.
+- **curl and tar.** No host Python, Node, or Rust installation is needed.
+- **A model API key** from OpenRouter or another supported OpenAI-compatible provider.
+  Provider usage may cost money.
+- **Internet access** for installation and connected services.
 
-> [!IMPORTANT]
-> Self-hosted does not mean fully local: messages, files, and other information
-> may be sent to the model providers and integrations needed for a task.
-> Assistant can send messages, change connected accounts, and execute code.
-> Start with narrow permissions. The sandbox broker has privileged Docker access;
-> read the [security guide](docs/security.md) before using it with sensitive data.
+Email and Telegram need their own account/bot credentials if enabled.
+The optional macOS app requires macOS 14 or later; the server can run elsewhere.
 
-## Install and set up
+## Install
 
-Clone the repository and open the terminal interface:
+Copy and paste this into a terminal:
 
 ```sh
-git clone https://github.com/rb81/assistant.git
-cd assistant
-./run.sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/assistant/main/install.sh | sh
 ```
 
-On the first launch, accept the prompts to create an isolated administration
-environment and install its dependencies. You don't need to install Python
-packages globally or copy `.env.example`.
+The [installer](install.sh) downloads Assistant, builds its Docker images, and
+starts management services. The default location is `~/.local/share/assistant`.
+The first build can take several minutes.
 
-The home screen walks you through setup:
+Then open setup:
 
-1. **Identity and timezone:** name your assistant and enter your details.
-2. **Models and API access:** choose a model, enter your API key, and select **Generate secure database password** for a fresh installation.
-3. **Choose a channel:** configure Email or Telegram under **Connections**. Enable only the other integrations you need.
-4. **Review assistant instructions:** read and adapt the example instructions, then choose **Keep draft**.
-5. **Review & save:** resolve any listed issues, check your changes, and confirm saving.
+```sh
+"$HOME/.local/bin/assistant"
+```
 
-Use **Tab / Shift-Tab** to move, **Enter** to open an action, and **Esc** to go
-back. The **About** panel explains each focused option; press **F1** for full help.
-Forms keep a draft as you move between sections. Nothing is written until
-you confirm **Save configuration**, and saving does not start the app.
+Follow the prompts to configure your assistant, models, and connections.
+Review and save your settings, then choose **Services > Start app**.
+The terminal interface needs at least 76 columns and 24 rows.
 
-For Telegram, add your numeric user ID to the allowed-user list. Verified
-recipient mappings use JSON, for example `{"you@example.com": "123456"}`.
-If you want approvals through Telegram instead of email, set **Settings →
-Advanced settings → Approvals and names → Approval delivery** to `telegram`
-and map your approval email to your allowed Telegram ID.
-See [Telegram setup](docs/telegram-and-voice.md) for details.
+Prefer a desktop interface? Use
+[Assistant for macOS](https://github.com/rb81/assistant-client) to connect to
+a local or remote installation, chat, and manage settings, services, and files.
 
-## Start using it
+For custom install locations, updates, backups, and troubleshooting, see
+[Running Assistant](docs/running-assistant.md).
 
-Open **Services → Start app** and confirm. The first start builds the images
-and downloads required components, so it can take a while. Check service health
-in **Services**, and open a component's **Recent logs** if something fails.
+## Before you connect your accounts
 
-Send a simple request to your assistant's mailbox or private Telegram bot, such as:
+> [!WARNING]
+> **Use an assistant-owned mailbox, not your personal inbox.** Email intake can
+> move messages, and starting workers may process mail already present.
+> Restrict allowed senders and outgoing recipients.
 
-> Summarize this document and list the questions I should ask about it.
+Self-hosted does not mean fully local: task content may be sent to your chosen
+model providers and integrations. Assistant can send messages, change connected
+accounts, and execute code. Start with narrow permissions and review approvals.
+The sandbox infrastructure has privileged Docker access.
 
-Keep the computer or server and Docker running while you want Assistant available.
-There is no browser dashboard; `./run.sh` is the local management interface.
+Keep the Management API private; use SSH for remote administration. Credentials
+and runtime state live under the gitignored `data/` directory, but credential
+files are **not encrypted storage**. Protect and back up your installation.
+Read the [security guide](docs/security.md) before using sensitive data.
 
-## Everyday use
+## Documentation
 
-Run `./run.sh` whenever you want to manage the installation:
+Start with the **[documentation index](docs/README.md)** for setup, integrations,
+configuration, and development.
 
-| Where | What you can do |
-|---|---|
-| **Services** | Check health, read logs, start or stop components |
-| **Activity** | Browse tasks, memories, reminders, projects, and script permissions |
-| **Connections** | Configure email, Telegram, calendars, Zoom, and Dropbox |
-| **Settings** | Edit instructions, change models, manage credentials, and review advanced settings |
-
-After changing settings, **Review & save**, then use **Services → Apply settings**
-on each affected component. Use **Settings → Credentials → Activate pending** for
-saved credential changes. Restarts and applying settings can interrupt active work.
-After a code update, **Start app** (or `./run.sh secrets sync`) also refreshes which
-services receive which credentials; you don't need to re-save setup for that.
-
-To stop everything, choose **Services → Stop app**. Your saved data stays in place.
-If the full-screen interface doesn't work in your terminal, use `./run.sh --plain`
-for line-oriented menus.
-
-## Your data and backups
-
-Local settings, credentials, files, and database state live under the gitignored
-`data/` directory. Credentials are protected files, not encrypted storage.
-Back up this directory securely; stop the app before taking a filesystem backup
-that needs to be consistent.
-
-If you move credentials to the optional Docker volume, **back up that volume
-separately**. A copy of `data/` alone will not contain those credentials.
-Resetting the database permanently deletes its contents and makes no backup.
-See [data locations and recovery](docs/running-assistant.md#data-locations).
-
-## More help
-
-The **[documentation index](docs/README.md)** has detailed configuration,
-integration guides, troubleshooting, and implementation references.
-For startup problems, begin with [Docker troubleshooting](docs/docker-setup.md#troubleshooting-local-administration).
+- [Running Assistant](docs/running-assistant.md)
+- [Configuration](docs/configuration.md)
+- [Security](docs/security.md)
+- [macOS client](https://github.com/rb81/assistant-client)
+- [Build a client](docs/building-clients.md)
 
 [Apache 2.0 license](LICENSE)

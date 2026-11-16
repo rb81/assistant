@@ -14,21 +14,22 @@ from .context_store import (contact_embedding_text, inbound_email_embedding_text
                             reminder_embedding_text)
 from .database import Database, UPDATED_AT_SQL
 from .embedding_client import EmbeddingClient
+from .embedding_contracts import EmbeddingTable
 
 
 LOGGER = logging.getLogger("assistant.embedding_maintenance")
 
 SOURCES = (
-    ("agent_memories", ("content",), lambda row: row["content"], "expires_at IS NULL OR expires_at > now()", "content"),
-    ("workspace_file_chunks", ("content",), lambda row: row["content"],
+    (EmbeddingTable.MEMORIES, ("content",), lambda row: row["content"], "expires_at IS NULL OR expires_at > now()", "content"),
+    (EmbeddingTable.WORKSPACE, ("content",), lambda row: row["content"],
      "EXISTS (SELECT 1 FROM workspace_files f WHERE f.id = record.file_id AND f.index_status IN ('indexed', 'embedding_failed'))", "content"),
-    ("jobs", ("task_summary", "metadata"), job_embedding_text, "true", "concat_ws(' ', task_summary, metadata->>'final_response')"),
-    ("reminders", ("title", "task"), reminder_embedding_text, "true", "concat_ws(' ', title, task)"),
-    ("outbound_email_logs", ("to_addresses", "subject", "body_text"), outbound_email_embedding_text,
+    (EmbeddingTable.JOBS, ("task_summary", "metadata"), job_embedding_text, "status <> 'deleted'", "concat_ws(' ', task_summary, metadata->>'final_response')"),
+    (EmbeddingTable.REMINDERS, ("title", "task"), reminder_embedding_text, "true", "concat_ws(' ', title, task)"),
+    (EmbeddingTable.OUTBOUND_EMAIL, ("to_addresses", "subject", "body_text"), outbound_email_embedding_text,
      "true", "concat_ws(' ', array_to_string(to_addresses, ' '), subject, body_text)"),
-    ("emails", ("from_address", "subject", "body_text", "body_html"), inbound_email_embedding_text,
+    (EmbeddingTable.EMAIL, ("from_address", "subject", "body_text", "body_html"), inbound_email_embedding_text,
      "true", "concat_ws(' ', from_address, subject, body_text, body_html)"),
-    ("contacts", ("first_name", "last_name", "email_address", "company", "title", "notes"), contact_embedding_text,
+    (EmbeddingTable.CONTACTS, ("first_name", "last_name", "email_address", "company", "title", "notes"), contact_embedding_text,
      "true", "concat_ws(' ', first_name, last_name, email_address, company, title, notes)"),
 )
 

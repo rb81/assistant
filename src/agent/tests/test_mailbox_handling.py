@@ -281,7 +281,7 @@ class FakeIngestDatabase:
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
         if "SELECT id, is_actionable FROM emails" in sql:
             return None
-        if "SELECT id FROM jobs" in sql:
+        if "SELECT id, task_summary FROM jobs" in sql or "FROM outbound_email_logs" in sql:
             return None
         if "INSERT INTO emails" in sql:
             self.inserted.append(params)

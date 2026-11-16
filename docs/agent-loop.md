@@ -1,6 +1,7 @@
 # Agent Loop and Job Lifecycle
 
-This document explains how jobs move through the system and how the task agent executes work.
+This page summarizes task-agent job execution, state transitions, and pause/resume
+behavior.
 
 ## Job Statuses
 
@@ -16,43 +17,31 @@ This document explains how jobs move through the system and how the task agent e
 
 ## Claiming and Concurrency
 
-Workers atomically claim due queued jobs in active workstreams with PostgreSQL
-row locking (`FOR UPDATE SKIP LOCKED`), ordered by priority descending, then
-creation time ascending. Task-agent excludes jobs assigned to the research
-worker. The claim records the worker lock and increments `attempts`.
+Workers claim due queued jobs in active workstreams with PostgreSQL row locking
+(`FOR UPDATE SKIP LOCKED`), ordered by priority and then creation time. Task-agent
+excludes research-worker jobs. Claiming records the worker lock and increments
+`attempts`.
 
 This prevents simultaneous claims, not duplicate external effects across retries.
 See [concurrent job processing](concurrent-job-processing.md).
 
 ## Task-Agent Execution (`TaskAgent.process_job`)
 
-For each claimed job:
+For each claimed job, task-agent:
 
-1. Initialize LLM client and tool runtime.
-2. Build base context from:
-   - latest thread emails/messages,
-   - pending supervisor instructions,
-   - linked reminder (if any),
-   - memory recall summary,
-   - async research status,
-   - prior side-effect summary,
-   - processed artifact manifests,
-   - main-conversation context for system tasks, recent system-task outcomes for
-     the main conversation, and related workstream change events.
-3. Build prompt messages (`system` + `user` context block).
-4. Enter bounded iteration loop.
+1. Initializes the model client and tool runtime.
+2. Builds context from the thread, pending instructions, reminder, memory recall,
+   research status, prior side effects, processed artifacts, and related
+   workstream or system-task activity.
+3. Builds the prompt and enters the bounded model/tool loop.
 
-On each iteration:
+Each iteration:
 
-- verify the worker still owns the running job,
-- inject new request context if `has_new_context` is set, deferring stale tool calls,
-- rebuild recall/context and clear in-memory history if `memory_revision` changes,
-- prepare active tool set,
-- call model,
-- log request/response and token usage,
-- execute returned tool calls,
-- persist tool results,
-- stop on terminal conditions.
+- verifies the worker still owns the job;
+- injects new requester context when flagged, deferring stale tool calls;
+- refreshes context and clears in-memory history if the memory revision changes;
+- calls the model, logs usage, executes tool calls and persists results;
+- stops on a terminal condition.
 
 ## Tool Loading Model
 
@@ -64,9 +53,9 @@ On each iteration:
 
 ## Completion and Terminal Rules
 
-`task_complete` requires a non-empty `response`. For jobs with automatic reply
-routing (and Telegram reply routes), it delivers that response through
-`ReplyRouter` before completing; failed or uncertain delivery blocks completion.
+`task_complete` requires a non-empty `response`. For automatically routed jobs, including Telegram reply routes, it delivers the
+response through `ReplyRouter` before completing; failed or uncertain delivery
+blocks completion.
 For legacy external-email jobs, a sent reply to the latest external sender must
 already exist in `outbound_email_logs` (To or Cc).
 
@@ -74,34 +63,28 @@ Automatically routed completion also checks for new requester context before
 delivery and before the final status update. New context keeps the job active;
 already completed side effects must not be repeated.
 
-`request_input` asks for missing information as an ordinary message; it is
-never an approval. Requester questions use the job's reply route (including
-when the requester is the admin) and set `metadata.waiting_for_input=true`.
-Admin questions, or requester questions that cannot be delivered, go to the
-admin as a plain Telegram message (reply to it or tap **Reply**) and/or email
-(answer with `/admin instruct JOB_ID`, or reply to the question email) and set
-`metadata.waiting_for_admin=true`. Either way the job moves to `waiting`; the
-answer resumes it as a supervisor instruction without changing permissions or
-limits. If no admin channel can deliver the question, the job moves to
-`needs_review`.
+`request_input` asks for missing information; it is never an approval.
+Requester questions always use the job's reply route, even when the requester is
+the admin, and set `metadata.waiting_for_input=true`. An admin-directed question
+also uses the requester route when the requester is the admin; otherwise, admin
+questions and undeliverable requester questions go to the admin by Telegram
+(reply or tap **Reply**) and/or email (reply to the question or use
+`/admin instruct JOB_ID`), and set `metadata.waiting_for_admin=true`. The job
+moves to `waiting`; an answer resumes it as a supervisor instruction without
+changing permissions or limits. If no admin channel can deliver the question,
+it moves to `needs_review`.
 
-Pauses keep the agent's working memory. When a job pauses for a question or
-for review (script, development or scheduled-script approval, security hold,
-limit request), the runtime saves a checkpoint of the conversation and the
-tools it had loaded (`metadata.resume_checkpoint_id`, `resume_tools`). On
-resume, the agent continues from that conversation with any new replies and
-admin instructions appended, instead of replanning from scratch. Guidance that
-arrives while a job is running is injected into the conversation at the next
-step. Prior-action context also lists questions asked, admin guidance,
-commands run and script approval requests.
+Pauses preserve working memory: the runtime checkpoints the conversation and
+loaded tools (`metadata.resume_checkpoint_id`, `resume_tools`). On resume, new
+replies and admin instructions are appended. Guidance received during execution
+is injected at the next step. Prior-action context records questions, guidance,
+commands and script approval requests.
 
-Approval gates are enforced by tools, not by conversation. The agent is told
-to call the gated tool (`development_session_request`,
-`script_approval_request`, `reminder_create(execution="script")`) directly
-rather than asking for a go-ahead first. For ungated actions that are
-irreversible or affect other people (sending to third parties, deleting data,
-replying on someone's behalf), it asks first if the request did not clearly
-cover them.
+Tools enforce approval gates. Call the gated tool
+(`development_session_request`, `script_approval_request`, or
+`reminder_create(execution="script")`) directly. For ungated irreversible
+actions or actions affecting others, ask first if the request did not clearly
+authorize them.
 
 `task_failed` marks the job `failed` and notifies the admin; it does not requeue it.
 Unhandled processing exceptions requeue while attempts remain, otherwise move
@@ -123,20 +106,19 @@ automatically retried after an uncertain result. See
 
 ## Async Requests
 
-If tool call is async-request type (`deep_research_request`):
+For an async request such as `deep_research_request`, task-agent:
 
-- job is moved to `waiting`,
-- status-change event is logged,
-- a status update is sent through the reply route, or by email when available,
-- memory consolidation runs,
-- parent job resumes later when linked async work completes.
+- moves the job to `waiting` and logs the transition;
+- sends a status update through the reply route, or email when available;
+- consolidates memory; and
+- resumes the parent job when the linked work completes.
 
 ## Budget and Context Controls
 
-- Iteration cap: `agent.limits.max_iterations_per_task`
-- Token cap: `agent.limits.max_tokens_per_task`, including nested `llm_service` usage
-- Near-limit mode adds `request_limit_increase` tool.
-- Prompt-size safety uses character budget and conversation compaction.
+- Iteration cap: `agent.limits.max_iterations_per_task`.
+- Token cap: `agent.limits.max_tokens_per_task`, including nested `llm_service` usage.
+- Near the cap, task-agent adds `request_limit_increase`.
+- Prompt size is bounded by a character budget and conversation compaction.
 
 If token/iteration limits are exceeded:
 

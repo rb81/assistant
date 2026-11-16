@@ -128,7 +128,7 @@ def _client(config: AppConfig) -> LlmClient:
     values = copy.deepcopy(config.values)
     values.setdefault("agent", {}).setdefault("llm", {}).update({
         "base_url": "https://openrouter.ai/api/v1",
-        "api_key_env": "OPENROUTER_API_KEY",
+        "api_key_env": "AGENT_LLM_OPENROUTER_API_KEY",
         "model": model,
     })
     return LlmClient(AppConfig(values), temperature=0, allow_fallback=False)
