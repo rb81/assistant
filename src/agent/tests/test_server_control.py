@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from assistant_agent.management_docker import DockerReader, PROJECT_LABEL
 from assistant_agent.management_server import connection, verify
 from assistant_agent.server_control import MANAGEMENT_START_WAIT_SECONDS, bootstrap, start, startup_progress
-from assistant_agent.setup import DockerCommandError, Installation, SetupError
+from assistant_agent.setup import DockerCommandError, Installation, SetupError, docker_failure
 from assistant_agent.management_api import create_app, ensure_token, token_path
 from assistant_agent.management_client import ManagementClient
 from assistant_agent.credential_volume import CredentialVolume
@@ -249,9 +249,53 @@ def test_configuration_changed_during_health_wait_is_not_recorded_as_activated(t
     docker.assert_not_called()
 
 
-def test_health_wait_preserves_docker_access_errors():
+def test_health_wait_refreshes_after_a_container_disappears_during_compose_ps():
     instance = Mock()
-    instance.container_rows.side_effect = DockerCommandError("Docker is unavailable", reason="unavailable")
+    ready = [{"Service": "task-agent", "State": "running", "Health": "healthy"}]
+    failure = docker_failure(["compose", "ps", "--all", "--format", "json"], subprocess.CompletedProcess(
+        [], 1, "partial-private-output", "Error response from daemon: No such container: " + "a" * 64,
+    ))
+    instance.container_rows.side_effect = lambda: Installation.container_rows(instance)
+    instance.compose.side_effect = [failure, json.dumps(ready)]
+    progress = Mock()
+    with patch("assistant_agent.setup.time.monotonic", side_effect=[0, 10]), \
+            patch("assistant_agent.setup.time.sleep") as sleep:
+        assert Installation.wait_for_container_health(
+            instance, ["task-agent"], ["task-agent"], progress,
+        ) == ready
+    assert instance.compose.call_count == 2
+    sleep.assert_called_once_with(5)
+    assert "refreshing the container list" in progress.call_args.args[0]
+    assert "partial-private-output" not in str(failure)
+    assert "No such container:" not in str(failure)
+
+
+def test_health_wait_container_list_races_cannot_extend_the_deadline():
+    instance = Mock()
+    instance.container_rows.side_effect = DockerCommandError("Container disappeared", reason="container_missing")
+    with patch("assistant_agent.setup.time.monotonic", side_effect=[0, 599, 600]), \
+            patch("assistant_agent.setup.time.sleep") as sleep, \
+            pytest.raises(SetupError, match="stable container list within 600 seconds.*readiness was not verified"):
+        Installation.wait_for_container_health(instance, ["task-agent"], ["task-agent"])
+    sleep.assert_called_once_with(1)
+
+
+def test_health_wait_does_not_hide_failed_workers_after_refreshing_container_list():
+    instance = Mock()
+    instance.container_rows.side_effect = [
+        DockerCommandError("Container disappeared", reason="container_missing"),
+        [{"Service": "task-agent", "State": "exited", "ExitCode": 1}],
+    ]
+    with patch("assistant_agent.setup.time.monotonic", side_effect=[0, 10]), \
+            patch("assistant_agent.setup.time.sleep"), \
+            pytest.raises(SetupError, match="Container startup failed: task-agent"):
+        Installation.wait_for_container_health(instance, ["task-agent"], ["task-agent"])
+
+
+@pytest.mark.parametrize("reason", ["unavailable", "permission", "volume", None])
+def test_health_wait_preserves_docker_access_errors(reason):
+    instance = Mock()
+    instance.container_rows.side_effect = DockerCommandError("Docker is unavailable", reason=reason)
     with pytest.raises(DockerCommandError, match="Docker is unavailable"), \
             patch("assistant_agent.setup.time.sleep") as sleep:
         Installation.wait_for_container_health(instance, ["task-agent"], ["task-agent"])

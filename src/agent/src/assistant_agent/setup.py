@@ -268,6 +268,9 @@ def docker_failure(arguments, result):
         reason = "volume"
         detail = ("The saved Docker credential volume is missing from the selected daemon. Check `docker context ls`; "
                   "use the original daemon or restore the credential-volume backup. Do not reset storage to bypass this.")
+    elif "no such container:" in stderr:
+        reason = "container_missing"
+        detail = "Docker could not find a referenced container. It may have been removed or replaced."
     elif "mounts denied" in stderr or "is not shared from the host" in stderr:
         reason = "mount"
         detail = "Docker cannot mount a host path. Allow the checkout and data directories in your runtime's file-sharing settings."
@@ -294,7 +297,8 @@ def docker_failure(arguments, result):
         operation = "Running a Docker helper"
     elif arguments[:1] == ["compose"]:
         operation = "Docker Compose"
-        detail += " For configuration diagnostics, run `docker compose --env-file data/.env config --quiet` from the repository root."
+        if reason != "container_missing":
+            detail += " For configuration diagnostics, run `docker compose --env-file data/.env config --quiet` from the repository root."
     return DockerCommandError(f"{operation} failed (exit status {result.returncode}). {detail}",
                               stdout=result.stdout, reason=reason)
 
@@ -1004,7 +1008,22 @@ class Installation:
         last_status = None
         next_report = 0
         while True:
-            rows = self.container_rows()
+            try:
+                rows = self.container_rows()
+            except DockerCommandError as error:
+                if error.reason != "container_missing":
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SetupError(
+                        "Docker could not obtain a stable container list within " + str(timeout)
+                        + " seconds. Startup failed; readiness was not verified. "
+                        "Inspect service activity before retrying."
+                    ) from error
+                if progress is not None:
+                    progress("a container disappeared during the health check; refreshing the container list")
+                time.sleep(min(5, remaining))
+                continue
             failed = [
                 row.get("Service") for row in rows
                 if row.get("Service") in configured_services and (
