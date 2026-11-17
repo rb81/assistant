@@ -55,6 +55,10 @@ STYLE = Style.from_dict({
     "dialog frame.label": "fg:#87d7ff bg:#20252b bold",
 })
 SECTIONS = ("Home", "Services", "Activity", "Connections", "Settings", "Help")
+SETTINGS_DESTINATIONS = {
+    "assistant": "Assistant", "models": "Models & Voice", "connections": "Connections",
+    "safety": "Safety & Approvals", "server": "Server",
+}
 SPINNER = ("|", "/", "-", "\\")
 
 
@@ -179,6 +183,7 @@ class ManagementApp:
         self.log_key = None
         self.form = {}
         self.form_group = None
+        self.advanced_forms = set()
         self.draft_revision = 0
         self.actions = []
         self.control_topics = {}
@@ -203,8 +208,7 @@ class ManagementApp:
             text(self.context_preview, height=2, style="class:muted"), text(),
             self.scroll,
             self.footer_actions, self.pagination,
-            ConditionalContainer(text(self.status_line, height=Dimension(min=1, max=2)),
-                                 Condition(lambda: bool(self.status_line()))),
+            text(self.status_line, height=2),
             text("Tab Move  Enter Open  F1 Help  Esc Back  F5 Refresh  Ctrl-Q Quit"),
         ])
         canvas = Box(surface, padding=0, padding_left=1, padding_right=1)
@@ -257,7 +261,7 @@ class ManagementApp:
             "Services" if route.startswith(("Service", "Logs")) else
             "Activity" if route in {"Activity", "Tasks", "Memories", "Reminders", "Projects", "Scripts", "Record", "Events", "Objects"} else
             "Connections" if route == "Connections" or route.startswith("Connection:") else
-            "Settings" if route in {"Settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith("Form:") else
+            "Settings" if route in {"Settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:")) else
             "Activity" if route == "Project deletion" else
             "Help" if route == "Help" else "Home")
 
@@ -628,6 +632,12 @@ class ManagementApp:
                       report=False, quiet=background)
         elif route == "Credentials":
             self.render()
+        elif route == "Instructions" and self.form_group != "instructions":
+            def loaded(value):
+                self.cache[key] = value
+                if self.key() == key:
+                    self.render()
+            self.task("Reading assistant instructions", self.backend.instruction_text, loaded, report=False)
         elif route == "Review":
             revision = self.draft_revision
             def loaded(problems):
@@ -788,10 +798,10 @@ class ManagementApp:
                      "Assistant can take real actions. Keep backups and review permissions.", height=3),
                 self.action("[x] I understand the responsibilities" if self.backend.accepted else
                             "[ ] I understand the responsibilities", self.acknowledge),
-                self.action("1. Identity and timezone", partial(self.go, "Form:identity")),
-                self.action("2. Models and API access", partial(self.go, "Form:models")),
-                self.action("3. Choose a channel", partial(self.go, "Connections")),
-                self.action("4. Review assistant instructions", partial(self.go, "Instructions")),
+                self.action("1. Choose a model and API key", partial(self.go, "Form:models")),
+                self.action("2. Identity and timezone", partial(self.go, "Form:identity")),
+                self.action("3. Review assistant instructions", partial(self.go, "Instructions")),
+                self.action("4. Optional connections", partial(self.go, "Connections")),
             ]
         else:
             items += [
@@ -814,7 +824,23 @@ class ManagementApp:
         self.render()
 
     def hub(self, route):
-        if route == "Activity":
+        if route.startswith("Settings:"):
+            destination = route.split(":", 1)[1]
+            metadata = self.backend.group_metadata
+            choices = [(title, "Form:" + key) for key, (title, _) in self.groups.items()
+                       if metadata.get(key, {}).get("destination") == destination
+                       and not metadata.get(key, {}).get("parent")]
+            if destination == "assistant":
+                choices.append(("Standing instructions", "Instructions"))
+            elif destination == "server":
+                choices += [("Services & health", "Services"), ("Search maintenance", "Search"),
+                            ("Storage & recovery", "Storage"), ("Credentials", "Credentials")]
+            route = SETTINGS_DESTINATIONS[destination]
+            description = "Choose a task. Technical tuning stays inside its owning page."
+        elif route == "Settings" and isinstance(self.backend, ApiManagementBackend):
+            choices = [(title, "Settings:" + key) for key, title in SETTINGS_DESTINATIONS.items()]
+            description = "Drafts stay in memory until reviewed. Saving and starting services are separate choices."
+        elif route == "Activity":
             choices = [
                 ("Tasks", "Tasks"), ("Memories", "Memories"), ("Reminders", "Reminders"),
                 ("Projects & workstreams", "Projects"), ("Script permissions", "Scripts"),
@@ -1191,6 +1217,8 @@ class ManagementApp:
                 for spec in specs
             }
         items = []
+        advanced = key in self.advanced_forms
+        has_advanced = False
         for spec in specs:
             widget = self.form[spec.key]
             restriction = getattr(self.backend, "restrictions", {}).get(spec.key)
@@ -1198,12 +1226,26 @@ class ManagementApp:
                 items.extend([text(spec.label + " (read only)"), text(restriction, height=2), text()])
                 continue
             metadata = getattr(self.backend, "field_metadata", {}).get(spec.key, {})
+            if isinstance(self.backend, ApiManagementBackend) and metadata.get("level") == "advanced":
+                has_advanced = True
+                if not advanced:
+                    continue
             self.control_topics[widget.control] = (spec.label, metadata.get("help") or field_help(spec))
             if spec.boolean:
                 items.extend([widget, text()])
             else:
                 suffix = " (configured; blank keeps it)" if spec.secret and spec.key in self.backend.credentials else ""
                 items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget, text()])
+        for child, metadata in getattr(self.backend, "group_metadata", {}).items():
+            if metadata.get("parent") != key or child not in self.groups:
+                continue
+            has_advanced = True
+            if advanced or metadata.get("section") or metadata.get("basic"):
+                items.append(self.action(self.groups[child][0], partial(self.go, "Form:" + child)))
+        if has_advanced:
+            items.append(self.action("Hide advanced controls" if advanced else "Show advanced controls",
+                                     partial(self.toggle_advanced, key),
+                                     help_text="Show or hide technical controls for this page. Draft values are preserved."))
         if key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
             items.insert(0, self.action("Generate secure database password", self.generate_password))
         group_help = getattr(self.backend, "group_metadata", {}).get(key, {}).get("help")
@@ -1213,9 +1255,16 @@ class ManagementApp:
                      self.action("Review & save", self.review),
                      self.action("Discard this form", self.discard_form),
                  ])
-        visible = [widget for key, widget in self.form.items() if key not in getattr(self.backend, "restrictions", {})]
+        visible = [widget for widget in self.form.values() if widget in items]
         if visible:
             self.app.layout.focus(visible[0])
+
+    def toggle_advanced(self, key):
+        if key in self.advanced_forms:
+            self.advanced_forms.remove(key)
+        else:
+            self.advanced_forms.add(key)
+        self.render()
 
     def generate_password(self):
         widget = self.form["AGENT_DATABASE_PASSWORD"]
@@ -1245,9 +1294,16 @@ class ManagementApp:
 
     def instructions(self):
         if self.form_group != "instructions":
+            content = self.cache.get(self.key())
+            if content is None and isinstance(self.backend, ApiManagementBackend):
+                self.put("Assistant instructions", "Instructions load only when you open this editor.",
+                         [text(self.read_errors.get(self.key()) or "Reading instructions...")],
+                         actions=[self.action("Retry", self.refresh,
+                                              help_text="Read standing instructions from the Management API.")])
+                return
             self.form_group = "instructions"
             self.form = {"instructions": input_field(
-                self.backend.instruction_text(), multiline=True, scrollbar=True,
+                self.backend.instruction_text() if content is None else content, multiline=True, scrollbar=True,
                 height=Dimension(min=6, preferred=16))}
         self.put("Assistant instructions", "Review the example or write your own. No file is changed until you save.",
                  [self.form["instructions"]], actions=[
@@ -1305,24 +1361,37 @@ class ManagementApp:
             items.append(self.action("Acknowledge first-run responsibilities", partial(self.go, "Home")))
         if not original.prompt_original and self.backend.instructions is None:
             items.append(self.action("Review required instructions", partial(self.go, "Instructions")))
+        actions = [
+            self.action("Save configuration", self.save, primary=True) if not problems else
+            self.action("Continue editing", partial(self.go, "Settings")),
+        ]
+        if not problems and isinstance(self.backend, ApiManagementBackend):
+            actions.append(self.action("Save & start" if not original.state.get("setup_complete") else "Save & apply",
+                                       self.save_and_start, primary=True,
+                                       help_text="Save reviewed settings and start or update affected application services."))
+        actions.append(self.action("Discard all draft changes", self.discard_all, danger=True))
         self.put("Review & save",
                  f"{len(problems)} configuration issues to resolve before saving." if problems else
                  "Configuration valid. Review changes below. Saving does not restart workers.",
-                 items, actions=[
-                     self.action("Save configuration", self.save, primary=True) if not problems else
-                     self.action("Continue editing", partial(self.go, "Settings")),
-                     self.action("Discard all draft changes", self.discard_all, danger=True),
-                 ])
+                 items, actions=actions)
+
+    def save_and_start(self):
+        self.confirm_action(
+            "Save and activate", "Save this reviewed draft and start or update application services?\n"
+            "Active work may be interrupted. Enabled connections may begin processing messages.",
+            "Save & start", self.backend.save_and_start,
+            lambda result: self.saved(started=True))
 
     def save(self):
-        self.confirm_action("Save configuration", "Write this reviewed draft to local configuration?\n"
+        self.confirm_action("Save configuration", "Save this reviewed draft through the Management API?\n"
                             "Credentials remain hidden. Running workers will not restart.",
                             "Save", self.backend.save, lambda result: self.saved())
 
-    def saved(self):
+    def saved(self, *, started=False):
         self.cache.clear()
         self.render()
-        self.status = "Saved. Use Services > Start app for startup, or Apply settings on affected components."
+        self.status = ("Saved and activated. Open Assistant for macOS to send your first message."
+                       if started else "Saved. Use Services > Start app for startup, or Apply settings on affected components.")
 
     def discard_all(self):
         def discarded(value):

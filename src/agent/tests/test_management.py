@@ -955,3 +955,56 @@ def test_management_collections_details_and_mutations_persist_in_a_real_database
         with pytest.raises(PermissionRevocationIncomplete, match="Permissions were saved"):
             mutate("block-script", script["id"])
     assert request("script", id=version["id"])["blocked"]
+
+
+def test_persistent_snapshot_and_event_invalidation_follow_commits_and_edits(db):
+    from assistant_agent.management_reader import read
+    config = AppConfig({})
+    job = db.create_manual_job("Snapshot test", "Read the newest messages")
+    for number in range(55):
+        db.execute(
+            """INSERT INTO request_messages(channel, external_id, conversation_id, sender_id, thread_id, body_text)
+               VALUES ('client', %s, %s, 'test', %s, %s)""",
+            (f"snapshot-{number}", job["thread_id"], job["thread_id"], f"Message {number}"),
+        )
+    snapshot = read(db, config, {"kind": "task-snapshot", "id": job["id"]})
+    assert snapshot["page"] == 1
+    assert snapshot["messages"]["total"] >= 55
+    assert snapshot["messages"]["rows"][-1]["body"] == "Message 54"
+    assert snapshot["task"]["id"] == job["id"]
+    before = read(db, config, {"kind": "event-snapshot"})
+    with db.connect() as transaction:
+        transaction.execute("UPDATE workstreams SET title = 'Changed title' WHERE id = %s", (job["workstream_id"],))
+        db.execute("INSERT INTO runtime_state(key, value) VALUES ('snapshot-concurrent', '{}')")
+        during = read(db, config, {"kind": "event-snapshot"})
+    after = read(db, config, {"kind": "event-snapshot"})
+    assert after["revision"] != before["revision"]
+    assert after["revision"] != during["revision"], "Commit must invalidate even an already-observed open transaction"
+    db.execute("DELETE FROM request_messages WHERE external_id = 'snapshot-3'")
+    assert read(db, config, {"kind": "event-snapshot"})["revision"] != after["revision"]
+
+
+def test_pooled_http_reader_runs_real_snapshots_and_recovers_from_a_bad_read(db):
+    import threading
+    import httpx
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    from assistant_agent.management_reader import create_server
+
+    job = db.create_manual_job("Pooled snapshot", "Read through HTTP")
+    with ConnectionPool(db.database_url, min_size=0, max_size=4, kwargs={"row_factory": dict_row}) as pool:
+        server = create_server(("127.0.0.1", 0), "test-token", AppConfig({}), pool)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", trust_env=False,
+                              headers={"Authorization": "Bearer test-token"}) as api:
+                response = api.post("/v1/read", json={"request": "tasks.snapshot", "task_id": job["id"]})
+                assert response.status_code == 200
+                assert response.json()["result"]["task"]["id"] == job["id"]
+                assert api.post("/v1/read", json={"request": "tasks.snapshot", "task_id": 999999}).status_code == 409
+                assert api.post("/v1/read", json={"request": "conversations.list"}).status_code == 200
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=3)

@@ -27,7 +27,10 @@ def startup_progress(*, interval=15, console=None):
     stopped = threading.Event()
 
     def emit(message, now):
-        console.print(f"[{int(now - started):>4}s] {message}", markup=False)
+        tone = ("red" if message.startswith("Startup stopped") else
+                "green" if message == "Startup checks completed." else
+                "yellow" if message.startswith("Still waiting") else "cyan")
+        console.print(f"[{int(now - started):>4}s] {message}", markup=False, style=tone)
 
     def progress(stage):
         nonlocal current_stage, stage_started
@@ -97,7 +100,10 @@ def start(root):
         print("Assistant and its management API are running.")
     else:
         print("Assistant management is running; setup is required before task workers start.")
-    print("Open the desktop client to inspect this instance, or run ./run.sh to complete setup in the TUI.")
+    if configured:
+        print("Next: open Assistant for macOS and connect to this installation.")
+    else:
+        print("Next: open guided setup with assistant, then choose Save & start.")
 
 
 def main():

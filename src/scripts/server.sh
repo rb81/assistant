@@ -61,14 +61,14 @@ admin() {
             --mount "type=bind,source=$ROOT,target=$ROOT" \
             --mount "type=bind,source=$SOCKET,target=/var/run/docker.sock" \
             -e ASSISTANT_CONTAINER_ADMIN=1 -e ASSISTANT_INSTALL_ROOT -e ASSISTANT_DOCKER_SOCKET \
-            -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp -e TERM \
+            -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp -e TERM -e NO_COLOR \
             "$IMAGE" python -m "$@"
     else
         docker run --rm -i --network "$NETWORK" --user "$ASSISTANT_UID:$ASSISTANT_GID" --group-add 0 --group-add "$SOCKET_GROUP" \
             --mount "type=bind,source=$ROOT,target=$ROOT" \
             --mount "type=bind,source=$SOCKET,target=/var/run/docker.sock" \
             -e ASSISTANT_CONTAINER_ADMIN=1 -e ASSISTANT_INSTALL_ROOT -e ASSISTANT_DOCKER_SOCKET \
-            -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp \
+            -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp -e NO_COLOR \
             "$IMAGE" python -m "$@"
     fi
 }
@@ -87,7 +87,7 @@ api_client() {
         -e ASSISTANT_CONTAINER_ADMIN=1 \
         -e ASSISTANT_MANAGEMENT_URL=http://127.0.0.1:8765 \
         -e ASSISTANT_MANAGEMENT_TOKEN_FILE=/run/assistant/management-token \
-        -e HOME=/tmp -e TERM "$@"
+        -e HOME=/tmp -e TERM -e NO_COLOR "$@"
 }
 
 if [ "${1:-}" = server ]; then

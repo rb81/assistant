@@ -318,11 +318,16 @@ def execute(db, config, request):
             )) AND o.status = 'sent'
         """
         parameters = (thread, thread, thread, thread, thread)
+        total = None
+        if request.get("latest"):
+            total = db.fetch_one("SELECT count(*) AS total FROM (" + query + ") messages", parameters)["total"]
+            page = max(0, (total - 1) // 50)
         rows = db.fetch_all(
             "SELECT * FROM (" + query + ") messages ORDER BY created_at, kind, channel, id LIMIT 50 OFFSET %s",
             (*parameters, page * 50),
         )
-        total = db.fetch_one("SELECT count(*) AS total FROM (" + query + ") messages", parameters)["total"]
+        if total is None:
+            total = db.fetch_one("SELECT count(*) AS total FROM (" + query + ") messages", parameters)["total"]
         for row in rows:
             if row["channel"] == "email":
                 row["body"] = strip_quoted_history(row["body"])
@@ -330,7 +335,7 @@ def execute(db, config, request):
             row["external"] = any(address.strip().casefold() != admin for address in row["recipients"])
             row["attachments"] = _message_attachments(db, config, row)
             row.pop("workstream_id", None)
-        return {"rows": rows, "total": total}
+        return {"rows": rows, "total": total, **({"page": page} if request.get("latest") else {})}
     if kind == "task-activity" and identifier:
         return _task_activity(db, identifier, request.get("since"))
     if kind == "permissions.read":

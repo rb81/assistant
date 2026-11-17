@@ -195,6 +195,7 @@ def test_keyboard_model_edit_review_and_save_preserves_other_fields_and_existing
             assert ui.app.layout.has_focus(ui.form["AGENT_LLM_FALLBACK_MODEL"])
             pipe.send_text("fallback-model\x13")
             await wait_for(lambda: ui.location.route == "Review")
+            await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
             assert ui.backend.values["AGENT_LLM_MODEL"] == "new-model"
             assert ui.backend.values["AGENT_LLM_FALLBACK_MODEL"] == "fallback-model"
             assert Installation(root).values["AGENT_LLM_MODEL"] == "old-model"
@@ -317,7 +318,7 @@ def test_compact_layout_keeps_help_above_content_and_the_footer_clear():
                 assert "Tune privacy" in screen[4]
                 assert all(len(line) <= size.columns - 2 for line in ui.context_preview().splitlines())
                 assert "About:" not in "\n".join(screen[-4:])
-                assert "Review & save" in screen[-2]
+                assert "Review & save" in "\n".join(screen[-5:-1])
                 assert "Ctrl-Q Quit" in screen[-1]
                 assert "ASSISTANT" not in "\n".join(screen)
                 assert "┌" not in "\n".join(screen) and "│" not in "\n".join(screen)
@@ -328,7 +329,7 @@ def test_compact_layout_keeps_help_above_content_and_the_footer_clear():
                 ui.error = ""
                 ui.app.invalidate()
                 await asyncio.sleep(0.08)
-                assert "Review & save" in snapshot(ui)[-2]
+                assert "Review & save" in "\n".join(snapshot(ui)[-5:-1])
             ui.go("Form:models")
             ui.app.output.size = Size(rows=24, columns=76)
             ui.app.invalidate()

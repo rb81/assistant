@@ -57,7 +57,8 @@ class ApiManagementBackend:
                    "pending": [item["name"] for item in credentials if item["status"] == "activation pending"],
                    "previous_credential_volume": storage["retirement_pending"]},
             credential_volume=storage["mode"] == "volume",
-            prompt_original=self.configuration["instructions"].encode(),
+            prompt_original=self.configuration["instructions"].encode() or
+                (b"[configured]" if self.configuration.get("instructions_configured") else b""),
         )
         self.accepted = self.configuration["setup_complete"]
         self.instructions = None
@@ -94,6 +95,12 @@ class ApiManagementBackend:
                       or self.instructions is not None or self.accepted != self.configuration["setup_complete"])
 
     def instruction_text(self):
+        if not self.configuration["instructions"] and self.configuration.get("instructions_configured"):
+            result = self.client.get("configuration/instructions")
+            if result["revision"] != self.configuration["revision"]:
+                raise SetupError("Configuration changed. Reload before editing instructions.")
+            self.configuration["instructions"] = result["instructions"]
+            self.installation.prompt_original = result["instructions"].encode()
         return self.instructions.decode() if self.instructions is not None else self.configuration["instructions"]
 
     def draft(self):
@@ -118,13 +125,16 @@ class ApiManagementBackend:
     def problems(self):
         return [("advanced", message) for message in self.preview()["problems"]]
 
-    def save(self):
+    def save(self, *, start=False):
         preview = self.preview()
         if not preview["valid"]:
             raise SetupError("\n".join(preview["problems"]))
         self.client.operation({"operation": "configuration.save", **self.payload(),
-                               "preview_id": preview["preview_id"], "confirmed": True})
+                               "preview_id": preview["preview_id"], "confirmed": True, "apply": start})
         return self.load()
+
+    def save_and_start(self):
+        return self.save(start=True)
 
     def services(self):
         return self.client.services()

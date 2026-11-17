@@ -3,6 +3,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import ExitStack, closing
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -10,8 +11,8 @@ import httpx
 from pydantic import ValidationError
 
 from .management_contracts import (
-    ConfigurationCheckResponse, FullConfigurationResponse, FullHealthResponse, LogsResponse, ServicesResponse,
-    ManagementOperationResponse,
+    ConfigurationCheckResponse, FullHealthResponse, LogsResponse, ServicesResponse,
+    ManagementOperationResponse, StructuredConfigurationResponse,
 )
 from .setup import SetupError
 
@@ -46,6 +47,19 @@ class ManagementClient:
             raise SetupError("Management URL must be a loopback HTTP address. Use SSH forwarding for remote servers.")
         self.url = url.rstrip("/")
         self.token = token
+        self._resources = ExitStack()
+        self._http = None
+
+    def close(self):
+        """Release the session's pooled HTTP connections."""
+        self._resources.close()
+        self._http = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def get(self, resource):
         return self.request("GET", resource)
@@ -55,31 +69,33 @@ class ManagementClient:
         if idempotency_key is not None:
             headers["Idempotency-Key"] = idempotency_key
         try:
-            with httpx.Client(timeout=45, trust_env=False, follow_redirects=False) as client:
-                response = client.request(
-                    method, self.url + "/v2/" + resource, headers=headers, json=payload,
-                )
-                if not response.is_success:
-                    try:
-                        error = response.json()
-                    except ValueError:
-                        error = None
-                    message = error.get("error", {}).get("message") if (
-                        isinstance(error, dict) and isinstance(error.get("error"), dict)) else None
-                    if not isinstance(message, str) or not message.strip():
-                        message = f"Management API returned HTTP {response.status_code}. Check the server and token."
-                    raise SetupError(message)
-                payload = response.json()
-                if not isinstance(payload, (dict, list)):
-                    raise ValueError
-                return payload
+            if self._http is None:
+                self._http = self._resources.enter_context(
+                    httpx.Client(timeout=45, trust_env=False, follow_redirects=False))
+            response = self._http.request(
+                method, self.url + "/v2/" + resource, headers=headers, json=payload,
+            )
+            if not response.is_success:
+                try:
+                    error = response.json()
+                except ValueError:
+                    error = None
+                message = error.get("error", {}).get("message") if (
+                    isinstance(error, dict) and isinstance(error.get("error"), dict)) else None
+                if not isinstance(message, str) or not message.strip():
+                    message = f"Management API returned HTTP {response.status_code}. Check the server and token."
+                raise SetupError(message)
+            payload = response.json()
+            if not isinstance(payload, (dict, list)):
+                raise ValueError
+            return payload
         except httpx.HTTPError:
             raise SetupError("Could not reach the management API. Check the server or SSH tunnel.") from None
         except ValueError:
             raise SetupError("Management API returned an invalid response.") from None
 
     def configuration(self):
-        return self.read("configuration", FullConfigurationResponse)
+        return self.read("configuration/settings", StructuredConfigurationResponse)
 
     def configuration_check(self):
         return self.read("configuration/check", ConfigurationCheckResponse)
@@ -128,7 +144,12 @@ def run_command(options):
         from .management_api import serve
         serve(options.root, options.port)
         return
-    client = ManagementClient.from_installation(options.root, url=options.url, token_file=options.token_file)
+    with closing(ManagementClient.from_installation(options.root, url=options.url, token_file=options.token_file)) as client:
+        return _run_client_command(options, client)
+
+
+def _run_client_command(options, client):
+    """Keep the CLI/TUI connection pool alive only for this invocation."""
     if options.management_action == "tui":
         from .management_api_backend import ApiManagementBackend
         from .management_tui import ManagementApp

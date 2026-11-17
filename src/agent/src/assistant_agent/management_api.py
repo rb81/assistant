@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Header, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .management import GROUPS, Field, Management
@@ -30,10 +30,11 @@ from .management_contracts import (
     ProjectFileContentResponse, ProjectFilesResponse, RecordPageResponse, ServicesResponse,
     ConversationsResponse, TaskActivityResponse, TaskDeletionPreviewResponse, TaskMessagesResponse, TaskSummaryResponse,
     ClientAcknowledgmentRequest, ClientAcknowledgmentResponse, ClientHistoryResponse, ClientPollResponse,
-    DomainReadRequest,
+    DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse,
 )
 from . import settings_schema
 from .management_operations import OperationManager
+from .management_events import EventBuffer
 from .secret_store import is_secret_name
 from .management_help import FIELD_HELP, GROUP_HELP
 from .setup import (
@@ -215,9 +216,20 @@ def configuration_group_details():
             help_text = "An additional " + title.rsplit(" ", 2)[0] + " calendar account. Leave blank if unused."
         else:
             parent = ADVANCED_GROUP_PARENTS.get(name)
+        owner = parent or name
+        destination = (
+            "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
+            "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
+                                 "catalog:deep_research", "catalog:search"} else
+            "safety" if owner in {"security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
+            "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",
+                                 "catalog:filesystem", "catalog:tool_result_cache", "catalog:conversion",
+                                 "catalog:workspace", "catalog:client", "catalog:heartbeat"} else "assistant"
+        )
         details.append({
             "id": name, "title": title, "help": help_text, "parent": parent, "section": section,
             "basic": any(spec.key in BASIC_SETTINGS for spec in specs) or name in ESSENTIAL_GROUPS,
+            "destination": destination,
         })
     return details
 
@@ -337,6 +349,11 @@ class ManagementService:
         self.root = Path(root).resolve()
         self.backend_factory = backend_factory
         self.preview_key = token.encode("utf-8")
+        self.reader_client = httpx.Client(timeout=15, trust_env=False, follow_redirects=False)
+
+    def close(self):
+        """Release retained private HTTP connections when the API shuts down."""
+        self.reader_client.close()
 
     def backend(self):
         backend = self.backend_factory(self.root, lambda *args: False)
@@ -370,19 +387,25 @@ class ManagementService:
             for spec in specs
         }
 
-    def configuration_v2(self):
+    def configuration_v2(self, *, include_source=True, section=None, instructions=True):
         backend = self.backend()
         installation = backend.installation
-        overrides, _ = parse_environment(
-            (read_regular(self.root / "data/overrides.env") or b"").decode("utf-8")
-        )
-        files = [
-            {"path": "src/config/agent.yaml", "format": "yaml", "values": installation.defaults.values},
-            {"path": "data/.env", "format": "env", "values": parse_environment(installation.env_text)[0]},
-            {"path": "data/overrides.env", "format": "env", "values": overrides},
-        ]
-        for file in files:
-            file["values"] = redacted(file["values"], backend)
+        details = configuration_group_details()
+        if section is not None and not any(item["id"] == section for item in details):
+            raise PublicSetupError("This settings section is unavailable. Reload the settings catalog.")
+        selected = {section} | {item["id"] for item in details if item["parent"] == section}
+        files = []
+        if include_source:
+            overrides, _ = parse_environment(
+                (read_regular(self.root / "data/overrides.env") or b"").decode("utf-8")
+            )
+            files = [
+                {"path": "src/config/agent.yaml", "format": "yaml", "values": installation.defaults.values},
+                {"path": "data/.env", "format": "env", "values": parse_environment(installation.env_text)[0]},
+                {"path": "data/overrides.env", "format": "env", "values": overrides},
+            ]
+            for file in files:
+                file["values"] = redacted(file["values"], backend)
         catalog = {item["env"]: item for item in settings_schema.catalog()}
         settings = [
             {
@@ -408,25 +431,31 @@ class ManagementService:
                 "edit_restriction": DERIVED_SETTINGS.get(spec.key),
             }
             for group, (_, specs) in configuration_groups().items()
+            if section is None or group in selected
             for spec in specs
             for presentation in (setting_presentation(group, spec),)
         ]
         from .management_yaml import backups
         source = installation.source / "config/agent.yaml"
-        return {
+        result = {
             "api_version": 2, "revision": self.revision(installation),
             "setup_complete": backend.accepted, "files": files, "settings": settings,
             "groups": configuration_group_details(),
             "credential_names": sorted(backend.credentials),
-            "instructions": backend.instruction_text(),
-            "agent_yaml": (read_regular(source) or b"").decode("utf-8"),
-            "agent_yaml_backups": backups(source.parent),
+            "instructions": backend.instruction_text() if instructions else "",
+            "instructions_configured": bool(backend.instruction_text().strip()),
             "setup_notice": (
                 "Use a dedicated mailbox. Models and integrations receive the data they need. "
                 "Assistant can take real actions. Keep backups and review permissions."
             ),
             "read_only": False,
         }
+        if include_source:
+            result.update(agent_yaml=(read_regular(source) or b"").decode("utf-8"),
+                          agent_yaml_backups=backups(source.parent))
+        else:
+            result.pop("files")
+        return result
 
     def _configuration_draft(self, payload):
         backend = self.backend()
@@ -612,9 +641,10 @@ class ManagementService:
         if not preview["valid"]:
             raise PublicSetupError("Configuration is invalid: " + "; ".join(preview["problems"]))
         backend, _, _ = self._configuration_draft(payload)
+        first_setup = not backend.installation.state.get("setup_complete")
         backend.save()
-        if payload.get("apply") and preview["changes"]:
-            backend.lifecycle("start" if any(change["key"] == "agent.yaml" for change in preview["changes"])
+        if payload.get("apply") and (preview["changes"] or first_setup):
+            backend.lifecycle("start" if first_setup or any(change["key"] == "agent.yaml" for change in preview["changes"])
                               else "apply", preserve_management=True)
 
     def yaml_backup(self, name):
@@ -787,6 +817,31 @@ class ManagementService:
                 "retirement_pending": bool(installation.state.get("previous_credential_volume"))}
 
     def _executor_read(self, request):
+        reader_url = os.environ.get("ASSISTANT_MANAGEMENT_READER_URL")
+        # A deployed read service never falls back to launching a container on failure.
+        if reader_url:
+            if request["request"] in READ_SERVICE_REQUESTS and not (
+                    request["request"] == "clients.read" and request.get("action") == "reconcile"):
+                if reader_url != "http://management-reader:8766":
+                    raise PublicSetupError("Management read service address is invalid.")
+                try:
+                    response = self.reader_client.post(
+                        reader_url + "/v1/read", json=request,
+                        headers={"Authorization": "Bearer " + read_token(token_path(self.root))},
+                    )
+                    if response.status_code == 503:
+                        raise ManagementExecutorUnavailable("Management reads are temporarily unavailable; retry.")
+                    if response.status_code != 200:
+                        raise PublicSetupError("Conversation service could not complete this read. "
+                                               "Check its health and migrations, then refresh.")
+                    body = response.json()
+                    if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
+                        raise ValueError
+                    return body["result"]
+                except httpx.HTTPError:
+                    raise ManagementExecutorUnavailable("Conversation service is unavailable; retry.") from None
+                except ValueError:
+                    raise PublicSetupError("Conversation service returned an invalid response.") from None
         executor_url = os.environ.get("ASSISTANT_MANAGEMENT_EXECUTOR_URL")
         if not executor_url:
             return None
@@ -871,6 +926,16 @@ class ManagementService:
         if delegated is not None:
             return delegated
         return self.backend().request({"kind": "task-messages", "id": identifier, "page": page})
+
+    def task_snapshot(self, identifier):
+        """Read messages, tool activity and task state in one consistent request."""
+        if not os.environ.get("ASSISTANT_MANAGEMENT_READER_URL"):
+            raise PublicSetupError("Start the updated conversation service before using snapshots.")
+        return self._executor_read({"request": "tasks.snapshot", "task_id": identifier})
+
+    def event_revision(self):
+        """Read opaque change markers; neither contains user data."""
+        return self._executor_read({"request": "events.snapshot"})
 
     def task_activity(self, identifier, since=None):
         if type(identifier) is not int or identifier <= 0 or not (
@@ -988,6 +1053,9 @@ class ManagementService:
 def create_app(root, token, service=None):
     service = service or ManagementService(root, token=token)
     instance_id = ensure_instance_id(root, token)
+    events = EventBuffer()
+    stream_capacity = asyncio.Semaphore(8)
+    persistent_reads = bool(os.environ.get("ASSISTANT_MANAGEMENT_READER_URL"))
     @asynccontextmanager
     async def lifespan(app):
         async def reconcile():
@@ -1003,22 +1071,45 @@ def create_app(root, token, service=None):
                 except Exception:
                     LOGGER.exception("Client channel delivery reconciliation failed")
                 await asyncio.sleep(interval)
-        task = asyncio.create_task(reconcile())
+        async def watch():
+            previous = None
+            approvals = None
+            unavailable = False
+            while True:
+                try:
+                    revision = await asyncio.to_thread(service.event_revision)
+                    operation_state = await asyncio.to_thread(operations.list)
+                    current = (revision, hashlib.sha256(json.dumps(operation_state, sort_keys=True).encode()).hexdigest())
+                    if current != previous or unavailable:
+                        await events.publish("state.changed")
+                    if revision["approvals_revision"] != approvals or unavailable:
+                        await events.publish("approvals.changed")
+                    approvals = revision["approvals_revision"]
+                    previous, unavailable = current, False
+                except Exception:
+                    if not unavailable:
+                        LOGGER.exception("Management event source is unavailable")
+                        await events.publish("server.unavailable")
+                    unavailable = True
+                await asyncio.sleep(1)
+        tasks = [asyncio.create_task(reconcile())]
+        if persistent_reads:
+            tasks.append(asyncio.create_task(watch()))
         try:
             yield
         finally:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             app.state.management_operations.executor.shutdown(wait=True)
+            service.close()
     app = FastAPI(
         title="Assistant management", version="2.0.0",
         docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan,
     )
     operations = OperationManager(root, service.execute_operation)
     app.state.management_operations = operations
+    app.state.management_events = events
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
     def failure(status, code, message):
@@ -1085,6 +1176,7 @@ def create_app(root, token, service=None):
             "capabilities": [
                 "configuration.read", "configuration.preview", "configuration.write",
                 "configuration.source.write", "configuration.source.backups",
+                "configuration.structured", "configuration.sections",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
                 "projects.files.read", "projects.files.upload", "projects.files.attach",
@@ -1094,13 +1186,47 @@ def create_app(root, token, service=None):
                 "domains.read", "domains.mutate", "workspace.manage", "contacts.manage",
                 "calendar.manage", "reminders.manage", "integrations.manage",
                 "permissions.read", "permissions.control", "approvals.read", "approvals.decide",
-            ],
+            ] + (["events.stream", "tasks.snapshot"] if persistent_reads else []),
             "read_only": False,
         }
 
     @app.get("/v2/configuration", response_model=FullConfigurationResponse)
     def configuration_v2():
         return service.configuration_v2()
+
+    @app.get("/v2/configuration/settings", response_model=StructuredConfigurationResponse)
+    def settings_v2(group: str | None = Query(None, max_length=128)):
+        return service.configuration_v2(include_source=False, section=group, instructions=False)
+
+    @app.get("/v2/configuration/catalog", response_model=StructuredConfigurationResponse)
+    def settings_catalog_v2():
+        result = service.configuration_v2(include_source=False, instructions=False)
+        # Searchable definitions are safe to preload; effective values are loaded per page.
+        for field in result["settings"]:
+            field["value"] = ""
+        return result
+
+    @app.get("/v2/configuration/instructions")
+    def instructions_v2():
+        backend = service.backend()
+        return {"revision": service.revision(backend.installation), "instructions": backend.instruction_text()}
+
+    @app.get("/v2/events")
+    async def events_v2(request: Request):
+        if not persistent_reads:
+            return failure(409, "unsupported", "Start the updated conversation service to enable live updates.")
+        if stream_capacity.locked():
+            return failure(503, "busy", "Too many event streams; retry later.")
+        await stream_capacity.acquire()
+        cursor = request.headers.get("last-event-id", "")[:128]
+        async def stream():
+            try:
+                async for message in events.stream(cursor, request.is_disconnected):
+                    yield message
+            finally:
+                stream_capacity.release()
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
 
     @app.get("/v2/configuration/agent-yaml/backups/{name}")
     def yaml_backup_v2(name: str):
@@ -1154,6 +1280,12 @@ def create_app(root, token, service=None):
     @app.get("/v2/tasks/{identifier}/messages", response_model=TaskMessagesResponse)
     def task_messages_v2(identifier: int, page: int = 0):
         return service.task_messages(identifier, page)
+
+    @app.get("/v2/tasks/{identifier}/snapshot")
+    def task_snapshot_v2(identifier: int):
+        if identifier <= 0:
+            raise PublicSetupError("Select an existing task.")
+        return service.task_snapshot(identifier)
 
     @app.get("/v2/clients")
     def clients_v2():

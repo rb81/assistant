@@ -42,7 +42,7 @@ TOOL_SERVICES = ("task-agent", "deep-research-agent", "heartbeat")
 ROUTING_SERVICES = ("downloader", "telegram-receiver")
 STARTUP_WAIT_SECONDS = 600
 LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {
-    "postgres", "clamav", "ollama", "sandbox", "transcription", "management", "management-docker",
+    "postgres", "clamav", "ollama", "sandbox", "transcription", "management", "management-docker", "management-reader",
 }
 GENERATED_SECRETS = {"AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN", "AGENT_TRANSCRIPTION_API_TOKEN"}
 SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
@@ -301,9 +301,9 @@ def docker_failure(arguments, result):
 
 def secret_services(name):
     if name == "AGENT_DATABASE_PASSWORD":
-        return ("postgres", *AGENT_SERVICES)
+        return ("postgres", "management-reader", *AGENT_SERVICES)
     if name == "AGENT_DATABASE_URL":
-        return AGENT_SERVICES
+        return ("management-reader", *AGENT_SERVICES)
     if name in ("AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY"):
         return (*MODEL_SERVICES, *ROUTING_SERVICES)
     if name == "AGENT_EMAIL_IMAP_PASSWORD":
@@ -839,6 +839,7 @@ class Installation:
             }
         # The read-only config mount (AGENT.md) needs its directory even before a prompt is saved.
         (self.data / "config").mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.data / "share").mkdir(mode=0o700, parents=True, exist_ok=True)
         for name, value in self.tls_files.items():
             writes[self.root / "data/private/tls" / name] = value
         for name in existing_service_tls:
@@ -1249,7 +1250,7 @@ class Installation:
         running = set(self.compose(["ps", "--status", "running", "--services"]).split())
         if "postgres" not in running:
             raise SetupError("Start PostgreSQL before coordinated password rotation; no credential was changed")
-        consumers = sorted(running & set(AGENT_SERVICES))
+        consumers = sorted(running & {*AGENT_SERVICES, "management-reader"})
         self.directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(self.directory, 0o700)
         self.write_credential("rotation.json", json.dumps({"previous": previous, "replacement": replacement, "consumers": consumers}).encode())

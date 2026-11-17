@@ -90,6 +90,7 @@ def test_fresh_bootstrap_is_idempotent_and_does_not_enable_workers(tmp_path):
     sources(tmp_path)
     instance = bootstrap(tmp_path)
     assert not instance.state.get("setup_complete")
+    assert (tmp_path / "data/share").is_dir()
     assert instance.secret_values["AGENT_DATABASE_PASSWORD"]
     token = token_path(tmp_path).read_bytes()
     password = instance.secret_values["AGENT_DATABASE_PASSWORD"]
@@ -325,9 +326,13 @@ def test_installer_reuses_existing_installation_and_does_not_consume_piped_stdin
         env=dict(os.environ, HOME=str(home), PATH=str(tools) + ":" + os.environ["PATH"],
                  ASSISTANT_INSTALL_DIR=str(destination), COLUMNS="40"), check=True,
     )
-    assert "server-started" in result.stdout
-    assert "Starting Assistant services; the" in result.stdout
-    assert "startup may take several minutes." in result.stdout
+    assert "server-started" not in result.stdout
+    log = next((destination / "data/logs").glob("install.*"))
+    assert "server-started" in log.read_text()
+    assert log.stat().st_mode & 0o077 == 0
+    assert "[3/4] Preparing services" in result.stdout
+    assert "startup may take several minutes." in " ".join(result.stdout.split())
+    assert "\x1b[" not in result.stdout
     assert all(len(line) <= 40 for line in result.stdout.splitlines()
                if not line.startswith("  ") and "assistant-client" not in line)
     assert (home / ".local/bin/assistant").is_symlink()
@@ -391,7 +396,8 @@ def test_installer_interruption_stops_its_startup_process_tree(tmp_path):
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
-def test_interactive_installer_shows_live_output_on_success_and_failure(tmp_path, exit_code):
+@pytest.mark.parametrize("verbose", [False, True])
+def test_installer_retains_details_and_streams_them_only_when_requested(tmp_path, exit_code, verbose):
     destination = tmp_path / "installation"
     (destination / "src/scripts").mkdir(parents=True)
     (destination / "src/scripts/server.sh").write_text("# marker\n")
@@ -407,7 +413,8 @@ def test_interactive_installer_shows_live_output_on_success_and_failure(tmp_path
         result = subprocess.run(
             ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave,
             env=dict(os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(destination),
-                     PATH=str(tools) + ":" + os.environ["PATH"]), timeout=10,
+                     PATH=str(tools) + ":" + os.environ["PATH"], ASSISTANT_VERBOSE="1" if verbose else "0",
+                     TERM="xterm-256color", NO_COLOR="1"), timeout=10,
         )
         os.close(slave)
         slave = None
@@ -424,8 +431,10 @@ def test_interactive_installer_shows_live_output_on_success_and_failure(tmp_path
         if slave is not None:
             os.close(slave)
         os.close(master)
-    assert b"startup-log-marker" in output
-    assert b"pending health checks appear below" in output
+    assert (b"startup-log-marker" in output) == (verbose or exit_code != 0)
+    assert "startup-log-marker" in next((destination / "data/logs").glob("install.*")).read_text()
+    assert b"\x1b[" not in output
+    assert b"Detailed startup log:" in output
     assert b"Starting... |" not in output
     assert (result.returncode == 0) == (exit_code == 0)
     assert not Path(str(destination) + ".install-lock").exists()
@@ -454,7 +463,9 @@ def test_installer_downloads_and_installs_a_source_bundle_without_host_python(tm
         env=dict(os.environ, HOME=str(tmp_path / "home"), PATH=str(tools) + ":" + os.environ["PATH"],
                  ASSISTANT_INSTALL_DIR=str(destination), TEST_ARCHIVE=str(archive)), check=True,
     )
-    assert "bootstrapped" in result.stdout
+    assert "bootstrapped" not in result.stdout
+    assert "bootstrapped" in next((destination / "data/logs").glob("install.*")).read_text()
+    assert "setup is still required" in result.stdout
     assert (destination / "src/scripts/server.sh").is_file()
     assert not Path(str(destination) + ".install-lock").exists()
 
@@ -553,6 +564,10 @@ def test_containerized_client_chat_uses_real_executor_and_database(tmp_path):
     project = "assistant-chat-test-" + uuid.uuid4().hex[:12]
     management_image = "assistant-management-test:" + uuid.uuid4().hex[:12]
     task_image = project + "-task-agent"
+    compose_path = tmp_path / "src/docker-compose.yml"
+    configuration = yaml.safe_load(compose_path.read_text())
+    configuration["services"]["management-reader"]["image"] = task_image
+    compose_path.write_text(yaml.safe_dump(configuration))
     instance.values.update(
         COMPOSE_PROJECT_NAME=project, ASSISTANT_MANAGEMENT_PORT=str(port),
         ASSISTANT_MANAGEMENT_IMAGE=management_image,
@@ -585,7 +600,7 @@ def test_containerized_client_chat_uses_real_executor_and_database(tmp_path):
             instance.docker(["build", "-t", image, "-f", str(ROOT / dockerfile), str(ROOT)], timeout=1800)
             built_images.append(image)
         instance.compose(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90",
-                          "management", "postgres"], timeout=180)
+                          "management", "postgres", "management-reader"], timeout=180)
         registered = operation("register-container-chat", {
             "operation": "client.register", "client_id": client_id, "name": "Test",
             "client_type": "desktop", "fallback_channels": [],
@@ -612,13 +627,31 @@ def test_containerized_client_chat_uses_real_executor_and_database(tmp_path):
             json={"message_ids": [messages[0]["id"]]}, timeout=60,
         )
         assert acknowledgment.json()["acknowledged"] == [messages[0]["id"]]
+        snapshot = httpx.get(url + f"/v2/tasks/{started['task_id']}/snapshot", headers=headers, timeout=30)
+        assert snapshot.status_code == 200, snapshot.text
+        assert snapshot.json()["messages"]["rows"][-1]["body"] == "Synthetic answer"
+        with httpx.stream("GET", url + "/v2/events", headers=headers, timeout=10) as stream:
+            assert stream.status_code == 200
+            cursor = None
+            for line in stream.iter_lines():
+                if line.startswith("id: "):
+                    cursor = line.removeprefix("id: ")
+                if line == "event: resync":
+                    break
+            assert cursor
         from concurrent.futures import ThreadPoolExecutor
 
         def acknowledge_again(_):
-            response = httpx.post(
-                url + f"/v2/clients/{client_id}/acknowledgments", headers=headers,
-                json={"message_ids": [messages[0]["id"]]}, timeout=120,
-            )
+            deadline = time.monotonic() + 30
+            while True:
+                response = httpx.post(
+                    url + f"/v2/clients/{client_id}/acknowledgments", headers=headers,
+                    json={"message_ids": [messages[0]["id"]]}, timeout=30,
+                )
+                if response.status_code != 503 or time.monotonic() >= deadline:
+                    break
+                assert response.headers["Retry-After"] == "1"
+                time.sleep(1)
             assert response.status_code == 200, response.text
             assert response.json()["acknowledged"] == [messages[0]["id"]]
 
@@ -629,6 +662,11 @@ def test_containerized_client_chat_uses_real_executor_and_database(tmp_path):
         history = httpx.get(url + f"/v2/clients/{client_id}/history", headers=headers, timeout=60).json()
         assert history["messages"][0]["body"] == "Synthetic answer"
         assert history["messages"][0]["status"] == "sent"
+        with httpx.stream("GET", url + "/v2/events", headers={**headers, "Last-Event-ID": cursor}, timeout=10) as stream:
+            assert stream.status_code == 200
+            lines = stream.iter_lines()
+            assert next(lines).startswith("id: ")
+            assert next(lines) == "event: resync"
     finally:
         try:
             instance.compose(["down", "--volumes"], timeout=120)

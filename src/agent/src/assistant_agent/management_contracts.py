@@ -6,6 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from .management_domains import ReadAction, WriteAction
 
 
+READ_SERVICE_REQUESTS = frozenset({
+    "conversations.list", "tasks.messages", "tasks.activity", "tasks.summary",
+    "records.list", "records.read", "records.children", "clients.read",
+    "tasks.snapshot", "events.snapshot",
+})
+
+
 class HealthResponse(BaseModel):
     api_version: Literal[1]
     instance_id: str
@@ -228,6 +235,7 @@ class SettingGroup(BaseModel):
     parent: str | None = None
     section: str | None = None
     basic: bool = False
+    destination: Literal["assistant", "models", "connections", "safety", "server"] = "assistant"
 
 
 class FullConfigurationResponse(BaseModel):
@@ -241,6 +249,20 @@ class FullConfigurationResponse(BaseModel):
     instructions: str
     agent_yaml: str = ""
     agent_yaml_backups: list[str] = Field(default_factory=list)
+    setup_notice: str
+    read_only: Literal[False]
+
+
+class StructuredConfigurationResponse(BaseModel):
+    """Product settings without source files or saved credential values."""
+    api_version: Literal[2]
+    revision: str
+    setup_complete: bool
+    settings: list[SettingField]
+    groups: list[SettingGroup]
+    credential_names: list[str]
+    instructions: str
+    instructions_configured: bool
     setup_notice: str
     read_only: Literal[False]
 
@@ -558,6 +580,19 @@ class TaskActivityRequest(BaseModel):
     since: str | None = Field(default=None, max_length=40)
 
 
+class TaskSnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: Literal["tasks.snapshot"]
+    task_id: int = Field(gt=0)
+
+
+class EventSnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: Literal["events.snapshot"]
+
+
 class ConversationsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -694,7 +729,8 @@ ManagementReadRequest = Annotated[
         RecordListRequest, RecordReadRequest, RecordChildrenRequest,
         ProjectPreviewRequest, PendingDeletionsRequest, ProjectFilesRequest,
         ProjectFileContentRequest, ConfigurationCheckRequest,
-        TaskMessagesRequest, TaskActivityRequest, ConversationsRequest, TaskSummaryRequest, TaskPreviewRequest, DatabasePasswordGenerationRequest, ApprovalsListRequest,
+        TaskMessagesRequest, TaskActivityRequest, TaskSnapshotRequest, EventSnapshotRequest,
+        ConversationsRequest, TaskSummaryRequest, TaskPreviewRequest, DatabasePasswordGenerationRequest, ApprovalsListRequest,
         PermissionReadRequest,
         ClientReadRequest,
         DomainReadRequest,

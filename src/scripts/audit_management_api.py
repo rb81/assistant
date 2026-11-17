@@ -51,6 +51,7 @@ RUNTIME_INTERNAL = {
     "ASSISTANT_DEFAULTS_DIR": "Internal defaults path, not an editable setting.",
     "ASSISTANT_MANAGEMENT_EXECUTOR": "Internal flag identifying the private executor.",
     "ASSISTANT_MANAGEMENT_EXECUTOR_URL": "Private executor network address fixed by Compose.",
+    "ASSISTANT_MANAGEMENT_READER_URL": "Private persistent reader address fixed by Compose.",
     "ASSISTANT_MANAGEMENT_URL": "Local client connection override; validated as a loopback address.",
     "ASSISTANT_MANAGEMENT_TOKEN_FILE": "Protected token path supplied to the API client by the launcher.",
     "DOCKER_HOST": "Host Docker context and the private Compose proxy determine Docker connectivity.",
@@ -416,6 +417,13 @@ def executor_read_handlers(root=ROOT):
                         and isinstance(condition.comparators[0].value, str)
                         and any(isinstance(item, ast.Return) for item in branch.body)):
                     handlers.add(condition.comparators[0].value)
+    reader = root / "src/agent/src/assistant_agent/management_reader.py"
+    if reader.is_file():
+        for node in ast.walk(ast.parse(reader.read_text(encoding="utf-8"), filename=str(reader))):
+            if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                    and any(isinstance(target, ast.Name) and target.id == "READ_KINDS" for target in node.targets)):
+                handlers.update(key.value for key in node.value.keys if isinstance(key, ast.Constant)
+                                and isinstance(key.value, str))
     return handlers
 
 

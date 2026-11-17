@@ -124,14 +124,17 @@ Never report a successful restart solely because the original connection closed.
 
 Configuration saves additionally require:
 
-1. Read `/v2/configuration` and preserve its `revision`.
+1. Read `/v2/configuration/catalog` and page-specific
+   `/v2/configuration/settings?group=...`; preserve and compare their `revision`.
+   Load `/v2/configuration/instructions` only when editing standing instructions.
 2. Send only draft changes to `/v2/configuration/preview`.
 3. Display validation problems and the exact change preview.
 4. Submit `configuration.save` with the same draft/revision, returned `preview_id`,
    and explicit confirmation.
 5. Activate affected services separately, or explicitly choose reviewed `apply: true`.
 
-Source YAML can be edited with `agent_yaml` in the same preview/save contract.
+Ordinary settings must not fetch source files or saved credential values.
+Source YAML can still be edited by legacy operator clients with `agent_yaml` in the same preview/save contract.
 The API retains three previous source versions and exposes their fixed-name
 contents for loading into a new draft. Changed source with `apply: true` rebuilds
 application images; unchanged source does not. See the [API reference](management-api.md)

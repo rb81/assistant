@@ -38,6 +38,9 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 |---|---|
 | `GET health` | Protocol, immutable installation identity, capabilities |
 | `GET configuration` | Revision, setting catalog with help, navigation `groups`, instructions, original `agent_yaml`, backup names |
+| `GET configuration/catalog` | Source-free navigation/search metadata; no effective values or instructions content |
+| `GET configuration/settings?group={id}` | Revision-bound effective values for a page and its children; omit group for all structured settings |
+| `GET configuration/instructions` | Lazily read editable standing instructions and revision |
 | `POST configuration/preview` | Validate the exact draft; return changes, problems, and `preview_id` |
 | `GET configuration/agent-yaml/backups/{name}` | Read one retained fixed-name source backup into a new draft |
 | `GET configuration/check` | Saved-file validation; add `?runtime=true` for executor-backed container checks |
@@ -52,6 +55,8 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET records/{collection}/{id}` | Record details |
 | `GET records/{collection}/{id}/children` | Task/research activity or project objects |
 | `GET tasks/{id}/messages` | Conversation transcript, paged chronologically |
+| `GET tasks/{id}/snapshot` | Newest message page, bounded activity, and task state in one repeatable-read transaction |
+| `GET events` | Authenticated resumable SSE invalidations over the same SSH tunnel |
 | `GET tasks/{id}/activity` | Tool calls across the whole thread (`since`) |
 | `GET tasks/{id}/deletion-preview` | Deletion inventory, blockers, digest |
 | `GET tasks/summary` | Task counts |
@@ -98,7 +103,22 @@ Supported operations include `configuration.save`, `service.lifecycle`,
 and `client.delivery-resolve`. Canonical contracts live in
 `src/agent/src/assistant_agent/management_contracts.py`.
 
-### Configuration and source backups
+### Structured settings and activation
+
+Ordinary clients use `configuration/catalog`, section reads and the separate
+instructions resource, never the legacy bulk/source endpoint. Section reads must
+match the catalog revision; stale drafts require reload, not silent merging.
+Saved secret values are never returned. Groups include a stable `destination`:
+`assistant`, `models`, `connections`, `safety`, or `server`. App preferences
+belong to each client, not the server.
+
+Set `apply: true` on a reviewed configuration save to activate explicitly.
+The first setup starts/builds required workers; later override-only saves
+recreate application services. Enabled integrations can begin processing messages.
+Saving without activation remains supported. Report activation failures and
+uncertain outcomes separately from saved state.
+
+### Legacy configuration and source backups
 
 Preserve the revision from `configuration`; send only edited setting values,
 optional instructions, and optional original-format `agent_yaml` text to preview.
@@ -111,7 +131,8 @@ belong in the credential store, not source YAML. A source change and its backup
 are saved in the same rollback-capable transaction. Three previous versions are
 retained as `agent.yaml.bk_YYYYMMDD_HHMMSS_microseconds` (UTC); loading a backup
 does not restore it until a new preview/save. No-op saves create no backup and
-trigger no activation. YAML changes rebuild application images; override-only
+trigger no activation after setup. An explicitly activated first setup starts
+workers even when only setup acknowledgment changed. YAML changes rebuild application images; override-only
 activation recreates application services. Failed activation leaves the saved
 configuration and backup available and reports failure, not success.
 
@@ -130,6 +151,31 @@ where relevant, `section` (for example a calendar provider), `choices` and
 help, parent, section, basic}`: top-level pages have no `parent`; nested groups
 (such as extra calendar accounts or catalog tuning) name the page they belong to,
 and `section` places them under that page's matching field section.
+
+### Persistent reads and live invalidations
+
+Updated Compose deployments route ordinary conversation, task, record, and client
+delivery reads through a private pooled read service, independently of deployment
+mutations. It has database/config access and read-only shared files, not a Docker
+socket or installation-root mount. Reconciliation and approval reviews remain in
+the isolated executor because they can write or trigger external effects.
+An unavailable reader returns an explicit error, never a disposable-container
+fallback. Older deployments retain their prior read path until upgraded.
+
+Negotiate `tasks.snapshot` and `events.stream` capabilities. SSE uses the usual
+Bearer header; resume with `Last-Event-ID`. The bounded buffer retains 256
+invalidations and emits `resync` after a gap, restart, or invalid cursor.
+Kinds are `state.changed`, `approvals.changed`, `server.unavailable`, and `resync`;
+payloads contain no conversation content. There are at most eight active streams,
+with 15-second keepalives. Clients must reconnect with bounded backoff and refresh
+authoritative state on resync. The watcher checks opaque PostgreSQL transaction
+snapshots and approval revisions once per second; invalidations intentionally
+include unrelated writes and are not an exact changed-record feed.
+
+Keep delivery polling/lease renewal and acknowledgments active even with SSE.
+Polling also remains the fallback after stream failure. A snapshot is a bounded
+newest-page read, not a transcript delta cursor; use existing message pagination
+for older history.
 
 ### Chats and deletion
 

@@ -83,6 +83,11 @@ PAGE_HELP = {
                    "your draft settings, not a successful connection test. Enable only integrations you need.",
     "Settings": "Configure identity, model access, safety, search and instructions. Credentials, maintenance "
                 "and recovery have separate controls. Form changes stay in your draft until reviewed and saved.",
+    "Settings:assistant": "Set identity, timezone, standing instructions and everyday assistant behavior.",
+    "Settings:models": "Choose model access, speech and search models. Provider use may send data externally and cost money.",
+    "Settings:connections": "Configure optional accounts and channels. Saved credentials do not verify connectivity.",
+    "Settings:safety": "Review permissions, approval delivery, screening and allowed destinations.",
+    "Settings:server": "Manage services, diagnostics, storage and recovery. Starting services can process existing requests.",
     "Advanced": "Tune privacy, task limits, email behavior, memory, web search, script networking, extra model "
                 "tools, speech and notifications. Move to an option to see what it controls before opening it.",
     "Instructions": "Edit the assistant's standing instructions: its role, preferred behavior and boundaries. "

@@ -16,8 +16,10 @@ The installer downloads source, builds images in Docker, and starts management
 and PostgreSQL. Fresh installations leave task workers stopped until setup is
 complete. A configured installation starts its configured services.
 
-Installation shows management-image build output and timestamped startup stages.
-Every fifteen seconds, an unfinished stage reports that it is still pending. Health-wait
+Installation shows four concise stages and retains startup diagnostics in
+owner-only `data/logs/install.*` files. Set `ASSISTANT_VERBOSE=1` to stream
+details; `NO_COLOR` disables color. Every fifteen seconds, unfinished startup
+reports that it is still pending. The diagnostic log's health-wait
 updates name the pending services and show how many are ready. Containers can
 be running before their health checks pass; workers must complete a polling
 cycle and verify database access, which may take longer if they pick up work.
@@ -36,9 +38,10 @@ desktop client, including its connection and usage instructions, see the
 
 In the terminal interface:
 
-1. Configure identity, model credentials, and connections.
-2. Review **Settings > Assistant instructions** and keep your draft.
-3. **Review & save**, then choose **Services > Start app**.
+1. Choose a model and API key, then set identity and timezone. Connections are optional.
+2. Review **Settings > Assistant > Standing instructions** and keep your draft.
+3. **Review & save**, then explicitly choose **Save & start**. To save without
+   starting workers, choose **Save configuration** and start from Services later.
 
 The task agent requires nonempty instructions in `data/config/AGENT.md`.
 Starting workers may process existing inbox messages: use an assistant-owned
@@ -86,7 +89,8 @@ Use a terminal at least **76 columns by 24 rows**.
 Forms retain a session draft. **Keep draft** does not write settings;
 **Review & save** validates and confirms changes. Saving alone does not restart
 workers: use **Services > Apply settings** on affected components.
-For saved credential changes, use **Settings > Credentials > Activate pending**.
+**Save & apply** deliberately saves and activates together.
+For saved credential changes, use **Settings > Server > Credentials > Activate pending**.
 Restarts and activation can interrupt active work.
 
 ## Start and inspect

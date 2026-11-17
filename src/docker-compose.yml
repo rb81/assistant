@@ -127,6 +127,7 @@ services:
       ASSISTANT_CONTAINER_ADMIN: "1"
       ASSISTANT_CREDENTIAL_STORE: /run/assistant/credentials/store.json
       ASSISTANT_MANAGEMENT_EXECUTOR_URL: http://management-docker:2376
+      ASSISTANT_MANAGEMENT_READER_URL: http://management-reader:8766
       DOCKER_HOST: tcp://management-docker:2375
     ports:
       - "127.0.0.1:${ASSISTANT_MANAGEMENT_PORT:-8765}:8765"
@@ -149,6 +150,42 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  management-reader:
+    <<: *agent-common
+    command: ["python", "-m", "assistant_agent.management_reader"]
+    cap_drop: ["ALL"]
+    # Read owner-only bind credentials as well as root-owned credential-volume grants.
+    cap_add: ["DAC_OVERRIDE"]
+    pids_limit: 64
+    mem_limit: 384m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - *agent-config-volume
+      - *postgres-tls-volume
+      - type: bind
+        source: ../data/.management-token
+        target: /run/assistant/management-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../data/share
+        target: /data/share
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - database_net
+      - management_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; from assistant_agent.worker_health import database_ready; socket.create_connection(('127.0.0.1',8766),timeout=2).close(); assert database_ready()"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 15s
 
   postgres:
     image: postgres:16

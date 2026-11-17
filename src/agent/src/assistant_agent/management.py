@@ -26,6 +26,7 @@ SERVICE_NAMES = {
     "ollama": "Local embeddings", "transcription": "Voice transcription",
     "sandbox": "Script runner",
     "management": "Management API", "management-docker": "Management Docker reader",
+    "management-reader": "Conversation service",
 }
 
 
