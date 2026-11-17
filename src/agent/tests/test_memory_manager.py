@@ -85,7 +85,10 @@ class MemoryCandidateFilterTest(unittest.TestCase):
         steward.memories_to_store = MagicMock(return_value=[{"content": "A related but distinct preference", "kind": "preference", "importance": 5, "confidence": 0.9, "evidence": "User request", "why_future_relevant": "Future scheduling"}])
         steward.duplicate_exists = MagicMock(return_value=False)
         steward._detect_conflicts = MagicMock(return_value=[{"id": 7, "similarity": 0.95}])
-        steward.consolidate({"id": 1, "thread_id": "test"}, [], "completed", "done")
+        with patch("assistant_agent.memory_manager.MemoryStore", return_value=steward.store) as store:
+            steward.consolidate({"id": 1, "thread_id": "test"}, [], "completed", "done")
+        steward.db.for_job.assert_called_once_with(1)
+        store.assert_called_once_with(steward.db.for_job.return_value, steward.config)
         steward.store.update.assert_not_called()
         metadata = steward.store.create.call_args.kwargs["metadata"]
         self.assertEqual(metadata["state"], "suggested")

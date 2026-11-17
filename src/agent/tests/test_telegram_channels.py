@@ -689,6 +689,49 @@ def test_shared_request_delivers_and_atomically_completes(database):
     assert current["status"] == "completed" and current["metadata"]["final_response"] == "Hello"
 
 
+@pytest.mark.parametrize("channel", ["client", "telegram"])
+def test_completion_memory_writes_do_not_interrupt_their_own_job(database, channel):
+    from assistant_agent.client_channels import ClientChannels
+    from assistant_agent.memory_manager import MemorySteward
+
+    migrate(database)
+    values = config()
+    if channel == "client":
+        ClientChannels(database, values).register("a" * 32, "Desktop", "desktop", [])
+        route = {"channel": "client", "client_id": "a" * 32}
+    else:
+        route = {"channel": "telegram", "chat_id": "123"}
+    RequestService(database).receive_request(IncomingRequest(
+        channel, "memory-final", "memory-conversation", "123", "memory-task",
+        "Remember my preference", reply_route=route,
+    ))
+    job = database.claim_job("test-worker")
+    agent = TaskAgent.__new__(TaskAgent)
+    agent.db, agent.config, agent.locked_by = database, values, "test-worker"
+    agent.memory_steward = MemorySteward(database, values)
+    candidate = {
+        "content": "User prefers written agendas before planning meetings.",
+        "kind": "preference", "importance": 5, "confidence": 0.9,
+        "evidence": "The user explicitly requested agendas.",
+        "why_future_relevant": "Guides future meeting preparation.",
+    }
+    with patch.object(agent.memory_steward, "memories_to_store", return_value=[candidate]), \
+            patch.object(agent.memory_steward, "_detect_conflicts", return_value=[]), \
+            patch("assistant_agent.telegram.TelegramClient.call", return_value={"message_id": 77}):
+        assert agent.handle_tool_call(
+            job, [], ToolRuntime(database, values, job), "call", "task_complete",
+            {"summary": "Preference saved", "response": "Noted"}, set(),
+        )
+    current = database.fetch_one("SELECT * FROM jobs WHERE id = %s", (job["id"],))
+    assert current["status"] == "completed" and not current["has_new_context"]
+    memory = database.fetch_one("SELECT * FROM agent_memories WHERE source_job_id = %s", (job["id"],))
+    event = database.fetch_one(
+        """SELECT actor_job_id FROM workstream_object_events
+           WHERE object_id = %s AND event_type = 'INSERT'""", (memory["object_id"],),
+    )
+    assert event["actor_job_id"] == job["id"]
+
+
 def test_already_delivered_completion_requires_and_skips_a_prior_send(database):
     migrate(database)
     RequestService(database).receive_request(IncomingRequest("telegram", "voice", "9:123", "123", "voice-task", "say hi",

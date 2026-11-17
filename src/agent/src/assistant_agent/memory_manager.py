@@ -227,6 +227,7 @@ class MemorySteward:
             max_writes = self.config.get_int("agent.memory.steward.max_writes_per_job", 5)
             min_importance = self.config.get_int("agent.memory.steward.min_importance", 4)
             min_confidence = self.config.get_float("agent.memory.steward.min_confidence", 0.55)
+            store = MemoryStore(self.db.for_job(job["id"]), self.config)
             created = []
             rejected = []
             for item in memories:
@@ -251,7 +252,7 @@ class MemorySteward:
                 conflicts = self._detect_conflicts(content, normalized["kind"])
                 # Validate and attach entity links
 
-                row = self.store.create(
+                row = store.create(
                     content=content,
                     tags=normalized["tags"],
                     scope=normalized["scope"],
