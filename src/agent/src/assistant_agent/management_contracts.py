@@ -27,6 +27,7 @@ class FullHealthResponse(BaseModel):
     name: str
     capabilities: list[str]
     read_only: Literal[False]
+    revision: str = "unknown"
 
 
 class ConfigurationFile(BaseModel):

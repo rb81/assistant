@@ -1,5 +1,11 @@
 name: assistant
 
+x-management-build: &management-build
+  context: ..
+  dockerfile: src/management/Dockerfile
+  args:
+    ASSISTANT_REVISION: ${ASSISTANT_REVISION:-unknown}
+
 x-agent-config-volume: &agent-config-volume
   type: bind
   source: ../data/config
@@ -59,9 +65,7 @@ x-agent-common: &agent-common
 services:
   management-docker:
     image: ${ASSISTANT_MANAGEMENT_IMAGE:-assistant-management:local}
-    build:
-      context: ..
-      dockerfile: src/management/Dockerfile
+    build: *management-build
     command: ["python", "-m", "assistant_agent.management_docker"]
     restart: unless-stopped
     read_only: true
@@ -106,9 +110,7 @@ services:
 
   management:
     image: ${ASSISTANT_MANAGEMENT_IMAGE:-assistant-management:local}
-    build:
-      context: ..
-      dockerfile: src/management/Dockerfile
+    build: *management-build
     restart: unless-stopped
     read_only: true
     cap_drop: ["ALL"]

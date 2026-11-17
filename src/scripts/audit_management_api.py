@@ -49,6 +49,9 @@ RUNTIME_INTERNAL = {
     "ASSISTANT_CONTAINER_ADMIN": "Internal flag identifying the management container.",
     "ASSISTANT_CREDENTIAL_STORE": "Container-internal credential volume path.",
     "ASSISTANT_DEFAULTS_DIR": "Internal defaults path, not an editable setting.",
+    "ASSISTANT_EXPECTED_REVISION": "Installer-supplied commit to verify against the running API.",
+    "ASSISTANT_INSTALL_DIAGNOSTICS": "One-shot installer flag; raw Docker errors go only to its protected log.",
+    "ASSISTANT_REVISION": "Exact source revision baked into the locally built management image.",
     "ASSISTANT_MANAGEMENT_EXECUTOR": "Internal flag identifying the private executor.",
     "ASSISTANT_MANAGEMENT_EXECUTOR_URL": "Private executor network address fixed by Compose.",
     "ASSISTANT_MANAGEMENT_READER_URL": "Private persistent reader address fixed by Compose.",
@@ -66,6 +69,9 @@ RUNTIME_INTERNAL = {
     "SHARED_FILE_UMASK": "Legacy fallback; managed Compose forwards AGENT_FILESYSTEM_SHARED_FILE_UMASK.",
 }
 RUNTIME_UNSUPPORTED = {
+}
+INSTALLER_BUILD_VARIABLES = {
+    "ASSISTANT_REVISION": "Installer-owned image identity, not an editable deployment setting.",
 }
 
 API_TESTS = "src/agent/tests/test_management_api.py"
@@ -704,9 +710,11 @@ def audit():
     deployment_variables = [
         {
             "name": name,
-            "status": ("restricted" if name in DERIVED_SETTINGS else "contract_present")
-            if name in setting_fields else "missing",
-            "restriction": DERIVED_SETTINGS.get(name),
+            "status": "restricted" if name in INSTALLER_BUILD_VARIABLES else (
+                ("restricted" if name in DERIVED_SETTINGS else "contract_present")
+                if name in setting_fields else "missing"
+            ),
+            "restriction": DERIVED_SETTINGS.get(name) or INSTALLER_BUILD_VARIABLES.get(name),
         }
         for name in compose_variables(compose_text)
     ]

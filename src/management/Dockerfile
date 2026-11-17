@@ -12,5 +12,7 @@ COPY src/agent/requirements-setup.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY src/agent/src /app/src
 COPY src/config/agent.yaml src/config/agent.schema.yaml /app/defaults/
-RUN chmod -R a+rX /app/src
+RUN chmod -R a+rX /app/src /app/defaults
+ARG ASSISTANT_REVISION=unknown
+ENV ASSISTANT_REVISION=$ASSISTANT_REVISION
 CMD ["python", "-m", "assistant_agent.management_server", "serve"]

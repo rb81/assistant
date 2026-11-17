@@ -942,6 +942,9 @@ class Installation:
         except OSError:
             raise DockerCommandError("Docker command could not be launched; check that Docker and any required sudo are installed") from None
         if result.returncode:
+            if os.environ.get("ASSISTANT_INSTALL_DIAGNOSTICS") == "1":
+                print("Docker failure details (private installer log):", file=sys.stderr)
+                print(result.stderr or "(no Docker error output)", file=sys.stderr)
             stderr = (result.stderr or "").lower()
             if elevated and any(message in stderr for message in (
                 "is not in the sudoers file", "is not allowed to execute",

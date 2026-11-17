@@ -1172,6 +1172,7 @@ def create_app(root, token, service=None):
     def health_v2():
         return {
             "api_version": 2, "name": "Assistant",
+            "revision": os.environ.get("ASSISTANT_REVISION", "unknown"),
             "instance_id": instance_id,
             "capabilities": [
                 "configuration.read", "configuration.preview", "configuration.write",

@@ -9,6 +9,27 @@ from .management_api import create_app, ensure_token, read_token, token_path
 from .setup import Installation, SetupError
 
 
+def verify(root, expected_revision):
+    """Verify the API actually serving this installation, without printing its data."""
+    from .management_client import ManagementClient
+
+    with ManagementClient("http://127.0.0.1:8765", read_token(token_path(root))) as client:
+        health = client.health()
+        if expected_revision != "unknown" and health["revision"] != expected_revision:
+            raise SetupError("The running management API is not the requested revision; update verification failed.")
+        required = {"configuration.structured", "services.read", "workspace.manage"}
+        if not required.issubset(health["capabilities"]):
+            raise SetupError("The running management API lacks required client capabilities.")
+        configuration = client.configuration()
+        client.services()
+        if configuration["setup_complete"]:
+            if not {"events.stream", "tasks.snapshot"}.issubset(health["capabilities"]):
+                raise SetupError("The persistent management reader is not enabled.")
+            client.get("tasks/summary")
+            client.request("POST", "query", {"action": "workspace.list"})
+    print("Management API revision, settings, services and configured database reads verified.")
+
+
 def connection(root):
     instance = Installation(root)
     port = int(instance.values.get("ASSISTANT_MANAGEMENT_PORT", "8765"))
@@ -22,9 +43,15 @@ def connection(root):
 
 def main():
     parser = argparse.ArgumentParser(description="Containerized Assistant management")
-    parser.add_argument("action", choices=("serve", "health", "connection"))
+    parser.add_argument("action", choices=("serve", "health", "connection", "verify"))
     args = parser.parse_args()
     root = Path(os.environ["ASSISTANT_INSTALL_ROOT"])
+    if args.action == "verify":
+        try:
+            verify(root, os.environ.get("ASSISTANT_EXPECTED_REVISION", "unknown"))
+        except SetupError as error:
+            raise SystemExit(str(error)) from None
+        return
     if args.action == "connection":
         print(json.dumps(connection(root)))
         return

@@ -19,7 +19,7 @@ from rich.console import Console
 from fastapi.testclient import TestClient
 
 from assistant_agent.management_docker import DockerReader, PROJECT_LABEL
-from assistant_agent.management_server import connection
+from assistant_agent.management_server import connection, verify
 from assistant_agent.server_control import MANAGEMENT_START_WAIT_SECONDS, bootstrap, start, startup_progress
 from assistant_agent.setup import DockerCommandError, Installation, SetupError
 from assistant_agent.management_api import create_app, ensure_token, token_path
@@ -29,6 +29,51 @@ from assistant_agent.management import Management
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_update_verifies_actual_api_revision_and_reads_before_success(tmp_path):
+    with patch("assistant_agent.management_server.read_token", return_value="fixture"), \
+            patch("assistant_agent.management_client.ManagementClient") as factory:
+        client = factory.return_value.__enter__.return_value
+        client.health.return_value = {
+            "revision": "a" * 40,
+            "capabilities": ["configuration.structured", "services.read", "workspace.manage",
+                             "events.stream", "tasks.snapshot"],
+        }
+        client.configuration.return_value = {"setup_complete": True}
+        verify(tmp_path, "a" * 40)
+        client.services.assert_called_once()
+        client.get.assert_called_once_with("tasks/summary")
+        client.request.assert_called_once_with("POST", "query", {"action": "workspace.list"})
+
+
+@pytest.mark.parametrize("health", [
+    {"revision": "old", "capabilities": ["configuration.structured", "services.read", "workspace.manage"]},
+    {"revision": "a" * 40, "capabilities": ["services.read"]},
+])
+def test_update_rejects_stale_or_incompatible_running_api(tmp_path, health):
+    with patch("assistant_agent.management_server.read_token", return_value="fixture"), \
+            patch("assistant_agent.management_client.ManagementClient") as factory:
+        client = factory.return_value.__enter__.return_value
+        client.health.return_value = health
+        with pytest.raises(SetupError, match="requested revision|capabilities"):
+            verify(tmp_path, "a" * 40)
+        client.configuration.assert_not_called()
+
+
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_raw_docker_failure_is_only_available_to_the_explicit_private_installer_log(diagnostics, capsys):
+    instance = Mock()
+    instance.use_sudo = False
+    instance.docker_environment.return_value = {}
+    instance.command_runner.return_value = subprocess.CompletedProcess(
+        ["docker", "compose", "up"], 1, "", "synthetic-private-docker-detail",
+    )
+    with patch.dict(os.environ, {"ASSISTANT_INSTALL_DIAGNOSTICS": "1" if diagnostics else "0"}):
+        with pytest.raises(DockerCommandError) as error:
+            Installation.docker(instance, ["compose", "up"])
+    assert "synthetic-private-docker-detail" not in str(error.value)
+    assert ("synthetic-private-docker-detail" in capsys.readouterr().err) == diagnostics
 
 
 def test_startup_progress_keeps_stages_visible_and_reports_elapsed_time():
@@ -324,14 +369,14 @@ def test_installer_reuses_existing_installation_and_does_not_consume_piped_stdin
     result = subprocess.run(
         ["sh", str(ROOT / "install.sh")], input="must-not-be-read\n", capture_output=True, text=True,
         env=dict(os.environ, HOME=str(home), PATH=str(tools) + ":" + os.environ["PATH"],
-                 ASSISTANT_INSTALL_DIR=str(destination), COLUMNS="40"), check=True,
+                 ASSISTANT_INSTALL_DIR=str(destination), ASSISTANT_UPDATE="0", COLUMNS="40"), check=True,
     )
     assert "server-started" not in result.stdout
     log = next((destination / "data/logs").glob("install.*"))
     assert "server-started" in log.read_text()
     assert log.stat().st_mode & 0o077 == 0
     assert "[3/4] Preparing services" in result.stdout
-    assert "startup may take several minutes." in " ".join(result.stdout.split())
+    assert "This may take several minutes." in " ".join(result.stdout.split())
     assert "\x1b[" not in result.stdout
     assert all(len(line) <= 40 for line in result.stdout.splitlines()
                if not line.startswith("  ") and "assistant-client" not in line)
@@ -352,10 +397,10 @@ def test_installer_does_not_report_success_when_server_start_fails(tmp_path):
     result = subprocess.run(
         ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, capture_output=True, text=True,
         env=dict(os.environ, HOME=str(home), PATH=str(tools) + ":" + os.environ["PATH"],
-                 ASSISTANT_INSTALL_DIR=str(destination)),
+                 ASSISTANT_INSTALL_DIR=str(destination), ASSISTANT_UPDATE="0"),
     )
     assert result.returncode != 0
-    assert "server failed" in result.stderr
+    assert "server failed" in next((destination / "data/logs").glob("install.*")).read_text()
     assert "installation is incomplete" in result.stderr
     assert "Assistant is installed" not in result.stdout
     assert not (home / ".local/bin/assistant").exists()
@@ -376,7 +421,7 @@ def test_installer_interruption_stops_its_startup_process_tree(tmp_path):
         ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=dict(os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(destination),
-                 PATH=str(tools) + ":" + os.environ["PATH"], START_MARKER=str(marker)),
+                 PATH=str(tools) + ":" + os.environ["PATH"], START_MARKER=str(marker), ASSISTANT_UPDATE="0"),
     )
     try:
         deadline = time.monotonic() + 5
@@ -414,7 +459,7 @@ def test_installer_retains_details_and_streams_them_only_when_requested(tmp_path
             ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave,
             env=dict(os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(destination),
                      PATH=str(tools) + ":" + os.environ["PATH"], ASSISTANT_VERBOSE="1" if verbose else "0",
-                     TERM="xterm-256color", NO_COLOR="1"), timeout=10,
+                     TERM="xterm-256color", NO_COLOR="1", ASSISTANT_UPDATE="0"), timeout=10,
         )
         os.close(slave)
         slave = None
@@ -431,7 +476,7 @@ def test_installer_retains_details_and_streams_them_only_when_requested(tmp_path
         if slave is not None:
             os.close(slave)
         os.close(master)
-    assert (b"startup-log-marker" in output) == (verbose or exit_code != 0)
+    assert (b"startup-log-marker" in output) == verbose
     assert "startup-log-marker" in next((destination / "data/logs").glob("install.*")).read_text()
     assert b"\x1b[" not in output
     assert b"Detailed startup log:" in output
@@ -440,10 +485,12 @@ def test_installer_retains_details_and_streams_them_only_when_requested(tmp_path
     assert not Path(str(destination) + ".install-lock").exists()
 
 
-def test_installer_downloads_and_installs_a_source_bundle_without_host_python(tmp_path):
+@pytest.mark.parametrize("pinned", [False, True])
+def test_installer_downloads_and_installs_a_source_bundle_without_host_python(tmp_path, pinned):
     source = tmp_path / "source/assistant-test"
     (source / "src/scripts").mkdir(parents=True)
     (source / "src/scripts/server.sh").write_text("# marker\n")
+    (source / "src/docker-compose.yml").write_text("services: {}\n")
     (source / "run.sh").write_text('#!/bin/sh\nprintf "bootstrapped\\n"\n')
     archive = tmp_path / "bundle.tar.gz"
     with tarfile.open(archive, "w:gz") as bundle:
@@ -452,8 +499,12 @@ def test_installer_downloads_and_installs_a_source_bundle_without_host_python(tm
     tools.mkdir()
     (tools / "docker").write_text("#!/bin/sh\nexit 0\n")
     (tools / "curl").write_text(
-        '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n'
-        'if [ "$1" = -o ]; then cp "$TEST_ARCHIVE" "$2"; exit; fi\nshift\ndone\nexit 1\n'
+        '#!/bin/sh\noutput=; url=\nwhile [ "$#" -gt 0 ]; do\n'
+        'case "$1" in -o) shift; output=$1 ;; https://*) url=$1 ;; esac\nshift\ndone\n'
+        'printf "%s\\n" "$url" >> "$TEST_URLS"\n'
+        'case "$url" in https://api.github.com/*)\n'
+        'printf \'[\\n  {\\n    "sha": "1111111111111111111111111111111111111111"\\n  }\\n]\\n\' > "$output" ;;\n'
+        '*) cp "$TEST_ARCHIVE" "$output" ;; esac\n'
     )
     for path in tools.iterdir():
         path.chmod(0o700)
@@ -461,12 +512,16 @@ def test_installer_downloads_and_installs_a_source_bundle_without_host_python(tm
     result = subprocess.run(
         ["sh", str(ROOT / "install.sh")], stdin=subprocess.DEVNULL, capture_output=True, text=True,
         env=dict(os.environ, HOME=str(tmp_path / "home"), PATH=str(tools) + ":" + os.environ["PATH"],
-                 ASSISTANT_INSTALL_DIR=str(destination), TEST_ARCHIVE=str(archive)), check=True,
+                 ASSISTANT_INSTALL_DIR=str(destination), TEST_ARCHIVE=str(archive),
+                 TEST_URLS=str(tmp_path / "urls"), ASSISTANT_VERSION="1" * 40 if pinned else "main"), check=True,
     )
     assert "bootstrapped" not in result.stdout
     assert "bootstrapped" in next((destination / "data/logs").glob("install.*")).read_text()
     assert "setup is still required" in result.stdout
     assert (destination / "src/scripts/server.sh").is_file()
+    urls = (tmp_path / "urls").read_text()
+    assert "archive/" + "1" * 40 + ".tar.gz" in urls
+    assert ("api.github.com" in urls) == (not pinned)
     assert not Path(str(destination) + ".install-lock").exists()
 
 
@@ -823,19 +878,23 @@ def test_shell_installation_bootstraps_containers_and_installed_connection_helpe
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     (root / "data").mkdir()
+    image = "assistant-installer-validation:" + uuid.uuid4().hex[:12]
     (root / "data/.env").write_text(
         "COMPOSE_PROJECT_NAME=assistant-installer-test-" + uuid.uuid4().hex[:12]
-        + "\nASSISTANT_MANAGEMENT_PORT=" + str(port) + "\n"
+        + "\nASSISTANT_MANAGEMENT_PORT=" + str(port) + "\nASSISTANT_MANAGEMENT_IMAGE=" + image + "\n"
     )
     home = tmp_path / "home"
-    environment = dict(os.environ, ASSISTANT_INSTALL_DIR=str(root), HOME=str(home))
+    environment = dict(os.environ, ASSISTANT_INSTALL_DIR=str(root), HOME=str(home),
+                       ASSISTANT_UPDATE="0", ASSISTANT_MANAGEMENT_IMAGE=image)
+    instance = Installation(root)
+    instance.docker(["build", "-t", image, "-f", str(root / "src/management/Dockerfile"), str(root)], timeout=900)
     try:
         result = subprocess.run(
             ["sh", str(ROOT / "install.sh")], env=environment, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=600,
         )
         assert result.returncode == 0, result.stderr
-        assert "setup is required" in result.stdout
+        assert "setup is still required" in result.stdout
         response = subprocess.run(
             [str(home / ".local/bin/assistant"), "connect"], env=environment,
             capture_output=True, text=True, timeout=30, check=True,
@@ -857,4 +916,72 @@ def test_shell_installation_bootstraps_containers_and_installed_connection_helpe
         assert not (root / "data/.venv-setup").exists()
     finally:
         Installation(root).compose(["down", "--volumes"], timeout=60)
-        restore_test_database_ownership(Installation(root))
+        restore_test_database_ownership(Installation(root), image=image)
+        instance.docker(["image", "rm", image], timeout=30)
+
+
+@pytest.mark.skipif(os.getenv("ASSISTANT_TEST_DOCKER") != "1", reason="requires opt-in isolated Docker project")
+def test_shell_updater_activates_and_verifies_two_real_revisions(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z"], text=True).split("\0")
+    for relative in filter(None, tracked):
+        destination = source / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    subprocess.run(["git", "init", "-q", "--initial-branch=main", str(source)], check=True)
+    for key, value in (("user.name", "Installer fixture"), ("user.email", "installer@example.invalid")):
+        subprocess.run(["git", "-C", str(source), "config", key, value], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "Initial source"], check=True)
+    revisions = [subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()]
+    root = tmp_path / "installed"
+    shutil.copytree(source, root, ignore=shutil.ignore_patterns(".git"))
+    (root / "data").mkdir()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    (root / "data/.env").write_text(
+        "COMPOSE_PROJECT_NAME=assistant-update-test-" + uuid.uuid4().hex[:12]
+        + "\nASSISTANT_MANAGEMENT_PORT=" + str(port) + "\n"
+    )
+    instance = bootstrap(root)
+    password = instance.secret_values["AGENT_DATABASE_PASSWORD"]
+    environment = dict(
+        os.environ, HOME=str(tmp_path / "home"), ASSISTANT_INSTALL_DIR=str(root),
+        ASSISTANT_SOURCE=str(source), ASSISTANT_VERSION="main", ASSISTANT_ADOPT="1",
+    )
+    environment.pop("ASSISTANT_UPDATE", None)
+    environment.pop("ASSISTANT_MANAGEMENT_IMAGE", None)
+    key = subprocess.check_output(["cksum"], input=str(root), text=True).split()[0]
+    try:
+        for update in (False, True):
+            if update:
+                (source / "update-marker").write_text("new revision\n")
+                subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+                subprocess.run(["git", "-C", str(source), "commit", "-qm", "Update source"], check=True)
+                revisions.append(subprocess.check_output(
+                    ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+                ).strip())
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=environment, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=600,
+            )
+            assert result.returncode == 0, result.stderr
+            with ManagementClient(f"http://127.0.0.1:{port}", token_path(root).read_text().strip()) as client:
+                assert client.health()["revision"] == revisions[-1]
+                assert "configuration.structured" in client.health()["capabilities"]
+                assert not client.configuration()["setup_complete"]
+                assert client.services()
+            assert Installation(root).secret_values["AGENT_DATABASE_PASSWORD"] == password
+            assert not (root / "data/.install-pending").exists()
+        assert (root / "update-marker").read_text() == "new revision\n"
+    finally:
+        instance = Installation(root)
+        instance.compose(["down", "--volumes"], timeout=120)
+        restore_test_database_ownership(instance, image=instance.values.get("ASSISTANT_MANAGEMENT_IMAGE"))
+        for revision in revisions:
+            image = f"assistant-management:update-{key}-{revision}"
+            exists = subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
+            if exists:
+                instance.docker(["image", "rm", image], timeout=30)

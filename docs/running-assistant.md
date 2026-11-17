@@ -12,7 +12,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/ass
 "$HOME/.local/bin/assistant"
 ```
 
-The installer downloads source, builds images in Docker, and starts management
+The installer installs **or updates** source, builds images in Docker, and starts management
 and PostgreSQL. Fresh installations leave task workers stopped until setup is
 complete. A configured installation starts its configured services.
 
@@ -61,14 +61,37 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/ass
   ASSISTANT_INSTALL_DIR="$HOME/assistant" ASSISTANT_VERSION=main sh
 ```
 
-To register an existing source checkout:
+Running the same installer again discovers the installation through
+`~/.local/bin/assistant`, downloads the latest commit on its configured ref, and
+rebuilds/reconciles the services. A local `sh install.sh` also recognizes its own
+source directory when no launcher exists. `ASSISTANT_INSTALL_DIR` overrides
+discovery; a conflicting launcher is rejected rather than creating a second install.
+
+The source/ref and exact installed commit are retained in owner-only
+`data/.installation`. The default source is `github:rb81/assistant` and the default
+ref is `main`. An existing Git checkout uses its tracked upstream, or requires an
+explicit source when it has none. For a private/local deployment source, configure
+it once (Git is needed for non-GitHub sources), for example on the deployment host:
 
 ```sh
-ASSISTANT_INSTALL_DIR="$PWD" sh install.sh
+ASSISTANT_INSTALL_DIR="$HOME/assistant" \
+  ASSISTANT_SOURCE="$HOME/assistant.git" ASSISTANT_VERSION=deploy sh install.sh
 ```
 
-Rerunning the installer preserves existing source and data; **it does not update
-them**. A conflicting launcher or unrelated destination is rejected.
+Subsequent runs remember this source; they do not switch back to public GitHub.
+Do not include credentials in a source URL; use the host's normal SSH/Git access.
+Git updates must fast-forward and the checkout must be clean. The installer never
+resets history or discards edits. Managed archive installations likewise reject
+modified source. Old non-Git installations without a source manifest need a
+one-time `ASSISTANT_ADOPT=1` after reviewing/backing up their source.
+
+`ASSISTANT_UPDATE=0 sh install.sh` explicitly repairs/rebuilds the existing source
+without downloading an update. This is also useful for developer checkouts.
+Automatic source updates build installation-specific, revision-tagged management
+images rather than replacing another installation's tag. If you deliberately
+provide an externally managed `ASSISTANT_MANAGEMENT_IMAGE`, update that image
+through its own deployment process and use `ASSISTANT_UPDATE=0`; the installer
+will not overwrite it with a local source build.
 Add `~/.local/bin` to PATH to use `assistant` directly, or use the full path.
 In a checkout, `./run.sh` is equivalent.
 
@@ -153,22 +176,35 @@ inspect their operation status. See the [API reference](management-api.md) and
 
 ### Updating or moving a source installation
 
-Back up first and stop the stack **before** moving or replacing source. Update
-from a reviewed server revision using your chosen source-download or Git workflow,
-preserving `data/`. The installer is not an updater.
-
-From the updated installation root, run:
+Back up persistent data before upgrading, especially before database migrations.
+Run the same installer used for initial installation:
 
 ```sh
-ASSISTANT_INSTALL_DIR="$PWD" sh install.sh
+sh install.sh
 ```
 
-For an existing installation, this runs the shipped deployment migrations,
-regenerates absolute paths and credential mounts, rebuilds images, and starts the
-configured services without downloading over your chosen source revision.
-Database migrations run during application startup.
+The installer resolves one exact source commit, validates/stages it, and builds
+images before stopping the old stack. It then activates the source, runs shipped
+deployment migrations, regenerates configuration/credential mounts, and starts
+the configured services. Database migrations run during application startup.
+Expect an interruption to active work during cutover. Success also requires
+checking the running API's revision, structured settings, services, and (after
+setup) database/workspace reads through the persistent reader.
 
-If the checkout moved, resolve any launcher still pointing at the old location
+Downloads/build failures leave the running installation untouched. After cutover,
+`data/.install-pending` records an incomplete update, and the next installer run
+finishes that exact revision after verifying that its source is complete. A
+partial source activation stops explicitly for recovery instead of starting
+mixed files. Archive updates retain previous source in the reported sibling
+`*.previous.*` directory; Git checkouts record the previous commit in
+`data/.install-previous-revision`. Retained source backups are owner-only and may
+be removed manually after validating the update; they do not contain `data/`.
+Previous source is **not** a database backup. There is no automatic database
+rollback; downgrading across incompatible schema changes requires a compatible
+backup and an explicit recovery procedure.
+
+If moving an installation, stop the stack first and preserve all of `data/`.
+Resolve any launcher still pointing at the old location
 before registering the new one. Do not remove an unrelated installation's
 launcher. `server start` alone does not run the root `migrations/` scripts.
 

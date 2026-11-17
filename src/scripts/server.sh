@@ -25,21 +25,37 @@ mkdir -p "$ROOT/data"
 export ASSISTANT_INSTALL_ROOT="$ROOT"
 export ASSISTANT_DOCKER_SOCKET="$SOCKET"
 export ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)"
+if [ -z "${ASSISTANT_MANAGEMENT_IMAGE:-}" ] && [ -f "$ROOT/data/.installation" ]; then
+    ASSISTANT_MANAGEMENT_IMAGE=$(sed -n 's/^image=//p' "$ROOT/data/.installation")
+fi
 IMAGE=${ASSISTANT_MANAGEMENT_IMAGE:-assistant-management:local}
+if [ -z "${ASSISTANT_REVISION:-}" ] && [ -f "$ROOT/data/.installation" ]; then
+    ASSISTANT_REVISION=$(sed -n 's/^revision=//p' "$ROOT/data/.installation")
+fi
+export ASSISTANT_REVISION="${ASSISTANT_REVISION:-unknown}"
 
-if [ "${1:-}" = connect ]; then
-    test "$#" -eq 1 || { printf '%s\n' 'Usage: assistant connect' >&2; exit 1; }
+if [ "${1:-}" = connect ] || { [ "${1:-}" = server ] && [ "${2:-}" = verify ]; }; then
+    if [ "$1" = connect ]; then
+        test "$#" -eq 1 || { printf '%s\n' 'Usage: assistant connect' >&2; exit 1; }
+        exec docker compose --project-directory "$ROOT/src" --env-file "$ROOT/data/.env" \
+            -f "$ROOT/src/docker-compose.yml" exec -T management \
+            python -m assistant_agent.management_server connection
+    fi
+    test "$#" -eq 2 || { printf '%s\n' 'Usage: assistant server verify' >&2; exit 1; }
     exec docker compose --project-directory "$ROOT/src" --env-file "$ROOT/data/.env" \
-        -f "$ROOT/src/docker-compose.yml" exec -T management \
-        python -m assistant_agent.management_server connection
+        -f "$ROOT/src/docker-compose.yml" exec -T -e "ASSISTANT_EXPECTED_REVISION=$ASSISTANT_REVISION" \
+        management python -m assistant_agent.management_server verify
 fi
 
-if [ "$IMAGE" = assistant-management:local ]; then
+case "$IMAGE" in assistant-management:local|assistant-management:update-*) LOCAL_IMAGE=1 ;; *) LOCAL_IMAGE=0 ;; esac
+if [ "$LOCAL_IMAGE" = 1 ]; then
     if [ "${1:-}" = server ] && [ "${2:-start}" = start ]; then
         printf '%s\n' 'Building the management image (the first build may take several minutes)...'
-        docker build --progress=plain -t "$IMAGE" -f "$ROOT/src/management/Dockerfile" "$ROOT"
+        docker build --progress=plain --build-arg "ASSISTANT_REVISION=$ASSISTANT_REVISION" \
+            -t "$IMAGE" -f "$ROOT/src/management/Dockerfile" "$ROOT"
     else
-        docker build -q -t "$IMAGE" -f "$ROOT/src/management/Dockerfile" "$ROOT" >/dev/null
+        docker build -q --build-arg "ASSISTANT_REVISION=$ASSISTANT_REVISION" \
+            -t "$IMAGE" -f "$ROOT/src/management/Dockerfile" "$ROOT" >/dev/null
     fi
 elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     docker pull "$IMAGE"
@@ -61,6 +77,7 @@ admin() {
             --mount "type=bind,source=$ROOT,target=$ROOT" \
             --mount "type=bind,source=$SOCKET,target=/var/run/docker.sock" \
             -e ASSISTANT_CONTAINER_ADMIN=1 -e ASSISTANT_INSTALL_ROOT -e ASSISTANT_DOCKER_SOCKET \
+            -e ASSISTANT_INSTALL_DIAGNOSTICS \
             -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp -e TERM -e NO_COLOR \
             "$IMAGE" python -m "$@"
     else
@@ -68,6 +85,7 @@ admin() {
             --mount "type=bind,source=$ROOT,target=$ROOT" \
             --mount "type=bind,source=$SOCKET,target=/var/run/docker.sock" \
             -e ASSISTANT_CONTAINER_ADMIN=1 -e ASSISTANT_INSTALL_ROOT -e ASSISTANT_DOCKER_SOCKET \
+            -e ASSISTANT_INSTALL_DIAGNOSTICS \
             -e ASSISTANT_MANAGEMENT_IMAGE -e ASSISTANT_UID -e ASSISTANT_GID -e HOME=/tmp -e NO_COLOR \
             "$IMAGE" python -m "$@"
     fi
