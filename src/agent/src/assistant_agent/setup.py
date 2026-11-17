@@ -340,7 +340,11 @@ def atomic_write(path, content, mode=0o600, *, owner=None):
     previous = read_regular(path)
     if path.parent.is_symlink():
         raise SetupError("Configuration directories must not be symlinks")
-    if previous == content and stat.S_IMODE(path.stat().st_mode) == mode:
+    info = path.stat() if previous is not None else None
+    if info is not None and owner is None:
+        owner = (info.st_uid, info.st_gid)
+    if (previous == content and info is not None and stat.S_IMODE(info.st_mode) == mode
+            and (info.st_uid, info.st_gid) == owner):
         return
     descriptor, temporary = tempfile.mkstemp(prefix=".setup-", dir=path.parent)
     try:

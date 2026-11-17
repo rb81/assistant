@@ -55,6 +55,37 @@ class SetupTest(unittest.TestCase):
             with self.assertRaisesRegex(SetupError, "002-shipped-agent-yaml"):
                 Installation(root)
 
+    @unittest.skipUnless(os.geteuid() == 0, "requires root to exercise the management executor identity")
+    def test_root_settings_save_preserves_installation_owner_access(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            instance = self.saved_configuration(root)
+            for item in (path, *path.rglob("*")):
+                os.chown(item, 1000, 1000)
+            instance.values["AGENT_IDENTITY_NAME"] = "Changed through the client"
+            instance.save()
+            overrides = path / "data/overrides.env"
+            info = overrides.stat()
+            self.assertEqual((info.st_uid, info.st_gid), (1000, 1000))
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+            try:
+                os.seteuid(1000)
+                reopened = Installation(root)
+                self.assertEqual(reopened.values["AGENT_IDENTITY_NAME"], "Changed through the client")
+            finally:
+                os.seteuid(0)
+
+    @unittest.skipUnless(os.geteuid() == 0, "requires root to transfer file ownership")
+    def test_atomic_write_applies_explicit_owner_when_contents_are_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "configuration"
+            atomic_write(path, b"unchanged")
+            atomic_write(path, b"unchanged", owner=(1000, 1000))
+            info = path.stat()
+            self.assertEqual((info.st_uid, info.st_gid), (1000, 1000))
+            self.assertEqual(path.read_bytes(), b"unchanged")
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+
     def test_root_launcher_forwards_arguments_from_another_working_directory(self):
         repository = Path(__file__).resolve().parents[3]
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
