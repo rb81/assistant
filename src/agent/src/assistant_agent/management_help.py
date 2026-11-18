@@ -2,8 +2,9 @@
 import re
 
 GROUP_HELP = {
-    "identity": "Name your assistant, choose its timezone, and identify the administrator and organization. "
-                "The approval email is used for administrator decisions; it is not the assistant's mailbox.",
+    "identity": "Name your assistant and choose the timezone it uses.",
+    "approvals": "Choose where to receive requests that need your approval. The approval email is your address, "
+                 "not the assistant's mailbox.",
     "models": "Choose the model provider and models used for ordinary tasks. Enter provider credentials and "
               "the bundled database password. Model use can cost money; task limits are not a spending cap.",
     "email": "Connect a dedicated assistant mailbox for receiving requests and sending replies. "
@@ -550,7 +551,7 @@ FIELD_HELP = {
                        "List choices with python -m assistant_agent.tts voices in the runtime environment.",
     "AGENT_TTS_VOICE": "Voice identifier supported by the chosen speech model. Voice names are model-specific, "
                        "not arbitrary descriptions such as 'friendly'.",
-    "AGENT_APPROVALS_CHANNEL": "Deliver human approval requests by email, telegram or both. Telegram needs "
+    "AGENT_APPROVALS_CHANNEL": "Deliver approval requests by email, Telegram, both, or in the Assistant app. Telegram needs "
                               "a bot token and the admin email mapped to an allowlisted numeric ID. "
                               "Choose a channel you will actually monitor.",
     "AGENT_NAMING_MODEL": "Model for generating short job and workstream names, not for performing the main "

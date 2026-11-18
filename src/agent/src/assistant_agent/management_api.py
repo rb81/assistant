@@ -171,10 +171,10 @@ CATALOG_GROUPS = {
 }
 ADVANCED_GROUP_PARENTS = {
     "advanced:Calendar privacy": "calendar", "advanced:Email behavior": "email",
-    "advanced:Approvals and names": "identity",
 }
 CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
 SETTING_CHOICES = {
+    "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
     "AGENT_CALENDAR_DEFAULT_PROVIDER": ("google", "outlook", "zoho"),
     "AGENT_ZOOM_AUTH_MODE": ("s2s", "oauth"),
 }
@@ -183,6 +183,29 @@ SETTING_CHOICES = {
 def setting_presentation(group, spec):
     """Label, section, and help a client should show for one setting."""
     label, section = spec.label, None
+    if spec.key == "AGENT_APPROVALS_CHANNEL":
+        label = "Approval delivery"
+    elif spec.key == "AGENT_NAMING_MODEL":
+        label, section = "Naming model", "Conversation naming"
+    elif group == "identity":
+        if spec.key.startswith("AGENT_ORG_"):
+            section = "Organization"
+        elif spec.key == "AGENT_ADMIN_NAME":
+            section = "About you"
+    elif group == "email":
+        if spec.key.startswith("AGENT_EMAIL_IMAP_"):
+            section = "Incoming mail"
+        elif spec.key.startswith("AGENT_EMAIL_SMTP_"):
+            section = "Outgoing mail"
+        elif spec.key in {"AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS"}:
+            section = "Access rules"
+    elif group == "security":
+        if spec.key.startswith("AGENT_SECURITY_DEVELOPMENT_"):
+            section = "Development sessions"
+        elif spec.key.startswith("AGENT_SECURITY_DECISION_MODEL_"):
+            section = "Content screening"
+        elif spec.key in {"AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED", "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS"}:
+            section = "Administrator requests"
     provider = re.match(r"^AGENT_CALENDAR_(GOOGLE|OUTLOOK|ZOHO)_", spec.key)
     if provider and group == "calendar":
         section = CALENDAR_PROVIDERS[provider.group(1)]
@@ -221,7 +244,7 @@ def configuration_group_details():
             "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
             "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
                                  "catalog:deep_research", "catalog:search"} else
-            "safety" if owner in {"security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
+            "safety" if owner in {"approvals", "security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
             "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",
                                  "catalog:filesystem", "catalog:tool_result_cache", "catalog:conversion",
                                  "catalog:workspace", "catalog:client", "catalog:heartbeat"} else "assistant"
@@ -242,6 +265,13 @@ ESSENTIAL_GROUPS = (
 
 def configuration_groups():
     groups = {name: (title, list(specs)) for name, (title, specs) in GROUPS.items()}
+    # Keep interactive setup's registry intact; these are Management API presentation groups.
+    approval_fields = [spec for spec in groups["identity"][1] if spec.key == "AGENT_ADMIN_EMAIL"]
+    groups["identity"][1][:] = [spec for spec in groups["identity"][1] if spec.key != "AGENT_ADMIN_EMAIL"]
+    _, approval_and_naming = groups.pop("advanced:Approvals and names")
+    approval_fields.extend(spec for spec in approval_and_naming if spec.key == "AGENT_APPROVALS_CHANNEL")
+    groups["models"][1].extend(spec for spec in approval_and_naming if spec.key == "AGENT_NAMING_MODEL")
+    groups["approvals"] = ("Approvals", approval_fields)
     groups["deployment"] = ("Deployment and sandbox", list(DEPLOYMENT_SETTINGS))
     known = {spec.key for _, specs in groups.values() for spec in specs}
     for item in settings_schema.catalog():

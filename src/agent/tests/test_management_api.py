@@ -814,6 +814,31 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert set(groups) == {item["group"] for item in result["settings"]}
 
 
+def test_v2_approval_settings_share_a_safety_page(tmp_path):
+    (tmp_path / "src/config").mkdir(parents=True)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "src/config/agent.yaml").write_text("agent:\n  identity:\n    name: My instance\n")
+    client = TestClient(create_app(tmp_path, TOKEN))
+    headers = {"Host": "127.0.0.1", "Authorization": "Bearer " + TOKEN}
+
+    response = client.get("/v2/configuration/settings?group=approvals", headers=headers)
+    assert response.status_code == 200
+    result = response.json()
+    approval_page = next(group for group in result["groups"] if group["id"] == "approvals")
+    assert approval_page["destination"] == "safety" and approval_page["basic"] and approval_page["parent"] is None
+    fields = {item["key"]: item["metadata"] for item in result["settings"]}
+    assert fields.keys() == {"AGENT_ADMIN_EMAIL", "AGENT_APPROVALS_CHANNEL"}
+    assert all(field["level"] == "basic" for field in fields.values())
+    assert fields["AGENT_APPROVALS_CHANNEL"]["choices"] == ["email", "telegram", "both", "client"]
+
+    response = client.get("/v2/configuration/settings?group=models", headers=headers)
+    assert response.status_code == 200
+    naming = next(item for item in response.json()["settings"] if item["key"] == "AGENT_NAMING_MODEL")
+    assert naming["group"] == "models"
+    assert naming["metadata"]["level"] == "advanced"
+    assert naming["metadata"]["section"] == "Conversation naming"
+
+
 def test_v2_configuration_preview_is_revision_checked_and_secret_safe(tmp_path):
     (tmp_path / "src/config").mkdir(parents=True)
     (tmp_path / "data").mkdir()
