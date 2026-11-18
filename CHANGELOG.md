@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased: Repository and documentation refresh
+## Unreleased: Server and client management refresh
+
+- The installer builds and verifies the server and Management API before
+  reporting success. It stages updates before cutover and refuses to overwrite
+  modified source.
+- The terminal interface and macOS app use the shared Management API. Settings
+  are grouped by purpose, and saves can be reviewed and activated separately.
+- Chat history and scheduled reminder runs can be listed separately. Scheduled
+  runs are read-only; questions about a run belong in a new chat.
 
 - Telegram approvals show the request context and immediate approve/deny buttons,
   removing the repetitive review-then-confirm step. Denying a paused task cancels
@@ -62,7 +70,7 @@
   reminder bindings; conflicting legacy histories require administrator
   reconciliation. Successful schedule checks clear old image-drift warnings.
 - Admin sender authentication (DKIM/SPF) is recommended and now on by default.
-  Turn it off in `./run.sh` → Security only if your mail provider cannot pass it.
+  Turn it off under Safety & Approvals only if your mail provider cannot pass it.
 - Application code, scripts, deployment files, and defaults now live under `src/`.
 - All repository-side local state belongs under ignored `data/`, including
   settings, credentials, configuration, setup dependencies, and backups.

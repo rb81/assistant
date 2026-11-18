@@ -9,40 +9,41 @@ instructions live in the [client repository](https://github.com/rb81/assistant-c
 
 | Guide | What you need it for |
 |---|---|
-| [Running Assistant](running-assistant.md) | Setup, everyday controls, backups, and reset |
-| [Configuration](configuration.md) | Settings, instructions, and credentials |
-| [Security](security.md) | Account isolation, permissions, approvals, and trust boundaries |
-| [macOS app](https://github.com/rb81/assistant-client) | Desktop installation, connections, usage, and source builds |
+| **[Running Assistant](running-assistant.md)** | Setup, everyday controls, backups, and reset |
+| **[Configuration](configuration.md)** | Settings, instructions, and credentials |
+| **[Security](security.md)** | Account isolation, permissions, approvals, and trust boundaries |
+| **[macOS app](https://github.com/rb81/assistant-client)** | Desktop installation, connections, usage, and source builds |
 
 ## Integrations
 
 | Guide | What it covers |
 |---|---|
-| [Email](email-and-artifacts.md) | Mailboxes, attachments, and replies |
-| [Email administration](email-administration.md) | Authenticated `/admin` commands |
-| [Telegram and voice](telegram-and-voice.md) | Bot setup, voice messages, and approvals |
-| [Calendars and meetings](calendar-providers.md) | Google, Outlook, Zoho, and Zoom |
-| [Dropbox](dropbox.md) | Scoped file import and export |
-| [OpenRouter](openrouter.md) | Models, provider settings, and hosted tools |
+| **[Email](email-and-artifacts.md)** | Mailboxes, attachments, and replies |
+| **[Email administration](email-administration.md)** | Authenticated `/admin` commands |
+| **[Telegram and voice](telegram-and-voice.md)** | Bot setup, voice messages, and approvals |
+| **[Calendars and meetings](calendar-providers.md)** | Google, Outlook, Zoho, and Zoom |
+| **[Dropbox](dropbox.md)** | Scoped file import and export |
+| **[OpenRouter](openrouter.md)** | Models, provider settings, and hosted tools |
 
 ## Operating Assistant
 
-- [Advanced configuration](advanced-configuration.md): limits, models, and scaling.
-- [Environment overrides](env-overrides.md): expert settings and precedence.
-- [Docker setup](docker-setup.md): services, mounts, networks, and troubleshooting.
-- [Sandbox](sandbox.md): code execution, network access, and script permissions.
-- [Memory system](memory-system.md): memories, embeddings, and workspace search.
+| Guide | What it covers |
+|---|---|
+| **[Advanced configuration](advanced-configuration.md)** | Limits, models, and scaling |
+| **[Environment overrides](env-overrides.md)** | Expert settings and precedence |
+| **[Docker setup](docker-setup.md)** | Services, mounts, networks, and troubleshooting |
+| **[Sandbox](sandbox.md)** | Code execution, network access, and script permissions |
+| **[Memory system](memory-system.md)** | Memories, embeddings, and workspace search |
 
 ## Development and API reference
 
-- [Codebase guide](codebase.md): layout, contribution, and tests.
-- [Architecture](architecture.md) and [data model](data-model.md): system structure.
-- [Build a client](building-clients.md) and [Management API](management-api.md):
-  connection, schemas, reads, and safe writes.
-- [Agent loop](agent-loop.md), [prompting](prompting.md), and
-  [concurrent jobs](concurrent-job-processing.md): task execution.
-- [Tools reference](tools-reference.md) and [extending tools](extending-tools.md):
-  tool contracts and implementation.
+| Guide | What it covers |
+|---|---|
+| **[Codebase guide](codebase.md)** | Layout, contribution, and tests |
+| **[Architecture](architecture.md)** and **[data model](data-model.md)** | System structure |
+| **[Build a client](building-clients.md)** and **[Management API](management-api.md)** | Connection, schemas, reads, and safe writes |
+| **[Agent loop](agent-loop.md)**, **[prompting](prompting.md)**, and **[concurrent jobs](concurrent-job-processing.md)** | Task execution |
+| **[Tools reference](tools-reference.md)** and **[extending tools](extending-tools.md)** | Tool contracts and implementation |
 
 ## Runtime help
 

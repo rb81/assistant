@@ -49,8 +49,8 @@ the task-agent's exception handling.
 Configuration (`agent.memory.steward.*`): `enabled`, `mode`, `model`, `timeout_seconds`,
 `max_tokens_per_call`, `max_injected_memories`, `max_writes_per_job`,
 `min_importance`, `min_confidence`, `conflict_detection_enabled` and
-`conflict_similarity_threshold` (default 0.85). The wizard's Advanced Settings
-cover automatic stewardship and the injected-memory limit.
+`conflict_similarity_threshold` (default 0.85). Use the **Memory** settings
+for automatic stewardship and the injected-memory limit.
 
 ### Lifecycle
 

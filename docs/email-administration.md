@@ -5,8 +5,8 @@ and embedding models. Ordinary requests still go through the assistant.
 
 ## Approval channels
 
-Choose the delivery channel in setup under **Advanced Settings → Approvals and
-names**: `email`, `telegram`, `both`, or `client`. The shipped default is `email`.
+Choose **Approval delivery** in Settings under **Safety & Approvals > Approvals**:
+`email`, `telegram`, `both`, or `client`. The shipped default is `email`.
 Use `client` for Management API review without requiring an email/Telegram
 approval channel. Client IDs are delivery identities, not authentication;
 review still requires the instance's administrative API credential.

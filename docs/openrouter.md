@@ -80,7 +80,7 @@ Discovery queries `GET /models?output_modalities=all` and caches successful
 catalogs for five minutes per policy. Generation uses `/chat/completions`;
 audio output is assembled from SSE `delta.audio` chunks with provider usage.
 
-Enable the feature in **Advanced Settings → Model preset tool** and select all
+Enable the feature in the **Model preset tool** settings and select all
 models or **Zero Data Retention (ZDR) only**
 (`agent.model_service.zdr_only` / `AGENT_MODEL_SERVICE_ZDR_ONLY`). ZDR-only
 discovery uses OpenRouter's documented [`zdr=true` catalog filter](https://openrouter.ai/docs/api/api-reference/models/get-models);
@@ -108,7 +108,7 @@ limits, supported modalities, and uncertain-request reconciliation.
 
 ## Dedicated text-to-speech
 
-Enable **Advanced Settings → Text-to-speech** independently of model presets.
+Use **Text-to-speech** settings to enable speech independently of model presets.
 `AGENT_TTS_ENABLED` / `agent.tts.enabled` defaults to `false`.
 `AGENT_TTS_ZDR_ONLY` / `agent.tts.zdr_only` defaults to `false`; when enabled it
 filters the model catalog and enforces `provider.zdr=true` for speech. It does

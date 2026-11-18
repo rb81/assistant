@@ -91,6 +91,10 @@ Retry safe reads/acknowledgments with bounded backoff and jitter, not a busy loo
 Cancelled requests (for example when a view closes) are not errors to display. Invalid JSON or incompatible schemas
 are errors, not empty successful responses.
 
+Use `GET /v2/conversations?channel=chat` for chat history and
+`channel=reminder` for scheduled runs. Scheduled runs are read-only; direct
+users to a new chat instead of offering a reply on the run.
+
 ## Mutations and recovery
 
 Submit confirmed typed mutations through `POST /v2/operations` with an

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Assistant" width="160">
+  <img src="docs/assets/assistant-wide.png" alt="Assistant">
 </p>
 
 <h1 align="center">Assistant</h1>
@@ -10,70 +10,49 @@
 
 Assistant is a self-hosted AI assistant that researches, works with files, runs
 code, and helps manage your day. Talk to it through email, Telegram, or the
-[macOS app](https://github.com/rb81/assistant-client). It runs in Docker on
-your computer or server and keeps working while your client is closed.
+[macOS app](https://github.com/rb81/assistant-client). The server runs in Docker
+and keeps working when you close the client.
 
-> **V2 is a prerelease.** Back up your data and test before relying on it for
-> important work. Upgrading from V1? Start with the
-> [transition guide](https://github.com/rb81/assistant/releases/tag/layout-transition).
+Upgrading from V1? Start with the
+[layout transition guide](https://github.com/rb81/assistant/releases/tag/layout-transition).
 
 ## What it can do
 
-- **Research and write:** ask questions, investigate topics, and produce reports.
-- **Work with files:** read documents, process attachments, and create new files.
-- **Run code:** execute scripts in an isolated sandbox, with approval controls.
-- **Manage your day:** set reminders and connect calendars and meetings.
-- **Keep context:** organize related work and retain searchable memories.
-- **Meet you where you are:** use email, Telegram with voice support, or the
-  native macOS app.
-
-For advanced configuration and integrations, start at the
-[documentation index](docs/README.md). Developers can build independent clients
-with the [Management API](docs/building-clients.md); the first-party macOS app is
-maintained in the [client repository](https://github.com/rb81/assistant-client).
+| Feature | What it does |
+|---|---|
+| **Research and writing** | Answer questions, investigate topics, and produce reports. |
+| **Files** | Read documents, process attachments, and create files. |
+| **Code execution** | Run scripts in an isolated sandbox with approval controls. |
+| **Reminders and calendars** | Schedule reminders and connect calendars and meeting services. |
+| **Memory** | Organize related work and retain searchable context. |
+| **Channels** | Use email, Telegram with voice support, or the macOS app. |
 
 ## Requirements
 
-- **macOS or Linux**, with Docker and Docker Compose installed and running.
-  Your account needs Docker access without `sudo`.
-- **curl and tar.** No host Python, Node, or Rust installation is needed.
-- **A model API key** from OpenRouter or another supported OpenAI-compatible provider.
-  Provider usage may cost money.
-- **Internet access** for installation and connected services.
-
-Email and Telegram need their own account/bot credentials if enabled.
-The optional macOS app requires macOS 14 or later; the server can run elsewhere.
+| Requirement | Details |
+|---|---|
+| **macOS or Linux** | Install and start Docker and Docker Compose. Your account needs Docker access without `sudo`. |
+| **curl and tar** | No host Python, Node, Rust, or Git installation is needed. |
+| **Model API key** | Use OpenRouter or another supported OpenAI-compatible provider. Usage may incur charges. |
+| **Internet access** | Required for installation and connected services. |
+| **Optional integrations** | Email and Telegram need separate credentials. The desktop client requires macOS 14 or later. |
 
 ## Install
 
-Copy and paste this into a terminal:
+Run the [installer](install.sh) in a terminal:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rb81/assistant/main/install.sh | sh
 ```
 
-The [installer](install.sh) downloads Assistant, builds its Docker images, and
-starts the local Management API. The default location is
-`~/.local/share/assistant`. The first build can take several minutes.
+The installer downloads Assistant, builds its Docker images, and starts the
+Management API and database. The first build can take several minutes.
 
-Then open setup:
-
-```sh
-"$HOME/.local/bin/assistant"
-```
-
-The terminal interface connects to the local Management API. Follow its prompts
-to configure your assistant, models, and connections. Review and save your
-settings, then choose **Services > Start app**.
-The terminal interface needs at least 76 columns and 24 rows.
-
-Prefer a desktop interface? Use
-[Assistant for macOS](https://github.com/rb81/assistant-client) to connect to a
-local or remote installation, chat, and manage settings, services, and files.
-Its installation and connection instructions live in that client repository.
-
-For custom install locations, updates, backups, and troubleshooting, see
-[Running Assistant](docs/running-assistant.md).
+| Next step | What to do |
+|---|---|
+| **Open setup** | Run the launcher command printed by the installer. Use a terminal at least 76 columns by 24 rows. |
+| **Configure and start** | Set your model, API key, and standing instructions. Choose **Review & save**, then **Save & start**. To start later, choose **Save configuration**, then **Services > Start app** when ready. |
+| **Connect from macOS** | Follow the [client connection guide](https://github.com/rb81/assistant-client#connect) to chat or manage the server from the desktop app. |
 
 ## Before you connect your accounts
 
@@ -82,25 +61,20 @@ For custom install locations, updates, backups, and troubleshooting, see
 > move messages, and starting workers may process mail already present.
 > Restrict allowed senders and outgoing recipients.
 
-Self-hosted does not mean fully local: task content may be sent to your chosen
-model providers and integrations. Assistant can send messages, change connected
-accounts, and execute code. Start with narrow permissions and review approvals.
-The sandbox infrastructure has privileged Docker access.
-
-Keep the Management API private; use SSH for remote administration. Credentials
-and runtime state live under the gitignored `data/` directory, but credential
-files are **not encrypted storage**. Protect and back up your installation.
-Read the [security guide](docs/security.md) before using sensitive data.
+| Boundary | What to know |
+|---|---|
+| **Model providers and integrations** | Self-hosting does not keep all processing on your server. Tasks may send content to the services you configure. |
+| **Permissions** | Start with narrowly scoped accounts and review approval requests. Sandbox infrastructure requires privileged Docker access. |
+| **Administration** | Keep the Management API off public networks and use SSH for remote access. Protect credentials and backups; credential storage is not encrypted by Assistant. |
 
 ## Documentation
 
-Start with the **[documentation index](docs/README.md)** for setup, integrations,
-configuration, and development.
-
-- [Running Assistant](docs/running-assistant.md)
-- [Configuration](docs/configuration.md)
-- [Security](docs/security.md)
-- [macOS client and its documentation](https://github.com/rb81/assistant-client)
-- [Build an independent API client](docs/building-clients.md)
+| Guide | What it covers |
+|---|---|
+| **[Documentation index](docs/README.md)** | All setup, integration, and development guides. |
+| **[Running Assistant](docs/running-assistant.md)** | Installation options, updates, backups, and troubleshooting. |
+| **[Configuration](docs/configuration.md)** | Settings, standing instructions, and credentials. |
+| **[Security](docs/security.md)** | Account isolation, permissions, approvals, and trust boundaries. |
+| **[Build a client](docs/building-clients.md)** | Connect an independent client to the Management API. |
 
 [Apache 2.0 license](LICENSE)

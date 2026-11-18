@@ -2,10 +2,14 @@
 
 ## Setup
 
-Install with the root `install.sh` script, then run `./run.sh` from the
-installation directory to configure the instance. The setup forms write local
-configuration only after **Review & save** and confirmation.
+Follow [Running Assistant](running-assistant.md) to install and open setup.
+The setup forms write configuration only after **Review & save** and
+confirmation.
 Saving settings and applying them to running services are separate steps.
+
+In the terminal, use **Settings > Safety & Approvals > Approvals** for
+approval delivery and the administrator email address. Use **Settings >
+Models & Voice** for the conversation naming model.
 
 Open a section directly when needed:
 
@@ -33,8 +37,8 @@ to configure an installation.
 | `data/config/AGENT.md` | Local runtime instructions |
 | `data/.setup.lock`, `data/backups/` | Setup locking and local backups |
 
-Other mutable state—including PostgreSQL, private files, and the shared
-workspace—lives under `data/`. Do not commit that directory. Defaults are read
+Other runtime state, including PostgreSQL and the shared workspace, lives
+under `data/`. Do not commit that directory. Defaults are read
 from the shipped `src/config/agent.yaml`; there is no runtime copy. Review and
 save the example instructions in Settings, or create a nonempty
 `data/config/AGENT.md` before starting task agents.
@@ -65,7 +69,7 @@ services after changing runtime configuration.
 
 Setup stores credentials in protected, gitignored files and grants only
 authorized services read-only mounts. Alternatively, select the dedicated
-unencrypted Docker credential volume in **Settings → Storage & recovery**.
+unencrypted Docker credential volume in **Settings > Server > Storage & recovery**.
 Back up that volume separately and retain `data/.secrets/state.json`.
 Compose secret mounts do not encrypt credentials; protect the host, Docker
 daemon, disks, and backups. Never put credentials in the shared workspace,

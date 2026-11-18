@@ -107,8 +107,8 @@ channel by content (short message/voice note to Telegram, long or document-style
 reply to email, or the requester's named preference) and does not announce a
 voice note.
 
-Speech generation is independently enabled in **Advanced Settings →
-Text-to-speech**; it does not require Telegram or local transcription. Choose
+Enable speech generation in the **Text-to-speech** settings. It does not
+require Telegram or local transcription. Choose
 an MP3-output model for voice notes. PCM-only output is WAV and can be sent only
 as an ordinary document. See [text-to-speech](tools-reference.md#text-to-speech-tool).
 
@@ -182,7 +182,7 @@ Historical reminders without a saved recipient keep their prior behavior.
 
 ## Management and recovery
 
-Set approval delivery in **Advanced Settings → Approvals and names** to
+Set **Approval delivery** under **Safety & Approvals > Approvals** to
 `telegram` or `both`. Admin identity uses the verified
 `AGENT_ADMIN_EMAIL` mapping described in [approval channels](email-administration.md#approval-channels).
 The mapped ID must also be allowlisted.

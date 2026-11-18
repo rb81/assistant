@@ -50,7 +50,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET credentials` | Credential names and activation states, never saved values |
 | `GET credentials/storage` | Credential storage mode and pending retirement |
 | `POST credentials/database-password/generate` | New password generation before a database exists |
-| `GET conversations` | Human conversation threads with their latest task (`page`, `query`, `channel`) |
+| `GET conversations` | Chat threads and scheduled reminder runs with their latest task (`page`, `query`, `channel`) |
 | `GET records/{collection}` | Paged tasks, projects, memories, reminders, scripts, research |
 | `GET records/{collection}/{id}` | Record details |
 | `GET records/{collection}/{id}/children` | Task/research activity or project objects |
@@ -76,7 +76,9 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET operations` and `GET operations/{id}` | Retained outcomes and progress |
 
 Records and conversations use `page`/`query` (conversations: 25 per page, newest
-activity first, optional `channel` of `client`, `telegram` or `email`); approvals
+activity first). Omit `channel` for both chats and reminder runs, use `chat`
+for chats across all channels, `reminder` for scheduled runs, or `client`,
+`telegram`, or `email` for a single chat channel. Approvals
 use `limit`/`offset`; transcripts use 50-message pages. Task activity returns a
 bounded window of up to 200 calls, with `since` and `truncated`, not numbered
 pages. Workspace domain actions use their documented offsets/limits. Never
@@ -109,8 +111,10 @@ Ordinary clients use `configuration/catalog`, section reads and the separate
 instructions resource, never the legacy bulk/source endpoint. Section reads must
 match the catalog revision; stale drafts require reload, not silent merging.
 Saved secret values are never returned. Groups include a stable `destination`:
-`assistant`, `models`, `connections`, `safety`, or `server`. App preferences
-belong to each client, not the server.
+`assistant`, `models`, `connections`, `safety`, or `server`. Approvals appear
+under Safety; conversation naming appears under Models. Use the catalog's
+group and field presentation metadata rather than hard-coding the layout.
+App preferences belong to each client, not the server.
 
 Set `apply: true` on a reviewed configuration save to activate explicitly.
 The first setup starts/builds required workers; later override-only saves
@@ -179,11 +183,13 @@ for older history.
 
 ### Chats and deletion
 
-`GET conversations` lists threads that people started (from request messages, not
-background jobs), titled by their opening message, with channel, message count,
+`GET conversations` lists chat threads and scheduled reminder runs, titled by
+their opening message, with channel, message count,
 last activity, and the latest task's ID, status, workstream title and
 `workstream_name_status` (`temporary`, `pending`, `naming`, `named`, `failed`). Read the
-transcript with `tasks/{latest_task_id}/messages` and reply with `task.reply`.
+transcript with `tasks/{latest_task_id}/messages`. Use `task.reply` for chats
+only. Scheduled reminder runs are read-only; use `task.start` to ask about a
+run in a new chat.
 Email bodies in the transcript have quoted reply history removed, so each
 message shows only what its sender wrote.
 

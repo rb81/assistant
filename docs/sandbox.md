@@ -358,9 +358,9 @@ services. Runtime database migration preserves existing rules.
 
 ## Upgrade and acceptance checklist
 
-Back up local state before upgrading. From the repository root, run `./run.sh`,
-review **Advanced Settings → Approvals and names**, select `email`, `telegram`,
-`both`, or `client`, and save. Telegram requires a configured, verified
+Back up the installation before upgrading. In Settings, open **Safety & Approvals >
+Approvals**, select `email`, `telegram`, `both`, or `client`, and save.
+Telegram requires a configured, verified
 administrator; email requires the admin address and working mail delivery.
 Client mode uses authenticated Management API review and registered-client notices.
 

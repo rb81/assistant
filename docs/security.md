@@ -68,7 +68,7 @@ Each cleanup step is journaled before database erasure. Failures or interruption
 leave a pending/failed deletion with its identifiers and database records intact for retry;
 some already-completed remote/file removals may be irreversible. Writer services
 stay stopped when a deletion remains incomplete or completion cannot be verified.
-**Settings → Storage & recovery → Resume an incomplete project deletion**
+**Settings > Server > Storage & recovery > Resume an incomplete project deletion**
 retries that original scope. Only writers running when the current operation
 began are restarted automatically; after successful recovery, use Services to
 start writers left stopped by an earlier failure. A successful receipt contains no deleted
@@ -119,7 +119,7 @@ under `/run/secrets` only to relevant services. `data/.env` contains non-secret 
 
 ### Optional Docker volume storage
 
-After saving setup, open **Settings → Storage & recovery → Move credentials to
+After saving setup, open **Settings > Server > Storage & recovery > Move credentials to
 a Docker volume**. This separate confirmed operation requires any settings draft
 to be saved or discarded first. Setup copies credentials into an installation-specific external Docker
 volume, verifies their contents and volume-subpath support, then deletes the
@@ -153,7 +153,7 @@ setup completion and pending credential activation. Removing it prevents setup
 from finding the selected store reliably. The otherwise empty `data/.secrets` directory
 is retained for this metadata.
 
-To reverse the move, open **Settings → Storage & recovery → Move credentials to
+To reverse the move, open **Settings > Server > Storage & recovery > Move credentials to
 host files** and confirm. Setup restores
 restricted `data/.secrets` files (`0700` directory, `0600` files), switches the Compose
 overlay back to file-backed secrets, then handles the cleanup automatically: it

@@ -70,15 +70,9 @@ discovery; a conflicting launcher is rejected rather than creating a second inst
 The source/ref and exact installed commit are retained in owner-only
 `data/.installation`. The default source is `github:rb81/assistant` and the default
 ref is `main`. An existing Git checkout uses its tracked upstream, or requires an
-explicit source when it has none. For a private/local deployment source, configure
-it once (Git is needed for non-GitHub sources), for example on the deployment host:
-
-```sh
-ASSISTANT_INSTALL_DIR="$HOME/assistant" \
-  ASSISTANT_SOURCE="$HOME/assistant.git" ASSISTANT_VERSION=deploy sh install.sh
-```
-
-Subsequent runs remember this source; they do not switch back to public GitHub.
+explicit source when it has none. For another Git source, set
+`ASSISTANT_SOURCE` and `ASSISTANT_VERSION` when installing (Git is needed for
+non-GitHub sources). Subsequent runs remember that source.
 Do not include credentials in a source URL; use the host's normal SSH/Git access.
 Git updates must fast-forward and the checkout must be clean. The installer never
 resets history or discards edits. Managed archive installations likewise reject
@@ -142,7 +136,7 @@ services running independently; Docker itself must start after a host reboot.
 
 **Activity** provides tasks, memories, reminders, projects, and script permissions.
 Record deletion uses a fresh preview and confirmation. If project deletion is
-interrupted, recover through **Settings > Storage & recovery**, then explicitly
+interrupted, recover through **Settings > Server > Storage & recovery**, then explicitly
 restart any writers that remain stopped.
 
 ### What service health verifies

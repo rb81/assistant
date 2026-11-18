@@ -259,11 +259,11 @@ never disclose host start URLs. See [calendar providers](calendar-providers.md).
 including supported image/audio generation and multimodal inputs. It does not
 inherit the assistant's context or tools and does not execute returned tool calls.
 
-Enable it with `./run.sh --section advanced` → **Model preset tool**.
+Enable it in the **Model preset tool** settings.
 It requires `AGENT_LLM_OPENROUTER_API_KEY` and an available shared workspace, even if the
 main assistant uses a different model provider. It is disabled by default.
-Setup's **Advanced Settings → Model preset tool** also selects all models
-(default) or ZDR-only discovery and routing with `AGENT_MODEL_SERVICE_ZDR_ONLY`.
+Select all models (default) or enable ZDR-only discovery and routing with
+`AGENT_MODEL_SERVICE_ZDR_ONLY`.
 The restriction applies to existing presets as well as new ones; it does not
 govern other tools. See [OpenRouter](openrouter.md#optional-preset-based-model-tool).
 
@@ -356,8 +356,7 @@ see [factory reset](running-assistant.md#factory-reset).
 
 `text_to_speech` is an independently enabled, loadable tool for dedicated
 OpenRouter `speech` models, not chat models advertising `audio`.
-Enable **Advanced Settings → Text-to-speech** with
-`./run.sh --section advanced`. It requires an internal `AGENT_LLM_OPENROUTER_API_KEY`
+Enable it in the **Text-to-speech** settings. It requires an internal `AGENT_LLM_OPENROUTER_API_KEY`
 and writable shared workspace, but not model presets, Telegram or transcription.
 Both enablement and the ZDR-only/all-model choice are independent of
 `llm_service`; defaults are disabled and all models.
