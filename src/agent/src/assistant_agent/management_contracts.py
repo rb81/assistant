@@ -600,7 +600,7 @@ class ConversationsRequest(BaseModel):
     request: Literal["conversations.list"]
     page: int = Field(default=0, ge=0, le=1_000_000)
     query: str = Field(default="", max_length=200)
-    channel: Literal["", "client", "telegram", "email"] = ""
+    channel: Literal["", "chat", "client", "telegram", "email", "reminder"] = ""
 
 
 class TaskSummaryRequest(BaseModel):

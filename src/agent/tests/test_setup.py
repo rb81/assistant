@@ -1776,6 +1776,20 @@ server.serve_forever()
             self.assertIsNone(overlay["services"]["task-agent"]["environment"]["AGENT_LLM_OPENROUTER_API_KEY"])
             self.assertEqual(Installation(root).secret_values, instance.secret_values)
 
+    def test_save_removes_retired_timezone_settings_without_changing_assistant_timezone(self):
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            env = data / ".env"
+            overrides = data / "overrides.env"
+            env.write_text("CALENDAR_TIMEZONE=UTC\nAGENT_CALENDAR_TIMEZONE=UTC\n")
+            overrides.write_text(
+                "# Leave this note\nAGENT_REMINDERS_DEFAULT_TIMEZONE=America/Chicago\nAGENT_APP_TIMEZONE=Asia/Dubai\n"
+            )
+            Installation(root).save()
+            self.assertNotIn("CALENDAR_TIMEZONE", env.read_text())
+            self.assertEqual(overrides.read_text(), "# Leave this note\nAGENT_APP_TIMEZONE=Asia/Dubai\n")
+
     def test_unchanged_save_preserves_secret_inode_and_public_tls_modes(self):
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)

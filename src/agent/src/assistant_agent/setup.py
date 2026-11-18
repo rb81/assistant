@@ -177,6 +177,9 @@ def section_settings(values, secret_values, section):
 
 
 OVERRIDES_FILE = "overrides.env"
+RETIRED_TIMEZONE_OVERRIDES = frozenset({
+    "AGENT_CALENDAR_TIMEZONE", "AGENT_REMINDERS_DEFAULT_TIMEZONE", "CALENDAR_TIMEZONE",
+})
 OVERRIDES_HEADER = """\
 # Assistant settings
 #
@@ -298,7 +301,8 @@ def docker_failure(arguments, result):
     elif arguments[:1] == ["compose"]:
         operation = "Docker Compose"
         if reason != "container_missing":
-            detail += " For configuration diagnostics, run `docker compose --env-file data/.env config --quiet` from the repository root."
+            detail += (' For configuration diagnostics, run `ASSISTANT_INSTALL_ROOT="$PWD" '
+                       'docker compose --env-file data/.env config --quiet` from the server repository root.')
     return DockerCommandError(f"{operation} failed (exit status {result.returncode}). {detail}",
                               stdout=result.stdout, reason=reason)
 
@@ -466,7 +470,8 @@ def validate_secret(name, value):
 
 
 class Installation:
-    def __init__(self, root, recovering=False):
+    def __init__(self, root, recovering=False, *, include_credentials=True):
+        """Load the installation; skip credential storage only for metadata reads."""
         self.root = Path(root).resolve()
         self.source = self.root / "src"
         self.data = self.root / "data"
@@ -482,6 +487,8 @@ class Installation:
         self.overrides_original = read_regular(self.overrides_path)
         self.overrides_text = (self.overrides_original or b"").decode("utf-8")
         self.values = {**parse_environment(self.env_text)[0], **parse_environment(self.overrides_text)[0]}
+        for key in RETIRED_TIMEZONE_OVERRIDES:
+            self.values.pop(key, None)
         if read_regular(self.data / "config/agent.yaml") is not None:
             raise SetupError("data/config/agent.yaml is no longer read; settings come from the shipped agent.yaml and "
                              "data/overrides.env. Run: sh migrations/002-shipped-agent-yaml.sh data")
@@ -530,6 +537,9 @@ class Installation:
         if self.use_credential_volume:
             self.use_sudo = (not os.getenv("ASSISTANT_CONTAINER_ADMIN") and platform.system() == "Linux"
                              and bool(self.state.get("credential_volume_sudo")))
+        if not include_credentials:
+            return
+        if self.use_credential_volume:
             from .credential_volume import CredentialVolume
             name = self.state["credential_volume"]
             if not re.fullmatch(r"assistant-credentials-[a-f0-9]{16}", name):
@@ -768,7 +778,8 @@ class Installation:
                if key not in settings and not is_secret_name(key.removesuffix("_FILE")) and original_values.get(key) != value}
         override_updates = {key: value for key, value in self.values.items()
                             if key in settings and original_overrides.get(key) != value}
-        override_removed = {key for key in original_overrides if key in settings and key not in self.values}
+        override_removed = set(original_overrides) & RETIRED_TIMEZONE_OVERRIDES
+        override_removed |= {key for key in original_overrides if key in settings and key not in self.values}
         updates["COMPOSE_FILE"] = str(self.source / "docker-compose.yml") + os.pathsep + str(self.data / ".compose-secrets.yaml")
         updates["SANDBOX_SHARED_ROOT_HOST"] = str(self.root / "data/share")
         updates["ASSISTANT_INSTALL_ROOT"] = str(self.root)

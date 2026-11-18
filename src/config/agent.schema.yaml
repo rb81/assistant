@@ -426,9 +426,6 @@ settings:
     description: "Maximum input-file bytes accepted by the file-conversion tool. Raise only when larger documents are needed and the converter has sufficient resources."
 
   # Reminders
-  agent.reminders.default_timezone:
-    label: Legacy reminder timezone
-    description: "Deprecated and ignored; reminders use the assistant timezone. Change the assistant timezone instead to affect local scheduling."
   agent.reminders.scheduler_poll_interval_seconds:
     label: Reminder polling interval
     description: "Seconds between checks for due reminders. Shorter intervals reduce scheduling delay but increase database activity."
@@ -440,9 +437,6 @@ settings:
     description: "Minutes between integrity and permission rechecks for scheduled scripts. Shorter intervals discover changes sooner but add inspection work."
 
   # Calendar
-  agent.calendar.timezone:
-    label: Legacy calendar timezone
-    description: "Deprecated and ignored; calendar operations use the assistant timezone. Change the assistant timezone instead to affect local calendar times."
   agent.calendar.default_alert_minutes:
     label: Calendar alert lead time
     description: "Default number of minutes before an event for a calendar alert when none is specified. Adjust for more or less advance notice."

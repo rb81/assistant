@@ -148,6 +148,8 @@ def execute(db, config, request):
                 if not task:
                     raise ValueError("Task is unavailable for management replies")
                 thread = task["thread_id"]
+                if thread.startswith("reminder:"):
+                    raise ValueError("Scheduled reminder runs are read-only. Start a new chat to ask about a run.")
                 workstream_id = task["workstream_id"]
                 reply_task_id = task["id"]
                 from .task_deletion import TaskDeletionService
@@ -255,16 +257,28 @@ def execute(db, config, request):
         if page > 1_000_000:
             raise ValueError("Conversation page is out of range")
         channel, search = request.get("channel") or "", (request.get("query") or "")[:200]
-        if channel not in {"", "client", "telegram", "email"}:
+        if channel not in {"", "chat", "client", "telegram", "email", "reminder"}:
             raise ValueError("Unsupported conversation channel")
-        # One row per human conversation thread; jobs from system sources never appear here.
+        # Both scheduler delivery paths reserve the reminder thread namespace.
         query = """
-            WITH threads AS (
+            WITH messages AS (
+              SELECT thread_id, channel, body_text, received_at, id FROM request_messages
+              UNION ALL
+              SELECT e.thread_id, 'reminder', COALESCE(e.body_text, ''), e.received_at, e.id FROM emails e
+              WHERE e.thread_id LIKE 'reminder:%%' AND e.from_address = 'reminder@local'
+                AND NOT EXISTS (SELECT 1 FROM request_messages r WHERE r.email_id = e.id)
+            ), threads AS (
               SELECT thread_id, count(*) AS message_count, max(received_at) AS last_message_at,
-                     (array_agg(channel ORDER BY received_at, id))[1] AS channel,
+                     CASE WHEN thread_id LIKE 'reminder:%%' THEN 'reminder'
+                          ELSE (array_agg(channel ORDER BY received_at, id))[1] END AS channel,
                      (array_agg(body_text ORDER BY received_at, id))[1] AS opening_message
-              FROM request_messages
-              WHERE (%s = '' OR channel = %s)
+              FROM messages
+              WHERE CASE %s
+                  WHEN '' THEN TRUE
+                  WHEN 'reminder' THEN thread_id LIKE 'reminder:%%'
+                  WHEN 'chat' THEN thread_id NOT LIKE 'reminder:%%'
+                  ELSE thread_id NOT LIKE 'reminder:%%' AND channel = %s
+              END
               GROUP BY thread_id
               HAVING %s = '' OR bool_or(body_text ILIKE %s)
             )
@@ -298,9 +312,18 @@ def execute(db, config, request):
             raise ValueError("Task is unavailable")
         thread = task["thread_id"]
         query = """
-            SELECT r.id, 'request' AS kind, r.channel, r.body_text AS body, r.received_at AS created_at,
+            SELECT r.id, 'request' AS kind,
+                   CASE WHEN r.thread_id LIKE 'reminder:%%' AND r.email_id IS NOT NULL AND r.sender_id = 'reminder@local'
+                        THEN 'reminder' ELSE r.channel END AS channel,
+                   r.body_text AS body, r.received_at AS created_at,
                    r.attachments, r.workstream_id, ARRAY[]::text[] AS recipients, NULL::text AS subject
             FROM request_messages r WHERE r.thread_id = %s
+            UNION ALL
+            SELECT e.id, 'request', 'reminder', COALESCE(e.body_text, ''), e.received_at,
+                   '[]'::jsonb, NULL, ARRAY[]::text[], e.subject
+            FROM emails e WHERE e.thread_id = %s AND e.thread_id LIKE 'reminder:%%'
+              AND e.from_address = 'reminder@local'
+              AND NOT EXISTS (SELECT 1 FROM request_messages r WHERE r.email_id = e.id)
             UNION ALL
             SELECT d.id, d.purpose AS kind, d.channel, d.body_text AS body, d.created_at,
                    d.attachments, d.workstream_id, ARRAY[]::text[] AS recipients, NULL::text AS subject
@@ -317,7 +340,7 @@ def execute(db, config, request):
               SELECT 1 FROM deep_research_runs r WHERE r.execution_job_id = j.id AND r.original_thread_id = %s
             )) AND o.status = 'sent'
         """
-        parameters = (thread, thread, thread, thread, thread)
+        parameters = (thread, thread, thread, thread, thread, thread)
         total = None
         if request.get("latest"):
             total = db.fetch_one("SELECT count(*) AS total FROM (" + query + ") messages", parameters)["total"]

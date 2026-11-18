@@ -289,14 +289,12 @@ agent:
     max_input_bytes: 26214400
 
   reminders:
-    default_timezone:
     scheduler_poll_interval_seconds: 2
     max_due_per_tick: 25
     script_check_interval_minutes: 360
 
   calendar:
     enabled: false
-    timezone:
     # Default provider when not specified per-call (google, outlook, or zoho).
     # Override via AGENT_CALENDAR_DEFAULT_PROVIDER env var.
     default_provider:

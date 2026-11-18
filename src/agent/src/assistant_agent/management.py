@@ -154,10 +154,10 @@ class Management:
         self.dirty = False
         self.progress = ""
 
-    def load(self):
+    def load(self, *, include_credentials=True):
         self.progress = "Reading protected local configuration"
         previous = self.installation
-        self.installation = Installation(self.root)
+        self.installation = Installation(self.root) if include_credentials else Installation(self.root, include_credentials=False)
         if previous is not None:
             self.installation.sudo_consent = getattr(previous, "sudo_consent", False)
         self.values = copy.deepcopy(self.installation.values)

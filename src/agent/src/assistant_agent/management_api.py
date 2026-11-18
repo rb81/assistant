@@ -355,9 +355,12 @@ class ManagementService:
         """Release retained private HTTP connections when the API shuts down."""
         self.reader_client.close()
 
-    def backend(self):
+    def backend(self, *, include_credentials=True):
         backend = self.backend_factory(self.root, lambda *args: False)
-        backend.load()
+        if not include_credentials and isinstance(backend, Management):
+            backend.load(include_credentials=False)
+        else:
+            backend.load()
         return backend
 
     @staticmethod
@@ -783,7 +786,7 @@ class ManagementService:
         }
 
     def services(self, details=False):
-        backend = self.backend()
+        backend = self.backend(include_credentials=False)
         return {"services": redacted(backend.services(include_uptime=True) if details else backend.services(), backend)}
 
     def logs(self, service):
@@ -812,7 +815,7 @@ class ManagementService:
         }
 
     def credential_storage(self):
-        installation = self.backend().installation
+        installation = self.backend(include_credentials=False).installation
         return {"mode": "volume" if installation.use_credential_volume else "host-files",
                 "retirement_pending": bool(installation.state.get("previous_credential_volume"))}
 
@@ -953,7 +956,7 @@ class ManagementService:
 
     def conversations(self, page=0, query="", channel=""):
         if type(page) is not int or not 0 <= page <= 1_000_000 or not isinstance(query, str) or len(query) > 200 \
-                or channel not in {"", "client", "telegram", "email"}:
+                or channel not in {"", "chat", "client", "telegram", "email", "reminder"}:
             raise PublicSetupError("Select a supported conversation page, search, and channel.")
         delegated = self._executor_read({"request": "conversations.list", "page": page, "query": query,
                                          "channel": channel})
@@ -1271,7 +1274,7 @@ def create_app(root, token, service=None):
 
     @app.get("/v2/conversations", response_model=ConversationsResponse)
     def conversations_v2(page: int = Query(0, ge=0, le=1_000_000), query: str = Query("", max_length=200),
-                         channel: Literal["", "client", "telegram", "email"] = ""):
+                         channel: Literal["", "chat", "client", "telegram", "email", "reminder"] = ""):
         return service.conversations(page, query, channel)
 
     @app.get("/v2/tasks/{identifier}/activity", response_model=TaskActivityResponse)

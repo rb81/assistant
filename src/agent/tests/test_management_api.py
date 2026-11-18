@@ -45,6 +45,29 @@ def backend():
     return item
 
 
+def test_service_status_and_storage_metadata_do_not_open_the_credential_volume(tmp_path):
+    from assistant_agent.credential_volume import CredentialVolume
+    from assistant_agent.setup import DockerCommandError, Installation
+
+    directory = tmp_path / "data/.secrets"
+    directory.mkdir(parents=True)
+    (directory / "state.json").write_text('{"credential_volume":"assistant-credentials-0123456789abcdef"}')
+    service = ManagementService(tmp_path)
+    try:
+        with patch.object(CredentialVolume, "load", side_effect=DockerCommandError("Docker is unavailable")) as volume, \
+                patch.object(Installation, "docker", side_effect=[
+                    "29.0", '{"services":{"task-agent":{}}}', '{"Service":"task-agent","State":"running"}',
+                ]):
+            assert service.credential_storage() == {"mode": "volume", "retirement_pending": False}
+            assert service.services()["services"][0]["state"] == "running"
+            volume.assert_not_called()
+            with pytest.raises(DockerCommandError, match="Could not load saved credentials"):
+                service.credentials()
+            volume.assert_called_once()
+    finally:
+        service.close()
+
+
 def test_v2_registered_client_chat_and_domain_management_over_http(db, tmp_path, monkeypatch):
     import time
     from assistant_agent.replies import ReplyRouter
@@ -1256,6 +1279,45 @@ def test_conversations_list_human_threads_with_their_latest_task(db):
     search = execute_management(db, AppConfig({}), {"kind": "conversations", "query": "50%"})
     assert [row["thread_id"] for row in search["rows"]] == ["chat-b"]
     assert execute_management(db, AppConfig({}), {"kind": "conversations", "query": "5_%"})["total"] == 0
+
+
+@pytest.mark.parametrize("backfilled", [False, True])
+def test_scheduled_threads_are_read_only_and_separate_from_chats(db, backfilled):
+    from assistant_agent.requests import IncomingRequest, RequestService
+
+    config = AppConfig({})
+    thread = "reminder:123"
+    requests = RequestService(db)
+    requests.receive_request(IncomingRequest(
+        "reminder", "reminder:123:daily", thread, thread, thread, "Scheduled instructions",
+        reply_route={"channel": "telegram", "chat_id": "123"}, metadata={"reminder_id": 123},
+    ))
+    requests.receive_request(IncomingRequest(
+        "client", "human-chat", "human-chat", CLIENT_ID, "human-chat", "A real message",
+    ))
+    db.execute(
+        """INSERT INTO emails(message_id, thread_id, from_address, subject, body_text, received_at)
+           VALUES ('legacy-reminder', 'reminder:456', 'reminder@local', 'Older reminder', 'Legacy instructions', now());
+           INSERT INTO jobs(thread_id, task_summary) VALUES ('reminder:456', 'Older reminder')"""
+    )
+    if not backfilled:
+        db.execute("DELETE FROM request_messages WHERE channel = 'local' AND external_id = 'legacy-reminder'")
+    scheduled = execute_management(db, config, {"kind": "conversations", "channel": "reminder"})
+    assert {row["thread_id"] for row in scheduled["rows"]} == {thread, "reminder:456"}
+    chats = execute_management(db, config, {"kind": "conversations", "channel": "chat"})
+    assert [row["thread_id"] for row in chats["rows"]] == ["human-chat"]
+    for row in scheduled["rows"]:
+        assert row["message_count"] == 1
+        task = row["latest_task_id"]
+        messages = execute_management(db, config, {"kind": "task-messages", "id": task})
+        assert [(msg["kind"], msg["channel"]) for msg in messages["rows"]] == [("request", "reminder")]
+        with pytest.raises(ValueError, match="Scheduled reminder runs are read-only"):
+            execute_management(db, config, {
+                "kind": "task.reply", "task_id": task, "body": "Do it again",
+                "request_key": "must-not-send", "client_id": CLIENT_ID, "confirmed": True,
+            })
+    assert db.fetch_one("SELECT count(*) AS total FROM request_messages WHERE body_text = 'Do it again'")["total"] == 0
+    assert db.fetch_one("SELECT count(*) AS total FROM jobs WHERE thread_id LIKE 'reminder:%'")["total"] == 2
 
 
 def test_task_activity_spans_the_thread_and_pairs_results(db):

@@ -57,11 +57,6 @@ def install_stopper() -> Stopper:
 
 def run_role(role: str) -> None:
     config = load_config()
-    assistant_timezone = str(config.get("agent.app.timezone") or "UTC").strip()
-    for setting in ("agent.calendar.timezone", "agent.reminders.default_timezone"):
-        legacy_timezone = str(config.get(setting) or "").strip()
-        if legacy_timezone and legacy_timezone != assistant_timezone:
-            LOGGER.warning("%s is deprecated and ignored; assistant timezone is %s", setting, assistant_timezone)
     apply_shared_file_umask(config)
     prompt_context_error = None
     if role in PROMPT_FILE_SEED_ROLES:

@@ -224,6 +224,8 @@ class ConfigTest(unittest.TestCase):
                 "AGENT_CONFIG": config_file.name,
                 "AGENT_CALENDAR_ENABLED": "true",
                 "AGENT_CALENDAR_TIMEZONE": "America/New_York",
+                "AGENT_REMINDERS_DEFAULT_TIMEZONE": "America/Chicago",
+                "AGENT_APP_TIMEZONE": "Asia/Dubai",
                 "AGENT_CALENDAR_DEFAULT_PROVIDER": "google",
                 "AGENT_CALENDAR_DEFAULT_ALERT_MINUTES": "15",
                 "AGENT_CALENDAR_GOOGLE_CLIENT_ID": "google-client-id",
@@ -234,7 +236,9 @@ class ConfigTest(unittest.TestCase):
                 config = load_config()
 
         self.assertTrue(config.get_bool("agent.calendar.enabled", False))
-        self.assertEqual(config.get("agent.calendar.timezone"), "America/New_York")
+        self.assertIsNone(config.get("agent.calendar.timezone"))
+        self.assertIsNone(config.get("agent.reminders.default_timezone"))
+        self.assertEqual(config.get("agent.app.timezone"), "Asia/Dubai")
         self.assertEqual(config.get("agent.calendar.default_provider"), "google")
         self.assertEqual(config.get_int("agent.calendar.default_alert_minutes", 30), 15)
         self.assertEqual(config.get("agent.calendar.google.client_id"), "google-client-id")
