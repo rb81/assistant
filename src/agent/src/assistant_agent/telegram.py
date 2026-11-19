@@ -103,6 +103,9 @@ def telegram_destination(config: AppConfig, job: dict[str, Any], recipient: str 
     if recipient == "me":
         if route.get("channel") == "telegram":
             destination = str(route.get("chat_id") or "")
+        elif route.get("channel") == metadata.get("source_channel") == "client" and route.get("client_id"):
+            address = str(config.get("agent.admin.email") or "").strip().lower()
+            destination = str(identities.get(address) or "") if address else ""
         else:
             address = str(route.get("to") or "").lower()
             if not address and metadata.get("source_channel") in (None, "local", "reminder"):

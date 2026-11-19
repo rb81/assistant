@@ -38,6 +38,21 @@ def test_email_to_telegram_identity_and_tool_gate():
         telegram_destination(config(), job, "stranger@example.com")
 
 
+@pytest.mark.parametrize(("source", "client_id", "recipients"), [
+    ("client", "desktop", {}),
+    ("client", "desktop", {"user@example.com": 456}),
+    ("client", "", {"user@example.com": 123}),
+    ("email", "desktop", {"user@example.com": 123}),
+])
+def test_client_telegram_identity_requires_client_origin_and_allowlisted_admin_mapping(source, client_id, recipients):
+    values = config()
+    values.values["agent"]["admin"] = {"email": "user@example.com"}
+    values.values["agent"]["telegram"]["recipients"] = recipients
+    job = {"metadata": {"source_channel": source, "reply_route": {"channel": "client", "client_id": client_id}}}
+    with pytest.raises(TelegramError, match="No authorized Telegram identity"):
+        telegram_destination(values, job)
+
+
 def test_reminder_defaults_to_initiating_channel_and_honors_explicit_channel():
     values = config()
     values.values["agent"]["email"] = {"smtp_host": "smtp.example.net", "smtp_from": "agent@example.net"}
@@ -293,11 +308,15 @@ def test_switching_to_voice_mode_does_not_bypass_prior_uncertain_delivery():
     delivery.client.call.assert_not_called()
 
 
-def test_telegram_runtime_passes_voice_note_through_existing_attachment_scan(tmp_path):
+@pytest.mark.parametrize("metadata", [
+    {"reply_route": {"channel": "telegram", "chat_id": "123"}},
+    {"source_channel": "client", "reply_route": {"channel": "client", "client_id": "desktop"}},
+])
+def test_telegram_runtime_passes_voice_note_through_existing_attachment_scan(tmp_path, metadata):
     values = config()
+    values.values["agent"]["admin"] = {"email": " User@Example.com "}
     values.values["agent"]["filesystem"] = {"shared_root": str(tmp_path), "require_mount": False}
-    runtime = ToolRuntime(MagicMock(), values, {"id": 7, "thread_id": "thread-7",
-                                             "metadata": {"reply_route": {"channel": "telegram", "chat_id": "123"}}})
+    runtime = ToolRuntime(MagicMock(), values, {"id": 7, "thread_id": "thread-7", "metadata": metadata})
     (tmp_path / "speech.mp3").write_bytes(b"ID3audio")
     with patch("assistant_agent.tools.ArtifactProcessor") as processor, patch(
         "assistant_agent.tools.TelegramDelivery"
@@ -306,6 +325,7 @@ def test_telegram_runtime_passes_voice_note_through_existing_attachment_scan(tmp
         delivery.return_value.send.return_value = {"status": "sent"}
         result = runtime.telegram_send("", attachments=[{"path": "speech.mp3", "voice_note": True}])
     assert result["status"] == "sent"
+    assert delivery.return_value.send.call_args.kwargs["destination"] == "123"
     prepared = delivery.return_value.send.call_args.kwargs["attachments"][0]
     assert prepared["voice_note"] is True and prepared["data"] == b"ID3audio"
     processor.return_value.scan_file.assert_called_once()

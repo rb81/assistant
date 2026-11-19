@@ -84,8 +84,11 @@ user; the decoder cannot read the initialization container's original secret.
   artifact pipeline. Voice/audio is scanned and transcribed before routing; the
   same transcript is reused for artifact processing.
 - `telegram_send(text, recipient="me", attachments=...)` is available even in
-  email tasks. `me` means the requester's configured identity. Named recipients
-  must be configured email-to-Telegram mappings, never arbitrary chat IDs.
+  email and client tasks. `me` means the requester's configured identity.
+  For requests from a registered client, `me` uses the `AGENT_ADMIN_EMAIL`
+  entry in `AGENT_TELEGRAM_RECIPIENTS`; the mapped ID must also be in
+  `AGENT_TELEGRAM_ALLOWED_USER_IDS`. Named recipients must be configured
+  email-to-Telegram mappings, never arbitrary chat IDs.
 - Outbound attachment inputs may be a workspace `path`, inline `content` with
   filename, or a clean `artifact_id` from the current conversation. Exact
   bytes are scanned; each batch is limited to 50 MiB and ten attachments.
