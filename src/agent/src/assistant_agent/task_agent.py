@@ -9,11 +9,12 @@ from psycopg.types.json import Jsonb
 from .artifact_processor import public_artifact_manifest, public_attachment_metadata
 from .config import AppConfig, agent_email, agent_name, worker_id
 from .database import Database, json_safe
+from .email_quotes import strip_quoted_history
 from .embedding_scheduler import EmbeddingScheduler
 from .llm_client import LlmClient
 from .memory_manager import MemorySteward
 from .micro_skills import (
-    SKILL_DISCOVERY_TOOLS, SKILL_WRITE_TOOL, SkillContext, SkillStore, completed as skill_call_completed,
+    MAX_QUERY_CHARS, SKILL_DISCOVERY_TOOLS, SKILL_WRITE_TOOL, SkillContext, SkillStore, completed as skill_call_completed,
     preferences_by_parent,
     core_skills, enabled as skills_enabled,
 )
@@ -1074,7 +1075,7 @@ class TaskAgent:
             query = self.skill_query(job, base_context)
             if query != state.query:
                 state.query = query
-                state.cards = self.skill_store.search(query, eligible)
+                state.cards = self.skill_store.search(query, eligible, proactive=True)
         cards = [card for card in state.cards if card["id"] in eligible
                  and card["revision"] == eligible[card["id"]].revision]
         admin = self.skill_requester_is_admin(job)
@@ -1091,17 +1092,21 @@ class TaskAgent:
     def skill_query(self, job, base_context):
         reminder = base_context.get("reminder")
         if reminder:
-            return str(reminder.get("task") or "")[:1600]
+            return str(reminder.get("task") or "")[:MAX_QUERY_CHARS]
         source = (job.get("metadata") or {}).get("source_channel")
         if source not in {None, "email", "local"}:
-            messages = self.db.fetch_all(
-                "SELECT body_text FROM request_messages WHERE thread_id = %s ORDER BY received_at DESC, id DESC LIMIT 2",
+            request = self.db.fetch_one(
+                "SELECT body_text FROM request_messages WHERE thread_id = %s ORDER BY received_at DESC, id DESC LIMIT 1",
                 (job["thread_id"],),
             )
         else:
-            messages = [row for row in reversed(self.db.latest_thread_emails(job["thread_id"], limit=3))
-                        if not self.is_outbound_email_context_item(row)]
-        return "\n".join(str(row.get("body_text") or "")[:800] for row in messages[:2]) or str(job.get("task_summary") or "")[:800]
+            request = next((row for row in reversed(self.db.latest_thread_emails(job["thread_id"], limit=3))
+                            if not self.is_outbound_email_context_item(row)), None)
+            if request is not None:
+                return strip_quoted_history(str(request.get("body_text") or "")[:MAX_QUERY_CHARS])
+        if request is not None:
+            return str(request.get("body_text") or "")[:MAX_QUERY_CHARS]
+        return str(job.get("task_summary") or "")[:800]
 
     def tools_for_call(self, job: dict[str, Any], enabled_tool_names: set[str], near_limit: bool = False) -> list[dict[str, Any]]:
         tools = available_tools(self.config, job, enabled_tool_names) + [GET_TOOL_SPECS_TOOL]

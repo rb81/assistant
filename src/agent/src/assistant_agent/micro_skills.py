@@ -18,6 +18,8 @@ SKILL_DIR = Path(__file__).with_name("skills")
 MAX_BODY_CHARS = 6000
 MAX_ACTIVE_CHARS = 24000
 MAX_QUERY_CHARS = 1600
+SEARCH_MIN_SIMILARITY = 0.45
+SUGGEST_MIN_SIMILARITY = 0.65
 SKILL_ID = re.compile(r"[A-Z][A-Z0-9]*(?:[._-][A-Z0-9]+)*")
 SKILL_DISCOVERY_TOOLS = [
     {"type": "function", "function": {
@@ -112,6 +114,15 @@ def terms(text: str) -> set[str]:
     }
 
 
+def recommendation_keyword_match(query: str, query_terms: set[str], skill: Skill) -> bool:
+    for name in (skill.id, skill.title):
+        phrase = re.findall(r"[^\W_]+", name.casefold())
+        if phrase and re.search(r"\b" + r"[\W_]+".join(map(re.escape, phrase)) + r"\b", query.casefold()):
+            return True
+    meaningful = query_terms - {"last", "next"}
+    return any(len(meaningful & terms(field)) >= 2 for field in (skill.description, *skill.examples))
+
+
 def enabled(config) -> bool:
     return config.get_bool("agent.skills.enabled", False)
 
@@ -152,7 +163,7 @@ class SkillStore:
             )
         }
 
-    def search(self, query, candidates, *, limit=3):
+    def search(self, query, candidates, *, limit=3, proactive=False):
         query = query.strip()[:MAX_QUERY_CHARS]
         if not query or not candidates:
             return []
@@ -160,7 +171,9 @@ class SkillStore:
         lexical = {
             skill.id: len(query_terms & terms(skill.index_text())) / max(len(query_terms), 1)
             for skill in candidates.values()
+            if not proactive or recommendation_keyword_match(query, query_terms, skill)
         }
+        minimum_similarity = SUGGEST_MIN_SIMILARITY if proactive else SEARCH_MIN_SIMILARITY
         semantic = {}
         if self.config.get_bool("agent.embeddings.enabled", True) and not keyword_only.get():
             client = EmbeddingClient(self.config)
@@ -181,10 +194,10 @@ class SkillStore:
                     for row in current:
                         if client.compatible(row, len(vector)):
                             score = cosine_similarity(vector, row["embedding"])
-                            if score is not None and score >= 0.45:
+                            if score is not None and score >= minimum_similarity:
                                 semantic[row["skill_id"]] = score
-        matches = [skill_id for skill_id in candidates if lexical[skill_id] > 0 or skill_id in semantic]
-        matches.sort(key=lambda skill_id: (-(semantic.get(skill_id, 0) + 0.35 * lexical[skill_id]), skill_id))
+        matches = [skill_id for skill_id in candidates if lexical.get(skill_id, 0) > 0 or skill_id in semantic]
+        matches.sort(key=lambda skill_id: (-(semantic.get(skill_id, 0) + 0.35 * lexical.get(skill_id, 0)), skill_id))
         return [candidates[skill_id].card() for skill_id in matches[:max(1, min(8, limit))]]
 
     def refresh_one(self, *, deadline) -> bool:

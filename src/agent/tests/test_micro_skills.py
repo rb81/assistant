@@ -40,10 +40,41 @@ def test_semantic_intent_selects_only_available_current_skills():
         for skill_id in ("EMAIL", "TELEGRAM")
     ]
     with patch("assistant_agent.micro_skills.EmbeddingClient.embed", return_value=[1.0, 0.0]) as embed:
-        result = store.search("Please reach out to my coworker", eligible)
+        result = store.search("Please reach out to my coworker", eligible, proactive=True)
         embed.assert_called_once()
     assert {row["id"] for row in result} == {"EMAIL", "TELEGRAM"}
     assert all("body" not in row for row in result)
+
+
+def test_proactive_search_skips_incidental_calendar_match_but_keeps_strong_intent():
+    db = Mock()
+    store = SkillStore(db, AppConfig({"agent": {"embeddings": {"enabled": True}}}))
+    catalog = core_skills()
+    candidates = {name: catalog[name] for name in ("CALENDAR", "CONTEXT")}
+    db.fetch_all.return_value = [
+        {"skill_id": skill_id, "fingerprint": candidates[skill_id].fingerprint(),
+         "embedding_model": "embeddinggemma", "embedding_dimensions": 2, "embedding": embedding}
+        for skill_id, embedding in (("CALENDAR", [0.6, 0.8]), ("CONTEXT", [1.0, 0.0]))
+    ]
+    with patch("assistant_agent.micro_skills.EmbeddingClient.embed", return_value=[1.0, 0.0]):
+        query = "What did we decide last week?"
+        assert [card["id"] for card in store.search(query, candidates, proactive=True)] == ["CONTEXT"]
+        assert "CALENDAR" in {card["id"] for card in store.search(query, candidates)}
+    with patch("assistant_agent.micro_skills.EmbeddingClient.embed", side_effect=RuntimeError):
+        assert store.search("Thanks for helping last week.", candidates, proactive=True) == []
+        assert [card["id"] for card in store.search("Book a meeting", candidates, proactive=True)] == ["CALENDAR"]
+
+
+def test_proactive_query_ignores_prior_email_and_quoted_calendar_request():
+    db = Mock()
+    agent = TaskAgent(db, AppConfig({}))
+    db.latest_thread_emails.return_value = [
+        {"body_text": "Book a meeting."},
+        {"body_text": "What did we decide?\n\nOn Monday, Alex wrote:\n> Book a meeting."},
+        {"body_text": "I booked a meeting.", "direction": "outbound"},
+    ]
+    job = {"thread_id": "test", "metadata": {"source_channel": "email"}}
+    assert agent.skill_query(job, {}) == "What did we decide?"
 
 
 def test_skill_index_embeds_metadata_and_invalidates_changed_title(db):

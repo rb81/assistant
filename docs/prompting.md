@@ -34,9 +34,12 @@ activates a body. Preferences aren't separate candidates: they load
 automatically with their parent skill on authenticated administrator requests.
 The configured embedding service indexes titles, descriptions,
 and example intents, not instruction bodies. The query uses a bounded excerpt
-of current request text, so only configure an embedding service you trust with
-that data. Retrieval falls back to keyword matching when vectors are missing
-or unavailable. Recommendations never authorize a tool or external action.
+of the latest request or scheduled task, not earlier messages or a quoted
+email thread. Only configure an embedding service you trust with that data.
+Proactive suggestions require a stronger semantic match than explicit skill
+search. Keyword fallback accepts an exact skill name or multiple terms from
+the same description or example, rather than a single incidental word.
+Recommendations never authorize a tool or external action.
 
 `get_tool_specs` activates bound guidance for the following model turn. A
 tool call made without its required guidance is not executed. Confirmed
