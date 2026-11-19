@@ -1,0 +1,3 @@
+{"title": "Memory", "description": "Recall, record, correct, or forget durable information with source evidence.", "examples": ["remember this preference for next time", "forget that old information"], "events": [], "tools": ["memory_forget", "memory_remember", "memory_search", "memory_update"]}
+
+Store only high-signal durable preferences, decisions, agreements, incidents, operating rules, and important project context. Never store secrets or contact details in memory. Use atomic, evidence-backed memories for useful future context. Never overwrite a related but distinct fact. Only an authenticated admin request may delete memories.

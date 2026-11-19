@@ -632,6 +632,16 @@ class ManagementApp:
                       report=False, quiet=background)
         elif route == "Credentials":
             self.render()
+        elif route in {"Skills", "Skill"}:
+            action, arguments = (
+                ("skills.list", {"offset": loc.page * 8, "limit": 8, "query": loc.query})
+                if route == "Skills" else ("skills.read", {"id": loc.record["id"]})
+            )
+            def loaded(data):
+                self.cache[key] = data
+                if self.key() == key:
+                    self.render()
+            self.task("Reading skills", partial(self.backend.client.query, action, arguments), loaded, report=False)
         elif route == "Instructions" and self.form_group != "instructions":
             def loaded(value):
                 self.cache[key] = value
@@ -763,6 +773,8 @@ class ManagementApp:
             self.edit_group(route.split(":", 1)[1])
         elif route == "Instructions":
             self.instructions()
+        elif route in {"Skills", "Skill"}:
+            self.skills_screen()
         elif route == "Review":
             self.review_screen()
         elif route == "Storage":
@@ -832,6 +844,7 @@ class ManagementApp:
                        and not metadata.get(key, {}).get("parent")]
             if destination == "assistant":
                 choices.append(("Standing instructions", "Instructions"))
+                choices.append(("Skills", "Skills"))
             elif destination == "server":
                 choices += [("Services & health", "Services"), ("Search maintenance", "Search"),
                             ("Storage & recovery", "Storage"), ("Credentials", "Credentials")]
@@ -1311,6 +1324,74 @@ class ManagementApp:
                      self.action("Discard this form", self.discard_form)])
         self.control_topics[self.form["instructions"].control] = ("Assistant instructions", page_help("Instructions"))
         self.app.layout.focus(self.form["instructions"])
+
+    def skills_screen(self):
+        data = self.cache.get(self.key())
+        route = self.location.route
+        if data is None:
+            self.put("Skills", "", [text(self.read_errors.get(self.key()) or "Reading skills...")],
+                     actions=[self.action("Retry", self.refresh, help_text="Read skills from the Management API.")])
+            return
+        if route == "Skills":
+            rows = [self.action(row["title"] + (" [locked]" if row["locked"] else ""),
+                                partial(self.go, "Skill", row), help_text=row["description"])
+                    for row in data["skills"]]
+            actions = [self.action("Add skill", partial(self.edit_skill, None), help_text="Create an editable custom skill."),
+                       self.action("Search", self.search, help_text="Filter the skill catalog."),
+                       self.action("Refresh", self.refresh, help_text="Read current revisions.")]
+            if self.location.page:
+                actions.append(self.action("Previous", partial(self.turn, -1), help_text="Show the previous page."))
+            if (self.location.page + 1) * 8 < data["total"]:
+                actions.append(self.action("Next", partial(self.turn, 1), help_text="Show the next page."))
+            self.put("Skills", "Shipped workflows are locked. Customize them with editable preference overlays.",
+                     rows or [text("No matching skills.")], actions=actions)
+            return
+        actions = []
+        if data["locked"]:
+            actions.append(self.action("Add preferences", partial(self.edit_skill, None, data["id"]),
+                                       help_text="Create a separately editable preference overlay for this skill."))
+        else:
+            actions.extend([
+                self.action("Edit skill", partial(self.edit_skill, data), help_text="Review and save a new revision."),
+                self.action("Delete skill", partial(self.delete_skill, data), danger=True,
+                            help_text="Delete the reviewed revision with administrator confirmation."),
+            ])
+        self.put(data["title"], data["description"],
+                 [text(f"{data['id']}  /  revision {data['revision']}" + ("  /  locked" if data["locked"] else "")),
+                  self.readable(data["body"])], actions=actions)
+
+    def skill_operation(self, action, arguments):
+        return self.backend.client.operation({
+            "operation": "domain.mutate", "action": "skills." + action,
+            "arguments": arguments, "confirmed": True,
+        })
+
+    def edit_skill(self, skill, overlay=None):
+        values = skill or {}
+        fields = (() if skill else (("id", "Skill ID", False, f"{overlay}.PREFERENCES" if overlay else ""),)) + (
+            ("title", "Title", False, values.get("title", "")),
+            ("description", "Description", False, values.get("description", "")),
+            ("body", "Skill instructions", False, values.get("body", "")),
+        )
+        def save(changes):
+            if skill:
+                changes = {**changes, "id": skill["id"], "revision": skill["revision"]}
+            elif overlay:
+                changes = {**changes, "overlay_for": overlay}
+            return self.skill_operation("edit" if skill else "create", changes)
+        def validate(changes):
+            if any(not value.strip() for value in changes.values()):
+                raise SetupError("Fill in each skill field before publishing.")
+        self.confirm_action("Save skill", "Review the instructions before publishing. Do not include secrets.",
+                            "Publish", save, fields=fields, validate=validate)
+
+    def delete_skill(self, skill):
+        def done(_):
+            self.cache.clear()
+            self.back()
+        self.confirm_action("Delete skill", f"Delete {skill['id']} revision {skill['revision']} from the active catalog?",
+                            "Delete", partial(self.skill_operation, "delete",
+                                              {"id": skill["id"], "revision": skill["revision"]}), done=done)
 
     def review(self):
         if not self.loaded:

@@ -308,6 +308,12 @@ settings:
   agent.prompt.max_context_file_bytes:
     label: Instruction file read limit
     description: "Maximum bytes read from a context instruction file for prompts. Larger limits include more instruction text but increase model input size and cost."
+  agent.skills.enabled:
+    label: Contextual micro-skills
+    description: "Recommend matching skills and load workflow guidance only when needed."
+  agent.skills.allow_assistant_writes:
+    label: Let the Assistant publish skill changes
+    description: "Allow the Assistant to create and revise editable skills after authenticated administrator feedback. Shipped skills remain locked and deletions still require administrator confirmation."
 
   # Memory
   agent.memory.working_context_days:

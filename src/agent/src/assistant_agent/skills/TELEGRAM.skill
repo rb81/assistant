@@ -1,0 +1,5 @@
+{"title": "Telegram", "description": "Contact someone on Telegram, reply to a linked chat, or send a voice note or document.", "examples": ["I need you to contact Alex for me", "send a quick message to my colleague"], "events": ["reply.telegram"], "tools": ["telegram_send"]}
+
+Telegram suits short messages, quick confirmations and voice notes; prefer email for long or document-style content unless the user asked for Telegram. To send a voice note, generate speech with text_to_speech and call telegram_send with attachments=[{path: the generated audio path, voice_note: true}] and no text. Delivery converts it to a native voice message automatically. Let the voice note stand alone: never announce, preface, caption or summarize it in text. Send audio as a plain file only when the user asked for a file. Never retry uncertain delivery or regenerate audio merely to retry a send.
+
+If Telegram is the automatic reply route, use task_complete.response for ordinary text on that route. If a separate telegram_send call delivered the answer or voice note, set task_complete.already_delivered=true. Write as yourself; do not speak in the administrator's voice.

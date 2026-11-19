@@ -187,6 +187,17 @@ class DatabaseResetTest(unittest.TestCase):
         self.assertEqual(self.db.get_state("memory_revision")["reason"], "factory reset")
         self.assertEqual(self.count("jobs"), 1)
 
+    def test_selective_skill_reset_clears_custom_skills_and_index_without_touching_jobs(self):
+        self.seed()
+        self.db.execute("INSERT INTO micro_skills(id, title, description, body, overlay_for) VALUES ('MY.EMAIL', 'Email', 'Preferences', 'Body', 'EMAIL')")
+        self.db.execute("INSERT INTO micro_skill_events(skill_id, revision, action, actor, title, description, body) "
+                        "VALUES ('MY.EMAIL', 1, 'create', 'admin', 'Email', 'Preferences', 'Body')")
+        self.db.execute("INSERT INTO micro_skill_embeddings VALUES ('EMAIL', 'fingerprint', 'model', 1, ARRAY[1.0])")
+        self.assertEqual(self.reset(["skills"]), {
+            "micro_skill_events": 1, "micro_skill_embeddings": 1, "micro_skills": 1,
+        })
+        self.assertEqual(self.count("jobs"), 1)
+
 
 class ResetOrchestrationTest(unittest.TestCase):
     def instance(self, root):

@@ -549,6 +549,12 @@ class WorkspaceIndex:
         refreshed = refresh_embeddings(self.db, self.config, deadline=time.monotonic() + 5)
         if refreshed:
             LOGGER.info("automatic help embedding refresh: %s", refreshed)
+        from .micro_skills import SkillStore, enabled as skills_enabled
+        if skills_enabled(self.config):
+            store = SkillStore(self.db, self.config)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and store.refresh_one(deadline=deadline):
+                pass
 
     def run_idle_once(self, scan=True) -> int:
         scheduler = EmbeddingScheduler(self.db, self.config)

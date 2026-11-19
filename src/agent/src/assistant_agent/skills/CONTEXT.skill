@@ -1,0 +1,3 @@
+{"title": "Context", "description": "Find prior conversations, tasks, decisions, or side effects before acting.", "examples": ["what did we decide last week", "have you already sent it"], "events": [], "tools": ["context_search", "job_read", "job_search"]}
+
+Use context_search to recall past actions, conversations, or decisions across all data sources. Use job_search and job_read to inspect specific past jobs and their outcomes, outbound emails, and linked reminders or projects.

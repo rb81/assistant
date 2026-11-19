@@ -233,6 +233,20 @@ details and leaves a read-only `[Deleted task]` marker, while preserving the
 transcript, attachments, and shared workstream data. Active/dependent work blocks
 deletion. This is not transcript erasure or workstream deletion.
 
+### Skills
+
+The `skills.manage` capability advertises the skill catalog. Use
+`POST /v2/query` with `skills.list` (`query`, `offset`, `limit`) to read metadata
+and `skills.read` (`id`) to read the selected instruction body.
+
+Use `POST /v2/operations` with `operation: "domain.mutate"` and
+`confirmed: true` for `skills.create`, `skills.edit`, and `skills.delete`.
+Poll the operation before refreshing the catalog. Creation takes an ID,
+title, description, body and optional `overlay_for` referencing a locked
+skill. Edit and delete require the revision returned by `skills.read`.
+Locked skills cannot be edited or deleted. See [Prompting and context](prompting.md)
+for access, lifecycle, and publishing settings.
+
 ### Files, approvals, and destructive operations
 
 Workspace operations are contained to permitted paths. Writes require a clean

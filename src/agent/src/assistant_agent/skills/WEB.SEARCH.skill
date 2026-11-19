@@ -1,0 +1,5 @@
+{"title": "Web Search", "description": "Find current facts, live information, and source-backed evidence on the web.", "examples": ["what is the latest news", "verify this with current sources"], "events": [], "tools": ["web_search"]}
+
+Search the live web for current, time-sensitive, or source-backed information. Returns citations and annotations. Use for facts that may have changed since training.
+
+For latest/current/news requests, search before relying on cached files or earlier notes unless the requester instructs otherwise. Stored email is not live web evidence. Describe a configured search as unavailable only if it returns an explicit error.

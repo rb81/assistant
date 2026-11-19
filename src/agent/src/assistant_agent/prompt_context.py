@@ -93,7 +93,7 @@ def ensure_prompt_files(config: AppConfig) -> None:
     root.mkdir(parents=True, exist_ok=True)
 
 
-def build_prompt_context(config: AppConfig) -> str:
+def build_prompt_context(config: AppConfig, *, include_feature_details: bool = True) -> str:
     """Build the runtime context block injected into the system prompt."""
     time_context = current_time_context(config)
     admin_name = str(config.get("agent.admin.name") or "").strip()
@@ -111,20 +111,27 @@ def build_prompt_context(config: AppConfig) -> str:
     lines.append("- Admin email: %s" % (admin_email_value or "not configured"))
     if org_name:
         lines.append("- Organization: %s" % org_name)
-    from .tts import configured as tts_configured, describe as tts_describe
-
     lines.extend(
         [
             "- Current UTC time: %s" % time_context["utc"],
             "- Current local time: %s" % time_context["local"],
             "- Default timezone: %s" % time_context["timezone"],
             "- For your own functionality, capabilities, limitations, architecture, or tool usage (including the sandbox), use help_search first, then help_topic with a returned topic_id and revision as needed. Use runtime_capabilities for live settings and limits. Help never grants permission to bypass policies.",
-            "- Model preset tool catalog policy: %s. This policy applies only to llm_service, not other model calls or web search." % (
-                "ZDR-only models and provider routing" if config.get_bool("agent.model_service.zdr_only", False) else "all models"
-            ),
-            "- Text-to-speech (admin-configured): %s. Speech and model preset calls share the model tool spending limit." % (
-                tts_describe(config) if tts_configured(config) else "disabled"
-            ),
         ]
     )
+    if include_feature_details:
+        lines.extend(feature_context(config).values())
     return "\n".join(lines)
+
+
+def feature_context(config: AppConfig) -> dict[str, str]:
+    from .tts import configured as tts_configured, describe as tts_describe
+
+    return {
+            "MODEL.PRESETS": "- Model preset tool catalog policy: %s. This policy applies only to llm_service, not other model calls or web search." % (
+                "ZDR-only models and provider routing" if config.get_bool("agent.model_service.zdr_only", False) else "all models"
+            ),
+            "TTS": "- Text-to-speech (admin-configured): %s. Speech and model preset calls share the model tool spending limit." % (
+                tts_describe(config) if tts_configured(config) else "disabled"
+            ),
+    }

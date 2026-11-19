@@ -91,6 +91,8 @@ PAGE_HELP = {
     "Settings:server": "Manage services, diagnostics, storage and recovery. Starting services can process existing requests.",
     "Advanced": "Tune privacy, task limits, email behavior, memory, web search, script networking, extra model "
                 "tools, speech and notifications. Move to an option to see what it controls before opening it.",
+    "Skills": "Search the skill catalog. Shipped skills are locked; add a custom skill or a preference overlay.",
+    "Skill": "Read exact instructions and revision. Custom skills can be edited or deleted after confirmation.",
     "Instructions": "Edit the assistant's standing instructions: its role, preferred behavior and boundaries. "
                     "These are guidance, not enforced security permissions. Keep draft retains edits in memory; "
                     "Review & save writes them to data/config/AGENT.md.",

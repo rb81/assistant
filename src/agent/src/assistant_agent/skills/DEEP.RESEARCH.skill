@@ -1,0 +1,3 @@
+{"title": "Deep Research", "description": "Request or check a guided multi-step research run.", "examples": ["research this thoroughly and produce a report"], "events": [], "tools": ["deep_research_request", "deep_research_status"]}
+
+Use for substantial research that benefits from iterative search. After starting, stop — the research agent runs asynchronously and returns findings to this job.

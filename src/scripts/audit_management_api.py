@@ -362,6 +362,7 @@ AGENT_MEDIATED_TOOLS = {
     "llm_service", "memory_forget", "memory_remember", "memory_search", "memory_update",
     "network_access_request", "reminder_cancel", "reminder_create", "reminder_list", "reminder_update",
     "request_input", "request_limit_increase", "runtime_capabilities", "script_approval_request",
+    "skill_list", "skill_search", "skill_load", "skill_save",
     "script_development_review", "telegram_send", "text_to_speech", "web_search", "workstream_attach",
     "workstream_list", "workstream_read",
 }
@@ -821,6 +822,7 @@ def audit():
         if access == "write":
             present = present and "domain.mutate" in operations
         test = None
+        test_path = "src/agent/tests/test_management_domains.py"
         if action in {"contacts.search", "contacts.read", "contacts.create", "contacts.update", "contacts.delete"}:
             test = "test_contact_management_requires_current_versions_and_rejects_unknown_arguments"
         elif action in {"workspace.list", "workspace.read", "workspace.write", "workspace.mkdir"}:
@@ -854,7 +856,9 @@ def audit():
             test = "test_management_email_and_telegram_sends_persist_delivery_and_distinguish_operations"
         elif action == "scripts.execute":
             test = "test_management_script_execution_preserves_sandbox_and_approval_boundary"
-        test_path = "src/agent/tests/test_management_domains.py"
+        elif action.startswith("skills."):
+            test_path = "src/agent/tests/test_management_api.py"
+            test = "test_v2_registered_client_chat_and_domain_management_over_http"
         requirements.append({
             "name": "domain." + action, "source": "explicit user-facing domain action",
             "api": " ".join(required_route), "selector": action,

@@ -1,0 +1,3 @@
+{"title": "Calendar", "description": "Check availability and propose or manage calendar events.", "examples": ["find a free hour next week", "book a meeting", "what is on my agenda"], "events": [], "tools": ["calendar_create_event", "calendar_delete_event", "calendar_list_busy", "calendar_list_calendars", "calendar_list_events", "calendar_sync", "calendar_update_event"]}
+
+Calendar writes are managed-only: create events through calendar_create_event, but calendar_update_event and calendar_delete_event can only act on events previously created and recorded by the calendar gateway. Never double-book or commit without admin approval.

@@ -41,13 +41,24 @@ Rules:
 - Keep source attributions in saved notes or summaries when search results support claims.
 """
 
+RESEARCH_FEATURE_GUIDANCE = {
+    "- Use web_search when current/live web evidence is needed.",
+    "- email_search only searches stored emails; it is not web search.",
+    "- For latest/current/news tasks, call web_search before relying on cached files or prior notes unless the requester explicitly says not to.",
+    "- Do not claim web search is unavailable unless web_search returns an explicit error.",
+    "- Save durable findings, source notes, and deliverables with File tools under the shared workspace when useful.",
+    "- For substantial result sets, write findings to files incrementally instead of keeping all details in the conversation.",
+}
+
 
 def compact_json(value: Any) -> str:
     return json.dumps(value, default=str, ensure_ascii=True)
 
 
 def research_system_prompt(config: AppConfig) -> str:
-    return RESEARCH_SYSTEM_PROMPT_TEMPLATE % {"agent_name": agent_name(config)}
+    from .micro_skills import enabled
+    prompt = RESEARCH_SYSTEM_PROMPT_TEMPLATE % {"agent_name": agent_name(config)}
+    return "\n".join(line for line in prompt.splitlines() if line not in RESEARCH_FEATURE_GUIDANCE) if enabled(config) else prompt
 
 
 def truncate_text(value: Any, limit: int = 6000) -> str:
@@ -155,6 +166,14 @@ class DeepResearchAgent:
         )
         messages = self.build_messages(run, execution_job)
         tools = research_tools(self.config)
+        from .micro_skills import SkillContext, core_skills, enabled as skills_enabled
+        skills = core_skills() if skills_enabled(self.config) else {}
+        tool_names = {tool_name(tool) for tool in tools}
+        if skills:
+            skills = {key: skill for key, skill in skills.items() if tool_names.intersection(skill.tools)}
+            execution_job["_research_skills"] = (SkillContext(), skills, tool_names)
+            if "WEB.SEARCH" in skills:
+                execution_job["_research_skills"][0].activate(skills["WEB.SEARCH"], "event")
         max_iterations = self.config.get_int("agent.deep_research.max_iterations", 30)
 
         for _iteration in range(max_iterations):
@@ -167,7 +186,12 @@ class DeepResearchAgent:
                 input_data={"message_count": len(messages), "tool_names": [tool_name(item) for item in tools]},
             )
             started = datetime.now(timezone.utc)
-            response = llm.chat(messages, tools)
+            active_messages = messages
+            if skills:
+                guidance = execution_job["_research_skills"][0].messages(skills, [], admin=False)
+                if guidance:
+                    active_messages = messages[:1] + [guidance] + messages[1:]
+            response = llm.chat(active_messages, tools)
             duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             choice = response["choices"][0]
             response_message = choice["message"]
@@ -200,6 +224,9 @@ class DeepResearchAgent:
                 terminal = self.handle_tool_call(run, execution_job, messages, tool_call)
                 if terminal:
                     return
+                if execution_job.pop("_research_skill_deferred", False):
+                    context_agent.close_open_tool_calls(messages)
+                    break
 
         self.fail_run(run, "deep research max iterations reached")
 
@@ -323,6 +350,21 @@ class DeepResearchAgent:
         except json.JSONDecodeError:
             arguments = {}
         self.log_event(run["id"], "tool_call", tool_name=name, input_data=arguments)
+        if research_skills := execution_job.get("_research_skills"):
+            state, catalog, allowed = research_skills
+            missing = [skill for skill in catalog.values()
+                       if name in skill.tools and (skill.id, skill.revision) not in state.visible]
+            if missing or name not in allowed:
+                for skill in reversed(missing):
+                    state.prioritize(skill)
+                result = {"status": "not_executed", "skills": [skill.id for skill in missing],
+                          "message": ("Read the supplied skill guidance and reconsider the call."
+                                      if missing else "This tool is unavailable to the research worker.")}
+                messages.append({"role": "tool", "tool_call_id": tool_call["id"],
+                                 "name": name, "content": compact_json(result)})
+                self.log_event(run["id"], "tool_result", tool_name=name, output_data=result)
+                execution_job["_research_skill_deferred"] = True
+                return False
 
         if name == "research_complete":
             summary = str(arguments.get("summary") or "Research completed.").strip()
@@ -366,6 +408,10 @@ class DeepResearchAgent:
                 duration_ms = None
                 self.log_event(run["id"], "error", tool_name=name, input_data=arguments, output_data=result)
             else:
+                if research_skills:
+                    from .micro_skills import completed
+                    if completed(result):
+                        state.succeeded(name, catalog)
                 result = self.prepare_tool_result_for_model(execution_job["id"], name, result)
                 self.increment_tool_count(run["id"])
                 self.log_event(

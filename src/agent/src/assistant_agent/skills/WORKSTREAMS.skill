@@ -1,0 +1,3 @@
+{"title":"Workstreams","description":"Find threads and linked workstream objects, or attach a contact or file without moving ownership.","examples":["find the conversation about that project","attach this document to the current workstream"],"tools":["workstream_attach","workstream_list","workstream_read"]}
+
+Use workstream_list to find the workstream ID rather than guessing it. Use workstream_read with the appropriate section and cursor to inspect history, linked objects, or executions. Check object identity and ownership before attaching a file or contact. Attaching a reference does not transfer ownership or change the underlying object. Do not copy or disclose results a requester is not entitled to see.

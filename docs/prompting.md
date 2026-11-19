@@ -1,8 +1,9 @@
 # Prompting and context
 
-The task agent composes a system message from the operator-maintained
-`data/config/AGENT.md`, generated runtime identity/time context, and tool
-instructions. The configured prompt filename is the `agent.prompt.agent_file`
+The task agent composes its prompt from built-in operating rules,
+runtime identity and time, operator-maintained personality and preferences in
+`data/config/AGENT.md`, and only the feature guidance needed for the task.
+The configured prompt filename is the `agent.prompt.agent_file`
 setting (`AGENT_PROMPT_AGENT_FILE` in `data/overrides.env`).
 Setup can initialize the local prompt from `src/config/AGENT.md.example`.
 
@@ -13,9 +14,46 @@ prompt. Task-agent reads at most `agent.prompt.max_context_file_bytes` bytes
 (65536 by default).
 
 The runtime context includes configured agent/admin identity, organization
-information when present, current time, timezone, help-tool guidance, and model/
-speech policy. Documentation is retrieved through `help_search` and `help_topic`,
+information when present, current time, timezone, and help-tool guidance.
+Model preset and speech policy appear with their respective skills.
+Documentation is retrieved through `help_search` and `help_topic`,
 not a shared-workspace documentation directory.
+
+## Contextual skills
+
+| Workflow | Locked skills and activation |
+|---|---|
+| Communication and identity | `EMAIL`, `TELEGRAM`, and `CONTACTS`; email and Telegram reply routes also activate their own guidance. |
+| Scheduling and meetings | `CALENDAR`, `ZOOM`, and `REMINDER.SCHEDULE` for their tool families. Notification-only reminders still do not invoke a model. |
+| Media and models | `MODEL.PRESETS` and `TTS`, each with its own live configuration detail. |
+| Workspace and automation | `FILES`, `DROPBOX`, `WORKSTREAMS`, and `SCRIPTS`; approved scheduled script runs activate `SCRIPTS` without asking again for approval. |
+| Recall and research | `MEMORY`, `CONTEXT`, `WEB.SEARCH`, and `DEEP.RESEARCH`. The dedicated research worker shares applicable locked guidance but keeps its narrower tool set. |
+
+`skill_list` and `skill_search` return candidate descriptions; `skill_load`
+activates a body. The configured embedding service indexes titles, descriptions,
+and example intents, not instruction bodies. The query uses a bounded excerpt
+of current request text, so only configure an embedding service you trust with
+that data. Retrieval falls back to keyword matching when vectors are missing
+or unavailable. Recommendations never authorize a tool or external action.
+
+`get_tool_specs` activates bound guidance for the following model turn. A
+tool call made without its required guidance is not executed. Confirmed
+success replaces tool-bound guidance with a recall reference; uncertain or
+failed actions do not consume it. Checkpoints carry revision references instead
+of copying skill bodies. Existing approval, retry, and delivery checks still
+apply in code.
+
+Use **Settings > Assistant > Skills** in the macOS app or TUI to inspect skill
+files and manage editable skills. Locked files ship with the application.
+Custom skills and preference overlays are used in authenticated administrator
+requests. Direct Assistant publishing is off by default
+(`AGENT_SKILLS_ALLOW_ASSISTANT_WRITES`); enabling it never authorizes deletion.
+Deleting an editable revision removes it from the active catalog, not the
+audit history. Do not put credentials in any skill or overlay.
+
+Upgrades leave existing `AGENT.md` files unchanged. Compare yours with the
+new example and remove duplicated operational prose only after review.
+`AGENT_SKILLS_ENABLED=false` disables contextual loading for rollback.
 
 ## Task context
 

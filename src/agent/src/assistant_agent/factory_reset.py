@@ -33,6 +33,10 @@ CATEGORIES = {
         requires=("jobs",), reason="jobs reply to and quote the email that started them",
         notes="Messages stay in the mailbox; see the mailbox position option."),
     "memories": Category("Memories and memory history", tables=("memory_events", "agent_memories")),
+    "skills": Category(
+        "Custom micro-skills, preference overlays and skill history",
+        tables=("micro_skill_events", "micro_skill_embeddings", "micro_skills"),
+        notes="Shipped skills remain available and their search index is rebuilt automatically."),
     "reminders": Category("Reminders (including recurring ones)", tables=("reminders",)),
     "calendar": Category(
         "Calendar and Zoom records the assistant created",

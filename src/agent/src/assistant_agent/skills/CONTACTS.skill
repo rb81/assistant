@@ -1,0 +1,3 @@
+{"title": "Contacts", "description": "Find or maintain verified contact details and relationships.", "examples": ["find Alex\u2019s address", "look up the number for my colleague"], "events": [], "tools": ["contact_create", "contact_delete", "contact_read", "contact_search", "contact_update"]}
+
+Use contact tools for storing, finding, updating, or deleting contact details. Do not use memory tools for contacts.

@@ -70,7 +70,8 @@ class ZoomMeetingTest(unittest.TestCase):
                 self.service.request("PATCH", "meetings/123", {})
 
     def test_zoom_tools_are_loadable_and_calendar_supports_linking(self):
-        from assistant_agent.tools import available_function_names, FUNCTION_TOOLS, TOOL_GUARDRAILS
+        from assistant_agent.micro_skills import core_skills
+        from assistant_agent.tools import available_function_names, FUNCTION_TOOLS
         available = available_function_names(self.service.config)
         self.assertIn("zoom_create_meeting", available)
         self.assertIn("zoom_update_meeting", available)
@@ -78,7 +79,7 @@ class ZoomMeetingTest(unittest.TestCase):
         self.assertIn("zoom_meeting_id", calendar["parameters"]["properties"])
         self.assertIn("automatically appends", calendar["description"])
         self.assertIn("description", calendar["parameters"]["properties"]["zoom_meeting_id"]["description"])
-        self.assertIn("do not also insert the URL", TOOL_GUARDRAILS["Zoom"]["text"])
+        self.assertIn("do not also insert the URL", core_skills()["ZOOM"].body)
         update = next(tool["function"] for tool in FUNCTION_TOOLS if tool["function"]["name"] == "calendar_update_event")
         self.assertIn("not automatically reinserted", update["description"])
 

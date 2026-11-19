@@ -139,9 +139,33 @@ def test_v2_registered_client_chat_and_domain_management_over_http(db, tmp_path,
         read = client.post("/v2/query", headers=headers,
                            json={"action": "contacts.read", "arguments": {"contact_id": contact_id}})
         assert read.status_code == 200 and read.json()["contact"]["first_name"] == "HTTP contact"
+        def skill_request(action, **arguments):
+            return {"operation": "domain.mutate", "action": "skills." + action, "arguments": arguments}
+
+        assert client.post("/v2/query", headers={"Host": "127.0.0.1"},
+                           json={"action": "skills.list"}).status_code == 401
+        document = {"id": "RELEASE.NOTES", "title": "Release notes", "description": "Compose notes",
+                    "body": "Use the reviewed release notes guide."}
+        operation("create-skill-http", **skill_request("create", **document))
+        read_skill = client.post("/v2/query", headers=headers,
+                                  json={"action": "skills.read", "arguments": {"id": document["id"]}})
+        assert read_skill.json()["body"] == document["body"]
+        operation("edit-skill-http", **skill_request(
+            "edit", **{**document, "title": "Reviewed releases"}, revision=read_skill.json()["revision"]))
+        edited_skill = client.post("/v2/query", headers=headers,
+                                    json={"action": "skills.read", "arguments": {"id": document["id"]}}).json()
+        assert edited_skill["title"] == "Reviewed releases"
+        delete = skill_request("delete", id=document["id"], revision=edited_skill["revision"])
+        assert client.post("/v2/operations", headers={**headers, "Idempotency-Key": "unconfirmed-skill"},
+                           json=delete).status_code == 422
+        operation("delete-skill-http", **delete)
+        filtered = client.post("/v2/query", headers=headers,
+                               json={"action": "skills.list", "arguments": {"query": document["id"]}})
+        assert filtered.json() == {"skills": [], "total": 0}
         journal = "\n".join(path.read_text() for path in (tmp_path / "data").rglob("*.json"))
         assert "Synthetic question" not in journal and "Synthetic answer" not in journal
         assert "HTTP contact" not in journal
+        assert document["body"] not in journal
     finally:
         app.state.management_operations.executor.shutdown(wait=True)
 

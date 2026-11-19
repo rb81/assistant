@@ -218,6 +218,10 @@ agent:
     agent_file: AGENT.md
     max_context_file_bytes: 65536
 
+  skills:
+    enabled: true
+    allow_assistant_writes: false
+
   memory:
     working_context_days: 14
     steward:

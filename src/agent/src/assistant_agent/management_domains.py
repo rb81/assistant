@@ -44,6 +44,7 @@ ReadAction = Literal[
     "calendar.calendars", "calendar.events", "calendar.busy", "email.search", "email.read",
     "memory.search", "workspace.search", "workspace.semantic-search", "workspace.list", "workspace.read",
     "zoom.list", "zoom.read", "dropbox.list", "context.search", "capabilities.read",
+    "skills.list", "skills.read",
 ]
 WriteAction = Literal[
     "contacts.create", "contacts.update", "contacts.delete",
@@ -54,6 +55,7 @@ WriteAction = Literal[
     "workspace.convert", "zoom.create", "zoom.update", "zoom.delete", "zoom.reconcile",
     "dropbox.import", "dropbox.export", "dropbox.delete", "scripts.execute",
     "projects.create", "projects.rename", "projects.archive", "projects.restore", "projects.attach",
+    "skills.create", "skills.edit", "skills.delete",
 ]
 VERSIONED = {
     "contacts.update", "contacts.delete", "reminders.update", "reminders.cancel",
@@ -86,6 +88,62 @@ PROJECT_ARGUMENTS = {
     "projects.archive": ProjectReference, "projects.restore": ProjectReference,
     "projects.attach": ProjectAttach,
 }
+
+
+class SkillList(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    query: str = Field(default="", max_length=500)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=50)
+
+
+class SkillReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(min_length=1, max_length=64)
+
+
+class SkillCreate(SkillReference):
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=6000)
+    overlay_for: str | None = Field(default=None, max_length=64)
+
+
+class SkillEdit(SkillReference):
+    revision: str = Field(min_length=1, max_length=18)
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=6000)
+
+
+class SkillDelete(SkillReference):
+    revision: str = Field(min_length=1, max_length=18)
+
+
+SKILL_READS = {"skills.list": SkillList, "skills.read": SkillReference}
+SKILL_WRITES = {"skills.create": SkillCreate, "skills.edit": SkillEdit, "skills.delete": SkillDelete}
+
+
+def skill_action(db, config, action, arguments, *, mutate):
+    from .micro_skills import SkillStore
+    store = SkillStore(db, config)
+    models = SKILL_WRITES if mutate else SKILL_READS
+    if action not in models:
+        raise ValueError("Unsupported skill operation.")
+    values = models[action].model_validate(arguments).model_dump()
+    if mutate:
+        return store.mutate(action.split(".")[1], values.pop("id"), actor="management:admin", **values)
+    catalog = store.catalog()
+    if action == "skills.read":
+        skill = catalog.get(values["id"])
+        if not skill:
+            raise ValueError("Skill not found.")
+        return skill.document()
+    query = values["query"].strip().casefold()
+    matching = [skill.card() for skill in sorted(catalog.values(), key=lambda item: item.id)
+                if query in skill.index_text().casefold()]
+    offset = values["offset"]
+    return {"skills": matching[offset:offset + values["limit"]], "total": len(matching)}
 
 
 def argument_model(action, method):
@@ -215,6 +273,9 @@ def catalog():
                      "arguments": argument_model(action, method).model_json_schema()})
     rows.extend({"action": action, "access": "write", "arguments": model.model_json_schema()}
                 for action, model in PROJECT_ARGUMENTS.items())
+    for models, access in ((SKILL_READS, "read"), (SKILL_WRITES, "write")):
+        rows.extend({"action": action, "access": access, "arguments": model.model_json_schema()}
+                    for action, model in models.items())
     return {"actions": rows}
 
 
@@ -226,6 +287,10 @@ def execute(db, config, payload, *, mutate=False):
     arguments = payload.get("arguments", {})
     if len(json.dumps(arguments).encode("utf-8")) > 2 * 1024 * 1024:
         raise ValueError("Domain arguments exceed 2 MiB")
+    if action in SKILL_READS or action in SKILL_WRITES:
+        if any(payload.get(key) is not None for key in ("task_id", "workstream_id", "client_id")):
+            raise ValueError("Skills are not task-, workstream-, or device-scoped.")
+        return skill_action(db, config, action, arguments, mutate=mutate)
     if action in PROJECT_ARGUMENTS and mutate:
         if any(payload.get(key) is not None for key in ("task_id", "workstream_id", "client_id")):
             raise ValueError("Project actions select their context through project_id only")

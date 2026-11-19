@@ -102,6 +102,28 @@ def test_native_services_render_structured_rows_and_keep_one_application():
         asyncio.run(scenario(Path(root)))
 
 
+def test_skills_load_bodies_on_open_and_locked_actions_offer_an_overlay(tmp_path):
+    async def scenario():
+        async with running(tmp_path) as (ui, _pipe):
+            card = {"id": "EMAIL", "title": "Email", "description": "Compose email.",
+                    "revision": "locked", "locked": True}
+            ui.backend.client = Mock()
+            ui.backend.client.query.side_effect = [
+                {"skills": [card], "total": 1}, {**card, "body": "Verify the recipient."},
+            ]
+            ui.go("Skills")
+            await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
+            ui.backend.client.query.assert_called_once_with("skills.list", {"offset": 0, "limit": 8, "query": ""})
+            ui.go("Skill", card)
+            await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
+            assert ui.backend.client.query.call_args.args == ("skills.read", {"id": "EMAIL"})
+            labels = {action.label for action in ui.actions}
+            assert "Add preferences" in labels
+            assert "Delete skill" not in labels
+
+    asyncio.run(scenario())
+
+
 def test_navigation_stays_available_while_a_background_read_is_in_progress():
     async def scenario(root):
         async with running(root) as (ui, pipe):
