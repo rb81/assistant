@@ -121,6 +121,27 @@ def test_pcm_only_models_produce_playable_wav_using_provider_rate_metadata(speec
         assert audio.getnframes() == 100
 
 
+@pytest.mark.parametrize("global_zdr, speech_zdr", [(False, False), (False, True), (True, False), (True, True)])
+def test_global_and_speech_zdr_merge_into_one_request_flag(speech, global_zdr, speech_zdr):
+    speech.config.values["agent"].setdefault("llm", {})["zdr_only"] = global_zdr
+    speech.config.values["agent"]["tts"]["zdr_only"] = speech_zdr
+    sent = []
+
+    def synthesize_request(payload, record_generation):
+        # Exercise the actual final serialization, not only the speech tool's intermediate payload.
+        with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"):
+            request = speech.client.request("/audio/speech", payload)
+        sent.append(request.data.decode())
+        record_generation("gen-tts-test")
+        return MP3, "audio/mpeg", "gen-tts-test"
+
+    with patch.object(speech.client, "synthesize", side_effect=synthesize_request):
+        speech.generate(**ARGUMENTS)
+    body = json.loads(sent[0])
+    assert body.get("provider") == ({"zdr": True} if global_zdr or speech_zdr else None)
+    assert sent[0].count('"zdr"') == int(global_zdr or speech_zdr)
+
+
 @pytest.mark.parametrize("settings, changes, error", [
     ({"model": CHAT_AUDIO["id"]}, {}, "AGENT_TTS_MODEL"),
     ({"model": "missing/model"}, {}, "AGENT_TTS_MODEL"),

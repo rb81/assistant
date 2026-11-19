@@ -84,6 +84,7 @@ def test_setup_fields_stay_with_their_feature_while_tuning_is_advanced(tmp_path)
     try:
         catalog = service.configuration_v2(include_source=False, instructions=False, values=False)
         fields = {field["key"]: field for field in catalog["settings"]}
+        assert len(fields) == len(catalog["settings"]), "Regrouping must not duplicate settings"
         for key in ("SETUP_EMAIL_ENABLED", "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_PORT",
                     "AGENT_EMAIL_IMAP_PASSWORD", "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_PASSWORD",
                     "AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET", "AGENT_CALENDAR_ZOHO_2_CALENDAR_ID",
@@ -93,10 +94,56 @@ def test_setup_fields_stay_with_their_feature_while_tuning_is_advanced(tmp_path)
         for key in ("AGENT_EMAIL_IMAP_POLL_INTERVAL_SECONDS", "AGENT_EMAIL_IMAP_TIMEOUT_SECONDS",
                     "AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS"):
             assert fields[key]["metadata"]["level"] == "advanced", key
-        speech = next(group for group in catalog["groups"] if group["id"] == "advanced:Text-to-speech")
+        speech = next(group for group in catalog["groups"] if group["id"] == "advanced:Model preset tool")
         assert speech["destination"] == "models"
         assert speech["basic"]
+        assert speech["title"] == "Model tools & speech"
+        assert speech["advanced_title"] == "Model tools & speech tuning"
+        assert fields["AGENT_TTS_MODEL"]["group"] == fields["AGENT_MODEL_SERVICE_BUDGET_USD"]["group"] == speech["id"]
+        assert not any(group["id"] == "advanced:Text-to-speech" for group in catalog["groups"])
         assert fields["AGENT_TTS_ENABLED"]["label"] == "Enable text to speech"
+        groups = {group["id"]: group for group in catalog["groups"]}
+        for field in catalog["settings"]:
+            if field["metadata"]["level"] == "basic":
+                owner = groups[field["group"]]
+                while owner["parent"]:
+                    owner = groups[owner["parent"]]
+                assert owner["basic"], f"{field['key']} would be hidden from every Basic page"
+        for key in ("AGENT_MEMORY_STEWARD_ENABLED", "AGENT_WORKSPACE_INDEX_ENABLED"):
+            assert fields[key]["metadata"]["level"] == "basic"
+            assert fields[key]["group"] == "advanced:Memory and workspace indexing"
+        assert groups["catalog:workspace"]["parent"] == "advanced:Memory and workspace indexing"
+        assert groups["catalog:identity"]["parent"] == "email"
+        assert groups["email"]["advanced_title"] == "Email behavior & delivery"
+        assert fields["AGENT_DATABASE_PASSWORD"]["group"] == "catalog:database"
+        assert fields["AGENT_DATABASE_PASSWORD"]["metadata"]["level"] == "advanced"
+        assert not groups["catalog:skills"]["basic"]
+        approval = fields["AGENT_APPROVALS_CHANNEL"]["metadata"]
+        assert "both" in approval["choices"]
+        assert approval["choice_labels"]["both"] == "Email & Telegram"
+    finally:
+        service.close()
+
+
+def test_default_calendar_choices_include_only_complete_saved_accounts(tmp_path):
+    configured(tmp_path)
+    backend = Management(tmp_path, lambda *_: False)
+    backend.load()
+    for provider in ("GOOGLE", "GOOGLE_2", "ZOHO_9"):
+        for suffix in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"):
+            backend.credentials[f"AGENT_CALENDAR_{provider}_{suffix}"] = "fixture-" + suffix
+    backend.credentials["AGENT_CALENDAR_OUTLOOK_CLIENT_ID"] = "incomplete"
+    backend.values["AGENT_CALENDAR_GOOGLE_3_CALENDAR_ID"] = "primary"
+    backend.save()
+    service = ManagementService(tmp_path)
+    try:
+        page = service.configuration_v2(include_source=False, instructions=False, section="calendar")
+        field = next(field for field in page["settings"] if field["key"] == "AGENT_CALENDAR_DEFAULT_PROVIDER")
+        assert field["metadata"]["choices"] == ["google", "google_2", "zoho_9"]
+        assert field["metadata"]["choice_labels"] == {
+            "google": "Google", "google_2": "Google calendar 2", "zoho_9": "Zoho calendar 9",
+        }
+        assert "fixture-" not in json.dumps(page)
     finally:
         service.close()
 

@@ -424,9 +424,9 @@ FIELD_HELP = {
                            "require the admin email to map to an allowlisted ID.",
     "AGENT_CALENDAR_ENABLED": "Allow calendar tools using the configured accounts. Complete the selected provider's "
                         "OAuth credentials first. Actions can change real calendars.",
-    "AGENT_CALENDAR_DEFAULT_PROVIDER": "Provider used when a calendar request does not select an account: google, "
-                                 "outlook or zoho. Numbered accounts configured outside this form may also be selected, "
-                                 "for example google_2.",
+    "AGENT_CALENDAR_DEFAULT_PROVIDER": "Calendar account used when a request does not select one. "
+                                 "Only accounts with complete saved OAuth credentials are listed. "
+                                 "Save a new account first, then choose it here. Connectivity is not verified by this list.",
     "AGENT_CALENDAR_OUTLOOK_TENANT_ID": "Microsoft tenant used for OAuth, usually common for supported personal and "
                                  "organizational accounts, or your directory's tenant ID.",
     "AGENT_CALENDAR_ZOHO_API_BASE": "HTTPS Calendar API URL for your Zoho region. Match the region used for the OAuth "

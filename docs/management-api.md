@@ -186,15 +186,28 @@ updated Compose definition before source saves can work. Ordinary saves without
 
 Each setting has `label`, `value`, `default`, `data_type` and `metadata`. Metadata
 includes `level` (`basic`/`advanced`), `help` (plain-language explanation), and,
-where relevant, `section` (for example a calendar provider), `choices` and
+where relevant, `section` (for example a calendar provider), `choices`, `choice_labels`, and
 `warning`. `groups` lists every setting group in display order as `{id, title,
-help, parent, section, basic}`: top-level pages have no `parent`; nested groups
+help, parent, section, basic, destination, advanced_title?}`: top-level pages have no `parent`; nested groups
 (such as extra calendar accounts or catalog tuning) name the page they belong to,
 and `section` places them under that page's matching field section.
 Basic includes feature enable switches, credentials, ordinary connection setup,
 and speech model/voice selection. Advanced is default-preserving power-user
 tuning such as polling periods, timeouts, and limits. Numbered calendar accounts
 inherit the same level as their primary account fields.
+Use optional `advanced_title` for a tuning page instead of repeating an unrelated
+Basic heading. Email message identity belongs to Email; model generation,
+routing, provider attribution, and database access have specific Advanced pages.
+Memory and workspace indexing are one feature page. Model presets and speech
+share a single page and one model-service spending limit.
+
+`choices` always contains wire values; `choice_labels` maps those values to
+display names. Approval delivery `both` is displayed as **Email & Telegram**.
+Default calendar choices are generated from primary and numbered Google,
+Outlook, and Zoho accounts with nonblank saved client ID, secret, and refresh
+token. Save new account credentials before selecting them. This is credential
+completeness, not an OAuth connectivity test. Preserve unavailable saved values
+visibly rather than silently replacing them; do not offer them as new choices.
 
 ### Persistent reads and live invalidations
 

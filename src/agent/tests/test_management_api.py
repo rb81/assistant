@@ -851,7 +851,7 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["label"] == "Client ID"
     assert settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["metadata"]["section"] == "Zoho"
     assert not settings["AGENT_CALENDAR_ZOHO_2_CLIENT_ID"]["metadata"]["help"].startswith("Zoho:")
-    assert settings["AGENT_CALENDAR_DEFAULT_PROVIDER"]["metadata"]["choices"] == ["google", "outlook", "zoho"]
+    assert settings["AGENT_CALENDAR_DEFAULT_PROVIDER"]["metadata"]["choices"] == []
     groups = {group["id"]: group for group in result["groups"]}
     assert groups["calendar:zoho_2"]["parent"] == "calendar"
     assert groups["calendar:zoho_2"]["section"] == settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["metadata"]["section"]
@@ -876,10 +876,10 @@ def test_v2_approval_settings_share_a_safety_page(tmp_path):
     assert all(field["level"] == "basic" for field in fields.values())
     assert fields["AGENT_APPROVALS_CHANNEL"]["choices"] == ["email", "telegram", "both", "client"]
 
-    response = client.get("/v2/configuration/settings?group=models", headers=headers)
+    response = client.get("/v2/configuration/settings?group=catalog:routing", headers=headers)
     assert response.status_code == 200
     naming = next(item for item in response.json()["settings"] if item["key"] == "AGENT_NAMING_MODEL")
-    assert naming["group"] == "models"
+    assert naming["group"] == "catalog:routing"
     assert naming["metadata"]["level"] == "advanced"
     assert naming["metadata"]["section"] == "Conversation naming"
 

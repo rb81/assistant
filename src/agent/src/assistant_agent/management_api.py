@@ -134,11 +134,13 @@ BASIC_SETTINGS = {
     "SETUP_EMAIL_ENABLED", "AGENT_TELEGRAM_ENABLED", "AGENT_TELEGRAM_BOT_TOKEN",
     "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_APPROVALS_CHANNEL",
     "AGENT_ADMIN_NAME", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS",
-    "AGENT_APP_NAME", "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_FALLBACK_MODEL",
+    "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_FALLBACK_MODEL",
     "AGENT_TTS_ENABLED", "AGENT_TTS_MODEL", "AGENT_TTS_VOICE",
     "AGENT_MODEL_SERVICE_ENABLED", "AGENT_MODEL_SERVICE_BUDGET_USD",
     "AGENT_SEARCH_ENABLED", "AGENT_DEEP_RESEARCH_ENABLED", "AGENT_FUSION_ENABLED",
-    "AGENT_SKILLS_ENABLED", "AGENT_MEMORY_STEWARD_ENABLED",
+    "AGENT_MEMORY_STEWARD_ENABLED",
+    "AGENT_WORKSPACE_INDEX_ENABLED", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL",
+    "AGENT_EMBEDDINGS_BASE_URL",
 }
 BASIC_SETTINGS.update(
     spec.key for group in ("identity", "models", "email", "telegram", "calendar", "zoom",
@@ -147,7 +149,7 @@ BASIC_SETTINGS.update(
     if spec.key not in {
         "AGENT_DROPBOX_MAX_FILE_BYTES", "AGENT_TELEGRAM_RECIPIENTS",
         "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS",
-        "AGENT_SECURITY_DECISION_MODEL_URL",
+        "AGENT_SECURITY_DECISION_MODEL_URL", "AGENT_DATABASE_PASSWORD",
     }
 )
 
@@ -160,12 +162,12 @@ def basic_setting(key):
 
 # Catalog groups: title, the primary settings page they extend (None = their own advanced page), and help.
 CATALOG_GROUPS = {
-    "app": ("Application", "identity", "Name and referrer sent to model providers that attribute requests."),
-    "identity": ("Message identity", "identity", "How outgoing message identifiers are formed."),
+    "app": ("Provider attribution", None, "Application name and referrer sent to model providers."),
+    "identity": ("Email message identity", "email", "How outgoing email message identifiers are formed."),
     "database": ("Database connection", None,
                  "Where services find PostgreSQL. Change only when running an external database."),
-    "llm": ("Model behavior", "models", "Sampling settings applied to ordinary task models."),
-    "routing": ("Model routing", "models", "Which model screens and routes incoming requests, and fallback timing."),
+    "llm": ("Generation & sampling", None, "Sampling settings applied to ordinary task models."),
+    "routing": ("Routing & fallback", None, "Which model screens and routes incoming requests, and fallback timing."),
     "limits": ("Prompt & history limits", None, "Conversation history, prompt size, summarization, and retry pacing for tasks."),
     "task_agent": ("Task worker", None, "How often the task worker checks for queued work."),
     "email": ("Email limits", "email", "Mailbox timeouts and size limits for reading messages and attachments."),
@@ -178,10 +180,10 @@ CATALOG_GROUPS = {
     "artifacts": ("Attachments & malware scanning", "security",
                   "Where attachments are stored, which types are accepted, and how they are scanned."),
     "prompt": ("Instructions file", None, "Where the assistant's standing instructions are read from."),
-    "skills": ("Skill settings", "identity", "Control contextual skill loading and Assistant publishing."),
-    "memory": ("Memory", None, "How long working context lasts and how the memory steward saves and prunes facts."),
-    "context": ("Related context", None, "How related records are found and added to each task's prompt."),
-    "workspace": ("Workspace indexing", None, "Which workspace files are converted and indexed for search."),
+    "skills": ("Skill loading & publishing", None, "Control contextual skill loading and Assistant publishing."),
+    "memory": ("Memory retention", "advanced:Memory and workspace indexing", "How working context expires and saved facts are pruned."),
+    "context": ("Related context", "advanced:Memory and workspace indexing", "How related records enter each task's prompt."),
+    "workspace": ("Workspace indexing", "advanced:Memory and workspace indexing", "Which workspace files are converted and indexed for search."),
     "conversion": ("Document conversion", None, "Tools and limits used to convert documents to text."),
     "reminders": ("Reminders", None, "Reminder timezone, scheduling cadence, and script checks."),
     "calendar": ("Calendar defaults", "calendar", "Timezone and default alert used for new events."),
@@ -200,9 +202,33 @@ ADVANCED_GROUP_PARENTS = {
 CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
-    "AGENT_CALENDAR_DEFAULT_PROVIDER": ("google", "outlook", "zoho"),
     "AGENT_ZOOM_AUTH_MODE": ("s2s", "oauth"),
 }
+CHOICE_LABELS = {
+    "AGENT_APPROVALS_CHANNEL": {
+        "email": "Email", "telegram": "Telegram", "both": "Email & Telegram", "client": "Assistant app",
+    },
+}
+ADVANCED_TITLES = {
+    "email": "Email behavior & delivery", "calendar": "Calendar defaults & privacy",
+    "telegram": "Telegram delivery & limits", "security": "Screening & execution limits",
+    "embeddings": "Embedding service tuning", "transcription": "Transcription service tuning",
+    "advanced:Model preset tool": "Model tools & speech tuning",
+    "advanced:Memory and workspace indexing": "Memory & search tuning",
+}
+
+
+def configured_calendars(backend):
+    """Match the router's complete OAuth accounts without exposing credential values."""
+    accounts = {}
+    for provider, title in CALENDAR_PROVIDERS.items():
+        for number in range(1, 10):
+            suffix = "" if number == 1 else f"_{number}"
+            prefix = f"AGENT_CALENDAR_{provider}{suffix}_"
+            if all(backend.credentials.get(prefix + key, "").strip()
+                   for key in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")):
+                accounts[provider.lower() + suffix] = title if number == 1 else f"{title} calendar {number}"
+    return accounts
 
 
 def setting_presentation(group, spec):
@@ -213,6 +239,9 @@ def setting_presentation(group, spec):
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
         label, section = "Naming model", "Conversation naming"
+    elif group == "advanced:Model preset tool":
+        section = ("Text to speech" if spec.key.startswith("AGENT_TTS_") else
+                   "Shared spending limit" if spec.key.startswith("AGENT_MODEL_SERVICE_BUDGET_") else "Model preset tool")
     elif group == "identity":
         if spec.key.startswith("AGENT_ORG_"):
             section = "Organization"
@@ -266,15 +295,17 @@ def configuration_group_details():
             help_text = "An additional " + title.rsplit(" ", 2)[0] + " calendar account. Leave blank if unused."
         else:
             parent = ADVANCED_GROUP_PARENTS.get(name)
-        if name == "advanced:Text-to-speech":
-            title = "Text to speech"
-            help_text = ("Create spoken audio with OpenRouter. Turn it on, choose a speech model, and select a voice. "
-                         "Uses your OpenRouter key and the shared model-tool spending limit.")
+        if name == "advanced:Model preset tool":
+            title = "Model tools & speech"
+            help_text = "Model presets and spoken audio use your OpenRouter key and one shared spending limit."
+        elif name == "advanced:Memory and workspace indexing":
+            title = "Memory & workspace"
+            help_text = "Choose whether Assistant maintains memories and indexes workspace files for search."
         owner = parent or name
         destination = (
             "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
             "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
-                                 "catalog:deep_research", "catalog:search", "advanced:Text-to-speech",
+                                 "catalog:deep_research", "catalog:search", "catalog:app",
                                  "advanced:Model preset tool", "advanced:Web search", "advanced:Research and notifications"} else
             "safety" if owner in {"approvals", "security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
             "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",
@@ -285,6 +316,7 @@ def configuration_group_details():
             "id": name, "title": title, "help": help_text, "parent": parent, "section": section,
             "basic": any(basic_setting(spec.key) for spec in specs) or name in ESSENTIAL_GROUPS,
             "destination": destination,
+            **({"advanced_title": ADVANCED_TITLES[name]} if name in ADVANCED_TITLES else {}),
         })
     return details
 
@@ -297,15 +329,18 @@ ESSENTIAL_GROUPS = (
 
 def configuration_groups():
     groups = {name: (title, list(specs)) for name, (title, specs) in GROUPS.items()}
+    _, speech = groups.pop("advanced:Text-to-speech")
+    groups["advanced:Model preset tool"][1].extend(speech)
+    groups["models"] = ("Assistant models", groups["models"][1])
     # Keep interactive setup's registry intact; these are Management API presentation groups.
     approval_fields = [spec for spec in groups["identity"][1] if spec.key == "AGENT_ADMIN_EMAIL"]
     groups["identity"][1][:] = [spec for spec in groups["identity"][1] if spec.key != "AGENT_ADMIN_EMAIL"]
     _, approval_and_naming = groups.pop("advanced:Approvals and names")
     approval_fields.extend(spec for spec in approval_and_naming if spec.key == "AGENT_APPROVALS_CHANNEL")
-    groups["models"][1].extend(spec for spec in approval_and_naming if spec.key == "AGENT_NAMING_MODEL")
     groups["approvals"] = ("Approvals", approval_fields)
     groups["deployment"] = ("Deployment and sandbox", list(DEPLOYMENT_SETTINGS))
     known = {spec.key for _, specs in groups.values() for spec in specs}
+    known.update(spec.key for spec in approval_and_naming)
     for item in settings_schema.catalog():
         if item["env"] in known:
             continue
@@ -339,6 +374,11 @@ def configuration_groups():
             if provider == "ZOHO":
                 fields.append(Field(prefix + "API_BASE", "Regional API URL"))
             groups[group] = (f"{provider.title()} calendar {number}", fields)
+    database_credentials = [spec for spec in groups["models"][1] if spec.key == "AGENT_DATABASE_PASSWORD"]
+    groups["models"][1][:] = [spec for spec in groups["models"][1] if spec.key != "AGENT_DATABASE_PASSWORD"]
+    groups.setdefault("catalog:database", ("Database connection", []))[1].extend(database_credentials)
+    groups.setdefault("catalog:routing", ("Routing & fallback", []))[1].extend(
+        spec for spec in approval_and_naming if spec.key == "AGENT_NAMING_MODEL")
     return groups
 
 
@@ -521,6 +561,7 @@ class ManagementService:
             for file in files:
                 file["values"] = redacted(file["values"], backend)
         catalog = {item["env"]: item for item in settings_schema.catalog()}
+        calendars = configured_calendars(backend)
         settings = [
             {
                 "group": group, "key": spec.key, "label": presentation[0],
@@ -537,6 +578,9 @@ class ManagementService:
                     "level": "basic" if basic_setting(spec.key) else "advanced",
                     **({"choices": list(DEPLOYMENT_CHOICES[spec.key])} if spec.key in DEPLOYMENT_CHOICES else {}),
                     **({"choices": list(SETTING_CHOICES[spec.key])} if spec.key in SETTING_CHOICES else {}),
+                    **({"choice_labels": CHOICE_LABELS[spec.key]} if spec.key in CHOICE_LABELS else {}),
+                    **({"choices": list(calendars), "choice_labels": calendars}
+                       if spec.key == "AGENT_CALENDAR_DEFAULT_PROVIDER" else {}),
                     **({"help": presentation[2]} if presentation[2] else {}),
                     **({"section": presentation[1]} if presentation[1] else {}),
                     **({"warning": DEPLOYMENT_WARNINGS[spec.key]} if spec.key in DEPLOYMENT_WARNINGS else {}),
