@@ -57,6 +57,7 @@ agent:
     model: anthropic/claude-sonnet-4.6
     fallback_model: openai/gpt-5.4
     base_url: https://openrouter.ai/api/v1
+    zdr_only: false
     temperature: 0.2
     max_tokens_per_call: 4096
     openrouter_api_key:

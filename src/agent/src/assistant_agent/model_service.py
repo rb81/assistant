@@ -15,6 +15,7 @@ from .config import app_display_name, app_referer_url
 from .model_resources import ModelServiceError, ModelToolResources, ProviderRejected, validate_media
 from .secret_store import read_secret
 from .transport_security import open_https_request
+from .openrouter_policy import apply_routing_policy, require_zdr
 
 
 BASE_URL = "https://openrouter.ai/api/v1"
@@ -40,6 +41,8 @@ class OpenRouterModels:
         key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not key:
             raise ModelServiceError("AGENT_LLM_OPENROUTER_API_KEY is required for the model service")
+        if payload is not None:
+            apply_routing_policy(self.config, BASE_URL, payload)
         return urllib.request.Request(
             BASE_URL + path,
             data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
@@ -55,6 +58,7 @@ class OpenRouterModels:
     def models(self, *, zdr_only=None):
         if zdr_only is None:
             zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
+        zdr_only = require_zdr(self.config, scoped=zdr_only)
         with _catalog_lock:
             cached = _catalog.get(zdr_only)
             if cached and time.monotonic() - cached[0] < 300:
@@ -180,7 +184,8 @@ class ModelService(ModelToolResources):
         for model in self.client.models():
             if model["id"] == slug:
                 return model
-        policy = " under the configured ZDR-only policy" if self.config.get_bool("agent.model_service.zdr_only", False) else ""
+        policy = " under the configured ZDR-only policy" if require_zdr(
+            self.config, scoped=self.config.get_bool("agent.model_service.zdr_only", False)) else ""
         raise ModelServiceError("Model is not in the current OpenRouter catalog%s; use query_models" % policy)
 
     def query_models(self, query="", input_modalities=None, output_modalities=None,

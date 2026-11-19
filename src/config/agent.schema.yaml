@@ -11,6 +11,21 @@
 # Keys must match agent.yaml paths exactly; entries with no matching path are ignored
 # and an info notice is logged.
 settings:
+  agent.llm.zdr_only:
+    label: Require Zero Data Retention on OpenRouter
+    description: "Route OpenRouter model requests only through Zero Data Retention endpoints, including fallback models, screening, speech, and model tools. Requests fail if no eligible endpoint is available. Does not apply to other providers."
+  agent.identity.name:
+    label: Assistant name
+    description: "The name your assistant uses in conversations and communications."
+  agent.app.timezone:
+    label: Timezone
+    description: "Timezone for the assistant's dates and schedules, such as Europe/London or UTC."
+  agent.admin.name:
+    label: Your name
+    description: "How the assistant addresses you."
+  agent.org.name:
+    label: Organization name
+    description: "Organization context supplied to your assistant."
   agent.approvals.channel:
     enum: [email, telegram, both, client]
     description: Approval notices use the selected channels; client decisions use the Management API.

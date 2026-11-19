@@ -22,6 +22,7 @@ from typing import Any, Optional
 from .config import AppConfig, app_display_name, app_referer_url
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
+from .openrouter_policy import apply_routing_policy
 
 
 LOGGER = logging.getLogger("assistant.security_screening")
@@ -217,7 +218,9 @@ class DecisionClient:
         self.timeout = max(1, config.get_int("agent.security.decision_model.timeout_seconds", 20))
 
     def decide(self, state: dict[str, Any], questions: list[Question]) -> dict[str, Answer]:
-        payload = json.dumps(self.translator.request(self.model, state, questions)).encode("utf-8")
+        body = self.translator.request(self.model, state, questions)
+        apply_routing_policy(self.config, self.url, body)
+        payload = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + self.api_key}
         if self.provider == "openrouter":
             headers.update({"HTTP-Referer": app_referer_url(self.config), "X-Title": app_display_name(self.config)})

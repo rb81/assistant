@@ -9,6 +9,7 @@ from .config import AppConfig, app_display_name, app_referer_url
 from .prompt_context import refresh_request_context
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
+from .openrouter_policy import apply_routing_policy, is_openrouter_url
 
 
 LOGGER = logging.getLogger("assistant.llm_client")
@@ -30,7 +31,7 @@ class LlmClient:
         self.config = config
         self.base_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
-        if "openrouter.ai" in self.base_url.lower():
+        if is_openrouter_url(self.base_url):
             api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         else:
             api_key = read_secret("AGENT_LLM_OPENAI_API_KEY") or read_secret("AGENT_LLM_OPENROUTER_API_KEY")
@@ -76,6 +77,7 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        apply_routing_policy(self.config, self.base_url, payload)
         body = json.dumps(payload, default=str).encode("utf-8")
         request = urllib.request.Request(
             "%s/chat/completions" % self.base_url,

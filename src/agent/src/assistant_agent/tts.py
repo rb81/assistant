@@ -23,6 +23,7 @@ from .model_service import OpenRouterModels
 from .requests import TransactionDatabase
 from .secret_store import read_secret
 from .transport_security import open_https_request
+from .openrouter_policy import require_zdr
 
 
 MAX_AUDIO_BYTES = 32 * 1024 * 1024
@@ -50,7 +51,7 @@ def describe(config):
     return "model %s, voice %s, %s; separate delivery instructions %s; %s" % (
         model, voice, audio_formats(model)[0].upper(),
         "supported" if supports_instructions(model) else "not supported (omit instructions)",
-        "ZDR routing enforced" if config.get_bool("agent.tts.zdr_only", False) else "any provider routing",
+        "ZDR routing enforced" if require_zdr(config, scoped=config.get_bool("agent.tts.zdr_only", False)) else "any provider routing",
     )
 
 

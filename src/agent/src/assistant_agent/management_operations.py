@@ -452,6 +452,19 @@ class OperationManager:
             self._refresh()
             return [dict(item) for item in reversed(self.data["operations"][-limit:])]
 
+    def lookup(self, key):
+        """Recover a lost receipt without replaying the original mutation."""
+        if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
+            raise SetupError("Select a valid submission key.")
+        with self.lock:
+            self._refresh()
+            entry = self.data["idempotency"].get(key)
+            if entry is None:
+                return {"status": "not_found", "operation": None}
+            if entry.get("operation_id") is None:
+                return {"status": "expired", "operation": None}
+            return {"status": "found", "operation": self.get(entry["operation_id"])}
+
 
 def persist_external_result(root, operation_id, *, succeeded, error=None, result=None):
     path = Path(root) / "data/.management-operations.json"

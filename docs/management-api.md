@@ -74,6 +74,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `POST query` | Typed, side-effect-free domain queries |
 | `POST operations` | Confirmed, typed asynchronous mutation |
 | `GET operations` and `GET operations/{id}` | Retained outcomes and progress |
+| `GET operations/lookup?key={key}` | Recover a retained receipt by submission key; requires `operations.lookup` capability |
 
 Records and conversations use `page`/`query` (conversations: 25 per page, newest
 activity first). Omit `channel` for both chats and reminder runs, use `chat`
@@ -90,6 +91,12 @@ Submit an immutable payload to `operations` with a random `Idempotency-Key`.
 HTTP 202 means accepted, not completed. Poll until `succeeded`, `failed`, or
 `interrupted`. Persist non-secret keys and operation IDs, not payload bodies.
 Unknown outcomes must be inspected, never blindly retried.
+
+If `operations.lookup` is advertised, look up the persisted idempotency key after
+a response is lost. The authenticated read returns `status: found` with its
+`operation`, `not_found`, or `expired`. It never submits or replays an action.
+Neither absence nor expiry proves that an action failed; inspect affected state
+before deciding what to do next.
 
 The last 500 operation statuses are retained; evicted keys remain protected
 against re-execution for at least 30 days. An evicted result may be unrecoverable.
@@ -115,6 +122,12 @@ Saved secret values are never returned. Groups include a stable `destination`:
 under Safety; conversation naming appears under Models. Use the catalog's
 group and field presentation metadata rather than hard-coding the layout.
 App preferences belong to each client, not the server.
+
+Source-free settings, instructions, and credential-inventory reads share a
+15-second configuration snapshot. Changes to installation-file metadata
+invalidate it immediately; mutations invalidate it on completion, including
+failure. Catalog reads do not compute effective values. Preview/save validation
+always uses fresh state and the existing credential-inclusive revision.
 
 Set `apply: true` on a reviewed configuration save to activate explicitly.
 The first setup starts/builds required workers; later override-only saves

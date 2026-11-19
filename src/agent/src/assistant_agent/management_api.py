@@ -12,6 +12,8 @@ import re
 import secrets
 import stat
 import asyncio
+import threading
+import time
 from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -131,6 +133,8 @@ BASIC_SETTINGS = {
     "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_ADMIN_EMAIL",
     "SETUP_EMAIL_ENABLED", "AGENT_TELEGRAM_ENABLED", "AGENT_TELEGRAM_BOT_TOKEN",
     "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_APPROVALS_CHANNEL",
+    "AGENT_ADMIN_NAME", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS",
+    "AGENT_APP_NAME", "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_FALLBACK_MODEL",
 }
 
 
@@ -193,6 +197,8 @@ def setting_presentation(group, spec):
             section = "Organization"
         elif spec.key == "AGENT_ADMIN_NAME":
             section = "About you"
+        else:
+            section = "Your assistant"
     elif group == "email":
         if spec.key.startswith("AGENT_EMAIL_IMAP_"):
             section = "Incoming mail"
@@ -381,6 +387,10 @@ class ManagementService:
         self.backend_factory = backend_factory
         self.preview_key = token.encode("utf-8")
         self.reader_client = httpx.Client(timeout=15, trust_env=False, follow_redirects=False)
+        self._settings_lock = threading.RLock()
+        self._settings_backend = None
+        self._settings_signature = None
+        self._settings_loaded_at = 0.0
 
     def close(self):
         """Release retained private HTTP connections when the API shuts down."""
@@ -393,6 +403,51 @@ class ManagementService:
         else:
             backend.load()
         return backend
+
+    def _configuration_signature(self):
+        paths = [
+            self.root / name for name in (
+                "data/.env", "data/overrides.env", "data/.compose-secrets.yaml",
+                "data/config/AGENT.md", "data/.secrets", "src/config/agent.yaml",
+                "src/config/agent.schema.yaml", "src/config/AGENT.md.example",
+            )
+        ]
+        directory = self.root / "data/.secrets"
+        if directory.is_dir() and not directory.is_symlink():
+            paths.extend(sorted(directory.iterdir()))
+        signature = []
+        for path in paths:
+            try:
+                info = path.lstat()
+                signature.append((str(path), info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+            except FileNotFoundError:
+                signature.append((str(path), None))
+        return tuple(signature)
+
+    def read_configuration_backend(self):
+        """Coalesce read-only settings loads, including expensive credential-volume discovery.
+
+        File metadata invalidates external edits immediately; the short lifetime also bounds
+        changes made outside the installation. Drafts and writes always load fresh snapshots.
+        """
+        if self.backend_factory is not Management:
+            return self.backend()
+        with self._settings_lock:
+            signature = self._configuration_signature()
+            if (self._settings_backend is not None and signature == self._settings_signature
+                    and time.monotonic() - self._settings_loaded_at < 15):
+                return self._settings_backend
+            backend = self.backend()
+            if signature == self._configuration_signature():
+                self._settings_backend = backend
+                self._settings_signature = signature
+                self._settings_loaded_at = time.monotonic()
+            return backend
+
+    def invalidate_configuration_cache(self):
+        with self._settings_lock:
+            self._settings_backend = None
+            self._settings_signature = None
 
     @staticmethod
     def revision(installation):
@@ -421,8 +476,8 @@ class ManagementService:
             for spec in specs
         }
 
-    def configuration_v2(self, *, include_source=True, section=None, instructions=True):
-        backend = self.backend()
+    def configuration_v2(self, *, include_source=True, section=None, instructions=True, values=True):
+        backend = self.backend() if include_source else self.read_configuration_backend()
         installation = backend.installation
         details = configuration_group_details()
         if section is not None and not any(item["id"] == section for item in details):
@@ -444,7 +499,7 @@ class ManagementService:
         settings = [
             {
                 "group": group, "key": spec.key, "label": presentation[0],
-                "value": backend.value(spec), "default": spec.default,
+                "value": backend.value(spec) if values else "", "default": spec.default,
                 "secret": spec.secret, "boolean": spec.boolean,
                 "data_type": (
                     "boolean" if spec.boolean else
@@ -689,6 +744,12 @@ class ManagementService:
         return {"content": read_regular(directory / name).decode("utf-8")}
 
     def execute_operation(self, operation_id, action, payload, report):
+        try:
+            return self._execute_operation(operation_id, action, payload, report)
+        finally:
+            self.invalidate_configuration_cache()
+
+    def _execute_operation(self, operation_id, action, payload, report):
         executor_url = os.environ.get("ASSISTANT_MANAGEMENT_EXECUTOR_URL")
         if executor_url:
             if executor_url != "http://management-docker:2376":
@@ -833,7 +894,7 @@ class ManagementService:
         }
 
     def credentials(self):
-        backend = self.backend()
+        backend = self.read_configuration_backend()
         pending = set(backend.installation.state.get("pending", []))
         removed = set(backend.installation.state.get("removed", []))
         return {
@@ -1212,6 +1273,7 @@ def create_app(root, token, service=None):
                 "configuration.read", "configuration.preview", "configuration.write",
                 "configuration.source.write", "configuration.source.backups",
                 "configuration.structured", "configuration.sections",
+                "operations.lookup",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
                 "projects.files.read", "projects.files.upload", "projects.files.attach",
@@ -1236,15 +1298,11 @@ def create_app(root, token, service=None):
 
     @app.get("/v2/configuration/catalog", response_model=StructuredConfigurationResponse)
     def settings_catalog_v2():
-        result = service.configuration_v2(include_source=False, instructions=False)
-        # Searchable definitions are safe to preload; effective values are loaded per page.
-        for field in result["settings"]:
-            field["value"] = ""
-        return result
+        return service.configuration_v2(include_source=False, instructions=False, values=False)
 
     @app.get("/v2/configuration/instructions")
     def instructions_v2():
-        backend = service.backend()
+        backend = service.read_configuration_backend()
         return {"revision": service.revision(backend.installation), "instructions": backend.instruction_text()}
 
     @app.get("/v2/events")
@@ -1448,6 +1506,10 @@ def create_app(root, token, service=None):
         if not 1 <= limit <= 100:
             raise PublicSetupError("Operation limit must be between 1 and 100.")
         return operations.list(limit)
+
+    @app.get("/v2/operations/lookup")
+    def lookup_operation(key: str = Query(min_length=8, max_length=128)):
+        return operations.lookup(key)
 
     @app.get("/v2/operations/{operation_id}", response_model=ManagementOperationResponse)
     def get_operation(operation_id: str):

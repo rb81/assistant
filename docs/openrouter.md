@@ -20,6 +20,23 @@ Request-time context is refreshed before sending.
 Requests include `Authorization: Bearer ...`, `HTTP-Referer` from
 `app_referer_url(config)`, and `X-Title` from `app_display_name(config)`.
 
+## Installation-wide ZDR
+
+Enable **Require Zero Data Retention on OpenRouter** in model settings
+(`agent.llm.zdr_only` / `AGENT_LLM_ZDR_ONLY`, default `false`) to add
+`"provider": {"zdr": true}` to every request sent to OpenRouter's HTTPS origin.
+This includes task/fallback calls, research/search, preset and speech generation,
+and OpenRouter decision screening. Requests to other providers are unchanged.
+An unavailable ZDR route fails rather than falling back to unrestricted routing.
+Stricter existing preset/speech policies are not relaxed.
+
+The macOS client's model selector maintains separate public full/ZDR catalogs,
+filters by the field's capabilities, and supports weekly automatic refresh,
+manual refresh, or automatic refresh disabled. These controls and caches live
+only on the Mac; there are no new server model-list refresh settings. The public
+catalog's `zdr=true` filter indicates eligible models, not account-specific
+availability, and does not replace request-time routing enforcement.
+
 ## Model Roles Across the System
 
 | Setting | Use |
@@ -90,8 +107,9 @@ after a policy change. Each generation request also sets
 failed discovery never falls back to all models. All-model mode does not
 override stricter account or guardrail policies.
 
-ZDR applies only to `llm_service`, not the primary assistant, research, web
-search, or other integrations. It describes provider inference retention, not
+The preset-specific ZDR switch applies only to `llm_service`; the installation-wide
+switch above also covers the primary assistant and other OpenRouter calls.
+ZDR describes provider inference retention, not
 local storage; generated files and accounting remain. Authentication is
 internal—agents must not search for API keys or recreate authenticated model
 calls in sandbox scripts.
@@ -112,7 +130,7 @@ Use **Text-to-speech** settings to enable speech independently of model presets.
 `AGENT_TTS_ENABLED` / `agent.tts.enabled` defaults to `false`.
 `AGENT_TTS_ZDR_ONLY` / `agent.tts.zdr_only` defaults to `false`; when enabled it
 filters the model catalog and enforces `provider.zdr=true` for speech. It does
-not inherit the model-preset ZDR setting.
+not inherit the model-preset ZDR setting, but installation-wide ZDR also applies.
 
 `AGENT_TTS_MODEL` and `AGENT_TTS_VOICE` select the dedicated speech model and
 voice (defaults `mistralai/voxtral-mini-tts-3-0` and
