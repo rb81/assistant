@@ -135,7 +135,27 @@ BASIC_SETTINGS = {
     "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_APPROVALS_CHANNEL",
     "AGENT_ADMIN_NAME", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS",
     "AGENT_APP_NAME", "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_FALLBACK_MODEL",
+    "AGENT_TTS_ENABLED", "AGENT_TTS_MODEL", "AGENT_TTS_VOICE",
+    "AGENT_MODEL_SERVICE_ENABLED", "AGENT_MODEL_SERVICE_BUDGET_USD",
+    "AGENT_SEARCH_ENABLED", "AGENT_DEEP_RESEARCH_ENABLED", "AGENT_FUSION_ENABLED",
+    "AGENT_SKILLS_ENABLED", "AGENT_MEMORY_STEWARD_ENABLED",
 }
+BASIC_SETTINGS.update(
+    spec.key for group in ("identity", "models", "email", "telegram", "calendar", "zoom",
+                           "dropbox", "transcription", "security")
+    for spec in GROUPS[group][1]
+    if spec.key not in {
+        "AGENT_DROPBOX_MAX_FILE_BYTES", "AGENT_TELEGRAM_RECIPIENTS",
+        "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS",
+        "AGENT_SECURITY_DECISION_MODEL_URL",
+    }
+)
+
+
+def basic_setting(key):
+    """Setup requirements stay beside their feature toggle; timing and limits remain tuning."""
+    normalized = re.sub(r"^(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_[2-9]_", r"\1_", key)
+    return normalized in BASIC_SETTINGS
 
 
 # Catalog groups: title, the primary settings page they extend (None = their own advanced page), and help.
@@ -187,7 +207,8 @@ SETTING_CHOICES = {
 
 def setting_presentation(group, spec):
     """Label, section, and help a client should show for one setting."""
-    label, section = spec.label, None
+    item = settings_schema.catalog_by_env().get(spec.key) or {}
+    label, section = (item.get("metadata") or {}).get("label", spec.label), None
     if spec.key == "AGENT_APPROVALS_CHANNEL":
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
@@ -224,7 +245,6 @@ def setting_presentation(group, spec):
         section = "General"
     label = re.sub(r" \((?:[a-z0-9]+(?:, | or ))+[a-z0-9]+\)$", "", label)
     normalized = re.sub(r"^(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_[2-9]_", r"\1_", spec.key)
-    item = settings_schema.catalog_by_env().get(spec.key) or {}
     explanation = FIELD_HELP.get(normalized) or (item.get("metadata") or {}).get("description")
     if provider and explanation:
         # The provider is already clear from the section or account heading.
@@ -246,11 +266,16 @@ def configuration_group_details():
             help_text = "An additional " + title.rsplit(" ", 2)[0] + " calendar account. Leave blank if unused."
         else:
             parent = ADVANCED_GROUP_PARENTS.get(name)
+        if name == "advanced:Text-to-speech":
+            title = "Text to speech"
+            help_text = ("Create spoken audio with OpenRouter. Turn it on, choose a speech model, and select a voice. "
+                         "Uses your OpenRouter key and the shared model-tool spending limit.")
         owner = parent or name
         destination = (
             "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
             "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
-                                 "catalog:deep_research", "catalog:search"} else
+                                 "catalog:deep_research", "catalog:search", "advanced:Text-to-speech",
+                                 "advanced:Model preset tool", "advanced:Web search", "advanced:Research and notifications"} else
             "safety" if owner in {"approvals", "security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
             "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",
                                  "catalog:filesystem", "catalog:tool_result_cache", "catalog:conversion",
@@ -258,7 +283,7 @@ def configuration_group_details():
         )
         details.append({
             "id": name, "title": title, "help": help_text, "parent": parent, "section": section,
-            "basic": any(spec.key in BASIC_SETTINGS for spec in specs) or name in ESSENTIAL_GROUPS,
+            "basic": any(basic_setting(spec.key) for spec in specs) or name in ESSENTIAL_GROUPS,
             "destination": destination,
         })
     return details
@@ -509,7 +534,7 @@ class ManagementService:
                 ),
                 "metadata": {
                     **catalog.get(spec.key, {}).get("metadata", {}),
-                    "level": "basic" if spec.key in BASIC_SETTINGS else "advanced",
+                    "level": "basic" if basic_setting(spec.key) else "advanced",
                     **({"choices": list(DEPLOYMENT_CHOICES[spec.key])} if spec.key in DEPLOYMENT_CHOICES else {}),
                     **({"choices": list(SETTING_CHOICES[spec.key])} if spec.key in SETTING_CHOICES else {}),
                     **({"help": presentation[2]} if presentation[2] else {}),
@@ -732,9 +757,40 @@ class ManagementService:
         backend, _, _ = self._configuration_draft(payload)
         first_setup = not backend.installation.state.get("setup_complete")
         backend.save()
-        if payload.get("apply") and (preview["changes"] or first_setup):
+        if payload.get("apply") and (preview["changes"] or first_setup or
+                                     backend.installation.state.get("pending_configuration")):
             backend.lifecycle("start" if first_setup or any(change["key"] == "agent.yaml" for change in preview["changes"])
                               else "apply", preserve_management=True)
+
+    def configuration_activation(self):
+        """List saved setting names/values, not credentials or a fabricated running-container diff."""
+        backend = self.read_configuration_backend()
+        state = backend.installation.state
+        specs = self._setting_specs()
+        titles = {group["id"]: group["title"] for group in configuration_group_details()}
+        changes = []
+        for key in state.get("pending_configuration", []):
+            if key in specs:
+                group, spec = specs[key]
+                label, section, _ = setting_presentation(group, spec)
+                context = titles[group]
+                if section and section != context:
+                    context += " / " + section
+                changes.append({
+                    "key": key, "label": label, "context": context,
+                    "value": "Credential changed" if spec.secret else redacted(backend.value(spec), backend),
+                })
+            else:
+                changes.append({"key": key, "label": {
+                    "instructions": "Assistant instructions", "agent.yaml": "Application defaults",
+                    "setup": "Initial application setup",
+                }.get(key, key), "value": "Updated"})
+        return {
+            "revision": self.revision(backend.installation),
+            "tracked": "pending_configuration" in state, "pending": bool(changes),
+            "requires_rebuild": any(change["key"] in {"agent.yaml", "setup"} for change in changes),
+            "changes": changes,
+        }
 
     def yaml_backup(self, name):
         from .management_yaml import BACKUP_PATTERN, backups
@@ -779,6 +835,8 @@ class ManagementService:
             return self.save_configuration(payload)
         backend = self.backend()
         if action == "service.lifecycle":
+            if payload.get("revision") is not None and payload["revision"] != self.revision(backend.installation):
+                raise PublicSetupError("Saved settings changed. Review the saved changes again before applying.")
             report(payload["action"].title() + " " + (payload.get("service") or "application"))
             return backend.lifecycle(payload["action"], payload.get("service"), preserve_management=True)
         if action == "credential.replace":
@@ -1273,6 +1331,7 @@ def create_app(root, token, service=None):
                 "configuration.read", "configuration.preview", "configuration.write",
                 "configuration.source.write", "configuration.source.backups",
                 "configuration.structured", "configuration.sections",
+                "configuration.activation",
                 "operations.lookup",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
@@ -1304,6 +1363,10 @@ def create_app(root, token, service=None):
     def instructions_v2():
         backend = service.read_configuration_backend()
         return {"revision": service.revision(backend.installation), "instructions": backend.instruction_text()}
+
+    @app.get("/v2/configuration/activation")
+    def configuration_activation_v2():
+        return service.configuration_activation()
 
     @app.get("/v2/events")
     async def events_v2(request: Request):

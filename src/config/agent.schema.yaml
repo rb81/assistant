@@ -11,6 +11,18 @@
 # Keys must match agent.yaml paths exactly; entries with no matching path are ignored
 # and an info notice is logged.
 settings:
+  agent.tts.enabled:
+    label: Enable text to speech
+    description: "Let the assistant create spoken audio. Requires a saved OpenRouter API key."
+  agent.tts.model:
+    label: Speech model
+    description: "Choose the OpenRouter model used to generate audio."
+  agent.tts.voice:
+    label: Voice
+    description: "Choose a voice advertised by the selected model. If none are advertised, enter its supported voice identifier."
+  agent.tts.zdr_only:
+    label: Require ZDR for speech
+    description: "Use only Zero Data Retention speech endpoints. Installation-wide ZDR already enforces this when enabled."
   agent.llm.zdr_only:
     label: Require Zero Data Retention on OpenRouter
     description: "Route OpenRouter model requests only through Zero Data Retention endpoints, including fallback models, screening, speech, and model tools. Requests fail if no eligible endpoint is available. Does not apply to other providers."

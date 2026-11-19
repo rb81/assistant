@@ -14,7 +14,7 @@ from .secret_store import SECRET_NAMES
 from .setup import (
     ADVANCED_SETTINGS, AGENT_SERVICES, ENV_OVERRIDES, LONG_RUNNING_SERVICES, DockerCommandError,
     Installation, PermissionActivationError, PublicSetupError, SetupError,
-    draft_problems, ensure_docker_access, read_regular, validate_secret,
+    draft_problems, ensure_docker_access, installation_lock, read_regular, validate_secret,
 )
 DEFAULT_PATHS = {key: path for key, path, _ in ENV_OVERRIDES}
 SERVICE_NAMES = {
@@ -246,6 +246,21 @@ class Management:
         if errors:
             raise PublicSetupError("\n".join(message for _, message in errors))
         instance.state["setup_complete"] = True
+        changed = {
+            key for key in self.values.keys() | self.installation.values.keys()
+            if self.values.get(key) != self.installation.values.get(key)
+        }
+        changed.update(
+            key for key in self.credentials.keys() | self.installation.secret_values.keys()
+            if self.credentials.get(key) != self.installation.secret_values.get(key)
+        )
+        if self.instructions is not None and self.instructions != self.installation.prompt_original:
+            changed.add("instructions")
+        if instance.defaults_copy is not None and instance.defaults_copy != self.installation.defaults_original:
+            changed.add("agent.yaml")
+        if not self.installation.state.get("setup_complete"):
+            changed.add("setup")
+        instance.state["pending_configuration"] = sorted(set(instance.state.get("pending_configuration", [])) | changed)
         instance.save()
         self.load()
 
@@ -348,7 +363,8 @@ class Management:
             raise PublicSetupError("Complete and save setup before starting the application.")
         self.access()
         self.installation.assert_current()
-        if action == "start" and not service:
+        if not service and (action == "start" or action == "apply" and
+                            {"agent.yaml", "setup"}.intersection(self.installation.state.get("pending_configuration", []))):
             if self.dirty:
                 raise PublicSetupError("Save or discard your draft before starting the application.")
             self.progress = "Building and starting the application"
@@ -356,7 +372,9 @@ class Management:
                 self.installation.start_containers(preserve_management=True)
             else:
                 self.installation.start_containers()
-            return self.services()
+            result = self.services()
+            self._record_configuration_applied()
+            return result
         catalog = self._service_catalog()
         if service and service not in catalog:
             raise PublicSetupError("Service is no longer configured. Refresh the list.")
@@ -425,7 +443,19 @@ class Management:
         )
         if verify_management_restart:
             self._verify_management_restart(previous)
-        return self.services()
+        result = self.services()
+        if action == "apply" and not service:
+            self._record_configuration_applied(targets)
+        return result
+
+    def _record_configuration_applied(self, services=()):
+        """Only successful application-wide activation clears the saved-change notice."""
+        if not self.installation.state.get("pending_configuration"):
+            return
+        with installation_lock(self.root):
+            self.installation.assert_current()
+            self.installation.state["pending_configuration"] = []
+            self.installation.record_credential_activation(services)
 
     def _management_container_state(self, *, timeout):
         identifiers = self.installation.compose(

@@ -522,7 +522,7 @@ class Installation:
         if (not isinstance(self.state, dict)
                 or any(not isinstance(self.state.get(key, []), list)
                        or any(not isinstance(name, str) for name in self.state.get(key, []))
-                       for key in ("pending", "removed"))
+                       for key in ("pending", "removed", "pending_configuration"))
                 or any(key in self.state and type(self.state[key]) is not bool
                        for key in ("setup_complete", "credential_volume_sudo", "previous_credential_volume_sudo"))
                 or any(key in self.state and (not isinstance(self.state[key], str)
@@ -1134,15 +1134,23 @@ class Installation:
             if not verified:
                 raise SetupError("Container restart policies could not be verified")
             stage("recording credential activation")
-            deleted = set(self.state.get("removed", []))
-            grants = self.overlay()["services"]
-            applied = {name for name in self.state.get("pending", []) if any(service in services and
-                       (name in deleted or grants.get(service, {}).get("environment", {}).get(container_variable(service, name) + "_FILE")) for service in secret_services(name))}
-            self.state["pending"] = sorted(set(self.state.get("pending", [])) - applied)
-            self.state["removed"] = sorted(deleted - applied)
-            atomic_write(self.state_path, json.dumps(self.state).encode())
-            self.state_original = read_regular(self.state_path)
+            self.record_credential_activation(services)
             return rows
+
+    def record_credential_activation(self, services):
+        """Caller holds the installation lock; disabled services retain their pending grants."""
+        deleted = set(self.state.get("removed", []))
+        grants = self.overlay()["services"]
+        applied = {
+            name for name in self.state.get("pending", [])
+            if any(service in services and
+                   (name in deleted or grants.get(service, {}).get("environment", {}).get(container_variable(service, name) + "_FILE"))
+                   for service in secret_services(name))
+        }
+        self.state["pending"] = sorted(set(self.state.get("pending", [])) - applied)
+        self.state["removed"] = sorted(deleted - applied)
+        atomic_write(self.state_path, json.dumps(self.state).encode())
+        self.state_original = read_regular(self.state_path)
 
     def apply(self, names):
         with installation_lock(self.root):

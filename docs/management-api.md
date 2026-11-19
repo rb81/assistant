@@ -41,6 +41,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET configuration/catalog` | Source-free navigation/search metadata; no effective values or instructions content |
 | `GET configuration/settings?group={id}` | Revision-bound effective values for a page and its children; omit group for all structured settings |
 | `GET configuration/instructions` | Lazily read editable standing instructions and revision |
+| `GET configuration/activation` | Revision-bound redacted saved changes awaiting application activation; requires `configuration.activation` |
 | `POST configuration/preview` | Validate the exact draft; return changes, problems, and `preview_id` |
 | `GET configuration/agent-yaml/backups/{name}` | Read one retained fixed-name source backup into a new draft |
 | `GET configuration/check` | Saved-file validation; add `?runtime=true` for executor-backed container checks |
@@ -135,6 +136,27 @@ recreate application services. Enabled integrations can begin processing message
 Saving without activation remains supported. Report activation failures and
 uncertain outcomes separately from saved state.
 
+With `configuration.activation`, read `configuration/activation` before applying
+saved settings. It returns `revision`, `tracked`, `pending`, `requires_rebuild`,
+and `changes` containing `{key, label, context, value}` (context is omitted for
+instructions, source defaults, and initial setup). Values are current saved values;
+credentials are represented only as "Credential changed", and instructions and
+source bodies are omitted. Persisted tracking stores setting names only.
+This is a conservative list of management saves since the last successful
+application-wide start/apply, not a live-container diff. Reverting a setting
+can leave its name listed. Saves predating the update cannot be reconstructed
+(`tracked: false`); direct installation-file edits are not added to the list.
+
+Send `service.lifecycle` with `action: "apply"`, `confirmed: true`, and the reviewed
+`revision`. A changed revision is rejected before activation. The revision is
+optional for legacy callers, but reviewed clients should always supply it.
+Failed or concurrent activation, individual-service actions, and restarts do not
+clear the global list. Initial startup and pending source-default changes build
+application images; ordinary overrides recreate enabled application services.
+Credential activation notices clear only for grants consumed by activated
+services. Clients should distinguish pending saved changes, unsaved drafts, and
+unconfirmed operation outcomes.
+
 ### Legacy configuration and source backups
 
 Preserve the revision from `configuration`; send only edited setting values,
@@ -147,8 +169,9 @@ Changed YAML is validated against existing setting paths/types. Credentials
 belong in the credential store, not source YAML. A source change and its backup
 are saved in the same rollback-capable transaction. Three previous versions are
 retained as `agent.yaml.bk_YYYYMMDD_HHMMSS_microseconds` (UTC); loading a backup
-does not restore it until a new preview/save. No-op saves create no backup and
-trigger no activation after setup. An explicitly activated first setup starts
+does not restore it until a new preview/save. No-op source saves create no backup.
+Explicit activation also applies earlier pending saves even if the current
+draft has no changes. An explicitly activated first setup starts
 workers even when only setup acknowledgment changed. YAML changes rebuild application images; override-only
 activation recreates application services. Failed activation leaves the saved
 configuration and backup available and reports failure, not success.
@@ -168,6 +191,10 @@ where relevant, `section` (for example a calendar provider), `choices` and
 help, parent, section, basic}`: top-level pages have no `parent`; nested groups
 (such as extra calendar accounts or catalog tuning) name the page they belong to,
 and `section` places them under that page's matching field section.
+Basic includes feature enable switches, credentials, ordinary connection setup,
+and speech model/voice selection. Advanced is default-preserving power-user
+tuning such as polling periods, timeouts, and limits. Numbered calendar accounts
+inherit the same level as their primary account fields.
 
 ### Persistent reads and live invalidations
 

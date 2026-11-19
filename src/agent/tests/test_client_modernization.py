@@ -1,9 +1,13 @@
 from unittest.mock import patch
 
+import json
+import pytest
 from fastapi.testclient import TestClient
 
 from assistant_agent.management import Management
 from assistant_agent.management_api import ManagementService, create_app
+from assistant_agent.setup import PublicSetupError, SetupError
+from test_management import configured
 
 
 def test_settings_reads_share_backend_but_detect_external_changes(tmp_path):
@@ -73,3 +77,130 @@ def test_lost_receipt_can_be_looked_up_without_replaying(tmp_path):
             assert client.get("/v2/operations/lookup?key=lost-receipt-key").status_code == 401
         finally:
             service.close()
+
+
+def test_setup_fields_stay_with_their_feature_while_tuning_is_advanced(tmp_path):
+    service = ManagementService(tmp_path)
+    try:
+        catalog = service.configuration_v2(include_source=False, instructions=False, values=False)
+        fields = {field["key"]: field for field in catalog["settings"]}
+        for key in ("SETUP_EMAIL_ENABLED", "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_PORT",
+                    "AGENT_EMAIL_IMAP_PASSWORD", "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_PASSWORD",
+                    "AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET", "AGENT_CALENDAR_ZOHO_2_CALENDAR_ID",
+                    "AGENT_ZOOM_AUTH_MODE", "AGENT_ZOOM_CLIENT_SECRET", "AGENT_DROPBOX_REFRESH_TOKEN",
+                    "AGENT_TTS_ENABLED", "AGENT_TTS_MODEL", "AGENT_TTS_VOICE"):
+            assert fields[key]["metadata"]["level"] == "basic", key
+        for key in ("AGENT_EMAIL_IMAP_POLL_INTERVAL_SECONDS", "AGENT_EMAIL_IMAP_TIMEOUT_SECONDS",
+                    "AGENT_MODEL_SERVICE_BUDGET_PERIOD_DAYS"):
+            assert fields[key]["metadata"]["level"] == "advanced", key
+        speech = next(group for group in catalog["groups"] if group["id"] == "advanced:Text-to-speech")
+        assert speech["destination"] == "models"
+        assert speech["basic"]
+        assert fields["AGENT_TTS_ENABLED"]["label"] == "Enable text to speech"
+    finally:
+        service.close()
+
+
+def test_saved_change_review_survives_multiple_saves_and_never_contains_secrets(tmp_path):
+    configured(tmp_path)
+    service = ManagementService(tmp_path)
+    try:
+        assert not service.configuration_activation()["tracked"]
+        for values in ({"AGENT_IDENTITY_NAME": "Updated"},
+                       {"AGENT_LLM_OPENROUTER_API_KEY": "replacement-private-key"}):
+            payload = {"revision": service.configuration_activation()["revision"], "values": values}
+            preview = service.preview_configuration(payload)
+            assert preview["valid"], preview["problems"]
+            service.save_configuration({**payload, "preview_id": preview["preview_id"]})
+        service.close()
+        service = ManagementService(tmp_path)
+        summary = service.configuration_activation()
+        assert summary["tracked"] and summary["pending"]
+        changes = {change["key"]: change for change in summary["changes"]}
+        assert changes["AGENT_IDENTITY_NAME"]["value"] == "Updated"
+        assert changes["AGENT_LLM_OPENROUTER_API_KEY"]["value"] == "Credential changed"
+        state = (tmp_path / "data/.secrets/state.json").read_text()
+        assert "replacement-private-key" not in state + json.dumps(summary)
+        client = TestClient(create_app(tmp_path, "a" * 64, service))
+        assert client.get("/v2/configuration/activation").status_code == 401
+        response = client.get("/v2/configuration/activation",
+                              headers={"Host": "127.0.0.1", "Authorization": "Bearer " + "a" * 64})
+        assert response.status_code == 200 and response.json()["pending"]
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("service_id,fail,cleared", [
+    (None, False, True), ("task-agent", False, False), (None, True, False),
+])
+def test_pending_settings_clear_only_after_successful_whole_application_apply(tmp_path, service_id, fail, cleared):
+    configured(tmp_path)
+    backend = Management(tmp_path, lambda *_: False)
+    backend.load()
+    backend.values["AGENT_IDENTITY_NAME"] = "Updated"
+    backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] = "replacement-key"
+    backend.save()
+    with patch.object(backend, "access"), \
+            patch.object(backend, "_service_catalog", return_value={"task-agent": {"restart": "unless-stopped"}}), \
+            patch.object(backend, "services", return_value=[]), \
+            patch.object(backend.installation, "reconcile_grants"), \
+            patch.object(backend.installation, "compose", side_effect=RuntimeError("apply failed") if fail else None):
+        if fail:
+            with pytest.raises(RuntimeError, match="apply failed"):
+                backend.lifecycle("apply", service_id, preserve_management=True)
+        else:
+            backend.lifecycle("apply", service_id, preserve_management=True)
+    state = json.loads((tmp_path / "data/.secrets/state.json").read_text())
+    assert (not state["pending_configuration"]) is cleared
+    assert ("AGENT_LLM_OPENROUTER_API_KEY" not in state["pending"]) is cleared
+
+
+def test_apply_rejects_configuration_changed_since_review(tmp_path):
+    configured(tmp_path)
+    service = ManagementService(tmp_path)
+    try:
+        old = service.configuration_activation()["revision"]
+        backend = service.backend()
+        backend.values["AGENT_IDENTITY_NAME"] = "Changed elsewhere"
+        backend.save()
+        with patch.object(Management, "lifecycle") as apply:
+            with pytest.raises(PublicSetupError, match="Review the saved changes again"):
+                service._execute_operation_local("service.lifecycle", {"action": "apply", "revision": old}, lambda _: None)
+            apply.assert_not_called()
+    finally:
+        service.close()
+
+
+def test_activation_does_not_clear_newer_saved_changes(tmp_path):
+    configured(tmp_path)
+    old = Management(tmp_path, lambda *_: False)
+    old.load()
+    old.values["AGENT_IDENTITY_NAME"] = "First"
+    old.save()
+    newer = Management(tmp_path, lambda *_: False)
+    newer.load()
+    newer.values["AGENT_APP_TIMEZONE"] = "Europe/London"
+    newer.save()
+    with pytest.raises(SetupError, match="Configuration changed"):
+        old._record_configuration_applied()
+    state = json.loads((tmp_path / "data/.secrets/state.json").read_text())
+    assert set(state["pending_configuration"]) >= {"AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE"}
+
+
+@pytest.mark.parametrize("key", ["agent.yaml", "setup"])
+def test_initial_setup_and_pending_source_defaults_require_build_before_apply(tmp_path, key):
+    installation = configured(tmp_path)
+    installation.state["pending_configuration"] = [key] if key == "agent.yaml" else []
+    installation.state["setup_complete"] = key != "setup"
+    installation.save()
+    backend = Management(tmp_path, lambda *_: False)
+    backend.load()
+    if key == "setup":
+        backend.accepted = True
+        backend.save()
+        assert "setup" in backend.installation.state["pending_configuration"]
+    with patch.object(backend, "access"), patch.object(backend, "services", return_value=[]), \
+            patch.object(backend.installation, "start_containers") as start:
+        backend.lifecycle("apply", preserve_management=True)
+        start.assert_called_once_with(preserve_management=True)
+    assert not json.loads((tmp_path / "data/.secrets/state.json").read_text())["pending_configuration"]
