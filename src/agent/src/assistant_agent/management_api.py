@@ -1220,7 +1220,7 @@ def create_app(root, token, service=None):
                 "tasks.messages", "tasks.activity", "conversations.read", "tasks.summary", "tasks.delete", "research.start",
                 "domains.read", "domains.mutate", "workspace.manage", "contacts.manage",
                 "calendar.manage", "reminders.manage", "integrations.manage",
-                "skills.manage",
+                "skills.manage", "skills.preferences",
                 "permissions.read", "permissions.control", "approvals.read", "approvals.decide",
             ] + (["events.stream", "tasks.snapshot"] if persistent_reads else []),
             "read_only": False,

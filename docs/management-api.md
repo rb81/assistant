@@ -236,14 +236,22 @@ deletion. This is not transcript erasure or workstream deletion.
 ### Skills
 
 The `skills.manage` capability advertises the skill catalog. Use
-`POST /v2/query` with `skills.list` (`query`, `offset`, `limit`) to read metadata
-and `skills.read` (`id`) to read the selected instruction body.
+`POST /v2/query` with `skills.list` (`query`, `offset`, `limit`,
+`include_overlays`) to read metadata and `skills.read` (`id`) to read the
+selected instruction body. Servers advertising `skills.preferences` support
+`include_overlays: false` to omit separate preference rows; the default remains
+`true` for older clients. A locked skill's detail includes `preferences`, either
+the single editable preference record or `null`.
 
 Use `POST /v2/operations` with `operation: "domain.mutate"` and
 `confirmed: true` for `skills.create`, `skills.edit`, and `skills.delete`.
-Poll the operation before refreshing the catalog. Creation takes an ID,
-title, description, body and optional `overlay_for` referencing a locked
-skill. Edit and delete require the revision returned by `skills.read`.
+Poll the operation before refreshing the catalog. A custom skill takes an ID,
+title, description, and body. To create preferences on a server advertising
+`skills.preferences`, send only `overlay_for` (the locked skill's ID) and `body`;
+the server assigns the record metadata. The older explicit creation format
+remains supported. To edit or delete preferences, target the nested record's ID
+and revision, not the locked skill's. Edits also send the current title and
+description with the new body. Delete always requires confirmation.
 Locked skills cannot be edited or deleted. See [Prompting and context](prompting.md)
 for access, lifecycle, and publishing settings.
 

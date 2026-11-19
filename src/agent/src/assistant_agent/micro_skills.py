@@ -30,13 +30,14 @@ SKILL_DISCOVERY_TOOLS = [
          {"offset": {"type": "integer", "minimum": 0}}, []),
         ("skill_search", "Find available skills by workflow or intent.",
          {"query": {"type": "string"}}, ["query"]),
-        ("skill_load", "Load a skill's guidance before planning or using a feature.",
+        ("skill_load", "Load a skill's guidance before planning or using a feature. Applicable operator preferences are included automatically.",
          {"id": {"type": "string"}}, ["id"]),
     )
 ]
 SKILL_WRITE_TOOL = {"type": "function", "function": {
     "name": "skill_save",
     "description": "Publish a new or revised reusable custom skill following explicit administrator feedback. "
+                   "To edit attached preferences, use the preference_record metadata from skill_list. "
                    "Never persist secrets or information from third parties. Cannot change or delete locked skills.",
     "parameters": {
         "type": "object",
@@ -79,6 +80,10 @@ class Skill:
 
     def fingerprint(self):
         return hashlib.sha256(self.index_text().encode()).hexdigest()
+
+
+def preferences_by_parent(catalog: dict[str, Skill]) -> dict[str, Skill]:
+    return {skill.overlay_for: skill for skill in catalog.values() if skill.overlay_for}
 
 
 @lru_cache(maxsize=1)
@@ -322,6 +327,7 @@ class SkillContext:
 
     def messages(self, catalog, cards, *, admin, runtime=None, char_limit=MAX_ACTIVE_CHARS):
         self.visible.clear()
+        preferences = preferences_by_parent(catalog) if admin else {}
         sections = []
         size = 0
         for skill_id in sorted(self.requested, key=lambda skill_id: self.requested[skill_id] != "event"):
@@ -332,10 +338,8 @@ class SkillContext:
             block = heading + skill.body
             if runtime and skill.id in runtime:
                 block += "\n\n" + runtime[skill.id]
-            if admin:
-                overlay = next((item for item in catalog.values() if item.overlay_for == skill.id), None)
-                if overlay:
-                    block += f"\n\nOperator preferences ({overlay.id}, revision {overlay.revision}):\n{overlay.body}"
+            if preference := preferences.get(skill.id):
+                block += f"\n\nOperator preferences:\n{preference.body}"
             cost = len(json.dumps(block, ensure_ascii=True))
             if size + cost > char_limit:
                 continue

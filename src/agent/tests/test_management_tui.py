@@ -102,24 +102,45 @@ def test_native_services_render_structured_rows_and_keep_one_application():
         asyncio.run(scenario(Path(root)))
 
 
-def test_skills_load_bodies_on_open_and_locked_actions_offer_an_overlay(tmp_path):
+def test_skills_load_preferences_on_open_and_edit_instructions_only(tmp_path):
     async def scenario():
         async with running(tmp_path) as (ui, _pipe):
             card = {"id": "EMAIL", "title": "Email", "description": "Compose email.",
                     "revision": "locked", "locked": True}
+            preference = {"id": "EMAIL.LEGACY", "revision": "3", "title": "Signature",
+                          "description": "Signoff", "body": "Sign as the Assistant."}
             ui.backend.client = Mock()
             ui.backend.client.query.side_effect = [
                 {"skills": [card], "total": 1}, {**card, "body": "Verify the recipient."},
             ]
             ui.go("Skills")
             await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
-            ui.backend.client.query.assert_called_once_with("skills.list", {"offset": 0, "limit": 8, "query": ""})
+            ui.backend.client.query.assert_called_once_with(
+                "skills.list", {"offset": 0, "limit": 8, "query": "", "include_overlays": False})
             ui.go("Skill", card)
             await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
             assert ui.backend.client.query.call_args.args == ("skills.read", {"id": "EMAIL"})
             labels = {action.label for action in ui.actions}
             assert "Add preferences" in labels
             assert "Delete skill" not in labels
+            ui.confirm_action = Mock()
+            next(action.handler for action in ui.actions if action.label == "Add preferences")()
+            assert ui.confirm_action.call_args.kwargs["fields"] == (("body", "Preference instructions", False, ""),)
+            ui.confirm_action.call_args.args[3]({"body": preference["body"]})
+            assert ui.backend.client.operation.call_args.args[0]["arguments"] == {
+                "overlay_for": "EMAIL", "body": preference["body"]}
+            ui.cache[ui.key()]["preferences"] = preference
+            ui.render()
+            actions = {action.label: action.handler for action in ui.actions}
+            assert "Add preferences" not in actions
+            actions["Edit preferences"]()
+            assert ui.confirm_action.call_args.kwargs["fields"][0][-1] == preference["body"]
+            ui.confirm_action.call_args.args[3]({"body": "New signoff."})
+            assert ui.backend.client.operation.call_args.args[0]["arguments"] == {
+                **preference, "body": "New signoff."}
+            actions["Remove preferences"]()
+            ui.confirm_action.call_args.args[3]()
+            assert ui.backend.client.operation.call_args.args[0]["arguments"] == {"id": preference["id"], "revision": "3"}
 
     asyncio.run(scenario())
 

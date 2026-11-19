@@ -30,7 +30,9 @@ not a shared-workspace documentation directory.
 | Recall and research | `MEMORY`, `CONTEXT`, `WEB.SEARCH`, and `DEEP.RESEARCH`. The dedicated research worker shares applicable locked guidance but keeps its narrower tool set. |
 
 `skill_list` and `skill_search` return candidate descriptions; `skill_load`
-activates a body. The configured embedding service indexes titles, descriptions,
+activates a body. Preferences aren't separate candidates: they load
+automatically with their parent skill on authenticated administrator requests.
+The configured embedding service indexes titles, descriptions,
 and example intents, not instruction bodies. The query uses a bounded excerpt
 of current request text, so only configure an embedding service you trust with
 that data. Retrieval falls back to keyword matching when vectors are missing
@@ -43,10 +45,14 @@ failed actions do not consume it. Checkpoints carry revision references instead
 of copying skill bodies. Existing approval, retry, and delivery checks still
 apply in code.
 
-Use **Settings > Assistant > Skills** in the macOS app or TUI to inspect skill
-files and manage editable skills. Locked files ship with the application.
-Custom skills and preference overlays are used in authenticated administrator
-requests. Direct Assistant publishing is off by default
+Use **Settings > Assistant > Skills** in the macOS app or TUI to inspect skills.
+Open a locked skill to add, edit, or remove its single **Preferences** entry.
+Write both what the Assistant should do and when in the instructions, followed
+by any content it should use. For example, under Email: “Use this signature for
+outbound emails:” followed by your signature. You don't need an ID, title, or
+description for preferences. Existing preferences are preserved. Standalone
+custom skills still use a title and description for discovery and load only for
+authenticated administrator requests. Direct Assistant publishing is off by default
 (`AGENT_SKILLS_ALLOW_ASSISTANT_WRITES`); enabling it never authorizes deletion.
 Deleting an editable revision removes it from the active catalog, not the
 audit history. Do not put credentials in any skill or overlay.

@@ -106,6 +106,34 @@ def test_resume_revalidates_revisions_and_does_not_inject_checkpoint_bodies():
     assert restored.requested == {"FILES": "tool"}
 
 
+def test_preferences_load_with_parent_without_becoming_a_discoverable_skill():
+    agent = TaskAgent(Mock(), AppConfig({"agent": {"skills": {"enabled": True}, "embeddings": {"enabled": False}}}))
+    preference = Skill("EMAIL.LEGACY", "Signature", "Unique match", "Include the personal signoff.", "1",
+                       overlay_for="EMAIL")
+    catalog = {**core_skills(), preference.id: preference}
+    state = SkillContext()
+    job = {"id": 13, "_skill_context": state, "_skill_lifecycle": catalog}
+    history = []
+
+    def call(name, arguments):
+        agent.handle_skill_call(job, history, "test", name, arguments)
+        return json.loads(history[-1]["content"])
+
+    with patch("assistant_agent.task_agent.available_function_names", return_value={"email_send"}), \
+            patch.object(agent, "skill_requester_is_admin", return_value=True) as is_admin:
+        assert [card["id"] for card in call("skill_list", {})["skills"]] == ["EMAIL"]
+        assert call("skill_search", {"query": preference.description}) == {"skills": []}
+        assert call("skill_load", {"id": "EMAIL"})["status"] == "queued"
+        assert call("skill_load", {"id": preference.id})["skill"]["id"] == "EMAIL"
+        prompt = state.messages(catalog, [], admin=True)["content"]
+        assert prompt.count(preference.body) == 1
+        assert preference.id not in prompt
+        assert call("skill_load", {"id": preference.id})["status"] == "already_loaded"
+        is_admin.return_value = False
+        assert "error" in call("skill_load", {"id": preference.id})
+        assert preference.body not in state.messages(catalog, [], admin=False)["content"]
+
+
 def test_locked_core_stale_revisions_and_deleted_overlay(db):
     db.execute("DROP TABLE micro_skill_events, micro_skill_embeddings, micro_skills")
     db.execute("DELETE FROM schema_migrations WHERE filename = '021_micro_skills.sql'")

@@ -634,7 +634,7 @@ class ManagementApp:
             self.render()
         elif route in {"Skills", "Skill"}:
             action, arguments = (
-                ("skills.list", {"offset": loc.page * 8, "limit": 8, "query": loc.query})
+                ("skills.list", {"offset": loc.page * 8, "limit": 8, "query": loc.query, "include_overlays": False})
                 if route == "Skills" else ("skills.read", {"id": loc.record["id"]})
             )
             def loaded(data):
@@ -1343,22 +1343,29 @@ class ManagementApp:
                 actions.append(self.action("Previous", partial(self.turn, -1), help_text="Show the previous page."))
             if (self.location.page + 1) * 8 < data["total"]:
                 actions.append(self.action("Next", partial(self.turn, 1), help_text="Show the next page."))
-            self.put("Skills", "Shipped workflows are locked. Customize them with editable preference overlays.",
+            self.put("Skills", "Open a locked skill to manage its preferences.",
                      rows or [text("No matching skills.")], actions=actions)
             return
         actions = []
+        details = [text(f"{data['id']}  /  revision {data['revision']}" + ("  /  locked" if data["locked"] else "")),
+                   self.readable(data["body"])]
         if data["locked"]:
-            actions.append(self.action("Add preferences", partial(self.edit_skill, None, data["id"]),
-                                       help_text="Create a separately editable preference overlay for this skill."))
+            preference = data.get("preferences")
+            details.extend([text("Preferences", style="class:title"),
+                            self.readable(preference["body"]) if preference else text("No preferences set.")])
+            actions.append(self.action("Edit preferences" if preference else "Add preferences",
+                                       partial(self.edit_skill, preference, data["id"]),
+                                       help_text="Set instructions that load automatically with this skill for admin requests."))
+            if preference:
+                actions.append(self.action("Remove preferences", partial(self.delete_skill, preference, preferences=True),
+                                           danger=True, help_text="Remove the reviewed preferences without changing the locked skill."))
         else:
             actions.extend([
                 self.action("Edit skill", partial(self.edit_skill, data), help_text="Review and save a new revision."),
                 self.action("Delete skill", partial(self.delete_skill, data), danger=True,
                             help_text="Delete the reviewed revision with administrator confirmation."),
             ])
-        self.put(data["title"], data["description"],
-                 [text(f"{data['id']}  /  revision {data['revision']}" + ("  /  locked" if data["locked"] else "")),
-                  self.readable(data["body"])], actions=actions)
+        self.put(data["title"], data["description"], details, actions=actions)
 
     def skill_operation(self, action, arguments):
         return self.backend.client.operation({
@@ -1366,32 +1373,42 @@ class ManagementApp:
             "arguments": arguments, "confirmed": True,
         })
 
-    def edit_skill(self, skill, overlay=None):
+    def edit_skill(self, skill, parent=None):
         values = skill or {}
-        fields = (() if skill else (("id", "Skill ID", False, f"{overlay}.PREFERENCES" if overlay else ""),)) + (
-            ("title", "Title", False, values.get("title", "")),
-            ("description", "Description", False, values.get("description", "")),
-            ("body", "Skill instructions", False, values.get("body", "")),
-        )
+        fields = ()
+        if not parent:
+            fields = (() if skill else (("id", "Skill ID", False, ""),)) + (
+                ("title", "Title", False, values.get("title", "")),
+                ("description", "Description", False, values.get("description", "")),
+            )
+        fields += (("body", "Preference instructions" if parent else "Skill instructions", False, values.get("body", "")),)
         def save(changes):
             if skill:
                 changes = {**changes, "id": skill["id"], "revision": skill["revision"]}
-            elif overlay:
-                changes = {**changes, "overlay_for": overlay}
+                if parent:
+                    changes.update(title=skill["title"], description=skill["description"])
+            elif parent:
+                changes = {**changes, "overlay_for": parent}
             return self.skill_operation("edit" if skill else "create", changes)
         def validate(changes):
             if any(not value.strip() for value in changes.values()):
                 raise SetupError("Fill in each skill field before publishing.")
-        self.confirm_action("Save skill", "Review the instructions before publishing. Do not include secrets.",
+        message = ("Include what the Assistant should do and when. Do not include secrets." if parent else
+                   "Review the instructions before publishing. Do not include secrets.")
+        self.confirm_action("Save preferences" if parent else "Save skill", message,
                             "Publish", save, fields=fields, validate=validate)
 
-    def delete_skill(self, skill):
+    def delete_skill(self, skill, *, preferences=False):
         def done(_):
             self.cache.clear()
             self.back()
-        self.confirm_action("Delete skill", f"Delete {skill['id']} revision {skill['revision']} from the active catalog?",
+        title = "Remove preferences" if preferences else "Delete skill"
+        message = ("Remove the reviewed preferences? The locked skill will not change." if preferences else
+                   f"Delete {skill['id']} revision {skill['revision']} from the active catalog?")
+        self.confirm_action(title, message,
                             "Delete", partial(self.skill_operation, "delete",
-                                              {"id": skill["id"], "revision": skill["revision"]}), done=done)
+                                              {"id": skill["id"], "revision": skill["revision"]}),
+                            done=None if preferences else done)
 
     def review(self):
         if not self.loaded:

@@ -162,10 +162,31 @@ def test_v2_registered_client_chat_and_domain_management_over_http(db, tmp_path,
         filtered = client.post("/v2/query", headers=headers,
                                json={"action": "skills.list", "arguments": {"query": document["id"]}})
         assert filtered.json() == {"skills": [], "total": 0}
+        preference_body = "For all outbound mail, sign as the Assistant."
+        operation("create-preferences-http", **skill_request("create", overlay_for="EMAIL", body=preference_body))
+        def email_preferences():
+            return client.post("/v2/query", headers=headers,
+                               json={"action": "skills.read", "arguments": {"id": "EMAIL"}}).json()["preferences"]
+
+        preference = email_preferences()
+        assert preference["body"] == preference_body
+        assert preference["overlay_for"] == "EMAIL"
+        for include_overlays, expected in ((True, {"EMAIL", preference["id"]}), (False, {"EMAIL"})):
+            result = client.post("/v2/query", headers=headers, json={
+                "action": "skills.list", "arguments": {"query": "EMAIL", "include_overlays": include_overlays}
+            }).json()
+            assert {skill["id"] for skill in result["skills"] if skill["id"] in {"EMAIL", preference["id"]}} == expected
+        operation("edit-preferences-http", **skill_request(
+            "edit", **{key: preference[key] for key in ("id", "title", "description", "revision")}, body="Updated signoff."))
+        updated = email_preferences()
+        assert updated["body"] == "Updated signoff."
+        operation("delete-preferences-http", **skill_request("delete", id=updated["id"], revision=updated["revision"]))
+        assert email_preferences() is None
         journal = "\n".join(path.read_text() for path in (tmp_path / "data").rglob("*.json"))
         assert "Synthetic question" not in journal and "Synthetic answer" not in journal
         assert "HTTP contact" not in journal
         assert document["body"] not in journal
+        assert preference_body not in journal
     finally:
         app.state.management_operations.executor.shutdown(wait=True)
 

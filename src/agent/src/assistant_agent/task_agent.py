@@ -14,6 +14,7 @@ from .llm_client import LlmClient
 from .memory_manager import MemorySteward
 from .micro_skills import (
     SKILL_DISCOVERY_TOOLS, SKILL_WRITE_TOOL, SkillContext, SkillStore, completed as skill_call_completed,
+    preferences_by_parent,
     core_skills, enabled as skills_enabled,
 )
 from .notifications import notify_admin_job_failure
@@ -1883,16 +1884,20 @@ class TaskAgent:
     def handle_skill_call(self, job, messages, tool_call_id, name, arguments):
         state = job["_skill_context"]
         eligible = self.active_skill_catalog(job)
-        overlays = self.skill_requester_is_admin(job)
-        if overlays:
-            eligible.update({item.id: item for item in job["_skill_lifecycle"].values() if item.overlay_for})
         try:
             if name == "skill_list":
                 offset = arguments.get("offset", 0)
                 if type(offset) is not int or offset < 0:
                     raise ValueError("Provide a non-negative skill list offset.")
                 rows = sorted(eligible.values(), key=lambda item: item.id)
-                result = {"skills": [item.card() for item in rows[offset:offset + 50]], "total": len(rows)}
+                preferences = preferences_by_parent(job["_skill_lifecycle"]) if self.can_save_skill(job) else {}
+                cards = []
+                for item in rows[offset:offset + 50]:
+                    card = item.card()
+                    if preference := preferences.get(item.id):
+                        card["preference_record"] = preference.card()
+                    cards.append(card)
+                result = {"skills": cards, "total": len(rows)}
             elif name == "skill_search":
                 query = arguments.get("query")
                 if not isinstance(query, str) or not query.strip():
@@ -1901,10 +1906,12 @@ class TaskAgent:
             elif name == "skill_load":
                 skill_id = arguments.get("id")
                 skill = eligible.get(skill_id) if isinstance(skill_id, str) else None
+                if skill is None and isinstance(skill_id, str) and self.skill_requester_is_admin(job):
+                    preference = job["_skill_lifecycle"].get(skill_id)
+                    if preference and preference.overlay_for:
+                        skill = eligible.get(preference.overlay_for)
                 if not skill:
                     raise ValueError("Skill not found or not available for this request.")
-                if skill.overlay_for:
-                    raise ValueError("Load the parent skill to apply its preference overlay.")
                 state.activate(skill, "manual")
                 state.prioritize(skill)
                 result = {"skill": skill.card(), "status": "already_loaded" if (skill.id, skill.revision) in state.visible else "queued"}

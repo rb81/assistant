@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from typing import Any, Literal, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 
 READ_ACTIONS = {
@@ -95,6 +95,7 @@ class SkillList(BaseModel):
     query: str = Field(default="", max_length=500)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=50)
+    include_overlays: bool = True
 
 
 class SkillReference(BaseModel):
@@ -102,11 +103,21 @@ class SkillReference(BaseModel):
     id: str = Field(min_length=1, max_length=64)
 
 
-class SkillCreate(SkillReference):
-    title: str = Field(min_length=1, max_length=100)
-    description: str = Field(min_length=1, max_length=500)
+class SkillCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str | None = Field(default=None, min_length=1, max_length=64)
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, min_length=1, max_length=500)
     body: str = Field(min_length=1, max_length=6000)
     overlay_for: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def creation_fields(self):
+        if self.id is not None and self.title is not None and self.description is not None:
+            return self
+        if self.overlay_for and all(value is None for value in (self.id, self.title, self.description)):
+            return self
+        raise ValueError("Provide ID, title and description for a custom skill, or only parent and instructions for preferences.")
 
 
 class SkillEdit(SkillReference):
@@ -125,23 +136,34 @@ SKILL_WRITES = {"skills.create": SkillCreate, "skills.edit": SkillEdit, "skills.
 
 
 def skill_action(db, config, action, arguments, *, mutate):
-    from .micro_skills import SkillStore
+    from .micro_skills import SkillStore, core_skills, preferences_by_parent
     store = SkillStore(db, config)
     models = SKILL_WRITES if mutate else SKILL_READS
     if action not in models:
         raise ValueError("Unsupported skill operation.")
     values = models[action].model_validate(arguments).model_dump()
     if mutate:
-        return store.mutate(action.split(".")[1], values.pop("id"), actor="management:admin", **values)
+        skill_id = values.pop("id")
+        if action == "skills.create" and skill_id is None:
+            parent = core_skills().get(values["overlay_for"])
+            if parent is None:
+                raise ValueError("Preferences must target a shipped skill.")
+            skill_id = f"{parent.id}.PREFERENCES.{uuid.uuid4().hex.upper()}"
+            values.update(title=f"{parent.title} preferences", description=f"Operator preferences for {parent.title}.")
+        return store.mutate(action.split(".")[1], skill_id, actor="management:admin", **values)
     catalog = store.catalog()
     if action == "skills.read":
         skill = catalog.get(values["id"])
         if not skill:
             raise ValueError("Skill not found.")
-        return skill.document()
+        result = skill.document()
+        if skill.locked:
+            preference = preferences_by_parent(catalog).get(skill.id)
+            result["preferences"] = preference.document() if preference else None
+        return result
     query = values["query"].strip().casefold()
     matching = [skill.card() for skill in sorted(catalog.values(), key=lambda item: item.id)
-                if query in skill.index_text().casefold()]
+                if (values["include_overlays"] or not skill.overlay_for) and query in skill.index_text().casefold()]
     offset = values["offset"]
     return {"skills": matching[offset:offset + values["limit"]], "total": len(matching)}
 
