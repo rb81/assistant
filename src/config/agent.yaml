@@ -225,6 +225,7 @@ agent:
 
   memory:
     working_context_days: 14
+    keyword_min_match: 0.5
     steward:
       enabled: true
       model: openai/gpt-4.1-mini
@@ -236,6 +237,7 @@ agent:
       max_transcript_bytes: 30000
       min_importance: 4
       min_confidence: 0.55
+      max_memory_chars: 500
       reap_after_days: 90
       reap_max_importance: 2
       reap_interval_hours: 24

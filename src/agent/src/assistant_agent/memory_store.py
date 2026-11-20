@@ -126,8 +126,10 @@ class MemoryStore:
     def touch(self, memory_ids: list[int]) -> None:
         if not memory_ids:
             return
-        for memory_id in memory_ids:
-            self.db.execute("UPDATE agent_memories SET last_accessed_at = now() WHERE id = %s", (memory_id,))
+        self.db.execute(
+            "UPDATE agent_memories SET last_accessed_at = now() WHERE id = ANY(%s)",
+            (sorted({int(memory_id) for memory_id in memory_ids}),),
+        )
 
     def add_workstream_provenance(
         self, rows: list[dict[str, Any]], current_workstream_id: Optional[int] = None,
@@ -362,6 +364,8 @@ class MemoryStore:
         limit: int = 10,
         *,
         workstream_id: Optional[int] = None,
+        min_match: Optional[float] = None,
+        touch: bool = True,
     ) -> list[dict[str, Any]]:
         max_rows = min(max(int(limit or 10), 1), 100)
         clean_query = str(query or "").strip()
@@ -373,7 +377,7 @@ class MemoryStore:
             params.append(workstream_id)
         if clean_query:
             pattern = "%%%s%%" % clean_query
-            terms = list(dict.fromkeys(term.lower() for term in re.findall(r"\w{3,}", clean_query) if term.lower() not in {"the", "and", "for", "this", "that", "with", "from", "please", "email", "task", "send", "have", "will", "your"}))[:12]
+            terms = query_terms(clean_query)
             filters.append(
                 """
                 (content ILIKE %s
@@ -412,21 +416,32 @@ class MemoryStore:
             """,
             tuple(params),
         )
-        self.touch([row["id"] for row in rows])
+        if clean_query:
+            rows = [{**row, "keyword_match": keyword_match_strength(row.get("content"), clean_query)} for row in rows]
+            if min_match is not None:
+                rows = [row for row in rows if row["keyword_match"] >= min_match]
+        if touch:
+            self.touch([row["id"] for row in rows])
         return rows
 
+    def keyword_min_match(self) -> float:
+        return self.config.get_float("agent.memory.keyword_min_match", 0.5)
+
     def semantic_search(
-        self, query: str, limit: int = 10, *, workstream_id: Optional[int] = None,
+        self, query: str, limit: int = 10, *, workstream_id: Optional[int] = None, touch: bool = True,
     ) -> list[dict[str, Any]]:
         clean_query = str(query or "").strip()
-        options = {"workstream_id": workstream_id} if workstream_id is not None else {}
+        options: dict[str, Any] = {"touch": touch}
+        if workstream_id is not None:
+            options["workstream_id"] = workstream_id
         if not clean_query:
             return self.keyword_search("", limit=limit, **options)
+        min_match = self.keyword_min_match()
         try:
             query_embedding = self.embedding_client.embed(clean_query)
         except Exception as exc:
             LOGGER.warning("semantic memory search falling back to keyword search: %s", exc)
-            return self.keyword_search(clean_query, limit=limit, **options)
+            return self.keyword_search(clean_query, limit=limit, min_match=min_match, **options)
 
         candidate_limit = self.config.get_int("agent.memory.embeddings.candidate_limit", 500)
         ownership_filter = ""
@@ -452,12 +467,16 @@ class MemoryStore:
         recency_boost_max = self.config.get_float("agent.memory.embeddings.recency_boost_max", 0.1)
         recency_boost_days = self.config.get_int("agent.memory.embeddings.recency_boost_days", 365)
         
+        minimum = self.config.get_float("agent.memory.embeddings.min_similarity", 0.45)
+        similarities: dict[int, float] = {}
         for row in rows:
             if not self.embedding_client.compatible(row, len(query_embedding)):
                 continue
             score = cosine_similarity(query_embedding, row.get("embedding") or [])
-            minimum = self.config.get_float("agent.memory.embeddings.min_similarity", 0.45)
-            if score is None or score < minimum:
+            if score is None:
+                continue
+            similarities[int(row["id"])] = score
+            if score < minimum:
                 continue
             # Calculate recency boost
             days_old = 9999
@@ -478,15 +497,56 @@ class MemoryStore:
             clean_row.pop("embedding", None)
             clean_row["score"] = score
             clean_row["similarity"] = score - recency_boost
+            clean_row["match"] = "semantic"
+            scored.append(clean_row)
+        # Keyword hits must be strong on their own or semantically similar; a single shared
+        # generic word (e.g. "agent" in "agents") is not evidence of relevance.
+        semantic_by_id = {row["id"]: row for row in scored}
+        for row in self.keyword_search(clean_query, limit=limit, workstream_id=workstream_id, touch=False):
+            similarity = similarities.get(int(row["id"]))
+            strength = float(row.get("keyword_match") or 0.0)
+            if strength < min_match and (similarity is None or similarity < minimum):
+                continue
+            existing = semantic_by_id.get(row["id"])
+            if existing is not None:
+                existing["keyword_match"] = strength
+                existing["match"] = "semantic+keyword"
+                existing["score"] = max(float(existing["score"]), strength)
+                continue
+            clean_row = {**row, "similarity": similarity, "score": strength, "match": "keyword"}
+            semantic_by_id[row["id"]] = clean_row
             scored.append(clean_row)
         scored.sort(key=lambda item: (item.get("score") or 0.0, item.get("importance") or 0), reverse=True)
-        keywords = self.keyword_search(clean_query, limit=limit, **options)
-        seen = {row["id"] for row in keywords}
-        result = (keywords + [row for row in scored if row["id"] not in seen])[: min(max(int(limit or 10), 1), 100)]
-        self.touch([row["id"] for row in result])
-        if not result:
-            return self.keyword_search(clean_query, limit=limit, **options)
+        result = scored[: min(max(int(limit or 10), 1), 100)]
+        if touch:
+            self.touch([row["id"] for row in result])
         return result
+
+
+KEYWORD_STOPWORDS = {
+    "the", "and", "for", "this", "that", "with", "from", "please", "email", "task", "send", "have", "will", "your",
+}
+
+
+def query_terms(query: str) -> list[str]:
+    return list(dict.fromkeys(
+        term.lower() for term in re.findall(r"\w{3,}", query) if term.lower() not in KEYWORD_STOPWORDS
+    ))[:12]
+
+
+def keyword_match_strength(content: Any, query: str) -> float:
+    """1.0 for a full-phrase match, otherwise the share of query terms found as whole words."""
+    text = str(content or "").lower()
+    clean_query = str(query or "").strip().lower()
+    if not text or not clean_query:
+        return 0.0
+    if clean_query in text:
+        return 1.0
+    terms = query_terms(clean_query)
+    if not terms:
+        return 0.0
+    words = set(re.findall(r"\w+", text))
+    return sum(term in words for term in terms) / len(terms)
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> Optional[float]:

@@ -112,8 +112,8 @@ CREATE FUNCTION set_updated_at() RETURNS trigger
 BEGIN
     IF to_jsonb(NEW) ? 'embedding'
          AND NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at
-         AND (to_jsonb(NEW) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
-                 = (to_jsonb(OLD) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata'])
+         AND (to_jsonb(NEW) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata', 'last_accessed_at'])
+                 = (to_jsonb(OLD) - ARRAY['embedding', 'embedding_model', 'embedding_dimensions', 'embedding_updated_at', 'metadata', 'last_accessed_at'])
          AND (COALESCE(to_jsonb(NEW)->'metadata', '{}'::jsonb) - 'embedding_pending')
                  = (COALESCE(to_jsonb(OLD)->'metadata', '{}'::jsonb) - 'embedding_pending') THEN
         RETURN NEW;

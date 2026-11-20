@@ -24,7 +24,11 @@ again afterwards. See [Email Administration](email-administration.md)
 for the commands and [security](security.md) for deletion limits.
 
 Memory supports keyword search and, when embeddings are available, semantic
-search. Contact details live in the dedicated `contacts` store and contact tools,
+search. With embeddings, a keyword hit is returned only if it contains the full
+query phrase, enough of the query's words as whole words
+(`agent.memory.keyword_min_match`, default 0.5), or is also semantically similar
+(`min_similarity`). Results report `similarity`, `keyword_match` and `match`;
+`confidence` is how certain the memory was when stored, not relevance. Contact details live in the dedicated `contacts` store and contact tools,
 so mutable records do not contaminate durable behavior.
 
 ## Memory Steward
@@ -36,19 +40,24 @@ keyword and semantic search, prioritizing the current workstream and retaining
 cross-workstream provenance. `max_injected_memories` (default 8) bounds the
 selected memory candidates; the synthesis currently includes at most eight.
 It also searches other context sources and uses the configured steward model
-to synthesize a concise recall summary.
+to synthesize a concise recall summary. Only memories the summary cites
+(`memory #ID`) are marked accessed; every candidate shown to the model is still
+recorded in `memory_ids` for erasure. Recording access updates
+`last_accessed_at` without changing `updated_at`, so reads do not inflate recency.
 
 **Consolidation.** At completion, failure, review, and asynchronous-wait paths,
 the steward asks the configured model to propose memories, subject to
-`min_importance`, `min_confidence` and `max_writes_per_job`. Inferred memories
+`min_importance`, `min_confidence`, `max_memory_chars` and `max_writes_per_job`. Inferred memories
 must include evidence and why they are relevant to the future; routine action
-logs and low-signal details are rejected. Failures are ignored in the default
+logs and low-signal details are rejected. Proposals longer than
+`max_memory_chars` (default 500) are rejected as non-atomic, and reminder or task
+configuration should be referenced by ID rather than copied. Failures are ignored in the default
 `best_effort` mode; `mode: required` propagates recall/consolidation errors to
 the task-agent's exception handling.
 
 Configuration (`agent.memory.steward.*`): `enabled`, `mode`, `model`, `timeout_seconds`,
 `max_tokens_per_call`, `max_injected_memories`, `max_writes_per_job`,
-`min_importance`, `min_confidence`, `conflict_detection_enabled` and
+`min_importance`, `min_confidence`, `max_memory_chars`, `conflict_detection_enabled` and
 `conflict_similarity_threshold` (default 0.85). Use the **Memory** settings
 for automatic stewardship and the injected-memory limit.
 

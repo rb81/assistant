@@ -346,6 +346,9 @@ settings:
   agent.memory.working_context_days:
     label: Working memory lifetime
     description: "Days before new working-context memories expire when no expiry is supplied. Longer lifetimes retain temporary details longer and may surface outdated context."
+  agent.memory.keyword_min_match:
+    label: Keyword memory match strength
+    description: "Share of search words, from zero to one, a memory must contain as whole words to be returned on keywords alone; full-phrase matches always qualify. Semantically similar memories are unaffected. Lower to return looser keyword matches."
   agent.memory.steward.model:
     label: Memory steward model
     description: "Model used to select recalled context and propose memories after tasks. Choose a capable, economical model; memory upkeep makes additional provider calls."
@@ -370,6 +373,9 @@ settings:
   agent.memory.steward.min_confidence:
     label: Minimum memory confidence
     description: "Minimum confidence score, from zero to one, for automatically saving a proposed memory unless the user explicitly requested it. Raise to filter uncertain facts more strictly."
+  agent.memory.steward.max_memory_chars:
+    label: Maximum memory length
+    description: "Longest automatically saved memory, in characters. Longer proposals are rejected as non-atomic, which keeps task specifications and copied configuration out of memory; zero removes the limit."
   agent.memory.steward.reap_after_days:
     label: Unused memory expiry age
     description: "Days without access before an unpinned, low-importance memory is eligible for expiry. Expiry hides it from active recall without deleting the stored record."

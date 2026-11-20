@@ -16,7 +16,8 @@ json_module.Jsonb = lambda value: value
 sys.modules.setdefault("psycopg.types", types.ModuleType("psycopg.types"))
 sys.modules.setdefault("psycopg.types.json", json_module)
 
-from assistant_agent.memory_manager import normalize_memory_candidate
+from assistant_agent.memory_manager import cited_memory_ids, normalize_memory_candidate
+from assistant_agent.memory_store import MemoryStore, keyword_match_strength
 from assistant_agent.memory_erasure import memory_contents, redact_memory
 
 
@@ -332,3 +333,70 @@ class MiniReflectionLoggingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NEWS_RULE = (
+    "Set up a weekly reminder to run scripts/weekly_ai_news.py every Monday and email "
+    "General AI news and AI assistants & agents news to the Admin."
+)
+
+
+class _SearchConfig:
+    def get_float(self, key, default):
+        return default
+
+    def get_int(self, key, default):
+        return default
+
+
+class _SearchDb:
+    def __init__(self, rows):
+        self.rows = rows
+        self.touched = []
+
+    def fetch_all(self, sql, params):
+        if "embedding IS NOT NULL" in sql:
+            return [dict(row) for row in self.rows]
+        return [{k: v for k, v in row.items() if k != "embedding"} for row in self.rows]
+
+    def execute(self, sql, params):
+        self.touched.extend(params[0])
+
+
+def _search_store(rows, query_vector):
+    store = MemoryStore.__new__(MemoryStore)
+    store.db = _SearchDb(rows)
+    store.config = _SearchConfig()
+    store.embedding_client = MagicMock(model="m", embed=MagicMock(return_value=query_vector))
+    store.embedding_client.compatible.return_value = True
+    return store
+
+
+class MemoryRelevanceTest(unittest.TestCase):
+    def test_single_generic_shared_word_is_not_a_keyword_match(self) -> None:
+        self.assertLess(keyword_match_strength(NEWS_RULE, "Bastien Vestian AI agent competition mentoring"), 0.5)
+        self.assertEqual(keyword_match_strength("Mentor Bastien Vestian weekly", "bastien vestian"), 1.0)
+
+    def test_weak_keyword_hit_without_similarity_is_dropped(self) -> None:
+        store = _search_store([{"id": 6, "content": NEWS_RULE, "embedding": [0.0, 1.0], "importance": 1}], [1.0, 0.0])
+        result = store.semantic_search("Bastien Vestian AI agent competition mentoring")
+        self.assertEqual(result, [])
+        self.assertEqual(store.db.touched, [])
+
+    def test_strong_keyword_hit_reports_scores_and_respects_touch(self) -> None:
+        store = _search_store([{"id": 9, "content": "Bastien Vestian asked for mentoring.", "embedding": [0.0, 1.0]}], [1.0, 0.0])
+        result = store.semantic_search("Bastien Vestian mentoring", touch=False)
+        self.assertEqual([row["id"] for row in result], [9])
+        self.assertEqual(result[0]["match"], "keyword")
+        self.assertEqual(result[0]["similarity"], 0.0)
+        self.assertEqual(store.db.touched, [])
+
+    def test_only_cited_memories_count_as_accessed(self) -> None:
+        summary = "Use memory #6 and memories 7, 9. Due 2026-11-20 (12 items)."
+        self.assertEqual(cited_memory_ids(summary, [6, 7, 9, 12, 20]), [6, 7, 9])
+        self.assertEqual(cited_memory_ids("NONE", [6]), [])
+
+    def test_overlong_memory_is_rejected_as_non_atomic(self) -> None:
+        item = {"content": "x" * 501, "kind": "operating_rule", "importance": 5, "explicit_user_requested": True}
+        self.assertEqual(normalize_memory_candidate(item, max_chars=500), (None, "too_long:501"))
+

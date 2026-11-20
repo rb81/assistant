@@ -166,6 +166,7 @@ class ContextStore:
             WHERE embedding IS NOT NULL
                             AND embedding_model = %s AND embedding_dimensions = %s
               AND (expires_at IS NULL OR expires_at > now())
+              AND COALESCE(metadata->>'state', 'active') = 'active'
             ORDER BY pinned DESC, importance DESC, updated_at DESC
             LIMIT %s
             """,
@@ -267,6 +268,7 @@ class ContextStore:
             SELECT id, content, tags, scope, kind, importance, created_at, updated_at
             FROM agent_memories
             WHERE (expires_at IS NULL OR expires_at > now())
+              AND COALESCE(metadata->>'state', 'active') = 'active'
               AND (content ILIKE %s OR scope ILIKE %s OR kind ILIKE %s)
             ORDER BY pinned DESC, importance DESC, updated_at DESC
             LIMIT %s

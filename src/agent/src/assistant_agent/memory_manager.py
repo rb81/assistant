@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -22,10 +23,10 @@ KIND_ALIASES = {
 # High-signal tool names that trigger mini-reflection after job completion
 
 
-RECALL_SYSTEM_PROMPT = 'You are a context steward. Return concise relevant recall with memory IDs and source evidence.\nDistinguish known source-backed facts from possibly related search results. Similarity or an exact word does not prove a relationship.\nUse only genuinely useful memories and source context for this request; do not guess, include secrets, or repeat routine bookkeeping.\nGive priority to explicit user preferences and standing rules when relevant. Return exactly NONE if nothing is useful.\nInclude drill-down IDs for memory_search, job_read, contact_read, or context_search when verification is needed.'
+RECALL_SYSTEM_PROMPT = 'You are a context steward. Return concise relevant recall with memory IDs and source evidence.\nDistinguish known source-backed facts from possibly related search results. Similarity or an exact word does not prove a relationship.\nUse only genuinely useful memories and source context for this request; do not guess, include secrets, or repeat routine bookkeeping.\nGive priority to explicit user preferences and standing rules when relevant. Return exactly NONE if nothing is useful.\nCite each memory you use as memory #ID. Candidate similarity is embedding relevance; confidence is only how sure the memory was when stored.\nInclude drill-down IDs for memory_search, job_read, contact_read, or context_search when verification is needed.'
 
 
-CONSOLIDATION_SYSTEM_PROMPT_TEMPLATE = 'You are a strict memory steward for %(agent_name)s. Return JSON only:\n{"memories":[{"content":"...","tags":["..."],"scope":"global","kind":"decision|agreement|incident|preference|operating_rule|project_context|working_context","importance":1,"confidence":0.9,"why_future_relevant":"...","evidence":"...","explicit_user_requested":false,"expires_at":null}]}\nStore atomic, concise, significant future-useful facts with source evidence. Prefer no memories to noise.\nAllowed kinds: decisions, agreements, significant incidents, durable preferences, operating rules, background to ongoing real-world work (project_context), and temporary commitments or pending follow-ups (working_context).\nWorking context expires by default. Include dates when relevant. Separate explicit user memories from uncertain inferred suggestions.\nNever conflate related facts or infer a correction from similarity. Do not store secrets, contact records, public trivia, speculation, routine successful-action logs, or copied source text.\nReturn {"memories":[]} when nothing needs remembering.'
+CONSOLIDATION_SYSTEM_PROMPT_TEMPLATE = 'You are a strict memory steward for %(agent_name)s. Return JSON only:\n{"memories":[{"content":"...","tags":["..."],"scope":"global","kind":"decision|agreement|incident|preference|operating_rule|project_context|working_context","importance":1,"confidence":0.9,"why_future_relevant":"...","evidence":"...","explicit_user_requested":false,"expires_at":null}]}\nStore atomic, concise, significant future-useful facts with source evidence. Prefer no memories to noise.\nAllowed kinds: decisions, agreements, significant incidents, durable preferences, operating rules, background to ongoing real-world work (project_context), and temporary commitments or pending follow-ups (working_context).\nWorking context expires by default. Include dates when relevant. Separate explicit user memories from uncertain inferred suggestions.\nNever conflate related facts or infer a correction from similarity. Do not store secrets, contact records, public trivia, speculation, routine successful-action logs, or copied source text.\nDo not copy reminder, schedule, script, or task configuration that is already stored in a reminder or job; at most store a one-sentence pointer naming the reminder or job ID. Keep each memory to one or two sentences.\nReturn {"memories":[]} when nothing needs remembering.'
 
 
 
@@ -78,14 +79,16 @@ class MemorySteward:
             if summary.strip().upper() == "NONE":
                 return {"summary": ""}
 
-            # Touch accessed memories
-            accessed_ids = [row["id"] for row in linked_memories + memory_candidates if row.get("id")]
-            if accessed_ids:
-                self.store.touch(accessed_ids)
+            # memory_ids lists everything shown to the model (memory erasure relies on it);
+            # only memories the recall actually cites count as accessed.
+            injected_ids = [row["id"] for row in linked_memories + memory_candidates if row.get("id")]
+            cited_ids = cited_memory_ids(summary, injected_ids)
+            if cited_ids:
+                self.store.touch(cited_ids)
 
             return {
                 "summary": summary.strip(),
-                "memory_ids": accessed_ids,
+                "memory_ids": injected_ids,
 
             }
         except Exception as exc:
@@ -173,23 +176,17 @@ class MemorySteward:
         seen: dict[int, dict[str, Any]] = {}
         if job.get("workstream_id"):
             for row in self.store.semantic_search(
-                query, limit=max(limit, 4), workstream_id=job["workstream_id"],
+                query, limit=max(limit, 4), workstream_id=job["workstream_id"], touch=False,
             ):
                 seen[int(row["id"])] = row
-            for row in self.store.keyword_search(
-                query[:500], limit=max(limit, 4), workstream_id=job["workstream_id"],
-            ):
-                seen[int(row["id"])] = row
-        for row in self.store.semantic_search(query, limit=max(limit, 4)):
-            seen[int(row["id"])] = row
-        for row in self.store.keyword_search(query[:500], limit=max(limit, 4)):
-            seen[int(row["id"])] = row
+        for row in self.store.semantic_search(query, limit=max(limit, 4), touch=False):
+            seen.setdefault(int(row["id"]), row)
         rows = self.store.add_workstream_provenance(
             list(seen.values()), current_workstream_id=job.get("workstream_id"),
         )
         rows.sort(key=lambda item: (
             bool(item.get("in_current_workstream")),
-            float(item.get("score") or 1.0),
+            float(item.get("score") or 0.0),
             bool(item.get("pinned")),
             int(item.get("importance") or 0),
         ), reverse=True)
@@ -227,6 +224,7 @@ class MemorySteward:
             max_writes = self.config.get_int("agent.memory.steward.max_writes_per_job", 5)
             min_importance = self.config.get_int("agent.memory.steward.min_importance", 4)
             min_confidence = self.config.get_float("agent.memory.steward.min_confidence", 0.55)
+            max_chars = self.config.get_int("agent.memory.steward.max_memory_chars", 500)
             store = MemoryStore(self.db.for_job(job["id"]), self.config)
             created = []
             rejected = []
@@ -237,6 +235,7 @@ class MemorySteward:
                     item,
                     min_importance=min_importance,
                     min_confidence=min_confidence,
+                    max_chars=max_chars,
                 )
                 if normalized is None:
                     rejected.append(compact_rejected_memory(item, reason))
@@ -424,7 +423,7 @@ class MemorySteward:
 
 
     def duplicate_exists(self, content: str) -> bool:
-        rows = self.store.keyword_search(content[:200], limit=5)
+        rows = self.store.keyword_search(content[:200], limit=5, touch=False)
         clean = content.strip().lower()
         return any(str(row.get("content") or "").strip().lower() == clean for row in rows)
 
@@ -487,6 +486,8 @@ def compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
         "kind": memory.get("kind"),
         "importance": memory.get("importance"),
         "confidence": memory.get("confidence"),
+        "similarity": memory.get("similarity"),
+        "keyword_match": memory.get("keyword_match"),
         "pinned": memory.get("pinned"),
         "linked_entities": memory.get("linked_entities") or [],
         "origin_workstream_id": memory.get("origin_workstream_id"),
@@ -502,10 +503,13 @@ def normalize_memory_candidate(
     *,
     min_importance: int = 4,
     min_confidence: float = 0.55,
+    max_chars: Optional[int] = None,
 ) -> tuple[Optional[dict[str, Any]], str]:
     content = str(item.get("content") or "").strip()
     if not content:
         return None, "empty_content"
+    if max_chars and len(content) > max_chars:
+        return None, "too_long:%s" % len(content)
 
     kind = normalize_memory_kind(item.get("kind"))
     if kind not in ALLOWED_MEMORY_KINDS:
@@ -552,6 +556,13 @@ def normalize_memory_candidate(
         },
         "",
     )
+
+
+def cited_memory_ids(summary: str, candidate_ids: list[int]) -> list[int]:
+    cited: set[int] = set()
+    for match in re.finditer(r"(?i)(?:\bmem(?:ory|ories)?\b|\bids?\b|#)[\s:#=_-]*(\d+(?:\s*(?:,|&|/|and)\s*#?\d+)*)", summary or ""):
+        cited.update(int(value) for value in re.findall(r"\d+", match.group(1)))
+    return [memory_id for memory_id in candidate_ids if int(memory_id) in cited]
 
 
 def normalize_memory_kind(value: Any) -> str:
