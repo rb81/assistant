@@ -469,6 +469,44 @@ def validate_secret(name, value):
         raise SetupError("Replace the placeholder credential")
 
 
+def startup_container_status(rows, services, configured_services):
+    expected = services if isinstance(services, dict) else dict.fromkeys(services, 1)
+    by_service = {service: [] for service in expected}
+    active = []
+    failed = set()
+    for row in rows:
+        # Compose ps --all also lists transient `compose run` containers under the same service name.
+        if "com.docker.compose.oneoff=true" in (row.get("Labels") or "").lower().split(","):
+            continue
+        service = row.get("Service")
+        if service in by_service:
+            by_service[service].append(row)
+            active.append(row)
+        if service in configured_services and (
+            row.get("State") == "dead"
+            or (row.get("State") == "exited"
+                and (service in expected or int(row.get("ExitCode") or 0) != 0))
+        ):
+            failed.add(service)
+    if failed:
+        raise SetupError(
+            "Container startup failed: " + ", ".join(sorted(failed))
+            + ". Inspect service logs; readiness was not verified."
+        )
+    lagging = {}
+    for service, replicas in by_service.items():
+        reasons = []
+        if len(replicas) < expected[service]:
+            reasons.append("missing" if not replicas else f"{len(replicas)}/{expected[service]} replicas present")
+        for row in replicas:
+            if row.get("State") != "running" or row.get("Health") not in (None, "", "healthy"):
+                status = row.get("Health") or row.get("State") or "unknown"
+                reasons.append(f"{row['Name']}: {status}" if len(replicas) > 1 and row.get("Name") else status)
+        if reasons:
+            lagging[service] = f"{service} ({', '.join(reasons)})"
+    return active, lagging
+
+
 class Installation:
     def __init__(self, root, recovering=False, *, include_credentials=True):
         """Load the installation; skip credential storage only for metadata reads."""
@@ -1014,8 +1052,10 @@ class Installation:
                 lagging.append(service + " (" + (row.get("Health") or row.get("State") or "unknown") + ")")
         return lagging
 
-    def wait_for_container_health(self, services, configured_services, progress=None, *, timeout=STARTUP_WAIT_SECONDS):
-        deadline = time.monotonic() + timeout
+    def wait_for_container_health(self, services, configured_services, progress=None, *,
+                                  timeout=STARTUP_WAIT_SECONDS, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic() + timeout
         last_status = None
         next_report = 0
         while True:
@@ -1035,35 +1075,17 @@ class Installation:
                     progress("a container disappeared during the health check; refreshing the container list")
                 time.sleep(min(5, remaining))
                 continue
-            failed = [
-                row.get("Service") for row in rows
-                if row.get("Service") in configured_services and (
-                    row.get("State") == "dead"
-                    or (row.get("State") == "exited"
-                        and (row.get("Service") in services or int(row.get("ExitCode") or 0) != 0))
-                )
-            ]
-            if failed:
-                raise SetupError(
-                    "Container startup failed: " + ", ".join(sorted(failed))
-                    + ". Inspect service logs; readiness was not verified."
-                )
-            by_service = {row.get("Service"): row for row in rows}
-            lagging = []
-            for service in services:
-                row = by_service.get(service, {})
-                if row.get("State") != "running" or row.get("Health") not in (None, "", "healthy"):
-                    lagging.append(service + " (" + (row.get("Health") or row.get("State") or "missing") + ")")
+            _, lagging = startup_container_status(rows, services, configured_services)
             if not lagging:
                 return rows
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise SetupError(
                     "These containers did not become healthy within " + str(timeout) + " seconds: "
-                    + ", ".join(lagging)
+                    + ", ".join(lagging.values())
                     + ". Startup failed; readiness was not verified. Inspect service logs before retrying."
                 )
-            status = ", ".join(lagging)
+            status = ", ".join(lagging.values())
             now = deadline - remaining
             if progress is not None and (status != last_status or now >= next_report):
                 if last_status is None and set(services).intersection(AGENT_SERVICES):
@@ -1071,7 +1093,7 @@ class Installation:
                              "running containers may still be processing their first cycle")
                 ready = len(services) - len(lagging)
                 progress(f"waiting for container health ({ready}/{len(services)} ready; "
-                         f"{int(timeout - remaining)}s/{timeout}s health wait): " + ", ".join(lagging))
+                         f"{int(timeout - remaining)}s/{timeout}s health wait): " + status)
                 last_status = status
                 next_report = now + 30
             time.sleep(min(5, remaining))
@@ -1090,7 +1112,13 @@ class Installation:
             self.reconcile_grants_locked(recreate=False)
             stage("Compose configuration")
             configuration = json.loads(self.compose(["config", "--format", "json"]))
-            services = sorted(set(configuration["services"]) & LONG_RUNNING_SERVICES)
+            configured_services = configuration["services"]
+            services = {}
+            for name in sorted(set(configured_services) & LONG_RUNNING_SERVICES):
+                settings = configured_services[name]
+                replicas = settings.get("scale", settings.get("deploy", {}).get("replicas", 1))
+                if replicas:
+                    services[name] = replicas
             if not services:
                 raise SetupError("No enabled long-running Assistant services were found")
             staged_sandbox = "sandbox-init" in configuration["services"]
@@ -1104,38 +1132,47 @@ class Installation:
             if preserve_management:
                 targets = sorted(set(configuration["services"]) - {"management", "management-docker"})
             self.compose(["up", "-d", "--build", *targets], timeout=1800)
-        stage("waiting for container health")
-        # Management startup acquires the installation lock to initialize its token and identity.
-        self.wait_for_container_health(services, configuration["services"], progress)
-        with installation_lock(self.root):
-            self.assert_current()
-            stage("checking container status")
-            rows = self.container_rows()
-            if any(row.get("Service") in configuration["services"] and row.get("Service") not in LONG_RUNNING_SERVICES and
-                   (row.get("State") == "dead" or (row.get("State") == "exited" and int(row.get("ExitCode") or 0) != 0)) for row in rows):
-                raise SetupError("A startup helper failed; inspect docker compose --env-file data/.env ps -a and logs")
-            active = [row for row in rows if row.get("Service") in services]
-            if set(services) != {row.get("Service") for row in active}:
-                raise SetupError("Some enabled containers are missing; inspect docker compose --env-file data/.env ps -a")
-            if any(row.get("State") != "running" or row.get("Health") not in (None, "", "healthy") for row in active):
-                raise SetupError("Some containers are not running or healthy; inspect docker compose --env-file data/.env ps -a and logs")
-            if staged_sandbox:
-                stage("verifying sandbox protected-file activation")
-                self.verify_sandbox_runtime()
-            identities = [row.get("ID") or row.get("Name") for row in active]
-            if not all(identities):
-                raise SetupError("Docker did not return container identities; restart policies were not verified")
-            stage("verifying restart policies")
-            self.docker(["update", "--restart", "unless-stopped", *identities])
-            policies = [json.loads(line) for line in self.docker(
-                ["inspect", "--format", "{{json .HostConfig.RestartPolicy.Name}}", *identities]
-            ).splitlines() if line.strip()]
-            verified = policies == ["unless-stopped"] * len(identities)
-            if not verified:
-                raise SetupError("Container restart policies could not be verified")
-            stage("recording credential activation")
-            self.record_credential_activation(services)
-            return rows
+        deadline = time.monotonic() + STARTUP_WAIT_SECONDS
+        while True:
+            stage("waiting for container health")
+            # Management startup acquires the installation lock to initialize its token and identity.
+            self.wait_for_container_health(services, configured_services, progress, deadline=deadline)
+            with installation_lock(self.root):
+                self.assert_current()
+                stage("checking container status")
+                try:
+                    rows = self.container_rows()
+                except DockerCommandError as error:
+                    if error.reason != "container_missing":
+                        raise
+                    retry = "a container disappeared during the final check"
+                else:
+                    active, lagging = startup_container_status(rows, services, configured_services)
+                    if not lagging:
+                        if staged_sandbox:
+                            stage("verifying sandbox protected-file activation")
+                            self.verify_sandbox_runtime()
+                        identities = [row.get("ID") or row.get("Name") for row in active]
+                        if not all(identities):
+                            raise SetupError("Docker did not return container identities; restart policies were not verified")
+                        stage("verifying restart policies")
+                        self.docker(["update", "--restart", "unless-stopped", *identities])
+                        policies = [json.loads(line) for line in self.docker(
+                            ["inspect", "--format", "{{json .HostConfig.RestartPolicy.Name}}", *identities]
+                        ).splitlines() if line.strip()]
+                        if policies != ["unless-stopped"] * len(identities):
+                            raise SetupError("Container restart policies could not be verified")
+                        stage("recording credential activation")
+                        self.record_credential_activation(services)
+                        return rows
+                    retry = ", ".join(lagging.values())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SetupError(f"Container readiness changed before startup verification completed: {retry}. "
+                                 "Startup failed; readiness was not verified. Inspect service logs before retrying.")
+            if progress is not None:
+                progress(f"Container readiness changed during the final check; retrying: {retry}")
+            time.sleep(min(5, remaining))
 
     def record_credential_activation(self, services):
         """Caller holds the installation lock; disabled services retain their pending grants."""

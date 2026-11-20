@@ -219,7 +219,7 @@ def test_configured_start_releases_installation_lock_for_management_startup(tmp_
             app.state.management_operations.executor.shutdown(wait=True)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        def verify_health(*args):
+        def verify_health(*args, **kwargs):
             executor.submit(management_startup).result(timeout=3)
             return rows
 
@@ -236,7 +236,7 @@ def test_configuration_changed_during_health_wait_is_not_recorded_as_activated(t
     instance.save()
     state = instance.state_path.read_bytes()
 
-    def external_edit(*args):
+    def external_edit(*args, **kwargs):
         instance.overrides_path.write_text("AGENT_IDENTITY_NAME=Changed elsewhere\n")
 
     with patch.object(instance, "compose", side_effect=[
@@ -268,6 +268,41 @@ def test_health_wait_refreshes_after_a_container_disappears_during_compose_ps():
     assert "refreshing the container list" in progress.call_args.args[0]
     assert "partial-private-output" not in str(failure)
     assert "No such container:" not in str(failure)
+
+
+def test_configured_start_waits_for_each_worker_replica_and_retries_final_check(tmp_path):
+    sources(tmp_path)
+    instance = bootstrap(tmp_path)
+    configuration = json.dumps({"services": {"task-agent": {"deploy": {"replicas": 2}}}})
+    first = {"Service": "task-agent", "Name": "task-agent-1", "ID": "first", "State": "running", "Health": "healthy"}
+    second = {**first, "Name": "task-agent-2", "ID": "second"}
+    ready = [first, second]
+    starting = {**first, "State": "created", "Health": ""}
+    snapshots = [[first], [starting, second], ready, [starting, second], ready, ready]
+    progress = Mock()
+    with patch.object(instance, "compose", side_effect=[configuration, "", *map(json.dumps, snapshots)]) as compose, \
+            patch.object(instance, "docker", side_effect=["", '"unless-stopped"\n"unless-stopped"\n']) as docker, \
+            patch("assistant_agent.setup.time.sleep") as sleep:
+        assert instance.start_containers(progress=progress) == ready
+    assert compose.call_count == 8
+    assert sleep.call_count == 3
+    assert docker.call_args_list[0].args[0] == ["update", "--restart", "unless-stopped", "first", "second"]
+    messages = [call.args[0] for call in progress.call_args_list]
+    assert any("1/2 replicas present" in line for line in messages)
+    assert any("final check; retrying: task-agent (task-agent-1: created)" in line for line in messages)
+
+
+def test_configured_start_excludes_one_off_task_agent_helpers(tmp_path):
+    sources(tmp_path)
+    instance = bootstrap(tmp_path)
+    worker = {"Service": "task-agent", "ID": "worker", "State": "running", "Health": "healthy"}
+    helper = {"Service": "task-agent", "ID": "helper", "Labels": "a=b,com.docker.compose.oneoff=True,c=d"}
+    snapshots = [[worker, {**helper, "State": "created"}], [worker, {**helper, "State": "exited", "ExitCode": 1}]]
+    with patch.object(instance, "compose", side_effect=[
+        json.dumps({"services": {"task-agent": {}}}), "", *map(json.dumps, snapshots),
+    ]), patch.object(instance, "docker", side_effect=["", '"unless-stopped"\n']) as docker:
+        assert instance.start_containers() == snapshots[-1]
+    assert docker.call_args_list[0].args[0] == ["update", "--restart", "unless-stopped", "worker"]
 
 
 def test_health_wait_container_list_races_cannot_extend_the_deadline():
@@ -639,7 +674,7 @@ def test_containerized_api_and_scoped_docker_reader(tmp_path):
         instance.compose(["stop", "management"], timeout=30)
         wait_for_health = instance.wait_for_container_health
         with patch.object(instance, "wait_for_container_health",
-                          side_effect=lambda *args: wait_for_health(*args, timeout=60)):
+                          side_effect=lambda *args, **kwargs: wait_for_health(*args, timeout=60)):
             instance.start_containers()
         assert client.health()["api_version"] == 2
     except SetupError:

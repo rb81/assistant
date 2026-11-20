@@ -1613,15 +1613,15 @@ server.serve_forever()
 
     def test_startup_reporting_preserves_health_and_helper_failures(self):
         cases = [
-            ([{"Service": "task-agent", "State": "running", "Health": "unhealthy", "ID": "worker"}], "not running or healthy"),
+            ([{"Service": "task-agent", "State": "running", "Health": "unhealthy", "ID": "worker"}], "task-agent (unhealthy)"),
             ([{"Service": "task-agent", "State": "running", "ID": "worker"},
-              {"Service": "ollama-model-puller", "State": "exited", "ExitCode": 1}], "startup helper failed"),
+              {"Service": "ollama-model-puller", "State": "exited", "ExitCode": 1}], "Container startup failed: ollama-model-puller"),
         ]
         for rows, expected in cases:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as root:
                 instance = self.saved_configuration(root)
                 console = MagicMock()
-                with patch.object(instance, "docker", return_value="28.0.0"), patch.object(instance, "wait_for_container_health"), patch.object(instance, "compose", side_effect=[json.dumps({"services": {"task-agent": {}, "ollama-model-puller": {}}}), "", json.dumps(rows)]):
+                with patch.object(instance, "docker", return_value="28.0.0"), patch.object(instance, "wait_for_container_health"), patch("assistant_agent.setup.time.monotonic", side_effect=[0, 600]), patch.object(instance, "compose", side_effect=[json.dumps({"services": {"task-agent": {}, "ollama-model-puller": {}}}), "", json.dumps(rows)]):
                     with self.assertRaises(SetupError):
                         start_saved_containers(instance, MagicMock(), console)
                 output = "\n".join(call.args[0] for call in console.print.call_args_list)
@@ -1685,8 +1685,8 @@ server.serve_forever()
             instance = Installation(root)
             instance.save()
             rows = [{"Service": "task-agent", "State": "running", "Health": "unhealthy", "ID": "worker"}]
-            with patch.object(instance, "wait_for_container_health"), patch.object(instance, "compose", side_effect=[json.dumps({"services": {"task-agent": {}}}), "", json.dumps(rows)]), patch.object(instance, "docker") as docker:
-                with self.assertRaisesRegex(SetupError, "not running or healthy"):
+            with patch.object(instance, "wait_for_container_health"), patch("assistant_agent.setup.time.monotonic", side_effect=[0, 600]), patch.object(instance, "compose", side_effect=[json.dumps({"services": {"task-agent": {}}}), "", json.dumps(rows)]), patch.object(instance, "docker") as docker:
+                with self.assertRaisesRegex(SetupError, r"readiness changed.*task-agent \(unhealthy\)"):
                     instance.start_containers()
                 docker.assert_not_called()
 
@@ -1697,7 +1697,7 @@ server.serve_forever()
             rows = [{"Service": "task-agent", "State": "running", "ID": "worker"},
                     {"Service": "ollama-model-puller", "State": "exited", "ExitCode": 1, "ID": "helper"}]
             with patch.object(instance, "wait_for_container_health"), patch.object(instance, "compose", side_effect=[json.dumps({"services": {"task-agent": {}, "ollama-model-puller": {}}}), "", json.dumps(rows)]), patch.object(instance, "docker") as docker:
-                with self.assertRaisesRegex(SetupError, "startup helper failed"):
+                with self.assertRaisesRegex(SetupError, "Container startup failed: ollama-model-puller"):
                     instance.start_containers()
                 docker.assert_not_called()
 
