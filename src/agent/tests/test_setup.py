@@ -24,6 +24,36 @@ from assistant_agent.config import load_config
 
 
 class SetupTest(unittest.TestCase):
+    def test_managed_reader_provisions_private_credential_and_stops_on_external_switch(self):
+        repository = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            shutil.copytree(repository / "config", path / "src/config")
+            shutil.copyfile(repository / "docker-compose.yml", path / "src/docker-compose.yml")
+            instance = self.saved_configuration(root)
+            instance.values.update(AGENT_WEB_FETCH_ENABLED="true", COMPOSE_PROFILES="email")
+            instance.save()
+
+            instance = Installation(root)
+            token = instance.secret_values["AGENT_WEB_FETCH_MANAGED_TOKEN"]
+            self.assertEqual(instance.values["COMPOSE_PROFILES"], "email,web-reader")
+            self.assertNotIn(token, (path / "data/overrides.env").read_text())
+            self.assertEqual({name for name, grants in instance.credential_grants().items()
+                              if "AGENT_WEB_FETCH_MANAGED_TOKEN" in grants},
+                             {"task-agent", "deep-research-agent", "heartbeat", "web-reader"})
+
+            instance.values["AGENT_WEB_FETCH_BASE_URL"] = "https://scraper.example.test"
+            instance.secret_values["AGENT_WEB_FETCH_API_TOKEN"] = "external-test-token"
+            instance.save()
+            instance = Installation(root)
+            self.assertEqual(instance.values["COMPOSE_PROFILES"], "email")
+            self.assertEqual(instance.secret_values["AGENT_WEB_FETCH_MANAGED_TOKEN"], token)
+            self.assertEqual(instance.credential_grants()["web-reader"], ["AGENT_WEB_FETCH_MANAGED_TOKEN"])
+            with patch.object(instance, "compose", side_effect=["web-reader\ntask-agent\nweb-reader-gateway", ""]) as compose:
+                instance.stop_inactive_web_reader()
+                self.assertEqual(compose.call_args.args[0],
+                                 ["--profile", "web-reader", "stop", "web-reader-gateway", "web-reader"])
+
     def test_setup_writes_only_runtime_data_and_preserves_local_configuration(self):
         repository = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as root:

@@ -18,6 +18,8 @@ from .setup import (
 )
 DEFAULT_PATHS = {key: path for key, path, _ in ENV_OVERRIDES}
 SERVICE_NAMES = {
+    "web-reader": "Managed web page reader",
+    "web-reader-gateway": "Web page reader gateway",
     "task-agent": "Task worker", "postgres": "Database", "downloader": "Email intake",
     "workspace-indexer": "Workspace indexer", "reminder-scheduler": "Reminders",
     "deep-research-agent": "Research worker", "supervisor": "Health monitor",
@@ -441,6 +443,8 @@ class Management:
         self.installation.compose(
             profile_args + commands[action] + targets, timeout=180 if verify_management_restart else 1800,
         )
+        if action == "apply" and not service:
+            self.installation.stop_inactive_web_reader()
         if verify_management_restart:
             self._verify_management_restart(previous)
         result = self.services()

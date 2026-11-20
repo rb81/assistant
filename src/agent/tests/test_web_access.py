@@ -1,9 +1,14 @@
 import io
 import json
+import os
+import shutil
+import subprocess
 import urllib.error
 from datetime import datetime, timezone
 from email.message import Message
+from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -165,6 +170,34 @@ def test_flagged_page_only_released_after_exact_approval_and_paged_from_cache(tm
     review.assert_called_once_with(config, url, "Title", content)
 
 
+def test_managed_reader_uses_fixed_private_endpoint_and_its_own_token(tmp_path, monkeypatch):
+    url = "https://example.org/page"
+    config = settings(tmp_path, fetch={"enabled": True})
+    monkeypatch.setenv(web_pages.MANAGED_SECRET, "managed-test-token")
+    monkeypatch.setenv(web_pages.SCRAPER_SECRET, "external-test-token")
+
+    def request(request, *, timeout):
+        assert request.full_url == "http://web-reader-gateway:8080/crawl"
+        assert request.get_header("Authorization") == "Bearer managed-test-token"
+        assert json.loads(request.data) == {"url": url, "timeout_seconds": 35}
+        assert timeout > 35
+        return http_response({"results": [{"success": True, "url": url, "markdown": "Rendered"}]})
+
+    transport = Mock(side_effect=request)
+    monkeypatch.setattr(web_pages, "open_internal_http_request", transport)
+    assert not web_pages.configuration_errors(config)
+    assert web_pages.scrape(config, url) == (url, "", "Rendered")
+    with pytest.raises(web_pages.WebFetchError, match="requires HTTPS"):
+        web_pages.scrape(config, "http://example.org/page")
+    transport.assert_called_once()
+
+    config.values["agent"]["web_fetch"]["base_url"] = "http://web-reader-gateway:8080"
+    assert web_pages.configuration_errors(config)
+    with pytest.raises(web_pages.WebFetchError, match="not configured correctly"):
+        web_pages.scrape(config, url)
+    transport.assert_called_once()
+
+
 def test_page_search_jumps_to_ranked_passages_and_reuses_snapshot(tmp_path, monkeypatch):
     url = "https://example.org/page"
     content = ("Renewal is possible. " + "filler " * 95 + "\n"
@@ -196,6 +229,76 @@ def test_page_search_jumps_to_ranked_passages_and_reuses_snapshot(tmp_path, monk
     review.assert_called_once()
     db.fetch_one.assert_called()
     assert all(call.args[1][:2] == (3, url) for call in db.fetch_one.call_args_list)
+
+
+@pytest.mark.skipif(os.environ.get("ASSISTANT_TEST_MANAGED_BROWSER") != "1", reason="requires Docker and public HTTPS")
+def test_managed_browser_renders_javascript_and_exits_between_requests(tmp_path):
+    from assistant_agent.setup import Installation
+
+    source = Path(__file__).resolve().parents[2]
+    target = tmp_path / "src"
+    for folder in ("config", "sandbox", "web_reader"):
+        shutil.copytree(source / folder, target / folder)
+    shutil.copyfile(source / "docker-compose.yml", target / "docker-compose.yml")
+    installation = Installation(tmp_path)
+    installation.values["AGENT_WEB_FETCH_ENABLED"] = "true"
+    installation.save()
+    installation = Installation(tmp_path)
+    prefix = installation.compose_prefix()
+    project = "assistant-web-reader-test-" + uuid4().hex[:8]
+
+    def compose(*args, input=None, check=True):
+        return subprocess.run(
+            ["docker", *prefix, "--project-name", project, "--profile", "web-reader", *args],
+            input=input, text=True, capture_output=True, check=check, timeout=600,
+        )
+
+    try:
+        started = compose("up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "45",
+                          "web-reader", "web-reader-gateway", check=False)
+        assert not started.returncode, started.stdout + started.stderr
+        probe = """
+import json, sys, urllib.error, urllib.request
+origin = "http://127.0.0.1:8080/crawl"
+def read(url, token):
+    data = json.dumps({"url": url, "timeout_seconds": 35}).encode()
+    request = urllib.request.Request(origin, data=data, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(request, timeout=40) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as error:
+        return error.code, json.load(error)
+token = sys.stdin.read()
+url = "https://quotes.toscrape.com/js/"
+assert read(url, "invalid")[0] == 401
+status, body = read(url, token)
+assert status == 200 and body["results"][0]["success"], (status, body)
+assert "by Albert Einstein" in body["results"][0]["markdown"]
+"""
+        result = compose("exec", "-T", "web-reader-gateway", "python", "-c", probe,
+                         input=installation.secret_values[web_pages.MANAGED_SECRET], check=False)
+        assert not result.returncode, result.stdout + result.stderr + compose("logs", "--tail", "20").stdout
+        idle = """
+import socket
+from pathlib import Path
+assert not any("Uid:\\t10001\\t" in p.read_text() for p in Path("/proc").glob("[0-9]*/status"))
+assert not list(Path("/tmp").iterdir())
+try:
+    with socket.create_connection(("1.1.1.1", 443), timeout=2):
+        raise AssertionError("Browser container can bypass the HTTPS gateway")
+except OSError:
+    pass
+"""
+        compose("exec", "-T", "web-reader", "python", "-c", idle)
+
+        installation.values["AGENT_WEB_FETCH_ENABLED"] = "false"
+        installation.save()
+        inactive = Installation(tmp_path)
+        with patch.object(inactive, "compose", side_effect=lambda args: compose(*args).stdout):
+            inactive.stop_inactive_web_reader()
+        assert not compose("ps", "--status", "running", "--services").stdout.strip()
+    finally:
+        compose("down", "--rmi", "local")
 
 
 @pytest.mark.parametrize(("kwargs", "error"), [

@@ -573,15 +573,19 @@ settings:
   # Web page reader
   agent.web_fetch.enabled:
     label: Enable web page reader
-    description: "Read rendered public pages via your self-hosted Crawl4AI instance. The development supervisor model reviews the extracted Markdown before the Assistant sees it."
+    description: "Read rendered public HTTPS pages. Applying this setting starts the managed browser service (Docker Engine 28+) unless an external Crawl4AI origin is configured. The supervisor reviews the extracted Markdown before the Assistant sees it."
   agent.web_fetch.base_url:
     type: str
-    label: Crawl4AI HTTPS origin
-    description: "Trusted HTTPS origin of your private Crawl4AI service, with no path or credentials."
+    label: External Crawl4AI HTTPS origin
+    description: "Leave blank to use the managed reader. For an external service, enter its trusted HTTPS origin without a path or embedded credentials."
   agent.web_fetch.api_token:
     secret: true
-    label: Crawl4AI API token
-    description: "Bearer token for your self-hosted Crawl4AI service."
+    label: External Crawl4AI API token
+    description: "Bearer token required only for an external Crawl4AI origin."
+  agent.web_fetch.managed_token:
+    secret: true
+    label: Managed browser token
+    description: "Installation-generated credential for the private managed reader."
   agent.web_fetch.timeout_seconds:
     label: Page read timeout
     description: "Time allowed for a Crawl4AI request, from 1 to 120 seconds."

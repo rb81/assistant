@@ -140,6 +140,8 @@ SERVICE_HELP = {
     "ollama-model-puller": "Downloads and prepares the configured local embedding model. This is an "
                            "initialization component; exiting successfully is normal.",
     "transcription": "Converts incoming voice audio into text locally. It does not generate spoken responses.",
+    "web-reader": "Starts a fresh Chromium process for each uncached page and closes it after extraction.",
+    "web-reader-gateway": "Connects Assistant workers to the managed browser and brokers public HTTPS egress.",
     "transcription-init": "Prepares the local voice-transcription model and runtime. This is an "
                           "initialization component; exiting successfully is normal.",
     "sandbox": "Runs approved scripts in isolated containers and enforces their network permissions. "

@@ -949,12 +949,16 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert not fields["ASSISTANT_INSTALL_ROOT"]["editable"]
     catalog_response = client.get("/v2/configuration/catalog", headers=headers).json()
     assert next(group for group in catalog_response["groups"] if group["id"] == "catalog:web_fetch")["destination"] == "models"
+    assert fields["AGENT_WEB_FETCH_ENABLED"]["metadata"]["level"] == "basic"
+    for key in ("AGENT_WEB_FETCH_BASE_URL", "AGENT_WEB_FETCH_API_TOKEN"):
+        assert fields[key]["metadata"]["level"] == "advanced"
     search_section = client.get("/v2/configuration/settings", params={"group": "catalog:search"}, headers=headers).json()
     search_fields = {item["key"]: item for item in search_section["settings"]}
     assert search_section["revision"] == catalog_response["revision"]
     assert search_fields["AGENT_SEARCH_PRIMARY_PROVIDER"]["metadata"]["choices"] == ["openrouter", "exa"]
     assert search_fields["AGENT_SEARCH_EXA_API_KEY"]["secret"]
-    for protected in ("AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN"):
+    for protected in ("AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN",
+                      "AGENT_WEB_FETCH_MANAGED_TOKEN"):
         assert client.post("/v2/configuration/preview", headers=headers, json={
             "revision": current["revision"], "values": {}, "remove_credentials": [protected],
         }).status_code == 409
@@ -1009,10 +1013,13 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert preview["valid"], preview["problems"]
     assert secret not in preview_response.text
     assert exa_key not in preview_response.text and scraper_key not in preview_response.text
+    assert client.post("/v2/configuration/preview", headers=headers, json={
+        "revision": current["revision"], "values": {"AGENT_WEB_FETCH_ENABLED": "true"},
+    }).json()["valid"]
     for bad_values in (
         {"AGENT_SEARCH_PRIMARY_PROVIDER": "unsupported"},
         {"AGENT_SEARCH_OPENROUTER_ENABLED": "false", "AGENT_SEARCH_EXA_ENABLED": "false"},
-        {"AGENT_WEB_FETCH_ENABLED": "true"},
+        {"AGENT_WEB_FETCH_ENABLED": "true", "AGENT_WEB_FETCH_BASE_URL": "https://scraper.example.test"},
     ):
         assert not client.post("/v2/configuration/preview", headers=headers, json={
             "revision": current["revision"], "values": bad_values,

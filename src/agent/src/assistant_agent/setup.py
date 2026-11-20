@@ -43,7 +43,11 @@ ROUTING_SERVICES = ("downloader", "telegram-receiver")
 STARTUP_WAIT_SECONDS = 600
 LONG_RUNNING_SERVICES = frozenset(AGENT_SERVICES) | {
     "postgres", "clamav", "ollama", "sandbox", "transcription", "management", "management-docker", "management-reader",
+    "web-reader", "web-reader-gateway",
 }
+WEB_READER_SERVICES = ("web-reader-gateway", "web-reader")
+WEB_READER_PROFILE = "web-reader"
+WEB_READER_TOKEN = "AGENT_WEB_FETCH_MANAGED_TOKEN"
 GENERATED_SECRETS = {"AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN", "AGENT_TRANSCRIPTION_API_TOKEN"}
 SECTION_IDS = ("identity", "models", "embeddings", "email", "calendar", "zoom", "dropbox", "telegram", "transcription", "security", "advanced", "instructions")
 ADVANCED_SETTINGS = {
@@ -316,6 +320,8 @@ def secret_services(name):
         return (*MODEL_SERVICES, *ROUTING_SERVICES)
     if name in {"AGENT_SEARCH_EXA_API_KEY", "AGENT_WEB_FETCH_API_TOKEN"}:
         return TOOL_SERVICES
+    if name == WEB_READER_TOKEN:
+        return ("web-reader", *TOOL_SERVICES)
     if name == "AGENT_EMAIL_IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
     if name == "AGENT_EMAIL_SMTP_PASSWORD":
@@ -639,6 +645,29 @@ class Installation:
     def grants_secret(self, name, service):
         return True
 
+    def configure_web_reader(self):
+        enabled = self.values.get("AGENT_WEB_FETCH_ENABLED", self.defaults.get("agent.web_fetch.enabled", False))
+        origin = self.values.get("AGENT_WEB_FETCH_BASE_URL", self.defaults.get("agent.web_fetch.base_url"))
+        managed = AppConfig({"enabled": enabled}).get_bool("enabled", False) and not str(origin or "").strip()
+        profiles = [p.strip() for p in self.values.get("COMPOSE_PROFILES", "").split(",") if p.strip()]
+        if managed and WEB_READER_PROFILE not in profiles:
+            profiles.append(WEB_READER_PROFILE)
+            self.values["COMPOSE_PROFILES"] = ",".join(profiles)
+        elif not managed and WEB_READER_PROFILE in profiles:
+            self.values["COMPOSE_PROFILES"] = ",".join(p for p in profiles if p != WEB_READER_PROFILE)
+        if managed and not self.secret_values.get(WEB_READER_TOKEN):
+            self.secret_values[WEB_READER_TOKEN] = secrets.token_urlsafe(32)
+
+    def stop_inactive_web_reader(self):
+        profiles = self.values.get("COMPOSE_PROFILES", "").split(",")
+        if not self.secret_values.get(WEB_READER_TOKEN) or WEB_READER_PROFILE in {profile.strip() for profile in profiles}:
+            return
+        prefix = ["--profile", WEB_READER_PROFILE]
+        running = self.compose([*prefix, "ps", "--status", "running", "--services"]).split()
+        targets = [name for name in WEB_READER_SERVICES if name in running]
+        if targets:
+            self.compose([*prefix, "stop", *targets])
+
     def credential_grants(self):
         return {
             service: sorted(str(value).removeprefix("/run/secrets/") for key, value in spec.get("environment", {}).items()
@@ -755,6 +784,7 @@ class Installation:
 
     def save_locked(self):
         self.assert_current()
+        self.configure_web_reader()
         if not self.secret_values.get("AGENT_SANDBOX_API_TOKEN"):
             self.secret_values["AGENT_SANDBOX_API_TOKEN"] = secrets.token_urlsafe(32)
         self.secret_values["AGENT_SANDBOX_REVOKE_TOKEN"] = hmac.new(
@@ -1134,6 +1164,7 @@ class Installation:
             if preserve_management:
                 targets = sorted(set(configuration["services"]) - {"management", "management-docker"})
             self.compose(["up", "-d", "--build", *targets], timeout=1800)
+            self.stop_inactive_web_reader()
         deadline = time.monotonic() + STARTUP_WAIT_SECONDS
         while True:
             stage("waiting for container health")
@@ -2600,15 +2631,15 @@ def draft_problems(instance):
             and values.get("AGENT_SEARCH_OPENROUTER_ENABLED", "true") != "true"
             and values.get("AGENT_SEARCH_EXA_ENABLED", "false") != "true"):
         problem("advanced", "Enable at least one web search provider, or disable web search")
-    if values.get("AGENT_WEB_FETCH_ENABLED") == "true":
+    if values.get("AGENT_WEB_FETCH_ENABLED") == "true" and str(values.get("AGENT_WEB_FETCH_BASE_URL", "")).strip():
         try:
             origin = str(values.get("AGENT_WEB_FETCH_BASE_URL", "")).strip().rstrip("/")
             if validate_https_url(origin, "Crawl4AI origin").path:
                 raise ValueError
         except (RuntimeError, ValueError):
-            problem("advanced", "Web page reader requires a valid Crawl4AI HTTPS origin without a path")
+            problem("advanced", "External Crawl4AI requires a valid HTTPS origin without a path")
         if not instance.secret_values.get("AGENT_WEB_FETCH_API_TOKEN"):
-            problem("advanced", "Web page reader requires a Crawl4AI API token")
+            problem("advanced", "External Crawl4AI requires an API token")
     for key, low, high in (("AGENT_WEB_FETCH_TIMEOUT_SECONDS", 1, 120), ("AGENT_WEB_FETCH_INLINE_CHARS", 250, 12000)):
         if key in values:
             try:

@@ -386,6 +386,7 @@ agent:
     enabled: false
     base_url:
     api_token:
+    managed_token:
     timeout_seconds: 35
     inline_chars: 3500
 

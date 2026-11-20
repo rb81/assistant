@@ -19,21 +19,45 @@ The direct Exa backend only receives search queries and search options.
 
 The optional `web_fetch` tool reads an exact public URL as rendered,
 boilerplate-filtered Markdown. It does not depend on either search provider.
-This feature is off by default. Deploy a self-hosted
-[Crawl4AI](https://docs.crawl4ai.com/core/self-hosting/) server with the v0.9
-Docker API and its authentication and public-egress controls enabled. For
-example, use a pinned release of `unclecode/crawl4ai`, set
-`CRAWL4AI_API_TOKEN` on that host, and place a private TLS reverse proxy in front
-of it. Allow the application workers to reach `POST /crawl` only. Do not expose
-the raw crawler port or mount Assistant credentials, the Docker socket, or
-shared workspace into the scraper. On the crawler host, block access to
-private networks and metadata services at the network layer as well as in
-Crawl4AI; those restrictions must cover redirects and browser subrequests.
-Do not grant generic access to the crawler from untrusted clients.
+### Managed browser (default)
 
-On the isolated crawler host, the upstream container can listen on loopback
-for the reverse proxy. Set `CRAWL4AI_API_TOKEN` securely in the shell or through
-your container secret manager before starting it:
+In **Models → Web page reader**, turn on the reader, save, and apply. Leave the
+external origin blank. Assistant provisions the browser and its private
+credential; you do not need an origin, reverse proxy, or API key. The first
+apply downloads and builds the browser image and can take several minutes.
+Web search does not need the browser and works with it disabled.
+
+The managed reader requires [Docker Engine 28 or newer](https://docs.docker.com/engine/release-notes/28/)
+for isolated bridge networking. On an older engine, upgrade Docker or use an
+external reader.
+
+The managed reader accepts public **HTTPS** hostnames on the standard port. Its
+browser has no direct route to the internet or the application network:
+all browser connections go through the public HTTPS egress proxy, including
+redirects and subrequests. Neither service publishes a host port. The reader
+does not mount the workspace, database credentials, or Docker socket.
+
+An uncached read starts a fresh Chromium subprocess, converts its rendered HTML
+to Markdown with Trafilatura, and deletes its temporary browser profile. No
+Chromium process stays running between reads;
+only the lightweight HTTP listener and gateway stay up. The reader runs one
+scrape at a time and reports busy if another request arrives. Disable the
+reader and apply to stop both containers. Switching to an external origin
+also stops them.
+
+### External Crawl4AI (optional)
+
+To supply your own browser server, configure **External Crawl4AI HTTPS origin**
+and **External Crawl4AI API token** under **Advanced → External reader & limits**
+and keep the reader enabled. Use an origin such as `https://crawler.example.com`
+without a path. Assistant sends a bearer-authenticated `POST /crawl` and
+verifies the TLS certificate against the trust store of the Assistant workers.
+Existing nonempty origins continue to select the external reader after upgrade.
+Clear the origin and apply to switch back to the managed browser.
+
+Deploy [Crawl4AI](https://docs.crawl4ai.com/core/self-hosting/) with its v0.9
+Docker API. On an isolated crawler host, set `CRAWL4AI_API_TOKEN` securely,
+bind the container to loopback, and put a private TLS reverse proxy in front:
 
 ```bash
 docker run -d --name assistant-web-reader --restart unless-stopped \
@@ -41,15 +65,13 @@ docker run -d --name assistant-web-reader --restart unless-stopped \
   unclecode/crawl4ai:0.9.0
 ```
 
-Keep the pinned release current with upstream security patches. Do not enable
-deep crawling or give the crawler any LLM credentials; the Assistant handles
-all model review after extraction.
+Allow only the Assistant workers to reach `POST /crawl` through the proxy.
+Block private networks and cloud metadata at the network layer and in Crawl4AI
+for navigations, redirects, and subrequests. Don't expose the raw port or
+mount Assistant credentials, its workspace, or the Docker socket. Leave deep
+crawling disabled, and keep the pinned image current with upstream patches.
 
-In **Models → Web page reader**, save the proxy's HTTPS origin and the token,
-enable the reader, and apply the settings. The origin is a trusted service
-configuration value; the page URL always travels in the request body and
-never changes the scraper destination. This is separate from network access
-or approvals for Assistant scripts.
+### Review and cache
 
 The same model used for development script supervision reviews the extracted
 Markdown before the task model sees it. The review sends the page to the

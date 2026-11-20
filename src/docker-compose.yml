@@ -296,6 +296,7 @@ services:
       - clamav_net
       - egress_net
       - sandbox_net
+      - web_reader_control_net
     deploy:
       replicas: ${TASK_AGENT_WORKERS:-1}
 
@@ -445,6 +446,7 @@ services:
       - model_net
       - clamav_net
       - egress_net
+      - web_reader_control_net
 
   supervisor:
     <<: *agent-common
@@ -470,6 +472,58 @@ services:
       - model_net
       - clamav_net
       - egress_net
+      - web_reader_control_net
+
+  web-reader-gateway:
+    profiles: ["web-reader"]
+    build:
+      context: .
+      dockerfile: web_reader/Dockerfile
+      target: gateway
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    pids_limit: 32
+    depends_on:
+      web-reader:
+        condition: service_healthy
+    networks:
+      - web_reader_control_net
+      - web_reader_browser_net
+      - service_egress_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web-reader:
+    profiles: ["web-reader"]
+    build:
+      context: .
+      dockerfile: web_reader/Dockerfile
+      target: reader
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["DAC_OVERRIDE", "SETUID", "SETGID", "CHOWN", "KILL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=384m,mode=1777
+    shm_size: 256m
+    mem_limit: 1536m
+    cpus: 2
+    pids_limit: 128
+    networks:
+      - web_reader_browser_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
 
   ollama:
     image: ollama/ollama:latest
@@ -647,3 +701,10 @@ networks:
       com.docker.network.bridge.enable_icc: "false"
   sandbox_net:
     internal: true
+  web_reader_control_net:
+    internal: true
+  web_reader_browser_net:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated

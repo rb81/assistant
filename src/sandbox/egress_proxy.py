@@ -167,7 +167,7 @@ async def resolve_public(host: str) -> list[str]:
         address = ipaddress.ip_address(info[4][0])
         if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
             address = address.ipv4_mapped
-        if not address.is_global:
+        if not address.is_global or address.is_multicast:
             raise ValueError("private_address")
         if str(address) not in addresses:
             addresses.append(str(address))

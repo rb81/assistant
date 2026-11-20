@@ -172,6 +172,34 @@ def test_application_restart_only_restarts_running_long_lived_services(tmp_path)
     assert compose.call_args_list[2].args[0] == ["--profile", "*", "restart", "task-agent", "downloader"]
 
 
+@pytest.mark.parametrize("managed", [True, False])
+def test_application_apply_follows_the_saved_web_reader_profile(tmp_path, managed):
+    service = backend(tmp_path, profiles="web-reader" if managed else "")
+    service.installation.state["setup_complete"] = True
+    service.installation.secret_values["AGENT_WEB_FETCH_MANAGED_TOKEN"] = "previously-generated"
+    config = compose_config(**{
+        "task-agent": {"restart": "unless-stopped"},
+        "web-reader": {"profiles": ["web-reader"], "restart": "unless-stopped"},
+        "web-reader-gateway": {"profiles": ["web-reader"], "restart": "unless-stopped"},
+    })
+    outputs = [config, ""] if managed else [config, "", "web-reader\nweb-reader-gateway\ntask-agent", ""]
+    with patch.object(service, "access"), patch.object(
+        service.installation, "assert_current"
+    ), patch.object(service.installation, "reconcile_grants"), patch.object(
+        service.installation, "compose", side_effect=outputs
+    ) as compose, patch.object(service, "services", return_value=[]):
+        service.lifecycle("apply", preserve_management=True)
+
+    start = compose.call_args_list[1].args[0]
+    assert start[:3] == ["--profile", "*", "up"]
+    if managed:
+        assert start[-3:] == ["task-agent", "web-reader", "web-reader-gateway"]
+        assert compose.call_count == 2
+    else:
+        assert start[-1] == "task-agent"
+        assert compose.call_args.args[0] == ["--profile", "web-reader", "stop", "web-reader-gateway", "web-reader"]
+
+
 def test_management_api_can_restart_itself_but_only_schedules_executor_restart(tmp_path, monkeypatch):
     service = backend(tmp_path)
     config = compose_config(**{

@@ -24,6 +24,8 @@ Python services handle intake, execution, indexing, scheduling, and monitoring.
 - `clamav` — artifact scanning.
 - `transcription` and `transcription-init` — optional local voice processing (`voice` profile).
 - `sandbox` and `sandbox-init` — authenticated command broker and protected runtime setup.
+- `web-reader` and `web-reader-gateway` — optional managed Chromium extraction
+  and isolated public HTTPS egress (`web-reader` profile).
 
 Most application roles use the Python agent image and select behavior through
 `AGENT_ROLE`. Services and optional profiles are defined in `src/docker-compose.yml`.
