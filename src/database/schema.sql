@@ -2542,6 +2542,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('018_stable_script_approvals.sql'),
   ('019_task_deletion.sql'),
   ('020_client_channels.sql'),
-  ('021_micro_skills.sql');
+  ('021_micro_skills.sql'),
+  ('022_memory_access_keeps_updated_at.sql');
 
 SET check_function_bodies = true;
