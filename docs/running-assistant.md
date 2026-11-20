@@ -187,9 +187,13 @@ setup) database/workspace reads through the persistent reader.
 
 Downloads/build failures leave the running installation untouched. After cutover,
 `data/.install-pending` records an incomplete update, and the next installer run
-finishes that exact revision after verifying that its source is complete. A
-partial source activation stops explicitly for recovery instead of starting
-mixed files. Archive updates retain previous source in the reported sibling
+finishes that exact revision after verifying that its source is complete. If a
+Git checkout has already fast-forwarded to a fix, rerun `sh install.sh` from
+that clean checkout. The installer stages and builds the checked-out revision
+before replacing the pending record. It rejects older or divergent checkouts
+and does not reset Git or roll back data. A partial archive activation stops
+explicitly for recovery instead of starting mixed files. Archive updates retain
+previous source in the reported sibling
 `*.previous.*` directory; Git checkouts record the previous commit in
 `data/.install-previous-revision`. Retained source backups are owner-only and may
 be removed manually after validating the update; they do not contain `data/`.

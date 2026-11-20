@@ -67,8 +67,9 @@ finish() {
             printf 'Data was not rolled back. Do not downgrade across database migrations.\n' >&2
         fi
     fi
-    if [ -n "$WORK" ] && [ ! -f "$PENDING" ]; then
-        # WORK is exclusively this invocation's mktemp directory, never the installation.
+    if [ -n "$WORK" ] && { [ ! -f "$PENDING" ] ||
+        { [ -n "$SUPERSEDED_WORK" ] && [ "$(setting work "$PENDING")" = "$SUPERSEDED_WORK" ]; }; }; then
+        # WORK is a validated staging directory, never the installation.
         case "$WORK" in "$DESTINATION".update.*) rm -rf -- "$WORK" ;; esac
     fi
     rmdir "$LOCK"
@@ -143,9 +144,13 @@ download_source() {
     if [ -n "$fetch_repository" ]; then
         git_source=$SOURCE
         case "$SOURCE" in github:*) git_source=https://github.com/${SOURCE#github:}.git ;; esac
-        run_logged 'fetching source' source_git fetch --no-tags "$git_source" "$REF" \
-            || fail 'Could not fetch the configured source. The running installation was not changed.'
-        REVISION=$(source_git rev-parse --verify 'FETCH_HEAD^{commit}')
+        if [ -n "$RECOVERY_REVISION" ]; then
+            REVISION=$RECOVERY_REVISION
+        else
+            run_logged 'fetching source' source_git fetch --no-tags "$git_source" "$REF" \
+                || fail 'Could not fetch the configured source. The running installation was not changed.'
+            REVISION=$(source_git rev-parse --verify 'FETCH_HEAD^{commit}')
+        fi
         if [ "$GIT_CHECKOUT" = 1 ]; then
             git -C "$DESTINATION" merge-base --is-ancestor HEAD "$REVISION" \
                 || fail 'The deployment source diverges from this checkout. Review it explicitly; the installer never force-resets Git history.'
@@ -237,6 +242,10 @@ activate_update() {
     } > "$PENDING"
     cp "$WORK/files" "$DESTINATION/data/.install-target-files"
     cp "$WORK/entries" "$DESTINATION/data/.install-target-entries"
+    if [ -n "$SUPERSEDED_WORK" ] && [ "$SUPERSEDED_WORK" != "$WORK" ]; then
+        # The replacement has been staged and now owns the pending record.
+        rm -rf -- "$SUPERSEDED_WORK"
+    fi
     if [ "$unchanged" = 1 ]; then
         print_wrapped 'Source is already current; reconciling services without a source cutover.'
         return
@@ -317,7 +326,7 @@ install_main() {
     mkdir "$LOCK" 2>/dev/null || fail "Another installer is running, or a stale lock exists: $LOCK"
     LOG=$DESTINATION/data/logs
     PENDING=$DESTINATION/data/.install-pending
-    WORK= BACKUP= START_PID= LOG_PID=
+    WORK= BACKUP= START_PID= LOG_PID= RECOVERY_REVISION= SUPERSEDED_WORK=
     trap 'finish $?' EXIT
     trap stop_start HUP INT TERM
     mkdir -p "$DESTINATION/data/logs"
@@ -348,17 +357,27 @@ install_main() {
             *) WORK=; fail 'Invalid update recovery directory.' ;;
         esac
         export ASSISTANT_MANAGEMENT_IMAGE="$(setting image "$PENDING")"
-        UPDATE=0
-        print_wrapped "Finishing interrupted update: $REVISION"
-        if [ "$GIT_CHECKOUT" = 1 ]; then
-            test "$(git -C "$DESTINATION" rev-parse HEAD)" = "$REVISION" || fail 'The pending Git revision was not activated. Review recovery information before restarting.'
+        if [ "$GIT_CHECKOUT" = 1 ] && [ "$(git -C "$DESTINATION" rev-parse HEAD)" != "$REVISION" ]; then
+            check_checkout
+            RECOVERY_REVISION=$(git -C "$DESTINATION" rev-parse HEAD)
+            git -C "$DESTINATION" merge-base --is-ancestor "$REVISION" "$RECOVERY_REVISION" \
+                || fail 'The checkout is not a descendant of the pending Git revision. Fast-forward to that revision or a newer fix before retrying.'
+            SUPERSEDED_WORK=$WORK
+            WORK=
+            UPDATE=1
+            print_wrapped "Recovering interrupted update $REVISION at checked-out revision $RECOVERY_REVISION"
+        else
+            UPDATE=0
+            print_wrapped "Finishing interrupted update: $REVISION"
+            BACKUP=$(setting previous "$PENDING")
+            verify_work=$(mktemp "$DESTINATION/data/.verify.XXXXXXXX")
+            source_manifest "$DESTINATION" "$DESTINATION/data/.install-target-entries" > "$verify_work"
+            if ! cmp -s "$verify_work" "$DESTINATION/data/.install-target-files"; then
+                rm "$verify_work"
+                fail 'Source activation was interrupted. Restore the retained previous source or complete activation before restarting; data was preserved.'
+            fi
+            rm "$verify_work"
         fi
-        BACKUP=$(setting previous "$PENDING")
-        verify_work=$(mktemp "$DESTINATION/data/.verify.XXXXXXXX")
-        source_manifest "$DESTINATION" "$DESTINATION/data/.install-target-entries" > "$verify_work"
-        cmp -s "$verify_work" "$DESTINATION/data/.install-target-files" \
-            || fail 'Source activation was interrupted. Restore the retained previous source or complete activation before restarting; data was preserved.'
-        rm "$verify_work"
     elif [ -f "$DESTINATION/data/.installation" ]; then
         [ -n "$SOURCE" ] || SOURCE=$(setting source "$DESTINATION/data/.installation")
         [ -n "$REF" ] || REF=$(setting ref "$DESTINATION/data/.installation")
@@ -388,11 +407,20 @@ install_main() {
     export ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)"
     unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME
     if [ "$UPDATE" = 1 ]; then
-        stage 2 'Downloading update'
+        if [ -n "$RECOVERY_REVISION" ]; then
+            stage 2 'Staging checked-out recovery revision'
+        else
+            stage 2 'Downloading update'
+        fi
         if [ -n "$REVISION" ]; then print_wrapped "Current revision: $REVISION"; fi
         WORK=$(mktemp -d "$DESTINATION.update.XXXXXXXX")
         check_checkout
         download_source
+        if [ -n "$RECOVERY_REVISION" ]; then
+            source_manifest "$DESTINATION" "$WORK/entries" > "$WORK/current-files"
+            cmp -s "$WORK/current-files" "$WORK/files" \
+                || fail 'The recovery checkout does not match its committed source. Preserve local changes before retrying.'
+        fi
         print_wrapped "Requested revision: $REVISION"
         export ASSISTANT_REVISION="$REVISION"
         stage 3 'Preparing services'

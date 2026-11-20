@@ -185,6 +185,71 @@ def test_incomplete_update_retains_recovery_and_can_finish_without_downloading(u
     assert not list(destination.parent.glob(destination.name + ".update.*"))
 
 
+def test_interrupted_git_update_recovers_at_newer_checked_out_revision(update_installation):
+    repository, destination, environment, install = update_installation
+    subprocess.run(["git", "clone", "-q", str(repository), str(destination)], check=True)
+    assert install().returncode == 0
+    data = destination / "data"
+    (data / "keep-private").write_text("private data")
+    pending_revision = next_revision(repository)
+    assert install(FAIL_START="1").returncode != 0
+    pending = (data / ".install-pending").read_bytes()
+    assert f"revision={pending_revision}\n".encode() in pending
+    original_work = list(destination.parent.glob(destination.name + ".update.*"))
+    assert len(original_work) == 1
+
+    (repository / "src/version").write_text("three")
+    git(repository, "commit", "-qam", "Fix startup")
+    revision = git(repository, "rev-parse", "HEAD")
+    git(destination, "pull", "--ff-only")
+    (destination / "src/version").write_text("local customization")
+    assert "checkout has local changes" in install().stderr
+    assert (destination / "src/version").read_text() == "local customization"
+    (destination / "src/version").write_text("three")
+
+    Path(environment["TRACE"]).write_text("")
+    result = install(FAIL_BUILD="1")
+    assert result.returncode != 0
+    assert (data / ".install-pending").read_bytes() == pending
+    assert list(destination.parent.glob(destination.name + ".update.*")) == original_work
+    assert "runtime server start" not in Path(environment["TRACE"]).read_text()
+
+    result = install(script=destination / "install.sh", FAIL_START="1")
+    assert result.returncode != 0
+    assert "Recovering interrupted update" in result.stdout
+    assert f"revision={revision}\n" in (data / ".install-pending").read_text()
+    assert not original_work[0].exists()
+
+    result = install(script=destination / "install.sh")
+    assert result.returncode == 0, result.stderr
+    assert f"Finishing interrupted update: {revision}" in result.stdout
+    assert f"revision={revision}\n" in (data / ".installation").read_text()
+    assert (data / "keep-private").read_text() == "private data"
+    assert not (data / ".install-pending").exists()
+    assert not list(destination.parent.glob(destination.name + ".update.*"))
+    assert "runtime server start three" in Path(environment["TRACE"]).read_text()
+    assert "runtime server verify three" in Path(environment["TRACE"]).read_text()
+    assert git(destination, "rev-parse", "HEAD") == revision
+
+
+def test_interrupted_git_update_rejects_checkout_outside_pending_history(update_installation):
+    repository, destination, environment, install = update_installation
+    subprocess.run(["git", "clone", "-q", str(repository), str(destination)], check=True)
+    original = git(destination, "rev-parse", "HEAD")
+    next_revision(repository)
+    assert install(FAIL_START="1").returncode != 0
+    pending = destination / "data/.install-pending"
+    before = pending.read_bytes()
+    git(destination, "switch", "--detach", original)
+    Path(environment["TRACE"]).write_text("")
+    result = install()
+    assert result.returncode != 0
+    assert "not a descendant of the pending Git revision" in result.stderr
+    assert pending.read_bytes() == before
+    assert git(destination, "rev-parse", "HEAD") == original
+    assert "runtime server start" not in Path(environment["TRACE"]).read_text()
+
+
 def test_incomplete_source_activation_is_not_mislabeled_as_repaired(update_installation):
     repository, destination, _, install = update_installation
     assert install().returncode == 0
