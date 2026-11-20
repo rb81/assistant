@@ -636,6 +636,7 @@ with tempfile.TemporaryDirectory() as root:
             self.assertGreaterEqual(len(current.secret_values["AGENT_TRANSCRIPTION_API_TOKEN"]), 32)
             overlay = yaml.safe_load((Path(root) / "data/.compose-secrets.yaml").read_text())
             self.assertIn("AGENT_TRANSCRIPTION_API_TOKEN_FILE", overlay["services"]["transcription-init"]["environment"])
+            self.assertIn("AGENT_TRANSCRIPTION_API_TOKEN_FILE", overlay["services"]["telegram-receiver"]["environment"])
             self.assertNotIn("AGENT_TRANSCRIPTION_API_TOKEN_FILE", overlay["services"].get("transcription", {}).get("environment", {}))
 
     def test_automatic_transcription_secret_generation_and_overlay_filtering(self):

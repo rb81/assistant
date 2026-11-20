@@ -368,6 +368,11 @@ def test_hardened_compose_configuration():
     assert service["networks"] == ["transcription_net"]
     assert values["networks"]["transcription_net"]["internal"]
     assert service["pids_limit"] <= 64
+    receiver = values["services"]["telegram-receiver"]
+    assert receiver["read_only"]
+    assert {"clamav_net", "transcription_net"} <= set(receiver["networks"])
+    assert "../data/private/artifacts/telegram:/data/private/artifacts/telegram" in receiver["volumes"]
+    assert "../data/private/artifacts:/data/private/artifacts" in values["services"]["request-preprocessor"]["volumes"]
     if shutil.which("docker"):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "src"
@@ -591,6 +596,30 @@ def test_voice_routing_uses_transcript_without_changing_original_message(databas
     assert "Plan a trip" in database.fetch_one("SELECT body_text FROM request_messages WHERE id = %s",
                                                (request["id"],))["body_text"]
 
+
+def test_voice_storage_failure_preserves_attachment_and_does_not_stall_polling(database, tmp_path, caplog):
+    unavailable_root = tmp_path / "not-a-directory"
+    unavailable_root.touch()
+    values = config()
+    values.values["agent"]["artifacts"] = {"raw_root": str(unavailable_root)}
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id, receiver.client = database, values, "9", MagicMock()
+    receiver.client.call.return_value = [
+        {"update_id": identifier, "message": {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+            "message_id": identifier, "date": 1_700_000_000, **content,
+        }}
+        for identifier, content in [(5, {"voice": {"file_id": "voice"}}), (6, {"text": "Separate task"})]
+    ]
+    with patch.object(RequestRouter, "route", return_value=RoutingDecision("telegram:9:123:6", "new", "Separate task")):
+        assert receiver.poll_once() == 2
+    assert database.get_state("telegram:9:offset") == 7
+    voice = database.fetch_one("SELECT status, attachments, metadata FROM request_messages WHERE external_id = '9:123:5'")
+    assert voice["status"] == "pending" and voice["metadata"]["routing"]["fallback"]
+    assert voice["attachments"][0]["file_id"] == "voice"
+    assert "intake_path" not in voice["attachments"][0]
+    assert database.fetch_one("SELECT id FROM request_messages WHERE external_id = '9:123:6'")
+    assert "audio context unavailable for routing" in caplog.text
 
 
 def test_request_replay_and_explicit_followup(database):

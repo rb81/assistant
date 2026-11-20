@@ -266,7 +266,7 @@ class TelegramReceiver:
         else:
             try:
                 routing_body = self.routing_audio(incoming)
-            except (TelegramError, TranscriptionError) as exc:
+            except (TelegramError, TranscriptionError, OSError) as exc:
                 LOGGER.warning("audio context unavailable for routing %s: %s", external, exc)
                 decision = router.fallback(incoming, known_reply, "audio context unavailable")
             else:

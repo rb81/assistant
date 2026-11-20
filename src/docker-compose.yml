@@ -335,12 +335,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      clamav:
+        condition: service_started
     environment:
       AGENT_ROLE: telegram-receiver
+    volumes:
+      - ../data/private/artifacts/telegram:/data/private/artifacts/telegram
+      - *postgres-tls-volume
+      - *sandbox-tls-volume
+      - *agent-config-volume
     networks:
       - database_net
       - egress_net
       - sandbox_net
+      - clamav_net
+      - transcription_net
 
   request-preprocessor:
     <<: *agent-common

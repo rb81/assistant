@@ -321,7 +321,7 @@ def secret_services(name):
     if name == "AGENT_TELEGRAM_BOT_TOKEN":
         return ("downloader", "telegram-receiver", "request-preprocessor", "reminder-scheduler", *TOOL_SERVICES)
     if name == "AGENT_TRANSCRIPTION_API_TOKEN":
-        return ("transcription-init", "request-preprocessor", "downloader")
+        return ("transcription-init", "telegram-receiver", "request-preprocessor", "downloader")
     if name == "AGENT_SANDBOX_API_TOKEN":
         return ("sandbox-init", "sandbox", "task-agent")
     if name == "AGENT_SANDBOX_REVOKE_TOKEN":
