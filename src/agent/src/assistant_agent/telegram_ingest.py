@@ -13,7 +13,7 @@ from .database import Database
 from .polling import run_poll_loop
 from .requests import IncomingRequest, RequestService
 from .request_router import RequestRouter, RoutingDecision
-from .telegram import TelegramClient, TelegramDelivery, TelegramError, telegram_identities
+from .telegram import TelegramClient, TelegramDelivery, TelegramError, answer_callback, telegram_identities
 from .threading import safe_filename
 from .transcription import TranscriptionError, transcribe_audio
 
@@ -318,14 +318,10 @@ class TelegramReceiver:
                    AND main_thread_id <> 'system:unattributed'""", (workstream_id,),
             )
             if not stream:
-                self.client.call("answerCallbackQuery", {
-                    "callback_query_id": callback["id"], "text": "That workstream is no longer available.",
-                })
+                answer_callback(self.client, callback["id"], text="That workstream is no longer available.")
                 return
             self.set_selection(sender, workstream_id)
-            self.client.call("answerCallbackQuery", {
-                "callback_query_id": callback["id"], "text": "Workstream selected.",
-            })
+            answer_callback(self.client, callback["id"], text="Workstream selected.")
             prompt = self.client.call("sendMessage", {
                 "chat_id": sender,
                 "text": "Reply to this message to continue: %s" % stream["title"],
@@ -338,16 +334,15 @@ class TelegramReceiver:
             return
         request = self.db.fetch_one("SELECT * FROM request_messages WHERE id = %s AND sender_id = %s AND status = 'pending' AND created_at > now() - interval '15 minutes'", (int(pieces[1]), sender))
         if not request or int(pieces[2]) not in (request["metadata"].get("selection") or []):
-            self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"],
-                             "text": "This selection has expired or was already handled. Reply to the task message or send a new request."})
+            answer_callback(self.client, callback["id"],
+                            text="This selection has expired or was already handled. Reply to the task message or send a new request.")
             return
         job = next((item for item in self.owned_jobs(sender, request["conversation_id"]) if item["id"] == int(pieces[2])), None)
         if not job:
-            self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"],
-                             "text": "This task is no longer active."})
+            answer_callback(self.client, callback["id"], text="This task is no longer active.")
             return
         self.db.execute("UPDATE request_messages SET thread_id = %s, metadata = metadata - 'selection', available_at = now() WHERE id = %s AND metadata ? 'selection'", (job["thread_id"], request["id"]))
-        self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        answer_callback(self.client, callback["id"])
 
     def poll_once(self) -> int:
         key = "telegram:%s:offset" % self.bot_id

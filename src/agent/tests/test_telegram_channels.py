@@ -14,6 +14,7 @@ import pytest
 
 from assistant_agent.config import AppConfig
 from assistant_agent.database import Database
+from assistant_agent.email_approvals import EmailApprovals
 from assistant_agent.requests import IncomingRequest, RequestService
 from assistant_agent.request_router import RequestRouter, RoutingDecision
 from assistant_agent.telegram import TelegramClient, TelegramDelivery, TelegramError, TelegramURLFilter, telegram_destination, telegram_message_parts
@@ -416,6 +417,55 @@ def router_llm(action, workstream_id=None):
         })}}]},
     ]
     return llm
+
+
+def test_failed_callback_acknowledgement_does_not_block_approval_or_next_message(database, caplog):
+    values = config()
+    values.values["agent"].update({"admin": {"email": "user@example.com"}, "approvals": {"channel": "telegram"}})
+    review = RequestService(database).receive_request(IncomingRequest(
+        "telegram", "9:123:30", "9:123", "123", "paused", "A request that needs review",
+    ))
+    job = database.fetch_one(
+        """UPDATE jobs SET status = 'needs_review' WHERE trigger_request_id = %s RETURNING id, updated_at""",
+        (review["id"],),
+    )
+    with patch("assistant_agent.telegram.TelegramClient") as telegram:
+        EmailApprovals(database, values).request(
+            "review:%s" % job["id"], {"kind": "review", "job_id": job["id"], "version": str(job["updated_at"])},
+            "Review this request.",
+        )
+    notice = telegram.return_value.call.call_args.args[1]
+    approve = next(button for row in notice["reply_markup"]["inline_keyboard"] for button in row
+                   if button["callback_data"].endswith(":ok"))
+    updates = [
+        {"update_id": 31, "callback_query": {"id": "stale", "from": {"id": 123},
+         "message": {"chat": {"id": 123, "type": "private"}}, "data": approve["callback_data"]}},
+        {"update_id": 32, "message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+         "message_id": 32, "date": 1_700_000_000, "text": "Start a separate task"}},
+    ]
+
+    def telegram_call(method, payload, **kwargs):
+        if method == "answerCallbackQuery":
+            raise TelegramError("Telegram rejected the request (HTTP 400)")
+        if method == "getUpdates":
+            return [update for update in updates if update["update_id"] >= payload["offset"]]
+        assert method == "sendMessage", method
+        return {"message_id": 33}
+
+    receiver = TelegramReceiver.__new__(TelegramReceiver)
+    receiver.db, receiver.config, receiver.bot_id = database, values, "9"
+    receiver.client = MagicMock()
+    receiver.client.call.side_effect = telegram_call
+    with patch.object(RequestRouter, "route", return_value=RoutingDecision("telegram:9:123:32", "new", "Separate task")):
+        assert receiver.poll_once() == 2
+    assert database.get_state("telegram:9:offset") == 33
+    assert database.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))["status"] == "queued"
+    assert "Could not acknowledge Telegram button press" in caplog.text
+    assert any(call.args[1].get("text") == "Task resumed." for call in receiver.client.call.call_args_list)
+
+    database.execute("UPDATE request_messages SET available_at = now() WHERE external_id = '9:123:32'")
+    assert receiver.poll_once() == 0
+    assert database.fetch_one("SELECT status FROM jobs WHERE thread_id = 'telegram:9:123:32'")["status"] == "queued"
 
 
 def test_router_continues_linked_email_workstream_from_standalone_telegram(database):
@@ -924,6 +974,7 @@ def test_telegram_selection_does_not_route_non_replies_and_quotes_keep_their_ass
     assert receiver.selected_workstream("123")["workstream_id"] == first["workstream_id"]
     receiver.client.call.assert_any_call(
         "answerCallbackQuery", {"callback_query_id": "callback", "text": "Workstream selected."},
+        timeout=5,
     )
     assert receiver.client.call.call_args.args[0] == "sendMessage"
 

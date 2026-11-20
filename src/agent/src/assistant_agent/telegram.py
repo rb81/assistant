@@ -21,6 +21,9 @@ from .requests import TransactionDatabase
 from .telegram_config import TelegramError, telegram_configured, telegram_identities
 
 
+LOGGER = logging.getLogger("assistant.telegram")
+
+
 def record_task_message(db, config, job_id, destination, message_id):
     """Associate direct API messages as well as routed deliveries with their task."""
     job = db.fetch_one(
@@ -169,6 +172,17 @@ class TelegramClient:
             raise TelegramError("Telegram attachment download failed") from None
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def answer_callback(client: TelegramClient, callback_id: str, *, text: str | None = None) -> None:
+    payload = {"callback_query_id": callback_id}
+    if text is not None:
+        payload["text"] = text
+    try:
+        client.call("answerCallbackQuery", payload, timeout=5)
+    except TelegramError as exc:
+        # Telegram's acknowledgement can expire before the underlying action does.
+        LOGGER.warning("Could not acknowledge Telegram button press: %s", exc)
 
 
 def telegram_message_parts(text: str) -> list[tuple[str, str]]:

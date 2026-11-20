@@ -12,6 +12,7 @@ from .email_approvals import (
     ApprovalDeliveryError, EmailApprovals, approval_keyboard, telegram_approval_summary, telegram_permission_summary,
 )
 from .requests import TransactionDatabase
+from .telegram import answer_callback
 
 
 STATUS = {"queued": "Queued", "running": "Working", "waiting": "Waiting for a reply",
@@ -587,7 +588,7 @@ class TelegramAdmin:
         pieces = str(callback.get("data") or "").split(":")
         if not pieces or pieces[0] not in {"ui", "ap", "pc"}:
             return False
-        self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        answer_callback(self.client, callback["id"])
         try:
             if len(pieces) != 3:
                 raise ValueError("Invalid menu action")
