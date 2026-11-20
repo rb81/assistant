@@ -116,8 +116,8 @@ def test_smtp_disconnect_after_send_is_not_retried(db, during_send):
     assert routed["status"] == ("uncertain" if during_send else "failed")
 
 
-@pytest.mark.parametrize("lose_response", [False, True])
-def test_email_fallback_over_local_tls_smtp(db, tmp_path, lose_response):
+@pytest.mark.parametrize("outcome", ["accepted", "lost_response", "auth_rejected"])
+def test_email_fallback_over_local_tls_smtp(db, tmp_path, outcome):
     import shutil
     import socketserver
     import ssl
@@ -161,7 +161,8 @@ def test_email_fallback_over_local_tls_smtp(db, tmp_path, lose_response):
                         connection.sendall(b"220 Ready for TLS\r\n")
                         connection = server_tls.wrap_socket(connection, server_side=True)
                     elif verb == b"AUTH":
-                        connection.sendall(b"235 Authentication successful\r\n")
+                        connection.sendall(b"535 Authentication rejected\r\n" if outcome == "auth_rejected"
+                                           else b"235 Authentication successful\r\n")
                     elif verb in {b"MAIL", b"RCPT"}:
                         connection.sendall(b"250 OK\r\n")
                     elif verb == b"DATA":
@@ -173,7 +174,7 @@ def test_email_fallback_over_local_tls_smtp(db, tmp_path, lose_response):
                                 break
                             data.append(value)
                         received.append(b"".join(data))
-                        if lose_response:
+                        if outcome == "lost_response":
                             return
                         connection.sendall(b"250 Accepted\r\n")
                     elif verb == b"QUIT":
@@ -201,9 +202,21 @@ def test_email_fallback_over_local_tls_smtp(db, tmp_path, lose_response):
                 assert channels.reconcile()["processed"] == 1
                 assert channels.reconcile()["processed"] == 0
             status = db.fetch_one("SELECT status FROM channel_deliveries WHERE id = %s", (delivery["log_id"],))
-            assert status["status"] == ("uncertain" if lose_response else "sent")
-            assert len(received) == 1
-            assert b"Synthetic TLS fallback" in received[0]
+            assert status["status"] == {
+                "accepted": "sent", "lost_response": "uncertain", "auth_rejected": "pending",
+            }[outcome]
+            assert len(received) == (0 if outcome == "auth_rejected" else 1)
+            if received:
+                assert b"Synthetic TLS fallback" in received[0]
+            if outcome == "auth_rejected":
+                outcome = "accepted"
+                db.execute("UPDATE channel_deliveries SET available_at = now() WHERE id = %s", (delivery["log_id"],))
+                with patch("assistant_agent.tools.ssl.create_default_context", return_value=client_tls):
+                    assert channels.reconcile()["processed"] == 1
+                    assert channels.reconcile()["processed"] == 0
+                assert db.fetch_one("SELECT status FROM channel_deliveries WHERE id = %s",
+                                    (delivery["log_id"],))["status"] == "sent"
+                assert len(received) == 1
         finally:
             server.shutdown()
             thread.join(timeout=10)
@@ -227,6 +240,71 @@ def test_telegram_failure_falls_back_only_if_no_parts_were_sent(db, partial):
         assert email.call_count == (0 if partial else 1)
     row = db.fetch_one("SELECT status, fallback_channel FROM channel_deliveries WHERE id = %s", (delivery["log_id"],))
     assert row == {"status": "uncertain" if partial else "sent", "fallback_channel": "telegram" if partial else "email"}
+
+
+@pytest.mark.parametrize("failure", ["rejected", "server_error", "lost_response"])
+def test_telegram_transport_failure_controls_fallback_and_retries(db, failure):
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from threading import Thread
+
+    from assistant_agent.telegram import TelegramClient
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            if failure == "lost_response":
+                self.connection.shutdown(2)
+                return
+            code = 401 if failure == "rejected" else 503
+            body = json.dumps({"ok": False, "error_code": code}).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            channels, identifier, runtime = client_task(db, fallbacks=["telegram", "email"])
+            runtime.config.values["agent"] = {
+                "admin": {"email": "admin@example.com"},
+                "telegram": {"enabled": True, "bot_token": "synthetic",
+                             "allowed_user_ids": ["123"], "recipients": {"admin@example.com": "123"}},
+                "email": {"smtp_host": "smtp.test.invalid", "smtp_username": "user", "smtp_password": "password"},
+            }
+            delivery = ReplyRouter(runtime).send("Synthetic provider failure")
+            channels.unregister(identifier)
+            original_init = TelegramClient.__init__
+
+            def local_client(client, config):
+                original_init(client, config)
+                client.base_url = f"http://127.0.0.1:{server.server_port}/bot"
+
+            with patch.object(TelegramClient, "__init__", local_client), \
+                    patch("assistant_agent.replies.ReplyRouter.email", return_value={"status": "sent"}) as email:
+                assert channels.reconcile()["processed"] == 1
+                assert channels.reconcile()["processed"] == 0
+                assert email.call_count == (1 if failure == "rejected" else 0)
+            row = db.fetch_one(
+                "SELECT status, fallback_channel FROM channel_deliveries WHERE id = %s", (delivery["log_id"],),
+            )
+            assert row == {
+                "status": "sent" if failure == "rejected" else "uncertain",
+                "fallback_channel": "email" if failure == "rejected" else "telegram",
+            }
+            telegram = db.fetch_one("SELECT status FROM channel_deliveries WHERE channel = 'telegram'")
+            assert telegram["status"] == ("failed" if failure == "rejected" else "uncertain")
+            assert len(requests) == 1
+        finally:
+            server.shutdown()
+            thread.join(timeout=10)
 
 
 def test_fallback_claim_prevents_concurrent_sends_and_late_acknowledgment(db):

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.modules.setdefault("yaml", types.SimpleNamespace(safe_load=lambda handle: {}))
 
 from assistant_agent.config import AppConfig
@@ -28,6 +30,69 @@ def prompt_config(shared_root: str, extras: dict = None) -> AppConfig:
     if extras:
         values["agent"].update(extras)
     return AppConfig(values)
+
+
+@pytest.mark.parametrize("responses,expected_models", [
+    ([401], ["primary"]),
+    ([429, 200], ["primary", "fallback"]),
+    ([503, 503], ["primary", "fallback"]),
+])
+def test_llm_provider_errors_over_tls(tmp_path, responses, expected_models):
+    import shutil
+    import ssl
+    import subprocess
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from threading import Thread
+
+    from assistant_agent.transport_security import open_https_request
+
+    if not shutil.which("openssl"):
+        pytest.skip("requires OpenSSL to create a disposable test certificate")
+    key, cert = tmp_path / "model.key", tmp_path / "model.crt"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        "-keyout", str(key), "-out", str(cert), "-subj", "/CN=localhost",
+        "-addext", "subjectAltName=IP:127.0.0.1",
+    ], check=True, capture_output=True)
+    server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_tls.load_cert_chain(cert, key)
+    client_tls = ssl.create_default_context(cafile=str(cert))
+    models = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            models.append(payload["model"])
+            status = responses[len(models) - 1]
+            body = json.dumps({"choices": []} if status == 200 else {"error": "synthetic"}).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        server.socket = server_tls.wrap_socket(server.socket, server_side=True)
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            config = AppConfig({"agent": {"llm": {"base_url": f"https://127.0.0.1:{server.server_port}",
+                                                   "model": "primary", "fallback_model": "fallback"}}})
+            with patch("assistant_agent.llm_client.read_secret", return_value="synthetic"), \
+                    patch("assistant_agent.llm_client.open_https_request",
+                          side_effect=lambda request, timeout: open_https_request(request, timeout, client_tls)):
+                client = LlmClient(config, timeout_seconds=5)
+                if responses[-1] == 200:
+                    assert client.chat([{"role": "user", "content": "Synthetic test"}], []) == {"choices": []}
+                else:
+                    with pytest.raises(RuntimeError, match=f"HTTP {responses[-1]}"):
+                        client.chat([{"role": "user", "content": "Synthetic test"}], [])
+            assert models == expected_models
+        finally:
+            server.shutdown()
+            thread.join(timeout=10)
 
 
 class EnsurePromptFilesTest(unittest.TestCase):
