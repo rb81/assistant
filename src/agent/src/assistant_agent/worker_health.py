@@ -15,6 +15,7 @@ HEALTH_PATH = Path("/run/assistant-health/progress.json")
 WORKER_ROLES = frozenset({
     "task-agent", "deep-research-agent", "downloader", "telegram-receiver",
     "request-preprocessor", "reminder-scheduler", "workspace-indexer", "supervisor", "heartbeat",
+    "tool-cache-cleanup",
 })
 _reporter = ContextVar("assistant_worker_health", default=None)
 

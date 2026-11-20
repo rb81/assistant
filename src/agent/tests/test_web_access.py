@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from assistant_agent import development_supervisor, exa_search, web_pages
+from assistant_agent import development_supervisor, exa_search, main, web_pages
 from assistant_agent.config import AppConfig
 from assistant_agent.deep_research import research_tools
 from assistant_agent.llm_client import LlmClient
@@ -140,6 +140,9 @@ def test_flagged_page_only_released_after_exact_approval_and_paged_from_cache(tm
     cache = {}
 
     def fetch(sql, params):
+        if sql.startswith("UPDATE jobs"):
+            assert params == (4,)
+            return {"id": 4}
         assert params[:2] == (4, url)
         if sql.startswith("INSERT"):
             _, _, final, title, body, fingerprint, summary = params
@@ -164,10 +167,42 @@ def test_flagged_page_only_released_after_exact_approval_and_paged_from_cache(tm
     assert messages[-1]["role"] == "tool"
     assert result["markdown"] == content[:250]
     assert result["content_warning"] == web_pages.CAUTION
+    assert "approved_web_page" not in job["metadata"]
+    replay_count = len(messages)
+    runtime.replay_approved_web_page(messages)
+    assert len(messages) == replay_count
     assert runtime.web_fetch(**result["next_read"]["arguments"])["markdown"] == content[250:]
     assert "markdown" not in ToolResultCache(config).redact_result("web_fetch", result)
     scrape.assert_called_once()
     review.assert_called_once_with(config, url, "Title", content)
+
+
+def test_cleanup_tool_caches_cleans_files_and_expired_pages(tmp_path):
+    db = Mock()
+    config = settings(tmp_path)
+    with patch("assistant_agent.main.ToolResultCache") as cache, \
+         patch("assistant_agent.web_pages.cleanup_expired") as cleanup_pages:
+        cache.return_value.cleanup_expired.return_value = 3
+        cache.return_value.retention_days.return_value = 7
+        assert main.cleanup_tool_caches(db, config) == 3
+    cache.return_value.cleanup_expired.assert_called_once_with()
+    cleanup_pages.assert_called_once_with(db, 7)
+
+
+def test_approved_web_page_replay_requires_claiming_the_persistent_marker(tmp_path):
+    db = Mock()
+    db.fetch_one.return_value = None
+    job = {"id": 4, "metadata": {"approved_web_page": {
+        "arguments": {"url": "https://example.org/page"}, "tool_call_id": "initial",
+    }}}
+    runtime = ToolRuntime(db, settings(tmp_path), job)
+    messages = []
+
+    runtime.replay_approved_web_page(messages)
+
+    assert messages == []
+    assert "approved_web_page" not in job["metadata"]
+    assert "metadata ? 'approved_web_page'" in db.fetch_one.call_args.args[0]
 
 
 def test_managed_reader_uses_fixed_private_endpoint_and_its_own_token(tmp_path, monkeypatch):

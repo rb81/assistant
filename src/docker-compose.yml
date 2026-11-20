@@ -319,6 +319,24 @@ services:
       - model_net
       - egress_net
 
+  tool-cache-cleanup:
+    <<: *agent-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_ROLE: tool-cache-cleanup
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    mem_limit: 256m
+    volumes:
+      - ../data/share:/data/share
+      - *postgres-tls-volume
+      - *sandbox-tls-volume
+      - *agent-config-volume
+    networks:
+      - database_net
+
   reminder-scheduler:
     <<: *agent-common
     depends_on:

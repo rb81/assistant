@@ -16,12 +16,13 @@ from .task_agent import TaskAgent
 from .tool_result_cache import ToolResultCache
 from .validation import postgres_password_is_weak, validate_role_config
 from .workspace_index import WorkspaceIndex
-from .worker_health import reporting
+from .worker_health import poll_cycle, reporting
 
 
 LOGGER = logging.getLogger("assistant.agent")
 PROMPT_FILE_SEED_ROLES = {"downloader", "task-agent", "deep-research-agent", "deep-research-cron", "all"}
 PROMPT_REQUIRED_ROLES = {"task-agent", "all"}
+TOOL_CACHE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 def configure_logging() -> None:
@@ -53,6 +54,15 @@ def install_stopper() -> Stopper:
     signal.signal(signal.SIGTERM, stopper.request_stop)
     signal.signal(signal.SIGINT, stopper.request_stop)
     return stopper
+
+
+def cleanup_tool_caches(db, config) -> int:
+    from .web_pages import cleanup_expired as cleanup_web_pages
+
+    cache = ToolResultCache(config)
+    count = cache.cleanup_expired()
+    cleanup_web_pages(db, cache.retention_days())
+    return count
 
 
 def run_role(role: str) -> None:
@@ -149,11 +159,14 @@ def run_role(role: str) -> None:
         count = indexer.run_idle_once()
         LOGGER.info("workspace index cron processed %s file(s)", count)
     elif role == "tool-cache-cleanup-cron":
-        from .web_pages import cleanup_expired as cleanup_web_pages
-        cache = ToolResultCache(config)
-        count = cache.cleanup_expired()
-        cleanup_web_pages(db, cache.retention_days())
+        count = cleanup_tool_caches(db, config)
         LOGGER.info("tool result cache cleanup removed %s file(s)", count)
+    elif role == "tool-cache-cleanup":
+        while not stopper():
+            with poll_cycle(TOOL_CACHE_CLEANUP_INTERVAL_SECONDS):
+                count = cleanup_tool_caches(db, config)
+                LOGGER.info("tool result cache cleanup removed %s file(s)", count)
+            stopper(TOOL_CACHE_CLEANUP_INTERVAL_SECONDS)
     elif role == "all":
         LOGGER.info("role 'all' runs downloader, schedulers, agents, and supervisor sequentially")
         indexer = WorkspaceIndex(db, config)

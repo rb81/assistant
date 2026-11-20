@@ -74,6 +74,14 @@ def test_busy_or_stalled_worker_does_not_refresh_success_from_a_timer(tmp_path):
         assert reporter.record["last_success"] == completed
 
 
+def test_tool_cache_cleanup_worker_reports_healthy_after_its_daily_cycle(tmp_path):
+    path = tmp_path / "progress.json"
+    with reporting("tool-cache-cleanup", path):
+        with poll_cycle(24 * 60 * 60):
+            pass
+        assert probe(path, "tool-cache-cleanup")[0]
+
+
 def test_poll_interval_sets_freshness_window_without_refreshing_during_idle(tmp_path):
     path = tmp_path / "progress.json"
     reporter = ProgressReporter("downloader", path)

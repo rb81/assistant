@@ -843,6 +843,16 @@ class ToolRuntime:
         replay = (self.job.get("metadata") or {}).get("approved_web_page")
         if not replay:
             return
+        claimed = self.db.fetch_one(
+            """UPDATE jobs SET metadata = metadata - 'approved_web_page'
+               WHERE id = %s AND metadata ? 'approved_web_page' RETURNING id""",
+            (self.job["id"],),
+        )
+        self.job["metadata"] = {
+            key: value for key, value in (self.job.get("metadata") or {}).items() if key != "approved_web_page"
+        }
+        if not claimed:
+            return
         args = replay["arguments"]
         try:
             result = self._web_fetch(args["url"], args.get("offset", 0), args.get("query"), allow_fetch=False)
