@@ -17,7 +17,8 @@ from .client_channels import delivery_accepted
 from .requests import TransactionDatabase
 from .task_agent import TaskAgent
 from .tool_result_cache import ToolResultCache
-from .tools import EMAIL_TOOL_NAMES, FILE_TOOL_NAMES, FUNCTION_TOOLS, WEB_SEARCH_TOOL_NAMES, ToolError, ToolRuntime, tool_name
+from .tools import (EMAIL_TOOL_NAMES, FILE_TOOL_NAMES, FUNCTION_TOOLS, WEB_FETCH_TOOL_NAMES,
+                    WEB_SEARCH_TOOL_NAMES, SecurityApprovalRequired, ToolError, ToolRuntime, tool_name)
 from .validation import admin_configured, search_configured, shared_root_status, smtp_configured
 
 
@@ -147,7 +148,7 @@ class DeepResearchAgent:
 
     def process_run(self, run: dict[str, Any]) -> None:
         if not search_configured(self.config):
-            self.fail_run(run, "Deep research requires OpenRouter web search configuration.")
+            self.fail_run(run, "Deep research requires an available web search provider.")
             return
         original_job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["original_job_id"],))
         if original_job is None:
@@ -165,6 +166,7 @@ class DeepResearchAgent:
             timeout_seconds=self.config.get_int("agent.deep_research.timeout_seconds", 180),
         )
         messages = self.build_messages(run, execution_job)
+        ToolRuntime(self.db, self.config, execution_job).replay_approved_web_page(messages)
         tools = research_tools(self.config)
         from .micro_skills import SkillContext, core_skills, enabled as skills_enabled
         skills = core_skills() if skills_enabled(self.config) else {}
@@ -403,6 +405,9 @@ class DeepResearchAgent:
                 started = datetime.now(timezone.utc)
                 result = runtime.run(name, arguments)
                 duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            except SecurityApprovalRequired as exc:
+                self.pause_for_page_review(run, execution_job, tool_call["id"], arguments, exc)
+                return True
             except (ToolError, TypeError, ValueError) as exc:
                 result = {"error": str(exc)}
                 duration_ms = None
@@ -431,6 +436,32 @@ class DeepResearchAgent:
             }
         )
         return False
+
+    def pause_for_page_review(self, run, execution_job, tool_call_id, arguments, exc):
+        reason = "Security review required for a web page.\n\n" + exc.summary
+        pending = {"tool": exc.tool, "fingerprint": exc.fingerprint,
+                   "replay": {"arguments": arguments, "tool_call_id": tool_call_id}}
+        self.db.log_event(execution_job["id"], "tool_call", tool_name=exc.tool, input_data=arguments)
+        with self.db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE deep_research_runs SET status = 'waiting_for_input', waiting_since = now(),
+                         last_error = %s, locked_at = NULL, locked_by = NULL, updated_at = now()
+                       WHERE id = %s AND status = 'running' AND locked_by = %s RETURNING id""",
+                    (reason, run["id"], self.locked_by),
+                )
+                if cur.fetchone() is None:
+                    return
+                cur.execute(
+                    """UPDATE jobs SET status = 'needs_review', metadata = metadata || %s
+                       WHERE id = %s AND status = 'waiting' RETURNING *""",
+                    (Jsonb({"waiting_for_input": False, "security_pending_action": pending}), execution_job["id"]),
+                )
+                paused = cur.fetchone()
+                if paused is None:
+                    raise RuntimeError("Could not pause research for page review")
+        self.log_event(run["id"], "tool_result", tool_name=exc.tool, output_data={"status": "needs_review"})
+        notify_admin_job_failure(self.db, self.config, paused, "needs_review", reason, "security_screening")
 
     def prepare_tool_result_for_model(self, job_id: int, name: str, result: dict[str, Any]) -> dict[str, Any]:
         return self.tool_result_cache.cache_result(job_id, name, result)
@@ -778,7 +809,7 @@ class ResearchToolRuntime:
         )
 
     def run(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name in FILE_TOOL_NAMES or name in EMAIL_TOOL_NAMES or name in WEB_SEARCH_TOOL_NAMES:
+        if name in FILE_TOOL_NAMES or name in EMAIL_TOOL_NAMES or name in WEB_SEARCH_TOOL_NAMES or name in WEB_FETCH_TOOL_NAMES:
             return self.tool_runtime.run(name, arguments)
         raise ToolError("unknown research tool: %s" % name)
 
@@ -846,6 +877,8 @@ def research_tools(config: AppConfig) -> list[dict[str, Any]]:
         names.update(FILE_TOOL_NAMES)
     if search_configured(config):
         names.update(WEB_SEARCH_TOOL_NAMES)
+    if config.get_bool("agent.web_fetch.enabled", False):
+        names.update(WEB_FETCH_TOOL_NAMES)
     tools = [tool for tool in FUNCTION_TOOLS if tool_name(tool) in names]
     tools.extend([RESEARCH_COMPLETE_TOOL, RESEARCH_FAILED_TOOL, RESEARCH_REQUEST_INPUT_TOOL])
     return tools

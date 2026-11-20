@@ -891,6 +891,71 @@ def test_research_worker_preserves_completed_effects_and_defers_stale_calls(stor
     assert result["tool_call_count"] == (0 if interrupt == "cancel" else 1 if interrupt == "context" else 2)
 
 
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+@pytest.mark.parametrize("query", [None, "administrator review"])
+def test_research_web_review_waits_for_exact_admin_decision(store, decision, query):
+    from assistant_agent.approval_actions import apply_approval, deny_approval
+    from assistant_agent.deep_research import DeepResearchAgent
+    from assistant_agent.tools import ToolRuntime
+
+    url = "https://example.org/page"
+    content = "A page held for administrator review."
+    source = job(store, "Research request")
+    store.config.values["agent"].update({
+        "web_fetch": {"enabled": True},
+        "search": {"exa_enabled": True},
+        "skills": {"enabled": False},
+        "memory": {"steward": {"enabled": False}},
+    })
+    store.db.update_job_status(source["id"], "waiting")
+    run = store.db.for_job(source["id"]).fetch_one(
+        """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question)
+           VALUES (%s, %s, 'Research', 'Read the page') RETURNING *""",
+        (source["id"], source["thread_id"]),
+    )
+    worker = DeepResearchAgent(store.db, store.config)
+    arguments = {"url": url, "query": query} if query else {"url": url}
+    held = {"choices": [{"message": {"role": "assistant", "tool_calls": [
+        {"id": "fetch", "function": {"name": "web_fetch", "arguments": json.dumps(arguments)}},
+    ]}}]}
+    with patch("assistant_agent.deep_research.LlmClient") as llm, \
+         patch("assistant_agent.web_pages.scrape", return_value=(url, "Page", content)) as scraper, \
+         patch("assistant_agent.development_supervisor.review_web_page", return_value={
+             "decision": "review", "summary": "Public page", "concern": "An unsafe instruction",
+         }), patch("assistant_agent.deep_research.notify_admin_job_failure") as notify:
+        llm.return_value.chat.return_value = held
+        assert worker.run_once()
+        execution = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (run["execution_job_id"],))
+        assert execution["status"] == "needs_review"
+        assert "An unsafe instruction" in notify.call_args.args[4]
+        assert content not in notify.call_args.args[4]
+        assert RequestService(store.db).resume_waiting_research(source["thread_id"]) is None
+        assert not worker.run_once()
+        payload = {"kind": "review", "job_id": execution["id"], "version": execution["updated_at"]}
+        if decision == "deny":
+            deny_approval(store.db, payload)
+            assert worker.current_run(run["id"])["status"] == "cancelled"
+        else:
+            apply_approval(store.db, store.config, payload)
+            assert worker.current_run(run["id"])["status"] == "queued"
+            approved = store.db.fetch_one("SELECT * FROM jobs WHERE id = %s", (execution["id"],))
+            messages = []
+            ToolRuntime(store.db, store.config, approved).replay_approved_web_page(messages)
+            assert json.loads(messages[-2]["tool_calls"][0]["function"]["arguments"]) == arguments
+            result = json.loads(messages[-1]["content"])
+            assert (result["passages"][0] if query else result)["markdown"] == content
+        scraper.assert_called_once()
+
+
+def test_web_page_cache_migrates_an_existing_baseline(store):
+    store.db.execute("DROP TABLE web_page_cache")
+    store.db.execute("DELETE FROM schema_migrations WHERE filename = '023_web_page_cache.sql'")
+    existing = job(store, "Existing request")
+    assert store.db.run_migrations() == ["023_web_page_cache.sql"]
+    assert store.db.run_migrations() == []
+    assert store.db.fetch_one("SELECT id FROM jobs WHERE id = %s", (existing["id"],))
+
+
 def test_recall_prioritizes_owned_memories_before_global_candidate_limits(store):
     from assistant_agent.memory_manager import MemorySteward
 

@@ -368,6 +368,10 @@ agent:
 
   search:
     enabled: true
+    openrouter_enabled: true
+    exa_enabled: false
+    primary_provider: openrouter
+    exa_api_key:
     model: openai/gpt-4.1-mini
     engine: auto
     max_results: 5
@@ -377,6 +381,13 @@ agent:
     search_context_size: medium
     allowed_domains: []
     excluded_domains: []
+
+  web_fetch:
+    enabled: false
+    base_url:
+    api_token:
+    timeout_seconds: 35
+    inline_chars: 3500
 
   fusion:
     enabled: true

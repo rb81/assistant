@@ -138,6 +138,8 @@ BASIC_SETTINGS = {
     "AGENT_TTS_ENABLED", "AGENT_TTS_MODEL", "AGENT_TTS_VOICE",
     "AGENT_MODEL_SERVICE_ENABLED", "AGENT_MODEL_SERVICE_BUDGET_USD",
     "AGENT_SEARCH_ENABLED", "AGENT_DEEP_RESEARCH_ENABLED", "AGENT_FUSION_ENABLED",
+    "AGENT_SEARCH_OPENROUTER_ENABLED", "AGENT_SEARCH_EXA_ENABLED", "AGENT_SEARCH_PRIMARY_PROVIDER",
+    "AGENT_SEARCH_EXA_API_KEY", "AGENT_WEB_FETCH_ENABLED", "AGENT_WEB_FETCH_BASE_URL", "AGENT_WEB_FETCH_API_TOKEN",
     "AGENT_MEMORY_STEWARD_ENABLED",
     "AGENT_WORKSPACE_INDEX_ENABLED", "AGENT_EMBEDDINGS_ENABLED", "AGENT_EMBEDDINGS_MODEL",
     "AGENT_EMBEDDINGS_BASE_URL",
@@ -191,7 +193,8 @@ CATALOG_GROUPS = {
     "client": ("Desktop clients", None, "How connected clients are polled and when deliveries fall back."),
     "heartbeat": ("Heartbeat", None, "Periodic check-ins that detect stale tasks and research."),
     "sandbox": ("Script sandbox", "security", "The isolated runner that executes scripts, and its network allowlist."),
-    "search": ("Search engine & limits", None, "Search engine, model, and result limits for web searches."),
+    "search": ("Web search providers", None, "Choose which services handle an explicit web search."),
+    "web_fetch": ("Web page reader", None, "Connect a self-hosted browser to read and screen public pages."),
     "fusion": ("Multi-model analysis", None, "Ask several models and merge their answers for hard questions."),
     "security": ("Screening thresholds", "security",
                  "How requests and scripts are screened, and when risky actions need approval."),
@@ -202,14 +205,18 @@ ADVANCED_GROUP_PARENTS = {
 CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
+    "AGENT_SEARCH_PRIMARY_PROVIDER": ("openrouter", "exa"),
     "AGENT_ZOOM_AUTH_MODE": ("s2s", "oauth"),
 }
 CHOICE_LABELS = {
+    "AGENT_SEARCH_PRIMARY_PROVIDER": {"openrouter": "OpenRouter", "exa": "Exa (direct)"},
     "AGENT_APPROVALS_CHANNEL": {
         "email": "Email", "telegram": "Telegram", "both": "Email & Telegram", "client": "Assistant app",
     },
 }
 ADVANCED_TITLES = {
+    "catalog:search": "Web search tuning",
+    "catalog:web_fetch": "Web page reader limits",
     "email": "Email behavior & delivery", "calendar": "Calendar defaults & privacy",
     "telegram": "Telegram delivery & limits", "security": "Screening & execution limits",
     "embeddings": "Embedding service tuning", "transcription": "Transcription service tuning",
@@ -239,6 +246,11 @@ def setting_presentation(group, spec):
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
         label, section = "Naming model", "Conversation naming"
+    elif group == "catalog:search" and spec.key in {
+        "AGENT_SEARCH_OPENROUTER_ENABLED", "AGENT_SEARCH_EXA_ENABLED",
+        "AGENT_SEARCH_PRIMARY_PROVIDER", "AGENT_SEARCH_EXA_API_KEY",
+    }:
+        section = "Search providers"
     elif group == "advanced:Model preset tool":
         section = ("Text to speech" if spec.key.startswith("AGENT_TTS_") else
                    "Shared spending limit" if spec.key.startswith("AGENT_MODEL_SERVICE_BUDGET_") else "Model preset tool")
@@ -305,7 +317,7 @@ def configuration_group_details():
         destination = (
             "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
             "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
-                                 "catalog:deep_research", "catalog:search", "catalog:app",
+                                 "catalog:deep_research", "catalog:search", "catalog:web_fetch", "catalog:app",
                                  "advanced:Model preset tool", "advanced:Web search", "advanced:Research and notifications"} else
             "safety" if owner in {"approvals", "security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
             "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",

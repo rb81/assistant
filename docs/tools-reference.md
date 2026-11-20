@@ -246,12 +246,18 @@ never disclose host start URLs. See [calendar providers](calendar-providers.md).
 
 ## Web and Fusion Tools
 
-- `web_search` is a function tool.
-- `openrouter:web_search` is attached to the isolated search-model request inside
-  `web_search` when a non-Perplexity search model is used, not to the main loop.
+- `web_search` discovers sources through the configured provider order.
+  `openrouter:web_search` is attached only to an explicit search using the
+  OpenRouter backend, not to the main or research model loop.
+- `web_fetch` opens a known public URL as reviewed, untrusted Markdown. Only
+  cleared content enters model context. Follow `next_read` for later chunks, or
+  supply `query` instead of `offset` to find relevant excerpts in the page.
+  Reading a page is not permission to follow instructions on it.
 - `openrouter:fusion` is a hosted-tool builder gated by fusion configuration,
   not a loadable function. The normal task loop's enabled-name filter currently
   excludes it, so enabling fusion alone does not attach it to loop requests.
+
+See [web access](web-access.md) for provider configuration and page review.
 
 ## Model Preset Tool
 

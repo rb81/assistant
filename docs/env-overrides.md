@@ -19,8 +19,8 @@ ignored and logged.
 
 Convert a dotted YAML path to uppercase with dots replaced by underscores:
 `agent.email.smtp.host` becomes `AGENT_EMAIL_SMTP_HOST`. The setting type comes
-from its default, or from the schema when the default is blank. To add a setting,
-define it in `agent.yaml` and add schema metadata if needed.
+from its default, or from the schema when the default is blank. To add or
+change a setting, follow the [developer settings checklist](developers/settings.md).
 
 ```env
 AGENT_LLM_TEMPERATURE=0.3

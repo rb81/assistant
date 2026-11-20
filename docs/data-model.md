@@ -4,7 +4,7 @@
 
 `src/database/schema.sql` is the generated current PostgreSQL schema, not a
 legacy bootstrap schema. It seeds `schema_migrations` with
-`000_current_baseline` and the applied records for `006`–`020`. Those migration
+`000_current_baseline` and the applied records for `006`–`023`. Those migration
 files remain in `src/agent/src/assistant_agent/migrations/`; the startup runner
 applies only unrecorded SQL files, in filename order.
 

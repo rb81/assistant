@@ -24,6 +24,7 @@ instructions live in the [client repository](https://github.com/rb81/assistant-c
 | **[Calendars and meetings](calendar-providers.md)** | Google, Outlook, Zoho, and Zoom |
 | **[Dropbox](dropbox.md)** | Scoped file import and export |
 | **[OpenRouter](openrouter.md)** | Models, provider settings, and hosted tools |
+| **[Web access](web-access.md)** | Search providers and reading public web pages |
 
 ## Operating Assistant
 
@@ -39,6 +40,7 @@ instructions live in the [client repository](https://github.com/rb81/assistant-c
 
 | Guide | What it covers |
 |---|---|
+| **[Developer and coding-agent guides](developers/README.md)** | Cross-repository implementation checklists, starting with settings |
 | **[Codebase guide](codebase.md)** | Layout, contribution, and tests |
 | **[Architecture](architecture.md)** and **[data model](data-model.md)** | System structure |
 | **[Build a client](building-clients.md)** and **[Management API](management-api.md)** | Connection, schemas, reads, and safe writes |

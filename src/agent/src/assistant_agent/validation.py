@@ -96,7 +96,26 @@ def sandbox_configured(config: AppConfig) -> bool:
 
 
 def search_configured(config: AppConfig) -> bool:
-    return config.get_bool("agent.search.enabled", True) and openrouter_configured(config)
+    return bool(search_providers(config))
+
+
+def search_providers(config: AppConfig) -> tuple[str, ...]:
+    if not config.get_bool("agent.search.enabled", True):
+        return ()
+    primary = config.get("agent.search.primary_provider", "openrouter")
+    if primary not in ("openrouter", "exa"):
+        return ()
+    available = []
+    if config.get_bool("agent.search.exa_enabled", False):
+        available.append("exa")
+    if config.get_bool("agent.search.openrouter_enabled", True):
+        try:
+            has_key = is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
+        except RuntimeError:
+            has_key = False
+        if has_key:
+            available.append("openrouter")
+    return tuple(sorted(available, key=lambda provider: provider != primary))
 
 
 def fusion_configured(config: AppConfig) -> bool:
@@ -175,8 +194,11 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if model_required and not is_set(config.get("agent.llm.model")):
         errors.append("%s requires agent.llm.model" % role)
 
-    if role in ("task-agent", "all") and config.get_bool("agent.search.enabled", True) and not openrouter_configured(config):
-        errors.append("OpenRouter web search is enabled but OpenRouter is not configured")
+    if role in ("task-agent", "all") and config.get_bool("agent.search.enabled", True) and not search_configured(config):
+        errors.append("Web search is enabled but no search provider is available")
+    if role in ("task-agent", "deep-research-agent", "deep-research-cron", "heartbeat", "heartbeat-cron", "all"):
+        from .web_pages import configuration_errors as web_fetch_configuration_errors
+        errors.extend(web_fetch_configuration_errors(config))
 
     if role in ("workspace-indexer", "workspace-index-cron") and not shared_root_status(config)["available"]:
         errors.append("workspace indexer requires an available shared workspace root")
@@ -190,7 +212,7 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
 
     if role in ("deep-research-agent", "deep-research-cron", "all") and config.get_bool("agent.deep_research.enabled", True):
         if not search_configured(config):
-            errors.append("deep research requires OpenRouter web search: set AGENT_LLM_OPENROUTER_API_KEY and keep SEARCH_ENABLED=true")
+            errors.append("deep research requires web search with at least one available provider")
         if not smtp_configured(config):
             errors.append("deep research requires SMTP config so it can request human guidance by email")
         if not admin_configured(config):
@@ -333,7 +355,8 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
         },
         "search_tools": {
             "available": search_configured(config),
-            "provider": "openrouter:web_search via web_search",
+            "provider": next(iter(search_providers(config)), None),
+            "providers": list(search_providers(config)),
             "tools": ["web_search"] if search_configured(config) else [],
         },
         "fusion_tools": {

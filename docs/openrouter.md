@@ -69,22 +69,22 @@ Optional `analysis_models`, judge `model`, `max_tool_calls`,
 
 ## `web_search` Runtime Behavior
 
-`ToolRuntime.web_search(...)` uses Perplexity-native mode when the search model
-contains `perplexity/`; it sends a normal chat request without
-`openrouter:web_search`. Otherwise it attaches the hosted tool for source-backed
-results.
+When the OpenRouter search backend is used, `ToolRuntime.web_search(...)`
+attaches `openrouter:web_search` only to its own search-model request. Ordinary
+task and deep-research model requests never include the hosted tool; they can
+call the local `web_search` function instead. Keep `:online` and server-side
+search presets out of model IDs if ordinary calls should not search.
 
-The search model falls back to `agent.llm.model` when unset. Perplexity-native
-mode does not send hosted-tool engine, result-count, or domain-filter settings.
-Results are normalized to answer text, annotations, citations, usage metadata,
-and a provider indicator (`perplexity` or `openrouter`).
+The search model falls back to `agent.llm.model` when unset. OpenRouter results
+include answer text, annotations, citations and usage metadata. For direct
+Exa and provider failover, see [web access](web-access.md).
 
 ## Configuration Requirements
 
-OpenRouter-backed features need a valid API key, an OpenRouter-compatible base
-URL, and their feature flags (for example `agent.search.enabled` or
-`agent.fusion.enabled`). Tools are exposed only when their prerequisites are
-available.
+OpenRouter-backed features need a valid API key and their feature flags.
+Ordinary hosted model tools such as fusion require the task model's
+OpenRouter base URL. Explicit OpenRouter web search can use OpenRouter
+even when the task model runs on another endpoint.
 
 ## Optional preset-based model tool
 

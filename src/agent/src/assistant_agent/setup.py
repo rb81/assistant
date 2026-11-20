@@ -314,6 +314,8 @@ def secret_services(name):
         return ("management-reader", *AGENT_SERVICES)
     if name in ("AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY"):
         return (*MODEL_SERVICES, *ROUTING_SERVICES)
+    if name in {"AGENT_SEARCH_EXA_API_KEY", "AGENT_WEB_FETCH_API_TOKEN"}:
+        return TOOL_SERVICES
     if name == "AGENT_EMAIL_IMAP_PASSWORD":
         return ("downloader", *MODEL_SERVICES)
     if name == "AGENT_EMAIL_SMTP_PASSWORD":
@@ -2592,6 +2594,28 @@ def draft_problems(instance):
                 error = advanced_value_error(setting, values[setting[0]])
                 if error:
                     problem("advanced", error)
+    if values.get("AGENT_SEARCH_PRIMARY_PROVIDER", "openrouter") not in {"openrouter", "exa"}:
+        problem("advanced", "Preferred web search provider must be openrouter or exa")
+    if (values.get("AGENT_SEARCH_ENABLED", "true") == "true"
+            and values.get("AGENT_SEARCH_OPENROUTER_ENABLED", "true") != "true"
+            and values.get("AGENT_SEARCH_EXA_ENABLED", "false") != "true"):
+        problem("advanced", "Enable at least one web search provider, or disable web search")
+    if values.get("AGENT_WEB_FETCH_ENABLED") == "true":
+        try:
+            origin = str(values.get("AGENT_WEB_FETCH_BASE_URL", "")).strip().rstrip("/")
+            if validate_https_url(origin, "Crawl4AI origin").path:
+                raise ValueError
+        except (RuntimeError, ValueError):
+            problem("advanced", "Web page reader requires a valid Crawl4AI HTTPS origin without a path")
+        if not instance.secret_values.get("AGENT_WEB_FETCH_API_TOKEN"):
+            problem("advanced", "Web page reader requires a Crawl4AI API token")
+    for key, low, high in (("AGENT_WEB_FETCH_TIMEOUT_SECONDS", 1, 120), ("AGENT_WEB_FETCH_INLINE_CHARS", 250, 12000)):
+        if key in values:
+            try:
+                if not low <= int(values[key]) <= high:
+                    raise ValueError
+            except (TypeError, ValueError):
+                problem("advanced", f"{key} must be an integer from {low} to {high}")
     model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
     if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
         problem("advanced", "Model preset tool requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")

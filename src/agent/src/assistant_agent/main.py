@@ -149,7 +149,10 @@ def run_role(role: str) -> None:
         count = indexer.run_idle_once()
         LOGGER.info("workspace index cron processed %s file(s)", count)
     elif role == "tool-cache-cleanup-cron":
-        count = ToolResultCache(config).cleanup_expired()
+        from .web_pages import cleanup_expired as cleanup_web_pages
+        cache = ToolResultCache(config)
+        count = cache.cleanup_expired()
+        cleanup_web_pages(db, cache.retention_days())
         LOGGER.info("tool result cache cleanup removed %s file(s)", count)
     elif role == "all":
         LOGGER.info("role 'all' runs downloader, schedulers, agents, and supervisor sequentially")

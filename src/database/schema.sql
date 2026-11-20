@@ -2525,6 +2525,21 @@ CREATE TABLE micro_skill_embeddings (
     embedding double precision[] NOT NULL
 );
 
+-- 023_web_page_cache.sql
+CREATE TABLE web_page_cache (
+  job_id bigint NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  requested_url text NOT NULL,
+  final_url text NOT NULL,
+  title text NOT NULL,
+  markdown text NOT NULL,
+  review_fingerprint text,
+  review_summary text,
+  fetched_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (job_id, requested_url)
+);
+
+CREATE INDEX web_page_cache_fetched_at ON web_page_cache (fetched_at);
+
 INSERT INTO schema_migrations(filename) VALUES
   ('000_current_baseline'),
   ('006_zoom_meetings.sql'),
@@ -2543,6 +2558,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('019_task_deletion.sql'),
   ('020_client_channels.sql'),
   ('021_micro_skills.sql'),
-  ('022_memory_access_keeps_updated_at.sql');
+  ('022_memory_access_keeps_updated_at.sql'),
+  ('023_web_page_cache.sql');
 
 SET check_function_bodies = true;

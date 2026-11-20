@@ -45,7 +45,7 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
     backend = ApiManagementBackend(terminal_root, client)
     with patch("assistant_agent.management_client.httpx.Client", return_value=transport):
         backend.load()
-        assert backend.groups["models"][0] == "Models & access"
+        assert backend.groups["models"][0] == "Assistant models"
         assert backend.field_metadata["AGENT_LLM_MODEL"]["help"]
         with create_pipe_input() as pipe:
             ui = ManagementApp(terminal_root, backend=backend, input=pipe, output=DummyOutput())
@@ -56,16 +56,27 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
                 action.label for action in ui.actions}
             ui.location.route = "Settings:models"
             ui.render()
-            assert "Models & access" in {action.label for action in ui.actions}
+            assert {"Assistant models", "Web search providers", "Web page reader"} <= {action.label for action in ui.actions}
+            ui.location.route = "Form:catalog:search"
+            ui.render()
+            preferred = ui.form["AGENT_SEARCH_PRIMARY_PROVIDER"]
+            assert "Allowed values: openrouter, exa" in ui.control_topics[preferred.control][1]
+            preferred.text = "exa"
+            ui.form["AGENT_SEARCH_EXA_ENABLED"].checked = True
+            ui.keep_draft()
+            assert backend.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"
         backend.stage("identity", {"AGENT_IDENTITY_NAME": "API-managed assistant"})
-        backend.stage("models", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key",
-                                 "AGENT_DATABASE_PASSWORD": "safe-test-database-password"})
+        backend.stage("models", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key"})
+        database_group = next(group for group, (_, fields) in backend.groups.items()
+                              if any(field.key == "AGENT_DATABASE_PASSWORD" for field in fields))
+        backend.stage(database_group, {"AGENT_DATABASE_PASSWORD": "safe-test-database-password"})
         backend.instructions = b"Ask before external actions.\n"
         backend.accepted = True
         preview = backend.preview()
         assert preview["valid"], preview["problems"]
         backend.save()
         assert backend.values["AGENT_IDENTITY_NAME"] == "API-managed assistant"
+        assert backend.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"
         assert not backend.dirty
         assert backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] == "[configured]"
         assert not terminal_root.exists()

@@ -27,9 +27,10 @@ class LlmClient:
         max_tokens: Optional[int] = None,
         timeout_seconds: Optional[int] = None,
         allow_fallback: bool = True,
+        base_url: Optional[str] = None,
     ):
         self.config = config
-        self.base_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
+        self.base_url = str(base_url or config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
         if is_openrouter_url(self.base_url):
             api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")

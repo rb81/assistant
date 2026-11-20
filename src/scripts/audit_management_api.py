@@ -363,7 +363,7 @@ AGENT_MEDIATED_TOOLS = {
     "network_access_request", "reminder_cancel", "reminder_create", "reminder_list", "reminder_update",
     "request_input", "request_limit_increase", "runtime_capabilities", "script_approval_request",
     "skill_list", "skill_search", "skill_load", "skill_save",
-    "script_development_review", "telegram_send", "text_to_speech", "web_search", "workstream_attach",
+    "script_development_review", "telegram_send", "text_to_speech", "web_fetch", "web_search", "workstream_attach",
     "workstream_list", "workstream_read",
 }
 WORKER_INTERNAL_TOOLS = {

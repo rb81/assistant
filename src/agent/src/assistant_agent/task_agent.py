@@ -258,6 +258,7 @@ class TaskAgent:
             job["_skill_context"].restore(job.pop("_resume_skill_refs", {}), job["_skill_lifecycle"])
         tool_runtime = ToolRuntime(self.db, self.config, job)
         self.replay_approved_call(job, tool_runtime, history)
+        tool_runtime.replay_approved_web_page(history)
         max_iterations, max_tokens = self.task_limits(job)
         history_window = self.config.get_int("agent.limits.message_history_window", 8)
         total_tokens = 0
@@ -1825,7 +1826,10 @@ class TaskAgent:
                 "script_permission",
             )
         except SecurityApprovalRequired as exc:
-            metadata = {"security_pending_action": {"tool": exc.tool, "fingerprint": exc.fingerprint}}
+            pending = {"tool": exc.tool, "fingerprint": exc.fingerprint}
+            if name == "web_fetch":
+                pending["replay"] = {"arguments": arguments, "tool_call_id": tool_call_id}
+            metadata = {"security_pending_action": pending}
             self.db.execute("UPDATE jobs SET metadata = metadata || %s WHERE id = %s", (Jsonb(metadata), job["id"]))
             job["metadata"] = {**(job.get("metadata") or {}), **metadata}
             result = {

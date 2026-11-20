@@ -947,12 +947,21 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert fields["TASK_AGENT_WORKERS"]["data_type"] == "integer"
     assert fields["SANDBOX_EGRESS_MODE"]["metadata"]["warning"]
     assert not fields["ASSISTANT_INSTALL_ROOT"]["editable"]
+    catalog_response = client.get("/v2/configuration/catalog", headers=headers).json()
+    assert next(group for group in catalog_response["groups"] if group["id"] == "catalog:web_fetch")["destination"] == "models"
+    search_section = client.get("/v2/configuration/settings", params={"group": "catalog:search"}, headers=headers).json()
+    search_fields = {item["key"]: item for item in search_section["settings"]}
+    assert search_section["revision"] == catalog_response["revision"]
+    assert search_fields["AGENT_SEARCH_PRIMARY_PROVIDER"]["metadata"]["choices"] == ["openrouter", "exa"]
+    assert search_fields["AGENT_SEARCH_EXA_API_KEY"]["secret"]
     for protected in ("AGENT_DATABASE_PASSWORD", "AGENT_SANDBOX_API_TOKEN", "AGENT_SANDBOX_REVOKE_TOKEN"):
         assert client.post("/v2/configuration/preview", headers=headers, json={
             "revision": current["revision"], "values": {}, "remove_credentials": [protected],
         }).status_code == 409
 
     secret = "private-transcription-token-" + "x" * 32
+    exa_key = "private-exa-provider-test-key"
+    scraper_key = "private-crawler-token-test-key"
     draft = {
         "revision": current["revision"],
         "values": {
@@ -965,6 +974,12 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
             "AGENT_CALENDAR_GOOGLE_2_REFRESH_TOKEN": "calendar-private-refresh",
             "TASK_AGENT_WORKERS": "3",
             "SANDBOX_RUN_CPUS": "1.5",
+            "AGENT_SEARCH_PRIMARY_PROVIDER": "exa",
+            "AGENT_SEARCH_EXA_ENABLED": "true",
+            "AGENT_SEARCH_EXA_API_KEY": exa_key,
+            "AGENT_WEB_FETCH_ENABLED": "true",
+            "AGENT_WEB_FETCH_BASE_URL": "https://scraper.example.test",
+            "AGENT_WEB_FETCH_API_TOKEN": scraper_key,
         },
     }
     invalid = {**draft, "values": {"AGENT_LLM_TEMPERATURE": "not-a-number"}}
@@ -993,6 +1008,15 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     preview = preview_response.json()
     assert preview["valid"], preview["problems"]
     assert secret not in preview_response.text
+    assert exa_key not in preview_response.text and scraper_key not in preview_response.text
+    for bad_values in (
+        {"AGENT_SEARCH_PRIMARY_PROVIDER": "unsupported"},
+        {"AGENT_SEARCH_OPENROUTER_ENABLED": "false", "AGENT_SEARCH_EXA_ENABLED": "false"},
+        {"AGENT_WEB_FETCH_ENABLED": "true"},
+    ):
+        assert not client.post("/v2/configuration/preview", headers=headers, json={
+            "revision": current["revision"], "values": bad_values,
+        }).json()["valid"]
     restricted = {**draft, "values": {"AGENT_SANDBOX_REVOKE_TOKEN": "x" * 32}}
     assert client.post("/v2/configuration/preview", headers=headers, json=restricted).status_code == 409
 
@@ -1023,6 +1047,12 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert saved.values["AGENT_CALENDAR_GOOGLE_2_CALENDAR_ID"] == "work-calendar"
     assert saved.values["TASK_AGENT_WORKERS"] == "3"
     assert saved.values["SANDBOX_RUN_CPUS"] == "1.5"
+    assert saved.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"
+    assert saved.secret_values["AGENT_SEARCH_EXA_API_KEY"] == exa_key
+    assert saved.secret_values["AGENT_WEB_FETCH_API_TOKEN"] == scraper_key
+    assert {service for service, grants in saved.credential_grants().items() if "AGENT_SEARCH_EXA_API_KEY" in grants} == {
+        "task-agent", "deep-research-agent", "heartbeat",
+    }
     assert saved.secret_values["AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET"] == "calendar-private-secret"
     assert parse_environment((tmp_path / "data/overrides.env").read_text())[0][
         "AGENT_CALENDAR_GOOGLE_2_CALENDAR_ID"
@@ -1035,6 +1065,7 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     reloaded = client.get("/v2/configuration", headers=headers)
     assert reloaded.status_code == 200
     assert secret not in reloaded.text
+    assert exa_key not in reloaded.text and scraper_key not in reloaded.text
     assert next(item["value"] for item in reloaded.json()["settings"]
                 if item["key"] == "AGENT_LLM_TEMPERATURE") == "0.35"
     removals = [f"AGENT_CALENDAR_GOOGLE_2_{name}"

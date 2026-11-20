@@ -831,6 +831,8 @@ class EmailDownloader:
             approved = list(metadata.get("security_approved_actions") or [])
             update["security_approved_actions"] = approved + [pending_action["fingerprint"]]
             update["security_pending_action"] = None
+            if pending_action.get("tool") == "web_fetch" and pending_action.get("replay"):
+                update["approved_web_page"] = pending_action["replay"]
 
         claimed = self.db.fetch_one(
             """

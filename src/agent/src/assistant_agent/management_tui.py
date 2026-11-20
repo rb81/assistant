@@ -1243,12 +1243,18 @@ class ManagementApp:
                 has_advanced = True
                 if not advanced:
                     continue
-            self.control_topics[widget.control] = (spec.label, metadata.get("help") or field_help(spec))
+            help_text = metadata.get("help") or field_help(spec)
+            choices = metadata.get("choices")
+            options = "Allowed values: " + ", ".join(choices) if choices and not spec.secret else ""
+            self.control_topics[widget.control] = (spec.label, " ".join(filter(None, (help_text, options))))
             if spec.boolean:
                 items.extend([widget, text()])
             else:
                 suffix = " (configured; blank keeps it)" if spec.secret and spec.key in self.backend.credentials else ""
-                items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget, text()])
+                items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget])
+                if options:
+                    items.append(text(options))
+                items.append(text())
         for child, metadata in getattr(self.backend, "group_metadata", {}).items():
             if metadata.get("parent") != key or child not in self.groups:
                 continue

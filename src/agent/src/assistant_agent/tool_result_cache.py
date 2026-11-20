@@ -13,7 +13,7 @@ from .config import AppConfig
 LOGGER = logging.getLogger("assistant.tool_result_cache")
 TEXT_OUTPUT_FIELDS = ("stdout", "stderr", "content")
 ALWAYS_CACHE_TOOLS = {"command_execute"}
-SOURCE_REPLAY_TOOLS = {"email_read"}
+SOURCE_REPLAY_TOOLS = {"email_read", "web_fetch"}
 CACHE_METADATA_PREFIX = "cached_output_"
 
 
@@ -76,6 +76,11 @@ class ToolResultCache:
         if not isinstance(result, dict):
             return result
         redacted = dict(result)
+        if tool_name == "web_fetch":
+            redacted.pop("markdown", None)
+            redacted.pop("title", None)
+            redacted.pop("passages", None)
+            return redacted
         if tool_name == "email_read":
             redacted = self._redact_email_read_result(redacted)
         cached_path = str(redacted.get("cached_output_path") or "").strip()
