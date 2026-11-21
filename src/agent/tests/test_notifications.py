@@ -101,6 +101,21 @@ class NotificationDedupeTest(unittest.TestCase):
         db.latest_thread_emails.assert_not_called()
         self.assertNotIn("message_id", context)
 
+    def test_terminal_notice_has_no_actionable_approval_instructions(self) -> None:
+        diagnostics = {
+            "explanation": "Required service unavailable",
+            "usage": {"total_tokens": 100, "token_pct": 1, "iterations_used": 1, "iteration_pct": 1, "api_calls": 1},
+            "limits": {"max_tokens": 10000, "max_iterations": 100},
+        }
+        with patch("assistant_agent.notifications.latest_request_context", return_value={}), patch(
+            "assistant_agent.notifications._latest_checkpoint", return_value={}
+        ), patch("assistant_agent.notifications._diagnostics", return_value=diagnostics):
+            body = _body(FakeDatabase(), AppConfig({"agent": {}}), {"id": 11}, "failed", "Service unavailable", "worker")
+        self.assertIn("not an approval request", body)
+        self.assertNotIn("Remote Approval", body)
+        self.assertNotIn("add no text", body)
+        self.assertNotIn("limits will be increased", body)
+
     def test_requester_falls_back_to_latest_thread_request_without_trigger(self) -> None:
         db = MagicMock()
         db.fetch_one.return_value = {"channel": "telegram", "sender_id": "123456"}

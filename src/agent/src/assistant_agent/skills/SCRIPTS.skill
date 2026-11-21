@@ -4,4 +4,6 @@ Runs commands in an isolated sandbox container. Outbound network access is deny-
 
 Only unchanged approved versions may be rerun within their session limits. Final approval closes development authorization and binds the code and dependency hashes, invocation, image and policy. A one-time approval permits one execution even if it fails. Approved code runs from a read-only snapshot; use the working directory or explicit workspace paths for output. Explicitly configured YOLO mode skips script approval gates, not sandbox restrictions.
 
+Before task_complete, finalize every open development session, not just the most recent script. Submit its final exact command and hosts, then wait for the runtime's approval decision. A pending approval is a pause, not a task failure. Do not rerun finished work or create another development session merely to clear finalization.
+
 For future or recurring sandbox work, write and test the script now. Use one reminder_create with execution='script' to reserve a one-off execution or obtain standing approval for recurring runs; never defer code preparation or approval to an agent-task reminder. Within a development session, this scheduling call is the final approval request. Specify the follow-up work in the task text. At execution, use the approved scheduled binding rather than creating a new approval or changing the invocation.

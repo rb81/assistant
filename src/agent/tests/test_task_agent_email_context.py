@@ -410,6 +410,46 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         self.assertEqual(agent.create_checkpoint.call_args.args[3], 31)
         agent.db.update_job_status.assert_called_once_with(123, "needs_review", last_error="token budget exceeded")
 
+    def test_pending_development_review_cannot_be_completed_or_failed(self):
+        for name in ("task_complete", "task_failed"):
+            for status in ("pending", "finalizing"):
+                with self.subTest(name=name, status=status):
+                    agent = self.agent()
+                    agent.db = MagicMock()
+                    agent.db.fetch_one.return_value = {"id": 41, "status": status}
+                    agent.pause_for_review = MagicMock(return_value=True)
+                    job = {"id": 12, "metadata": {"permission_request": {"session_id": 41, "kind": "final"}}}
+                    stopped = agent.handle_tool_call(job, [], MagicMock(), "call", name, {"reason": "Waiting"}, set())
+                    self.assertTrue(stopped)
+                    self.assertEqual(agent.pause_for_review.call_args.args[5]["status"], "needs_review")
+                    agent.db.update_job_status.assert_not_called()
+                    agent.memory_steward.consolidate.assert_not_called()
+
+    def test_active_session_requires_finalization_without_suggesting_failure(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = {"id": 41, "status": "active"}
+        messages = []
+        self.assertFalse(agent.handle_tool_call(
+            {"id": 12, "metadata": {}}, messages, MagicMock(), "call", "task_complete", {}, set(),
+        ))
+        self.assertIn("script_approval_request", messages[-1]["content"])
+        self.assertNotIn("Use task_failed", messages[-1]["content"])
+        agent.db.update_job_status.assert_not_called()
+
+    def test_genuine_failure_after_development_denial_remains_terminal(self):
+        agent = self.agent()
+        agent.db = MagicMock()
+        agent.db.fetch_one.return_value = None
+        agent.update_linked_reminder = MagicMock()
+        agent.update_channel_status = MagicMock()
+        job = {"id": 12, "metadata": {"permission_request": {"session_id": 41}}}
+        with patch("assistant_agent.task_agent.notify_admin_job_failure"):
+            self.assertTrue(agent.handle_tool_call(
+                job, [], MagicMock(), "call", "task_failed", {"reason": "Approval denied"}, set(),
+            ))
+        agent.db.update_job_status.assert_called_once_with(12, "failed", last_error="Approval denied")
+
     def agent(self) -> TaskAgent:
         temp_dir = TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

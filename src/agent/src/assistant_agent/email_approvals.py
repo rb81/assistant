@@ -100,6 +100,12 @@ def approval_reply(message: Message) -> tuple[str, str, str] | None:
         return None
     if len(tokens) != 1 or len(hashes) != 1:
         raise ValueError("Keep exactly one original approval message, including its OTP and request hash.")
+    return tokens.pop(), hashes.pop(), reply_instruction(message)
+
+
+def reply_instruction(message: Message) -> str:
+    """Extract authored guidance without treating quoted notifications or signatures as instructions."""
+    plain, html = _reply_bodies(message)
     instructions = []
     lines = "\n".join(plain or html).splitlines()
     for index, line in enumerate(lines):
@@ -114,7 +120,7 @@ def approval_reply(message: Message) -> tuple[str, str, str] | None:
         ):
             break
         instructions.append(line)
-    return tokens.pop(), hashes.pop(), "\n".join(instructions).strip()
+    return "\n".join(instructions).strip()
 
 
 def send_admin_email(config, subject: str, body: str, *, attachment: tuple[str, bytes] | None = None) -> str:
@@ -411,6 +417,15 @@ class EmailApprovals:
                             summary[:20000],
                         )
                     )
+                    if email_fallback:
+                        body = body.replace(
+                            MARKER,
+                            MARKER + "\n\nDELIVERY NOTICE\n"
+                            "Telegram delivery could not be confirmed, so this approval was sent by email.\n"
+                            "This is the same one-use approval, not a new request. Decide through either "
+                            "available channel; it can be consumed only once.",
+                            1,
+                        )
                     send_admin_email(
                         self.config, email_subject, body,
                         **({"attachment": details_attachment} if details_attachment else {}),

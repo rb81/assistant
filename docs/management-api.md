@@ -70,7 +70,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET clients` | Channel registrations and availability |
 | `GET clients/{id}/messages` | Poll and renew availability |
 | `GET clients/{id}/history` | Retained delivery history with `before_id` |
-| `POST clients/{id}/acknowledgments` | Acknowledge rendered deliveries |
+| `POST clients/{id}/acknowledgments` | Acknowledge accepted deliveries (not human read receipts) |
 | `GET domains` | Read/write action catalog and argument schemas |
 | `POST query` | Typed, side-effect-free domain queries |
 | `POST operations` | Confirmed, typed asynchronous mutation |

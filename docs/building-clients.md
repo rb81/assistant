@@ -164,16 +164,27 @@ Polling renews availability; registration alone does not. Keep one sequential
 message poller per channel. Do not let long-running operations or file transfers
 block its availability heartbeat.
 
-Deduplicate by message ID, deliver/render messages successfully, then POST
+Deduplicate by message ID, durably accept messages into the client (or render
+them successfully for an output-only client), then POST
 `message_ids` to `/v2/clients/{id}/acknowledgments`. Acknowledgment means delivery,
 not a human read receipt. A failed acknowledgment is not success; allow reoffers
-and retry safely. Do not acknowledge content lost during rendering/output.
+and retry safely. A GUI should acknowledge background receipt without waiting
+for the person to open a conversation; human unread markers remain separate.
+Do not acknowledge before successful local acceptance or rendering/output.
 
 Use `/history` for retained delivery states and older pages; do not download all
 history on every heartbeat. Stop polling when the client truly exits. An
 unavailable client or unacknowledged delivery falls back according to server
 settings (normally Telegram, then email), not another arbitrary registered client.
 Absent fallback configuration retains the message for later polling.
+
+For routing diagnostics, run `sh examples/diagnose-routing.sh` from a server
+checkout with the task-agent container running. Optionally append a positive
+task ID. The script uses a read-only database snapshot and reports delivery
+timing, channels, status, and approval-fallback flags, excluding message bodies,
+addresses, credentials, and approval tokens. Set `ASSISTANT_COMPOSE_PROJECT`
+for a non-default Compose project, or `ASSISTANT_DIAGNOSTIC_CONTAINER` to select
+its task-agent container explicitly.
 
 External delivery can be `uncertain`. An administrator can use
 `client.delivery-resolve` to mark it sent or return it to the client. Returning it

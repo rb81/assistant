@@ -360,6 +360,72 @@ class ApprovalReplyTest(unittest.TestCase):
         self.assertIn("Prepare the report.", summary)
         self.assertNotIn("not yet been authenticated", summary)
 
+    def test_quoted_only_failure_notice_is_not_a_task_or_approval(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config, downloader.db = self.config, MagicMock()
+        downloader.db.fetch_one.return_value = None
+        for body, html in (
+            ("> Task failed.\n> Quote this original message; add no text.", False),
+            ("On Tuesday, Assistant wrote:\n> Task failed.", False),
+            ("<blockquote>Task failed.</blockquote>", True),
+        ):
+            with self.subTest(html=html, body=body):
+                message = reply(body, html=html)
+                message.replace_header("Subject", "Re: Assistant job #12 needs attention: failed")
+                with patch("assistant_agent.admin_commands.AdminCommands.reply") as answer, patch(
+                    "assistant_agent.email_ingest.RequestService.receive_request"
+                ) as receive, patch("assistant_agent.email_approvals.EmailApprovals.request") as approval:
+                    result = downloader.ingest_raw(message.as_bytes())
+                self.assertTrue(result.quarantine)
+                self.assertFalse(result.queued)
+                self.assertIn("No action was approved", answer.call_args.args[1])
+                receive.assert_not_called()
+                approval.assert_not_called()
+
+    def test_permission_subject_without_confirmation_does_not_create_a_task(self):
+        from assistant_agent.email_ingest import EmailDownloader
+        downloader = EmailDownloader.__new__(EmailDownloader)
+        downloader.config, downloader.db = self.config, MagicMock()
+        downloader.db.fetch_one.return_value = None
+        message = reply("APPROVE ONCE")
+        message.replace_header("Subject", "Re: Assistant approval: script and hosts")
+        with patch("assistant_agent.email_ingest.RequestService.receive_request") as receive, patch(
+            "assistant_agent.email_approvals.EmailApprovals.request"
+        ) as approval:
+            result = downloader.ingest_raw(message.as_bytes())
+        self.assertTrue(result.quarantine)
+        receive.assert_not_called()
+        approval.assert_not_called()
+
+    def test_fallback_email_labels_the_original_approval_without_changing_its_payload(self):
+        from assistant_agent.telegram import TelegramError
+        self.config.values["agent"].update({
+            "approvals": {"channel": "telegram"},
+            "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+            "email": {"smtp_host": "mail.example.com", "smtp_from": "assistant@example.com"},
+        })
+        for payload in (
+            {"kind": "command", "subject": "/admin cancel 12", "body": ""},
+            {"kind": "permission", "permission_type": "final", "version_id": 7},
+        ):
+            with self.subTest(kind=payload["kind"]):
+                db = MagicMock()
+                db.fetch_one.return_value = {"key": "claimed"}
+                with patch("assistant_agent.telegram.TelegramClient", side_effect=TelegramError("transport failed")), patch(
+                    "assistant_agent.email_approvals.send_admin_email"
+                ) as send:
+                    self.assertTrue(EmailApprovals(db, self.config).request("generic-fallback", payload, "Review this action"))
+                body = send.call_args.args[2]
+                self.assertIn("same one-use approval, not a new request", body)
+                _, digest, instruction = approval_reply(reply(body))
+                stored = next(call.args[1] for call in db.set_state.call_args_list
+                              if call.args[0] == "email-approval:" + digest)
+                self.assertEqual(stored["payload"], payload)
+                self.assertEqual(stored["channel"], "telegram")
+                self.assertNotIn("email_fallback", stored)
+                self.assertEqual(instruction, "")
+
     def test_automation_cannot_bypass_confirmation_by_becoming_an_ordinary_task(self):
         from assistant_agent.email_ingest import EmailDownloader
         downloader = EmailDownloader.__new__(EmailDownloader)
@@ -544,6 +610,14 @@ class AdminConversationPolicyTest(unittest.TestCase):
         self.assertIsNone(self.receive.call_args.kwargs["review_override"])
         attachment = self.artifacts.call_args.args[1][0]
         self.assertEqual(Path(attachment["path"]).read_bytes(), b"report")
+
+    def test_authored_reply_to_failure_notice_still_queues_an_ordinary_request(self):
+        self.downloader.config.values["agent"]["security"]["confirm_new_admin_conversations"] = False
+        self.message.replace_header("Subject", "Re: Assistant job #12 needs attention: failed")
+        self.message.set_content("Investigate the unavailable service.\n\nOn Tuesday, Assistant wrote:\n> Task failed.")
+        self.assertTrue(self.ingest().queued)
+        self.approve.assert_not_called()
+        self.assertFalse(self.receive.call_args.kwargs["admin_authenticated"])
 
     def test_stored_reply_with_sender_history_needs_no_confirmation_even_on_router_fallback(self):
         self.message["In-Reply-To"] = "<assistant@example.com>"
@@ -826,6 +900,7 @@ class ApprovalDatabaseTest(unittest.TestCase):
                 "assistant_agent.telegram.TelegramClient", side_effect=TelegramError("network interrupted")
             ), patch("assistant_agent.email_approvals.send_admin_email") as send:
                 self.assertTrue(self.service.request("fallback:" + first_channel, self.payload, "Cancel task"))
+            self.assertIn("same one-use approval, not a new request", send.call_args.args[2])
             token, digest, _ = approval_reply(reply(send.call_args.args[2]))
             pending = self.db.get_state("email-approval:" + digest)
             self.assertTrue(self.db.get_state(pending["source_key"])["email_fallback"])

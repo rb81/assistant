@@ -201,17 +201,25 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
             ),
         ])
 
-    lines.extend([
-        "",
-        "─── Remote Approval ────────────────────────────",
-        "Use the confirmation in this notification: Telegram buttons, or an email reply retaining its OTP/hash.",
-        "  • Your reply body will be passed to the agent as an instruction.",
-        ("  • Only the exact held action is approved once; execution limits stay unchanged."
-         if (job.get("metadata") or {}).get("security_pending_action") else
-         "  • Both limits will be increased by %s%%." % increase_pct),
-        "  • Keep the original confirmation quoted; add no text to approve without instructions.",
-        "  • If it expires, request a fresh confirmation from /menu or send /admin review %s." % job["id"],
-    ])
+    if status == "needs_review":
+        lines.extend([
+            "",
+            "─── Remote Approval ────────────────────────────",
+            "Use the confirmation in this notification: Telegram buttons, or an email reply retaining its OTP/hash.",
+            "  • Your reply body will be passed to the agent as an instruction.",
+            ("  • Only the exact held action is approved once; execution limits stay unchanged."
+             if (job.get("metadata") or {}).get("security_pending_action") else
+             "  • Both limits will be increased by %s%%." % increase_pct),
+            "  • Keep the original confirmation quoted; add no text to approve without instructions.",
+            "  • If it expires, request a fresh confirmation from /menu or send /admin review %s." % job["id"],
+        ])
+    else:
+        lines.extend([
+            "",
+            "This is a task status notice, not an approval request.",
+            "Replying with this notice quoted does not approve an action or resume the task.",
+            "Review the task details and request an explicit retry after addressing the cause.",
+        ])
 
     return "\n".join(lines)
 

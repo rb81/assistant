@@ -31,6 +31,14 @@ was selected. Successful Telegram delivery does not send an extra email.
 Fallback needs SMTP; email replies also need email intake and its downloader.
 Delivery alone never authorizes an action.
 
+Fallback email is labeled as the same one-use approval, not a second request.
+Terminal task-failure notices are not approval requests: quoting one without
+new instructions neither grants permission nor resumes the task. Such replies
+are quarantined with an explanation instead of creating another task. An authored
+follow-up still follows ordinary email intake and its confirmation rules.
+Development tasks waiting for a matching recorded approval remain paused for
+review; finalizing all open sessions is required before task completion.
+
 Script requests offer **Approve once**, **Approve always**, and **Deny**.
 Website requests also support a grant for this script version or all approved
 scripts. **Once** permits one execution, not the whole job. Provide feedback

@@ -5,6 +5,7 @@ import imaplib
 import json
 import logging
 import os
+import re
 import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ from typing import Any, Optional
 from psycopg.types.json import Jsonb
 
 from .artifact_processor import ArtifactProcessor
-from .config import AppConfig, message_id_domain
+from .config import AppConfig, agent_name, message_id_domain
 from .database import Database, json_safe
 from .email_authentication import authentication_enabled, evaluate as evaluate_authentication
 from .email_disclosure import strip_disclosure_html, strip_disclosure_text
@@ -295,7 +296,7 @@ class EmailDownloader:
 
         subject = json_safe(decode_mime_header(parsed.get("Subject")) or "")
         from .admin_commands import AdminCommands, is_admin_subject
-        from .email_approvals import EmailApprovals, admin_sender, approval_reply, reply_text
+        from .email_approvals import EmailApprovals, admin_sender, approval_reply, reply_instruction, reply_text
         fresh = approved_instruction is None and security_approved is None
         configured_admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         claims_admin = bool(configured_admin) and configured_admin in {
@@ -405,8 +406,18 @@ class EmailDownloader:
                 LOGGER.warning("admin approval rejected for %s: %s", message_id, exc)
                 return IngestResult(inserted=True, queued=False, message_id=message_id)
             normalized = normalize_subject(subject)
-            if normalized == "assistant approval required":
+            if normalized == "assistant approval required" or normalized.startswith("assistant approval:"):
                 LOGGER.warning("approval reply %s has no OTP/hash; quarantined without creating another approval", message_id)
+                return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
+            failure_subject = re.match(
+                re.escape(agent_name(self.config).lower()) + r" job #\d+ needs attention(?::|$)", normalized,
+            )
+            if failure_subject and admin_sender(parsed, self.config) and not reply_instruction(parsed):
+                LOGGER.warning("quoted-only task status reply %s was not queued", message_id)
+                AdminCommands(self.db, self.config).reply(
+                    parsed, "That message is a task status notice, not an approval request. "
+                    "No action was approved or resumed. Send an explicit request if you want to retry or discuss the task.",
+                )
                 return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
         if is_admin_subject(subject):
             handled = AdminCommands(self.db, self.config).handle(parsed, subject, reply_text(parsed))
