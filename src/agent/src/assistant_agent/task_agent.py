@@ -14,7 +14,7 @@ from .embedding_scheduler import EmbeddingScheduler
 from .llm_client import LlmClient
 from .memory_manager import MemorySteward
 from .micro_skills import (
-    MAX_QUERY_CHARS, SKILL_DISCOVERY_TOOLS, SKILL_WRITE_TOOL, SkillContext, SkillStore, completed as skill_call_completed,
+    MAX_QUERY_CHARS, SKILL_DISCOVERY_TOOLS, SKILL_WRITE_TOOL, SkillContext, SkillStore,
     preferences_by_parent,
     core_skills, enabled as skills_enabled,
 )
@@ -377,7 +377,10 @@ class TaskAgent:
                 if terminal_result:
                     return
                 if job.pop("_skill_deferred", False):
-                    self.close_open_tool_calls(history)
+                    self.defer_skill_tool_calls(
+                        history, tool_calls[call_index + 1:],
+                        lambda event_type, **details: self.db.log_event(job["id"], event_type, **details),
+                    )
                     break
                 if nested_tokens and total_tokens >= max_tokens:
                     break
@@ -1888,6 +1891,10 @@ class TaskAgent:
             result = {"status": "paused", "message": "Job paused for admin review. The admin has been notified of your request."}
             return self.pause_for_review(job, messages, name, arguments, tool_call_id, result, last_error, "agent_limit_request")
 
+        if state:
+            state.used(name, job["_skill_lifecycle"])
+            if requires_script:
+                state.touch("SCRIPTS")
         try:
             started = datetime.now(timezone.utc)
             result = tool_runtime.run(name, arguments)
@@ -1950,10 +1957,6 @@ class TaskAgent:
             duration_ms = None
             self.db.log_event(job["id"], "error", tool_name=name, input_data=arguments, output_data=result)
         else:
-            if state and skill_call_completed(result):
-                state.succeeded(name, job["_skill_lifecycle"])
-                if requires_script:
-                    state.consume("SCRIPTS")
             result = self.prepare_tool_result_for_model(job["id"], name, result)
             self.db.log_event(job["id"], "tool_result", tool_name=name,
                               input_data=arguments if name in SCRIPT_PERMISSION_TOOLS | {"command_execute"} else None,
@@ -2047,6 +2050,9 @@ class TaskAgent:
         if not claimed:
             return
         name, arguments = replay["tool"], replay["arguments"]
+        if state := job.get("_skill_context"):
+            state.used(name, job["_skill_lifecycle"])
+            state.touch("SCRIPTS")
         try:
             result = tool_runtime.run(name, arguments)
         except script_permissions.PermissionRequired:
@@ -2058,9 +2064,6 @@ class TaskAgent:
             note = "The approved %s call could not be saved automatically: %s" % (name, exc)
             self.db.log_event(job["id"], "error", tool_name=name, input_data=arguments, output_data={"error": str(exc)})
         else:
-            if (state := job.get("_skill_context")) and skill_call_completed(result):
-                state.succeeded(name, job["_skill_lifecycle"])
-                state.consume("SCRIPTS")
             result = self.prepare_tool_result_for_model(job["id"], name, result)
             self.db.log_event(job["id"], "tool_result", tool_name=name, input_data=arguments,
                               output_data=self.redact_tool_result_for_storage(name, result))
@@ -2443,6 +2446,23 @@ class TaskAgent:
                 })
                 position += 1
             break
+
+    @staticmethod
+    def defer_skill_tool_calls(messages, calls, log_event):
+        for call in calls:
+            name = str((call.get("function") or {}).get("name") or "unknown")
+            result = {
+                "status": "not_executed",
+                "reason": "An earlier call in this batch requires skill guidance. Reconsider this call "
+                          "on the next turn. No action was taken.",
+                "tool_call_id": str(call.get("id") or ""),
+            }
+            log_event("tool_call", tool_name=name)
+            log_event("tool_result", tool_name=name, output_data=result)
+            messages.append({
+                "role": "tool", "tool_call_id": result["tool_call_id"],
+                "name": name, "content": compact_json(result),
+            })
 
     def save_resume_point(self, job: dict[str, Any], messages: list[dict[str, Any]], reason: str) -> Optional[int]:
         """Checkpoint the conversation so a resumed job continues instead of replanning from scratch."""

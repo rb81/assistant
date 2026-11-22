@@ -1,11 +1,13 @@
 import json
 import time
+from dataclasses import replace
 from unittest.mock import Mock, patch
 
 import pytest
 from psycopg.types.json import Jsonb
 
 from assistant_agent.config import AppConfig
+from assistant_agent.deep_research import DeepResearchAgent
 from assistant_agent.micro_skills import Skill, SkillContext, SkillStore, core_skills
 from assistant_agent.task_agent import TaskAgent, system_prompt
 from assistant_agent.tools import CORE_TOOL_NAMES, HELP_TOOL_NAMES, LOADABLE_TOOL_NAMES, TERMINAL_TOOL_NAMES
@@ -97,7 +99,7 @@ def test_skill_index_embeds_metadata_and_invalidates_changed_title(db):
         embed.assert_not_called()
 
 
-def test_bound_guidance_is_required_before_dispatch_and_recalled_after_success():
+def test_bound_guidance_is_required_before_dispatch_and_recalled_after_idle_turns():
     db = Mock()
     agent = TaskAgent(db, AppConfig({"agent": {"skills": {"enabled": True}}}))
     state = SkillContext()
@@ -115,11 +117,140 @@ def test_bound_guidance_is_required_before_dispatch_and_recalled_after_success()
         assert active.count(catalog["EMAIL"].body) == 1
         run()
         assert "EMAIL" in state.requested
+        assert catalog["EMAIL"].body in state.messages(catalog, [], admin=False)["content"]
         run()
-        assert "EMAIL" not in state.requested
+        assert "EMAIL" in state.requested
+        for _ in range(2):
+            assert catalog["EMAIL"].body in state.messages(catalog, [], admin=False)["content"]
         recalled = state.messages(catalog, [], admin=False)["content"]
+        assert "EMAIL" not in state.requested
         assert "Recall with skill_load" in recalled
         assert catalog["EMAIL"].body not in recalled
+
+
+def test_multi_turn_web_workflow_keeps_guidance_after_success_and_uncertain_results():
+    agent = TaskAgent(Mock(), AppConfig({"agent": {"skills": {"enabled": True}}}))
+    state = SkillContext()
+    catalog = core_skills()
+    job = {"id": 13, "_skill_context": state, "_skill_lifecycle": catalog}
+    names = {"web_search", "web_fetch"}
+    runtime = Mock()
+    runtime.run.side_effect = [{}, {}, {"status": "uncertain"}, {"error": "temporary failure"}, {}]
+    history = []
+    enabled = set()
+    with patch("assistant_agent.task_agent.available_function_names", return_value=names):
+        agent.load_tool_specs(job, {"tools": sorted(names)}, enabled)
+        for index, name in enumerate(("web_search", "web_fetch", "web_fetch", "web_fetch", "web_search")):
+            guidance = state.messages(catalog, [], admin=False)
+            assert catalog["WEB.SEARCH"].body in guidance["content"]
+            agent.handle_tool_call(job, history, runtime, str(index), name, {}, enabled)
+            assert json.loads(history[-1]["content"]).get("status") != "not_executed"
+    assert runtime.run.call_count == 5
+
+
+@pytest.mark.parametrize("missing_guidance", ["budget", "revision"])
+def test_retained_guidance_does_not_bypass_visibility_or_revision_checks(missing_guidance):
+    agent = TaskAgent(Mock(), AppConfig({"agent": {"skills": {"enabled": True}}}))
+    state = SkillContext()
+    catalog = core_skills()
+    skill = catalog["WEB.SEARCH"]
+    state.activate(skill, "tool")
+    state.messages(catalog, [], admin=False, char_limit=0 if missing_guidance == "budget" else 24000)
+    if missing_guidance == "revision":
+        skill = replace(skill, revision="new", body="Updated web guidance.")
+        catalog = {**catalog, skill.id: skill}
+    job = {"id": 13, "_skill_context": state, "_skill_lifecycle": catalog}
+    runtime = Mock()
+    history = []
+    with patch("assistant_agent.task_agent.available_function_names", return_value={"web_fetch"}):
+        agent.handle_tool_call(job, history, runtime, "one", "web_fetch", {}, {"web_fetch"})
+    runtime.run.assert_not_called()
+    assert json.loads(history[-1]["content"])["status"] == "not_executed"
+    assert skill.body in state.messages(catalog, [], admin=False)["content"]
+    assert (skill.id, skill.revision) in state.visible
+
+
+def test_idle_age_survives_resume_without_expiring_event_or_custom_guidance():
+    catalog = core_skills()
+    custom = Skill("WRITING", "Writing", "Review prose", "Use concrete language.", "1")
+    catalog = {**catalog, custom.id: custom}
+    state = SkillContext()
+    state.activate(catalog["WEB.SEARCH"], "tool")
+    state.messages(catalog, [], admin=False)
+    restored = SkillContext()
+    restored.restore(state.reference(catalog), catalog)
+    restored.activate(catalog["EMAIL"], "event")
+    restored.activate(custom, "manual")
+    assert catalog["WEB.SEARCH"].body in restored.messages(catalog, [], admin=False)["content"]
+    for _ in range(3):
+        guidance = restored.messages(catalog, [], admin=False)["content"]
+        assert catalog["WEB.SEARCH"].body not in guidance
+        assert catalog["EMAIL"].body in guidance
+        assert custom.body in guidance
+
+
+@pytest.mark.parametrize("worker", ["task", "research"])
+def test_worker_logs_remaining_calls_after_a_skill_gate_without_dispatch(worker):
+    config = AppConfig({"agent": {"skills": {"enabled": True}, "embeddings": {"enabled": False}}})
+    db = Mock()
+    db.fetch_all.return_value = []
+    calls = [{"id": "one", "function": {"name": "file_read", "arguments": "{}"}},
+             {"id": "two", "function": {"name": "file_write", "arguments": "{}"}}]
+    llm = Mock()
+    llm.chat.return_value = {"choices": [{"message": {"role": "assistant", "tool_calls": calls}}]}
+    runtime = Mock(model_service_tokens=0)
+    if worker == "task":
+        agent = TaskAgent(db, config)
+        agent.create_llm = Mock(return_value=llm)
+        agent.update_channel_status = Mock()
+        agent.name_job = Mock()
+        agent.name_pending_workstream = Mock()
+        agent.build_base_context = Mock(return_value={})
+        agent.messages_from_base_context = Mock(return_value=[{"role": "system", "content": "test"}])
+        agent.admin_review_resume_messages = Mock(return_value=[])
+        agent.initial_tool_names = Mock(return_value={"file_read", "file_write"})
+        agent.resume_history = Mock(return_value=[])
+        agent.create_tool_runtime = Mock(return_value=runtime)
+        agent.replay_approved_call = Mock()
+        agent.task_limits = Mock(return_value=(3, 1000))
+        agent.still_owns_job = Mock(side_effect=[True, True, False])
+        agent.inject_new_context_if_needed = Mock()
+        agent.tools_for_call = Mock(return_value=[])
+        agent.defer_stale_tool_calls = Mock(return_value=False)
+        agent.skill_query = Mock(return_value="read files")
+        agent.skill_requester_is_admin = Mock(return_value=False)
+        with patch("assistant_agent.task_agent.available_function_names",
+                   return_value={"file_read", "file_write"}):
+            agent.process_job({"id": 13, "metadata": {}})
+        events = [call.args[1:] for call in db.log_event.call_args_list]
+        details = [call.kwargs for call in db.log_event.call_args_list]
+    else:
+        agent = DeepResearchAgent(db, config)
+        agent.build_messages = Mock(return_value=[{"role": "system", "content": "test"}])
+        agent.still_owns_run = Mock(side_effect=[True, True, False])
+        agent.log_event = Mock()
+        db.fetch_one.side_effect = [{"id": 13}, {"id": 14}]
+        tools = [{"type": "function", "function": {"name": name}}
+                 for name in ("file_read", "file_write")]
+        with patch("assistant_agent.deep_research.search_configured", return_value=True), \
+                patch("assistant_agent.deep_research.LlmClient", return_value=llm), \
+                patch("assistant_agent.deep_research.ToolRuntime", return_value=runtime), \
+                patch("assistant_agent.deep_research.ResearchToolRuntime", return_value=runtime), \
+                patch("assistant_agent.deep_research.research_tools", return_value=tools), \
+                patch.object(TaskAgent, "inject_new_context_if_needed"), \
+                patch.object(TaskAgent, "defer_stale_tool_calls", return_value=False):
+            agent.process_run({"id": 7, "original_job_id": 13, "execution_job_id": 14})
+        events = [call.args[1:] for call in agent.log_event.call_args_list]
+        details = [call.kwargs for call in agent.log_event.call_args_list]
+    runtime.run.assert_not_called()
+    skipped = [(event, detail) for event, detail in zip(events, details)
+               if detail.get("tool_name") == "file_write"]
+    assert [event for event, _ in skipped] == [("tool_call",), ("tool_result",)]
+    result = skipped[-1][1]["output_data"]
+    assert result["status"] == "not_executed"
+    assert result["tool_call_id"] == "two"
+    assert "earlier call" in result["reason"]
+    assert "skill guidance" in result["reason"]
 
 
 def test_resume_revalidates_revisions_and_does_not_inject_checkpoint_bodies():

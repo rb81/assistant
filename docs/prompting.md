@@ -42,11 +42,19 @@ the same description or example, rather than a single incidental word.
 Recommendations never authorize a tool or external action.
 
 `get_tool_specs` activates bound guidance for the following model turn. A
-tool call made without its required guidance is not executed. Confirmed
-success replaces tool-bound guidance with a recall reference; uncertain or
-failed actions do not consume it. Checkpoints carry revision references instead
-of copying skill bodies. Existing approval, retry, and delivery checks still
-apply in code.
+tool call made without its required guidance is not executed. Dispatching a
+tool keeps bound guidance active across related model turns, including
+failed or uncertain attempts. After two model turns without using its tools,
+the guidance is replaced by a recall reference. Event-bound guidance remains
+active, and manually loaded custom guidance without bound tools does not expire.
+The prompt budget and current skill revision still determine whether guidance
+is visible; retention never bypasses the skill gate.
+
+When a skill gate defers a call, remaining calls in that batch also receive
+`not_executed` replies and individual activity-log entries. These are
+recoverable guidance deferrals, not network or provider errors. Checkpoints
+carry revision references and idle-turn ages instead of copying skill bodies.
+Existing approval, retry, and delivery checks still apply in code.
 
 Use **Settings > Assistant > Skills** in the macOS app or TUI to inspect skills.
 Open a locked skill to add, edit, or remove its single **Preferences** entry.

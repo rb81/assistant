@@ -227,7 +227,10 @@ class DeepResearchAgent:
                 if terminal:
                     return
                 if execution_job.pop("_research_skill_deferred", False):
-                    context_agent.close_open_tool_calls(messages)
+                    context_agent.defer_skill_tool_calls(
+                        messages, tool_calls[index + 1:],
+                        lambda event_type, **details: self.log_event(run["id"], event_type, **details),
+                    )
                     break
 
         self.fail_run(run, "deep research max iterations reached")
@@ -401,6 +404,8 @@ class DeepResearchAgent:
             self.log_event(run["id"], "error", tool_name=name, input_data=arguments, output_data=result)
         else:
             runtime = ResearchToolRuntime(self.db, self.config, current_run, execution_job, self)
+            if research_skills:
+                state.used(name, catalog)
             try:
                 started = datetime.now(timezone.utc)
                 result = runtime.run(name, arguments)
@@ -413,10 +418,6 @@ class DeepResearchAgent:
                 duration_ms = None
                 self.log_event(run["id"], "error", tool_name=name, input_data=arguments, output_data=result)
             else:
-                if research_skills:
-                    from .micro_skills import completed
-                    if completed(result):
-                        state.succeeded(name, catalog)
                 result = self.prepare_tool_result_for_model(execution_job["id"], name, result)
                 self.increment_tool_count(run["id"])
                 self.log_event(

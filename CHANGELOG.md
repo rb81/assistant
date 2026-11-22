@@ -2,6 +2,10 @@
 
 ## Unreleased: Server and client management refresh
 
+- Tool-bound skill guidance stays active across related calls and expires after
+  two unused model turns, reducing repeated skill-gate deferrals. Task and research
+  activity logs now include every remaining call skipped after a skill gate.
+  Initial guidance, revision, prompt-budget, and approval checks remain enforced.
 - Model settings have a complete saved snapshot in the Management API, with
   server-owned selectors and links. The TUI and macOS client focus on editing
   individual model choices; provider, voice, safety, and tuning controls stay in

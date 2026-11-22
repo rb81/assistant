@@ -17,6 +17,7 @@ LOGGER = logging.getLogger(__name__)
 SKILL_DIR = Path(__file__).with_name("skills")
 MAX_BODY_CHARS = 6000
 MAX_ACTIVE_CHARS = 24000
+MAX_IDLE_TURNS = 2
 MAX_QUERY_CHARS = 1600
 SEARCH_MIN_SIMILARITY = 0.45
 SUGGEST_MIN_SIMILARITY = 0.65
@@ -125,17 +126,6 @@ def recommendation_keyword_match(query: str, query_terms: set[str], skill: Skill
 
 def enabled(config) -> bool:
     return config.get_bool("agent.skills.enabled", False)
-
-
-def completed(result: dict) -> bool:
-    return (not result.get("error") and not result.get("blocked_reason")
-            and result.get("ok") is not False and result.get("success") is not False
-            and result.get("exit_code") in (None, 0) and result.get("returncode") in (None, 0)
-            and result.get("status") not in (
-                "error", "failed", "blocked", "denied", "pending", "paused", "waiting", "uncertain",
-                "requires_approval", "needs_review", "not_executed", "partial", "degraded", "skipped",
-                "no_providers", "timed_out",
-            ))
 
 
 class SkillStore:
@@ -297,10 +287,12 @@ class SkillContext:
         self.requested: dict[str, str] = {}
         self.visible: set[tuple[str, str]] = set()
         self.recalled: set[str] = set()
+        self.idle_turns: dict[str, int] = {}
         self.cards: list[dict] = []
         self.query: str | None = None
 
     def activate(self, skill: Skill, reason: str) -> bool:
+        self.idle_turns.pop(skill.id, None)
         if skill.id in self.requested:
             if reason == "event":
                 self.requested[skill.id] = reason
@@ -316,30 +308,56 @@ class SkillContext:
             if skill and skill.revision == revision and reason in {"manual", "tool"}:
                 self.activate(skill, reason)
         self.recalled.update(skill_id for skill_id in record.get("recalled", []) if skill_id in catalog)
+        for skill_id, revision, idle in record.get("idle", []):
+            skill = catalog.get(skill_id)
+            if (skill and skill.revision == revision and skill_id in self.requested
+                    and type(idle) is int and 0 <= idle <= MAX_IDLE_TURNS):
+                self.idle_turns[skill_id] = idle
 
     def reference(self, catalog):
         return {
             "active": [[skill_id, catalog[skill_id].revision, reason]
                        for skill_id, reason in self.requested.items() if skill_id in catalog and reason != "event"],
             "recalled": sorted(self.recalled),
+            "idle": [[skill_id, catalog[skill_id].revision, idle]
+                     for skill_id, idle in self.idle_turns.items()
+                     if skill_id in catalog and self.requested.get(skill_id) in {"manual", "tool"}],
         }
 
-    def succeeded(self, name, catalog):
+    def used(self, name, catalog):
         for skill in catalog.values():
             if name in skill.tools:
-                self.consume(skill.id)
+                self.touch(skill.id)
+
+    def touch(self, skill_id):
+        if self.requested.get(skill_id) in {"tool", "manual"}:
+            self.idle_turns[skill_id] = 0
 
     def consume(self, skill_id):
+        self.idle_turns.pop(skill_id, None)
         if self.requested.get(skill_id) in {"tool", "manual"}:
             del self.requested[skill_id]
             self.recalled.add(skill_id)
 
     def prioritize(self, skill):
+        self.idle_turns.pop(skill.id, None)
         reason = self.requested.get(skill.id, "tool")
         self.requested = {skill.id: reason, **self.requested}
 
     def messages(self, catalog, cards, *, admin, runtime=None, char_limit=MAX_ACTIVE_CHARS):
         self.visible.clear()
+        for skill_id, reason in list(self.requested.items()):
+            skill = catalog.get(skill_id)
+            if not skill or not skill.tools or reason == "event":
+                self.idle_turns.pop(skill_id, None)
+                continue
+            idle = self.idle_turns.get(skill_id, 0)
+            if idle >= MAX_IDLE_TURNS:
+                self.consume(skill_id)
+            else:
+                self.idle_turns[skill_id] = idle + 1
+        self.idle_turns = {skill_id: idle for skill_id, idle in self.idle_turns.items()
+                           if skill_id in self.requested}
         preferences = preferences_by_parent(catalog) if admin else {}
         sections = []
         size = 0
