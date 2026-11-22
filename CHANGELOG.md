@@ -2,10 +2,17 @@
 
 ## Unreleased: Server and client management refresh
 
-- Model settings now have one searchable, read-only overview in the Management
-  API, TUI and macOS client. It includes advanced tuning, disabled features,
-  inheritance and credential presence, with links to existing editors. Saved
-  configuration remains distinct from running models and provider availability.
+- Model settings have a complete saved snapshot in the Management API, with
+  server-owned selectors and links. The TUI and macOS client focus on editing
+  individual model choices; provider, voice, safety, and tuning controls stay in
+  linked settings pages. Saved configuration remains distinct from running
+  models and provider availability.
+- The macOS client reviews configuration drafts in a modal and supports Back
+  and Forward across pages and settings sections, retaining drafts and scroll
+  positions. Hidden retained panes do not poll or mark chats read.
+- Completion avoids repeating an answer already emailed or sent through
+  Telegram to the current requester, including client-originated tasks.
+  Meaningful undelivered updates can still be sent explicitly.
 - The installer builds and verifies the server and Management API before
   reporting success. It stages updates before cutover and refuses to overwrite
   modified source.

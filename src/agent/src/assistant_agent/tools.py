@@ -3782,7 +3782,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "task_complete",
-            "description": "Mark the task complete. response is the user-visible final answer shown in the dashboard for local jobs; for external email jobs, send email_send first, then include a concise record of the answer sent.",
+            "description": "Mark the task complete. Automatic routes suppress a redundant response after a successful requester delivery; set deliver_update=true to send meaningful information that remains undelivered. Legacy external email jobs require email_send first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3794,7 +3794,12 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     "already_delivered": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Set true when the reply was already delivered to the requester this turn via telegram_send or email_send (for example a voice note). response is then recorded but not sent again.",
+                        "description": "Set true only when the complete answer was successfully delivered to the requester for this request and no meaningful update remains. The response is recorded but not sent again.",
+                    },
+                    "deliver_update": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set true when response contains meaningful new information not yet delivered, including a failure or limitation. Send it even if an earlier message reached the requester. Do not combine with already_delivered.",
                     },
                 },
                 "required": ["summary", "response"],

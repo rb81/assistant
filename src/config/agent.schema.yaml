@@ -18,11 +18,13 @@ model_sections:
     title: Task models & provider
     paths: [agent.llm., agent.app.name, agent.app.referer_url]
     summary: [agent.llm.model, agent.llm.fallback_model, agent.llm.base_url]
+    selectors: [agent.llm.model, agent.llm.fallback_model]
     provider: agent.llm.base_url
   - id: routing
     title: Routing & naming
     paths: [agent.routing., agent.naming.]
     summary: [agent.routing.model, agent.naming.model]
+    selectors: [agent.routing.model, agent.naming.model]
     provider: agent.llm.base_url
   - id: limits
     title: Generation limits & summarization
@@ -39,17 +41,20 @@ model_sections:
       - agent.limits.limit_approach_factor
       - agent.limits.rate_limit_backoff_seconds
     summary: [agent.limits.summarization_model]
+    selectors: [agent.limits.summarization_model]
     provider: agent.llm.base_url
   - id: screening
     title: Decision-model screening
     paths: [agent.security.decision_model.]
     summary: [agent.security.decision_model.provider, agent.security.decision_model.model, agent.security.decision_model.url]
+    selectors: [agent.security.decision_model.model]
     enabled: agent.security.decision_model.enabled
     provider: agent.security.decision_model.provider
   - id: development
     title: Development supervisor
     paths: [agent.security.development.]
     summary: [agent.security.development.model]
+    selectors: [agent.security.development.model]
     provider: agent.llm.base_url
     provider_override_model: agent.security.development.model
     provider_override_url: https://openrouter.ai/api/v1
@@ -57,36 +62,42 @@ model_sections:
     title: Deep research
     paths: [agent.deep_research.enabled, agent.deep_research.model, agent.deep_research.search_model, agent.deep_research.max_tool_calls, agent.deep_research.max_iterations, agent.deep_research.timeout_seconds]
     summary: [agent.deep_research.model, agent.deep_research.search_model]
+    selectors: [agent.deep_research.model, agent.deep_research.search_model]
     enabled: agent.deep_research.enabled
     provider: agent.llm.base_url
   - id: fusion
     title: Multi-model analysis
     paths: [agent.fusion.]
     summary: [agent.fusion.analysis_models, agent.fusion.model]
+    selectors: [agent.fusion.analysis_models, agent.fusion.model]
     enabled: agent.fusion.enabled
     provider_url: https://openrouter.ai/api/v1
   - id: search
     title: Model-powered web search
     paths: [agent.search.enabled, agent.search.openrouter_enabled, agent.search.primary_provider, agent.search.model, agent.search.engine, agent.search.max_results, agent.search.max_total_results, agent.search.max_tokens, agent.search.timeout_seconds, agent.search.search_context_size, agent.search.allowed_domains, agent.search.excluded_domains]
     summary: [agent.search.primary_provider, agent.search.model]
+    selectors: [agent.search.model]
     enabled: agent.search.openrouter_enabled
     provider_url: https://openrouter.ai/api/v1
   - id: embeddings
     title: Embeddings
     paths: [agent.embeddings.]
     summary: [agent.embeddings.model, agent.embeddings.base_url]
+    selectors: [agent.embeddings.model]
     enabled: agent.embeddings.enabled
     provider: agent.embeddings.base_url
   - id: transcription
     title: Transcription
     paths: [agent.transcription.]
     summary: [agent.transcription.model_path, agent.transcription.base_url]
+    selectors: [agent.transcription.model_path]
     enabled: agent.transcription.enabled
     provider: agent.transcription.base_url
   - id: speech
     title: Speech generation
     paths: [agent.tts.]
     summary: [agent.tts.model, agent.tts.voice]
+    selectors: [agent.tts.model]
     enabled: agent.tts.enabled
     provider_url: https://openrouter.ai/api/v1
   - id: tools

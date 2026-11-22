@@ -80,9 +80,28 @@ def test_tui_model_overview_keeps_saved_values_and_links_existing_editors(tmp_pa
             assert "Edit Speech model" in labels and "Edit Primary model" not in labels
             ui.location.query = ""
             primary.handler()
-            assert ui.location.route == "Form:models"
-            assert backend.values["AGENT_LLM_MODEL"] == "example/unsaved"
+            assert ui.location.route == "Model:AGENT_LLM_MODEL"
+            assert set(ui.form) == {"AGENT_LLM_MODEL"}
+            ui.form["AGENT_LLM_MODEL"].text = "example/quick-edit"
+            ui.save_form()
+            assert backend.values["AGENT_LLM_MODEL"] == "example/quick-edit"
+            ui.location.route = "Model:AGENT_LLM_MODEL"
+            ui.render()
+            ui.discard_form()
+            assert backend.values["AGENT_LLM_MODEL"] == "example/quick-edit"
             client.operation.assert_not_called()
+            from assistant_agent.management_contracts import ModelSettingsResponse
+            legacy = {**overview, "sections": [
+                {key: value for key, value in section.items() if key not in {"selection_keys", "related_settings"}}
+                for section in overview["sections"]
+            ]}
+            older = ModelSettingsResponse.model_validate(legacy).model_dump()
+            assert older["sections"][0]["selection_keys"] is None
+            ui.location.route = "Model settings"
+            ui.cache[ui.key()] = older
+            with patch.object(ui, "put") as put:
+                ui.model_settings_screen()
+            assert put.call_args.args[1] == "Update the server to use quick model editing."
     finally:
         service.close()
 

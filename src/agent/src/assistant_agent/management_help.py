@@ -583,6 +583,8 @@ for provider in ("GOOGLE", "OUTLOOK", "ZOHO"):
 
 
 def page_help(route):
+    if route.startswith("Model:"):
+        return "Edit one model choice in your draft, then review and save. Provider and tuning controls stay on their existing settings pages."
     if route.startswith(("Form:", "Connection:")):
         key = route.split(":", 1)[1]
         if key == "deployment" or key.startswith(("catalog:", "calendar:")):

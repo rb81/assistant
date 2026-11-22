@@ -261,7 +261,7 @@ class ManagementApp:
             "Services" if route.startswith(("Service", "Logs")) else
             "Activity" if route in {"Activity", "Tasks", "Memories", "Reminders", "Projects", "Scripts", "Record", "Events", "Objects"} else
             "Connections" if route == "Connections" or route.startswith("Connection:") else
-            "Settings" if route in {"Settings", "Model settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:")) else
+            "Settings" if route in {"Settings", "Model settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:", "Model:")) else
             "Activity" if route == "Project deletion" else
             "Help" if route == "Help" else "Home")
 
@@ -779,6 +779,11 @@ class ManagementApp:
             self.logs()
         elif route.startswith(("Form:", "Connection:")):
             self.edit_group(route.split(":", 1)[1])
+        elif route.startswith("Model:"):
+            key = route.split(":", 1)[1]
+            group = next(group for group, (_, specs) in self.groups.items()
+                         if any(spec.key == key for spec in specs))
+            self.edit_group(group, only=key)
         elif route == "Instructions":
             self.instructions()
         elif route == "Model settings":
@@ -901,7 +906,7 @@ class ManagementApp:
                      actions=actions)
             return
         items = [text("Saved settings only. Running models and provider availability are not verified."),
-                 text("Local draft changes are not shown. Edit through the existing settings pages.")]
+                 text("Choose Edit to change one model. Other controls stay in the linked settings pages.")]
         if not data["activation_tracked"]:
             items.append(text("Activation tracking is unavailable for earlier saves."))
         elif data["pending_activation"]:
@@ -911,12 +916,17 @@ class ManagementApp:
         query = self.location.query.strip().lower()
         matches = 0
         for section in data["sections"]:
+            if section.get("selection_keys") is None or section.get("related_settings") is None:
+                self.put("Model settings", "Update the server to use quick model editing.",
+                         [text("Use the existing settings pages until updated metadata is available.")],
+                         actions=actions)
+                return
             fields = [
                 field for field in section["settings"]
-                if not query or query in " ".join([
+                if field["key"] in section["selection_keys"] and (not query or query in " ".join([
                     section["title"], section["provider"], field["label"], field["key"],
                     field["display_value"], field["metadata"].get("help", ""),
-                ]).lower()
+                ]).lower())
             ]
             if not fields:
                 continue
@@ -934,10 +944,14 @@ class ManagementApp:
                     value += " / needs applying"
                 items.append(self.readable(field["label"] + ": " + value))
                 if field["group"] in self.groups:
-                    items.append(self.action("Edit " + field["label"], partial(self.go, "Form:" + field["group"])))
+                    items.append(self.action("Edit " + field["label"], partial(self.go, "Model:" + field["key"])))
+            for link in section["related_settings"]:
+                field = next(field for field in section["settings"] if field["key"] == link["field_key"])
+                items.append(self.action("Other settings: " + link["title"],
+                                         partial(self.go, "Form:" + field["group"])))
         if not matches:
             items.append(text("No model settings match this search."))
-        self.put("Model settings", "All model roles, including advanced settings and disabled features.",
+        self.put("Model settings", "Quick model choices, including disabled features. Review the draft before saving.",
                  items, actions=actions)
 
     def storage(self):
@@ -1280,8 +1294,11 @@ class ManagementApp:
     def new_memory(self):
         self.mutate_text("create-memory", None, "")
 
-    def edit_group(self, key):
+    def edit_group(self, key, *, only=None):
         title, specs = self.groups[key]
+        if only:
+            specs = [spec for spec in specs if spec.key == only]
+            title = specs[0].label
         if self.form_group != key:
             self.form_group = key
             self.form = {
@@ -1299,7 +1316,7 @@ class ManagementApp:
                 items.extend([text(spec.label + " (read only)"), text(restriction, height=2), text()])
                 continue
             metadata = getattr(self.backend, "field_metadata", {}).get(spec.key, {})
-            if isinstance(self.backend, ApiManagementBackend) and metadata.get("level") == "advanced":
+            if not only and isinstance(self.backend, ApiManagementBackend) and metadata.get("level") == "advanced":
                 has_advanced = True
                 if not advanced:
                     continue
@@ -1316,7 +1333,7 @@ class ManagementApp:
                     items.append(text(options))
                 items.append(text())
         for child, metadata in getattr(self.backend, "group_metadata", {}).items():
-            if metadata.get("parent") != key or child not in self.groups:
+            if only or metadata.get("parent") != key or child not in self.groups:
                 continue
             has_advanced = True
             if advanced or metadata.get("section") or metadata.get("basic"):
@@ -1325,7 +1342,7 @@ class ManagementApp:
             items.append(self.action("Hide advanced controls" if advanced else "Show advanced controls",
                                      partial(self.toggle_advanced, key),
                                      help_text="Show or hide technical controls for this page. Draft values are preserved."))
-        if key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
+        if not only and key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
             items.insert(0, self.action("Generate secure database password", self.generate_password))
         group_help = getattr(self.backend, "group_metadata", {}).get(key, {}).get("help")
         self.put(title, group_help or page_help("Form:" + key),

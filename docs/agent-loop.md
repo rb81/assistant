@@ -56,6 +56,13 @@ Each iteration:
 `task_complete` requires a non-empty `response`. For automatically routed jobs, including Telegram reply routes, it delivers the
 response through `ReplyRouter` before completing; failed or uncertain delivery
 blocks completion.
+A successful separate email or Telegram delivery to the requester for the
+current request automatically suppresses a redundant completion response.
+`already_delivered=true` also records the response without re-sending it, but
+requires a verified delivery. Attempted, failed, uncertain, and third-party
+sends do not qualify. Set `deliver_update=true` to deliver meaningful
+information not yet sent, including a failure or limitation, even after an
+earlier message; it cannot be combined with `already_delivered=true`.
 For legacy external-email jobs, a sent reply to the latest external sender must
 already exist in `outbound_email_logs` (To or Cc).
 

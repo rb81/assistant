@@ -276,12 +276,22 @@ class ModelSettingField(SettingField):
     pending_activation: bool = False
 
 
+class ModelSettingsLink(BaseModel):
+    """Owning settings page for controls omitted from the quick model editor."""
+    group: str
+    title: str
+    destination: Literal["assistant", "models", "connections", "safety", "advanced"]
+    field_key: str
+
+
 class ModelSettingsSection(BaseModel):
     id: str
     title: str
     enabled: bool | None = None
     provider: str
     summary_keys: list[str]
+    selection_keys: list[str] | None = None
+    related_settings: list[ModelSettingsLink] | None = None
     settings: list[ModelSettingField]
 
 

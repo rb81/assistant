@@ -433,7 +433,7 @@ messages use a per-attachment `voice_note: true` flag on `telegram_send`
 
 Terminal:
 
-- `task_complete` (`already_delivered: true` records the response without re-sending it when the reply, e.g. a voice note, was already sent via `telegram_send`/`email_send` for the current request)
+- `task_complete` (a successful requester delivery suppresses a redundant response; `already_delivered: true` requires that delivery, while `deliver_update: true` sends meaningful new information or failures even after an earlier delivery)
 - `task_failed`
 - `request_input` (asks the requester or admin for missing information as an ordinary message and pauses until the reply; never used for approvals, which the gated tools request themselves)
 

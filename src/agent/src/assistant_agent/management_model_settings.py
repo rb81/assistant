@@ -6,6 +6,7 @@ from .security_screening import PROVIDERS, DEFAULT_PROVIDER
 def overview(configuration, state):
     fields = {field["key"]: field for field in configuration["settings"]}
     pending = set(state.get("pending_configuration", []))
+    groups = {group["id"]: group for group in configuration["groups"]}
     sections = []
     for descriptor in settings_schema.model_sections():
         selected = []
@@ -49,12 +50,31 @@ def overview(configuration, state):
         override_key = descriptor.get("provider_override_model")
         if override_key and fields[settings_schema.derived_env_name(override_key)]["value"].strip():
             provider = descriptor["provider_override_url"]
+        available_keys = {field["key"] for field in selected}
+        selection_keys = [settings_schema.derived_env_name(path) for path in descriptor.get("selectors", [])
+                          if settings_schema.derived_env_name(path) in available_keys]
+        related_settings = {}
+        for field in selected:
+            if field["key"] in selection_keys:
+                continue
+            owner = groups[field["group"]]
+            root = groups.get(owner.get("parent"), owner)
+            advanced = (root.get("destination") == "server" or not root["basic"]
+                        or field["metadata"].get("level") == "advanced")
+            destination = "advanced" if advanced else root.get("destination", "models")
+            related_settings.setdefault((root["id"], destination), {
+                "group": root["id"], "destination": destination,
+                "title": (root.get("advanced_title") or root["title"]) if advanced else root["title"],
+                "field_key": field["key"],
+            })
         sections.append({
             "id": descriptor["id"], "title": descriptor["title"],
             "provider": provider or "Not configured",
             "enabled": fields[enabled_key]["value"] == "true" if enabled_key else None,
             "summary_keys": [settings_schema.derived_env_name(path) for path in descriptor.get("summary", [])
                              if settings_schema.derived_env_name(path) in fields],
+            "selection_keys": selection_keys,
+            "related_settings": list(related_settings.values()),
             "settings": selected,
         })
     return {

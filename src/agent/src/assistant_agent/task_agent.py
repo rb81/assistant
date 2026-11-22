@@ -93,7 +93,7 @@ SYSTEM_PROMPT_TEMPLATE = """# Assistant operating rules
 - Relevant durable memory and recent context from past actions may be injected as a short summary. Do not manage memory unless memory tools are explicitly loaded or the user asks.
 - If you need to recall past actions, emails sent, jobs completed, or prior conversations, use context_search or job_search/job_read. These search across supported data sources including past jobs, outbound emails, reminders, memories, contacts, and inbound emails.
 - If prior action context says a reminder, calendar event, email, file, project, or research run was already created, do not repeat that durable side effect unless explicitly requested or necessary.
-- When automatic reply routing is active, task_complete.response is delivered by the reply router. If a separate channel tool already delivered the answer, use already_delivered=true to avoid repeating it. Never send bookkeeping replies to local system addresses ending in @local.
+- When automatic reply routing is active, task_complete normally delivers response, but a successful separate delivery to the requester for this request automatically suppresses a redundant completion message. Set already_delivered=true only if the complete answer was delivered and no meaningful update remains. If there is new, undelivered information, including a failure or limitation, set deliver_update=true and do not set already_delivered; the update must be sent even after an earlier delivery. A failed, blocked, uncertain, or third-party delivery does not suppress the reply. Never send bookkeeping replies to local system addresses ending in @local.
 - request_input is only for information you genuinely cannot proceed without (a missing fact, an ambiguous choice). It sends an ordinary message and pauses the job until the reply arrives; the reply is guidance, never an approval. Use recipient="requester" for the original sender; use recipient="admin" only when the requester cannot answer or the question concerns safety or configuration. Never use it to confirm plans for gated actions or to request approvals, and never invent approval codes.
 - Replies and administrator guidance appear in your restored conversation when a job resumes. Act on them; do not re-ask answered questions or repeat completed steps.
 - Call task_complete only after required replies or requested outbound messages have been sent. Local system senders ending in @local do not require a bookkeeping reply, but task_complete.response must still contain the user-visible final answer.
@@ -337,12 +337,20 @@ class TaskAgent:
                 if draft:
                     prompt = (
                         "You wrote a draft answer but did not call a tool. If this is the final answer, call "
-                        "task_complete with summary and response containing the exact user-visible answer. If this "
-                        "job has automatic reply routing, task_complete delivers the answer. For legacy external "
+                        "task_complete with a summary and response. For automatic reply routing, a successful "
+                        "earlier delivery to the requester suppresses a redundant response. If meaningful new "
+                        "information remains, including a failure or limitation, set deliver_update=true so it "
+                        "is sent. Use already_delivered=true only when the complete answer was delivered and no "
+                        "update remains. For legacy external "
                         "email jobs without automatic routing, call email_send first. Otherwise call task_failed or request_input as appropriate."
                     )
                 else:
-                    prompt = "Continue by calling exactly one terminal tool: task_complete, task_failed, or request_input."
+                    prompt = (
+                        "Continue by calling exactly one terminal tool: task_complete, task_failed, or request_input. "
+                        "A successful earlier delivery to the requester suppresses a redundant response. "
+                        "If meaningful information remains undelivered, including a failure or limitation, set "
+                        "deliver_update=true so it is sent. Use already_delivered=true only when no update remains."
+                    )
                 history.append(
                     {
                         "role": "user",
@@ -600,10 +608,15 @@ class TaskAgent:
         route = (job.get("metadata") or {}).get("reply_route") or {}
         email = self.normalized_email_address(route.get("to") or "") if route.get("channel") == "email" else ""
         chat = str(route.get("chat_id") or "") if route.get("channel") == "telegram" else ""
+        if route.get("channel") == "client":
+            email = self.normalized_email_address(self.config.get("agent.admin.email"))
+        if email and not chat:
+            from .telegram import telegram_identities
+            chat = str(telegram_identities(self.config).get(email) or "")
         if chat:
             from .telegram import telegram_identities
-            email = next((address for address, identifier in telegram_identities(self.config).items()
-                          if str(identifier) == chat), "")
+            email = email or next((address for address, identifier in telegram_identities(self.config).items()
+                                   if str(identifier) == chat), "")
         if requester_only and not (email or chat):
             return False
         if requester_only:
@@ -648,8 +661,12 @@ class TaskAgent:
                 "task_complete requires a non-empty response. For dashboard/local jobs this is the answer shown "
                 "to the user; for external email jobs it records the answer already sent by email_send."
             )
-        route = (job.get("metadata") or {}).get("reply_route") or {}
-        requester = self.latest_external_requester(job) if route.get("channel") in (None, "email") else ""
+        metadata = job.get("metadata") or {}
+        route = metadata.get("reply_route") or {}
+        requester = self.latest_external_requester(job) if (
+            route.get("channel") in (None, "email")
+            and not (metadata.get("auto_reply") and route.get("channel") == "email")
+        ) else ""
         if requester and not self.sent_reply_to(job["id"], requester):
             return (
                 "Cannot complete yet: the latest external requester %s has not received a sent email_send reply "
@@ -789,7 +806,13 @@ class TaskAgent:
         if route.get("channel"):
             content_lines.append("Reply channel: %s" % route["channel"])
         if route.get("channel") == "telegram" or (job.get("metadata") or {}).get("auto_reply"):
-            content_lines.append("Completion requirement: task_complete.response is automatically delivered to the configured reply channel. Include the full user-visible answer. Use telegram_send only for requested files or separate messages.")
+            content_lines.append(
+                "Completion requirement: task_complete.response is normally delivered to the configured reply "
+                "channel, but a successful earlier delivery to the requester suppresses a redundant response. "
+                "If meaningful information remains undelivered, including a failure or limitation, set "
+                "deliver_update=true so it is sent. Use already_delivered=true only when the complete answer "
+                "was delivered and no update remains. Use telegram_send only for requested files or separate messages."
+            )
         elif external_requester:
             content_lines.extend(
                 [
@@ -1751,15 +1774,21 @@ class TaskAgent:
                     return False
             metadata = job.get("metadata") or {}
             already_delivered = arguments.get("already_delivered") is True
+            deliver_update = arguments.get("deliver_update") is True
+            if already_delivered and deliver_update:
+                result = {"error": "Choose either already_delivered=true or deliver_update=true, not both."}
+                self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
+                messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
+                return False
             if already_delivered and not self.delivered_since_request(
-                job, requester_only=(metadata.get("reply_route") or {}).get("channel") in {"email", "telegram"},
+                job, requester_only=(metadata.get("reply_route") or {}).get("channel") in {"email", "telegram", "client"},
             ):
                 result = {"error": "already_delivered=true requires a reply sent with telegram_send or email_send for the current request. Send it first or omit already_delivered."}
                 self.db.log_event(job["id"], "error", tool_name=name, output_data=result)
                 messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": compact_json(result)})
                 return False
-            # A substantive delivery to the requester is the answer, not a reason to send a receipt.
-            already_delivered = already_delivered or self.delivered_since_request(job, requester_only=True)
+            if not already_delivered and not deliver_update:
+                already_delivered = self.delivered_since_request(job, requester_only=True)
             if response and not already_delivered and ((metadata.get("reply_route") or {}).get("channel") == "telegram" or metadata.get("auto_reply")):
                 try:
                     delivery = ReplyRouter(tool_runtime).send(response)

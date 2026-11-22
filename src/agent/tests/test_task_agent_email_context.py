@@ -49,6 +49,123 @@ def raw(value):
     return getattr(value, "obj", value)
 
 
+class DeliveryAwareCompletionTest(unittest.TestCase):
+    def setUp(self):
+        self.agent = TaskAgent.__new__(TaskAgent)
+        self.agent.db = MagicMock()
+        self.agent.config = AppConfig({"agent": {"admin": {"email": "user@example.com"}}})
+        self.agent.locked_by = "worker"
+        self.agent.memory_steward = MagicMock()
+        self.agent.update_linked_reminder = MagicMock()
+        self.agent.update_channel_status = MagicMock()
+        self.agent.completion_blocker = MagicMock(return_value="")
+        self.agent.db.fetch_one.side_effect = [
+            None, {"has_new_context": False}, {"id": 7},
+        ]
+        self.job = {
+            "id": 7, "thread_id": "thread",
+            "metadata": {"auto_reply": True, "reply_request_id": 42,
+                         "reply_route": {"channel": "email", "to": "user@example.com"}},
+        }
+
+    def complete(self, arguments):
+        return self.agent.handle_tool_call(
+            self.job, [], MagicMock(), "call", "task_complete", arguments, set(),
+        )
+
+    def test_confirmed_requester_delivery_skips_duplicate(self):
+        self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": "User <USER@example.com>"}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            self.assertTrue(self.complete({"response": "Report sent"}))
+        router.assert_not_called()
+        query, params = self.agent.db.fetch_all.call_args.args
+        self.assertIn("o.status = 'sent'", query)
+        self.assertIn("d.status = 'sent'", query)
+        self.assertIn("o.created_at >= since.at", query)
+        self.assertEqual(params, (42, 7, 7))
+
+    def test_no_confirmed_requester_delivery_cannot_suppress(self):
+        for rows in ([], [{"channel": "email", "destination": "other@example.com"}]):
+            with self.subTest(rows=rows):
+                self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}]
+                self.agent.db.fetch_all.return_value = rows
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertFalse(self.complete({"response": "Report sent", "already_delivered": True}))
+                router.assert_not_called()
+
+    def test_meaningful_update_is_delivered_after_earlier_message(self):
+        self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": "user@example.com"}]
+        self.assertTrue(self.agent.delivered_since_request(self.job, requester_only=True))
+        self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False},
+                                               {"has_new_context": False}, {"id": 7}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            router.return_value.send.return_value = {"status": "sent", "body": "One item failed"}
+            self.assertTrue(self.complete({"response": "One item failed", "deliver_update": True}))
+        router.return_value.send.assert_called_once_with("One item failed")
+
+    def test_no_confirmed_requester_delivery_routes_final_response(self):
+        for rows in ([], [{"channel": "email", "destination": "other@example.com"}]):
+            with self.subTest(rows=rows):
+                self.agent.db.fetch_all.return_value = rows
+                self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False},
+                                                       {"has_new_context": False}, {"id": 7}]
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    router.return_value.send.return_value = {"status": "sent", "body": "Email failed"}
+                    self.assertTrue(self.complete({"response": "Email failed"}))
+                router.return_value.send.assert_called_once_with("Email failed")
+                query = self.agent.db.fetch_all.call_args.args[0]
+                self.assertIn("o.status = 'sent'", query)
+                self.assertIn("o.created_at >= since.at", query)
+
+    def test_conflicting_delivery_flags_are_rejected(self):
+        self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            self.assertFalse(self.complete({"response": "Update", "already_delivered": True,
+                                            "deliver_update": True}))
+        router.assert_not_called()
+        self.agent.db.fetch_all.assert_not_called()
+
+    def test_client_delivery_requires_admin_recipient(self):
+        self.job["metadata"]["reply_route"] = {"channel": "client", "client_id": "desktop"}
+        self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": "other@example.com"}]
+        self.assertFalse(self.complete({"response": "Report sent", "already_delivered": True}))
+        self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False},
+                                               {"has_new_context": False}, {"id": 7}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            router.return_value.send.return_value = {"status": "sent", "body": "Report sent"}
+            self.assertTrue(self.complete({"response": "Report sent"}))
+        router.return_value.send.assert_called_once_with("Report sent")
+
+    def test_client_accepts_confirmed_admin_email(self):
+        self.job["metadata"]["reply_route"] = {"channel": "client", "client_id": "desktop"}
+        self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": "user@example.com"}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            self.assertTrue(self.complete({"response": "Report sent"}))
+        router.assert_not_called()
+
+    def test_email_requester_can_receive_answer_through_linked_telegram(self):
+        self.agent.config = AppConfig({"agent": {"telegram": {"recipients": {"user@example.com": 123}}}})
+        self.agent.db.fetch_all.return_value = [{"channel": "telegram", "destination": "123"}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            self.assertTrue(self.complete({"response": "Report sent", "already_delivered": True}))
+        router.assert_not_called()
+
+    def test_legacy_email_requires_email_but_routed_email_uses_delivery_check(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="user@example.com")
+        self.agent.sent_reply_to = MagicMock(return_value=False)
+        self.assertEqual(self.agent.completion_blocker(self.job, "Answer"), "")
+        self.job["metadata"]["auto_reply"] = False
+        self.assertIn("has not received", self.agent.completion_blocker(self.job, "Answer"))
+
+    def test_failed_final_delivery_does_not_complete(self):
+        self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            router.return_value.send.return_value = {"status": "failed"}
+            self.assertFalse(self.complete({"response": "Email delivery failed"}))
+        self.agent.memory_steward.consolidate.assert_not_called()
+
+
 class TaskAgentEmailContextTest(unittest.TestCase):
     def test_completion_rejections_record_a_result_for_the_started_call(self):
         for metadata, current, arguments in [

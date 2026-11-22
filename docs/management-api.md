@@ -129,7 +129,8 @@ With `configuration.model-settings`, read `configuration/model-settings` for
 one read-only saved snapshot. It returns `api_version`, `revision`,
 `value_state: "saved"`, `read_only: true`, `activation_tracked`,
 `pending_activation`, and ordered `sections`. Each section includes `id`,
-`title`, `provider`, optional `enabled`, `summary_keys`, and `settings`.
+`title`, `provider`, optional `enabled`, `summary_keys`, `selection_keys`,
+`related_settings`, and `settings`.
 Fields reuse `SettingField` and add `display_value`, `value_source`
 (`configured`, `inherited`, `provider_default`, `credential_status`, or `unset`),
 optional `inherited_from` (another field's key), and `pending_activation`.
@@ -139,11 +140,20 @@ Credentials have empty values/defaults and display only "Configured" or
 The overview includes disabled features and advanced tuning without moving their
 editors. Section membership comes from `model_sections` in the settings sidecar;
 `metadata.model_section` also identifies membership in ordinary catalog reads.
+`selection_keys` orders only the model choices for a focused editor; provider
+URLs, credentials, voice choices, and tuning are not selectors. `related_settings`
+contains deduplicated links with `group`, `title`, `destination`, and `field_key`
+to the owning pages (`advanced` identifies tuning). The complete `settings` list
+and `summary_keys` remain available for older readers. Sections with no selectors
+need not appear in a quick model editor. Older servers without this metadata
+require an explicit update notice, not an empty successful quick editor.
 Blank inherited models resolve from the same saved snapshot; decision-model
 provider defaults reuse the runtime provider registry. This is not live provider
 availability, per-request model usage, or verified running configuration.
 Activation tracking is conservative administrative history, as described below.
 Editing still uses the existing revision/preview/save/activation contracts.
+Both the macOS client and TUI use these selectors and links; edits enter their
+existing in-memory drafts rather than introducing another model-save endpoint.
 
 Source-free settings, instructions, and credential-inventory reads share a
 15-second configuration snapshot. Changes to installation-file metadata
