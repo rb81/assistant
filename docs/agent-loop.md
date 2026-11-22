@@ -53,18 +53,32 @@ Each iteration:
 
 ## Completion and Terminal Rules
 
-`task_complete` requires a non-empty `response`. For automatically routed jobs, including Telegram reply routes, it delivers the
-response through `ReplyRouter` before completing; failed or uncertain delivery
-blocks completion.
-A successful separate email or Telegram delivery to the requester for the
-current request automatically suppresses a redundant completion response.
-`already_delivered=true` also records the response without re-sending it, but
-requires a verified delivery. Attempted, failed, uncertain, and third-party
-sends do not qualify. Set `deliver_update=true` to deliver meaningful
-information not yet sent, including a failure or limitation, even after an
-earlier message; it cannot be combined with `already_delivered=true`.
+`task_complete.summary` is one brief internal outcome sentence (roughly 20 words
+or fewer), not a full reply or a message to the user. Communicate the result once:
+
+- If the result has not been delivered, include the actual answer in `response`.
+  Automatically routed jobs deliver it through `ReplyRouter`; failed or uncertain
+  delivery blocks completion.
+- If a channel tool successfully delivered the complete result to the requester
+  for the current request, use `already_delivered=true` and **omit `response`**.
+  Do not regenerate the sent answer, send a completion receipt, or turn the
+  internal summary into another user message. The runtime verifies delivery;
+  attempted, failed, uncertain, and third-party sends do not qualify.
+- If meaningful information remains after an earlier message, including a
+  failure, limitation, or required next step, include that information in
+  `response` with `deliver_update=true`. An earlier progress message is not the
+  complete result. This flag cannot be combined with `already_delivered=true`.
+
+A non-empty `response` is required unless `already_delivered=true` explicitly
+acknowledges delivery and the runtime verifies it against the trusted requester.
+For legacy jobs without a reply route, that is the external sender, or the
+configured administrator for local jobs. Older
+callers supplying a redundant response still benefit from automatic suppression.
+Summary-only completion removes the need to generate a second full answer, but
+the brief completion tool call and normal agent-loop input still consume tokens.
 For legacy external-email jobs, a sent reply to the latest external sender must
-already exist in `outbound_email_logs` (To or Cc).
+already exist in `outbound_email_logs` (To or Cc); then completion needs only the
+brief internal summary and `already_delivered=true`.
 
 Automatically routed completion also checks for new requester context before
 delivery and before the final status update. New context keeps the job active;

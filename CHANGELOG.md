@@ -12,7 +12,9 @@
   positions. Hidden retained panes do not poll or mark chats read.
 - Completion avoids repeating an answer already emailed or sent through
   Telegram to the current requester, including client-originated tasks.
-  Meaningful undelivered updates can still be sent explicitly.
+  After confirmed result delivery, the agent generates only a brief internal
+  completion summary, not a second full reply. Meaningful undelivered updates
+  can still be sent explicitly.
 - The installer builds and verifies the server and Management API before
   reporting success. It stages updates before cutover and refuses to overwrite
   modified source.

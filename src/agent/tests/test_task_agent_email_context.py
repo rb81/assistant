@@ -84,6 +84,90 @@ class DeliveryAwareCompletionTest(unittest.TestCase):
         self.assertIn("o.created_at >= since.at", query)
         self.assertEqual(params, (42, 7, 7))
 
+    def test_verified_delivery_completes_with_only_an_internal_summary(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="")
+        for channel, route, delivery in [
+            ("email", {"channel": "email", "to": "user@example.com"},
+             {"channel": "email", "destination": "user@example.com"}),
+            ("telegram", {"channel": "telegram", "chat_id": "123"},
+             {"channel": "telegram", "destination": "123"}),
+            ("client", {"channel": "client", "client_id": "desktop"},
+             {"channel": "email", "destination": "user@example.com"}),
+        ]:
+            with self.subTest(channel=channel):
+                self.job["metadata"]["reply_route"] = route
+                self.agent.db.fetch_all.return_value = [delivery]
+                self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}, {"id": 7}]
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertTrue(self.complete({
+                        "summary": "Sent the requested report.", "already_delivered": True,
+                    }))
+                router.assert_not_called()
+                self.assertEqual(self.agent.db.log_event.call_args.kwargs["output_data"], {
+                    "summary": "Sent the requested report.", "response": "",
+                })
+                self.assertEqual(raw(self.agent.db.execute.call_args.args[1][0])["final_response"], "")
+
+    def test_internal_summary_cannot_replace_an_undelivered_answer(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="")
+        for rows in ([], [{"channel": "email", "destination": "other@example.com"}],
+                     [{"channel": "email", "destination": "user@example.com"}]):
+            with self.subTest(rows=rows):
+                self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}]
+                self.agent.db.fetch_all.return_value = rows
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertFalse(self.complete({"summary": "Prepared the report."}))
+                router.assert_not_called()
+                self.agent.memory_steward.consolidate.assert_not_called()
+                self.assertIn("A response is required",
+                              self.agent.db.log_event.call_args.kwargs["output_data"]["error"])
+
+    def test_legacy_summary_only_completion_requires_a_requester_delivery(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="user@example.com")
+        self.agent.sent_reply_to = MagicMock(return_value=True)
+        self.job["metadata"] = {"reply_request_id": 42}
+        for destination, completed in (("other@example.com", False), ("user@example.com", True)):
+            with self.subTest(destination=destination):
+                self.agent.db.fetch_one.side_effect = [None]
+                self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": destination}]
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertEqual(self.complete({
+                        "summary": "Sent the requested report.", "already_delivered": True,
+                    }), completed)
+                router.assert_not_called()
+        self.agent.db.update_job_status.assert_called_once_with(
+            7, "completed", task_summary="Sent the requested report.",
+        )
+
+    def test_local_summary_only_completion_requires_admin_delivery(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="")
+        self.job["metadata"] = {"reply_request_id": 42}
+        for destination, completed in (("other@example.com", False), ("user@example.com", True)):
+            with self.subTest(destination=destination):
+                self.agent.db.fetch_one.side_effect = [None]
+                self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": destination}]
+                with patch("assistant_agent.task_agent.ReplyRouter") as router:
+                    self.assertEqual(self.complete({
+                        "summary": "Sent the requested report.", "already_delivered": True,
+                    }), completed)
+                router.assert_not_called()
+        self.agent.db.update_job_status.assert_called_once_with(
+            7, "completed", task_summary="Sent the requested report.",
+        )
+
+    def test_undelivered_update_still_requires_a_response(self):
+        del self.agent.completion_blocker
+        self.agent.latest_external_requester = MagicMock(return_value="")
+        self.agent.db.fetch_all.return_value = [{"channel": "email", "destination": "user@example.com"}]
+        with patch("assistant_agent.task_agent.ReplyRouter") as router:
+            self.assertFalse(self.complete({"summary": "One item failed.", "deliver_update": True}))
+        router.assert_not_called()
+        self.agent.memory_steward.consolidate.assert_not_called()
+
     def test_no_confirmed_requester_delivery_cannot_suppress(self):
         for rows in ([], [{"channel": "email", "destination": "other@example.com"}]):
             with self.subTest(rows=rows):
@@ -157,6 +241,8 @@ class DeliveryAwareCompletionTest(unittest.TestCase):
         self.assertEqual(self.agent.completion_blocker(self.job, "Answer"), "")
         self.job["metadata"]["auto_reply"] = False
         self.assertIn("has not received", self.agent.completion_blocker(self.job, "Answer"))
+        self.assertIn("has not received",
+                      self.agent.completion_blocker(self.job, "", already_delivered=True))
 
     def test_failed_final_delivery_does_not_complete(self):
         self.agent.db.fetch_one.side_effect = [None, {"has_new_context": False}]

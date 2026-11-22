@@ -3782,19 +3782,22 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "task_complete",
-            "description": "Mark the task complete. Automatic routes suppress a redundant response after a successful requester delivery; set deliver_update=true to send meaningful information that remains undelivered. Legacy external email jobs require email_send first.",
+            "description": "Record completion with a brief internal summary, not another user message. If the complete result already reached the requester, set already_delivered=true and omit response; do not regenerate the sent answer. Otherwise response is the actual answer delivered by automatic routes. Use deliver_update=true only for genuinely new undelivered information. Legacy external email jobs require email_send first.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string"},
+                    "summary": {
+                        "type": "string",
+                        "description": "One brief internal outcome sentence, roughly 20 words or fewer. Never a full reply, copied message, or user-facing completion receipt.",
+                    },
                     "response": {
                         "type": "string",
-                        "description": "User-visible final response. Do not use this to bypass email_send for external email requesters.",
+                        "description": "Actual user-facing answer, required only if the complete result has not been delivered or a meaningful update remains. Omit entirely when already_delivered=true; do not rewrite the delivered message. Legacy external email requesters need email_send first.",
                     },
                     "already_delivered": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Set true only when the complete answer was successfully delivered to the requester for this request and no meaningful update remains. The response is recorded but not sent again.",
+                        "description": "Set true only when the complete result was successfully delivered to the requester for this request and no meaningful update remains. Runtime verification is required. Supply only summary and omit response.",
                     },
                     "deliver_update": {
                         "type": "boolean",
@@ -3802,7 +3805,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                         "description": "Set true when response contains meaningful new information not yet delivered, including a failure or limitation. Send it even if an earlier message reached the requester. Do not combine with already_delivered.",
                     },
                 },
-                "required": ["summary", "response"],
+                "required": ["summary"],
             },
         },
     },

@@ -103,9 +103,13 @@ apply. `text` is optional when attachments are present:
 {"attachments":[{"path":"outputs/job-12/example-0.mp3","voice_note":true}]}
 ```
 
-After a successful send, `task_complete` may use `already_delivered: true` to
-avoid a second response. This is accepted only if `telegram_send` or
-`email_send` succeeded for the current request. The system prompt chooses a
+After a successful send of the complete result, finish with
+`task_complete(summary="Sent the requested result.", already_delivered=true)`
+and omit `response`. The summary is a brief internal record, not another user
+message; do not regenerate or announce the sent result. This is accepted only
+if `telegram_send` or `email_send` succeeded for the current request. A progress
+message is not the complete result; genuinely new information still needs a
+`response` with `deliver_update: true`. The system prompt chooses a
 channel by content (short message/voice note to Telegram, long or document-style
 reply to email, or the requester's named preference) and does not announce a
 voice note.
