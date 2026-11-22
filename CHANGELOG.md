@@ -2,6 +2,10 @@
 
 ## Unreleased: Server and client management refresh
 
+- Model settings now have one searchable, read-only overview in the Management
+  API, TUI and macOS client. It includes advanced tuning, disabled features,
+  inheritance and credential presence, with links to existing editors. Saved
+  configuration remains distinct from running models and provider availability.
 - The installer builds and verifies the server and Management API before
   reporting success. It stages updates before cutover and refuses to overwrite
   modified source.

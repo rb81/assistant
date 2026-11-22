@@ -54,6 +54,9 @@ GROUP_HELP = {
 }
 
 PAGE_HELP = {
+    "Model settings": "See all saved model roles and tuning together, including disabled features. "
+                      "Search or open an existing editor; local drafts, running models and provider availability "
+                      "are not shown as verified state.",
     "Home": "Start setup here, or jump to services, saved records and settings. Edits remain in a draft "
             "until you confirm Review & save. Saving configuration does not start the app.",
     "Services": "See actual Docker component state and health. Open a component for logs or individual controls. "

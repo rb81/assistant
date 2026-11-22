@@ -25,6 +25,67 @@ ROOT = Path(__file__).resolve().parents[3]
 TOKEN = "a" * 48
 
 
+def test_model_overview_reports_unsupported_and_incompatible_servers():
+    client = ManagementClient("http://127.0.0.1:8765", TOKEN)
+    with patch.object(client, "health", return_value={"capabilities": []}), \
+            patch.object(client, "get") as get:
+        with pytest.raises(SetupError, match="Update the server"):
+            client.model_settings()
+        get.assert_not_called()
+    with patch.object(client, "health", return_value={"capabilities": ["configuration.model-settings"]}), \
+            patch.object(client, "get", return_value={"sections": []}):
+        with pytest.raises(SetupError, match="incompatible response"):
+            client.model_settings()
+
+
+def test_tui_model_overview_keeps_saved_values_and_links_existing_editors(tmp_path):
+    from assistant_agent.management_api import ManagementService
+    from test_management import configured
+
+    (tmp_path / "src/config").mkdir(parents=True)
+    for name in ("agent.yaml", "agent.schema.yaml", "AGENT.md.example"):
+        shutil.copyfile(ROOT / "src/config" / name, tmp_path / "src/config" / name)
+    configured(tmp_path)
+    service = ManagementService(tmp_path)
+    try:
+        overview = service.model_settings()
+        client = Mock()
+        client.configuration.return_value = service.configuration_v2(include_source=False, instructions=False)
+        client.get.side_effect = [{"credentials": []}, {"retirement_pending": False, "mode": "files"}]
+        backend = ApiManagementBackend(tmp_path / "unmounted", client)
+        backend.load()
+        client.model_settings.return_value = overview
+        assert backend.model_settings()["revision"] == backend.configuration["revision"]
+        client.model_settings.return_value = {**overview, "revision": "stale"}
+        with pytest.raises(SetupError, match="Configuration changed"):
+            backend.model_settings()
+        client.model_settings.return_value = overview
+        backend.stage("models", {"AGENT_LLM_MODEL": "example/unsaved"})
+        with create_pipe_input() as pipe:
+            ui = ManagementApp(tmp_path, backend=backend, input=pipe, output=DummyOutput())
+            ui.loaded = True
+            ui.location.route = "Settings:models"
+            ui.render()
+            assert "Model settings overview" in {action.label for action in ui.actions}
+            ui.location.route = "Model settings"
+            ui.cache[ui.key()] = overview
+            ui.render()
+            assert ui.in_section("Settings")
+            primary = next(action for action in ui.actions if action.label == "Edit Primary model")
+            assert "Search" in {action.label for action in ui.actions}
+            ui.location.query = "speech"
+            ui.cache[ui.key()] = overview
+            ui.render()
+            labels = {action.label for action in ui.actions}
+            assert "Edit Speech model" in labels and "Edit Primary model" not in labels
+            ui.location.query = ""
+            primary.handler()
+            assert ui.location.route == "Form:models"
+            assert backend.values["AGENT_LLM_MODEL"] == "example/unsaved"
+            client.operation.assert_not_called()
+    finally:
+        service.close()
+
 def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(tmp_path):
     server_root = tmp_path / "server"
     (server_root / "src/config").mkdir(parents=True)
@@ -47,6 +108,10 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
         backend.load()
         assert backend.groups["models"][0] == "Assistant models"
         assert backend.field_metadata["AGENT_LLM_MODEL"]["help"]
+        overview = client.model_settings()
+        assert overview["revision"] == backend.configuration["revision"]
+        assert overview["value_state"] == "saved"
+        assert any(section["id"] == "task" for section in overview["sections"])
         with create_pipe_input() as pipe:
             ui = ManagementApp(terminal_root, backend=backend, input=pipe, output=DummyOutput())
             ui.loaded = True
@@ -81,6 +146,7 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
         assert backend.credentials["AGENT_LLM_OPENROUTER_API_KEY"] == "[configured]"
         assert not terminal_root.exists()
     assert any(url.endswith("/v2/configuration/preview") for _, url in requests)
+    assert any(url.endswith("/v2/configuration/model-settings") for _, url in requests)
     assert not any(url.endswith("/v2/configuration") for _, url in requests)
     assert any(method == "POST" and url.endswith("/v2/operations") for method, url in requests)
 

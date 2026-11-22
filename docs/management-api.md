@@ -40,6 +40,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET configuration` | Revision, setting catalog with help, navigation `groups`, instructions, original `agent_yaml`, backup names |
 | `GET configuration/catalog` | Source-free navigation/search metadata; no effective values or instructions content |
 | `GET configuration/settings?group={id}` | Revision-bound effective values for a page and its children; omit group for all structured settings |
+| `GET configuration/model-settings` | One read-only, revision-bound saved-model overview with server-owned sections, including advanced tuning and disabled features |
 | `GET configuration/instructions` | Lazily read editable standing instructions and revision |
 | `GET configuration/activation` | Revision-bound redacted saved changes awaiting application activation; requires `configuration.activation` |
 | `POST configuration/preview` | Validate the exact draft; return changes, problems, and `preview_id` |
@@ -123,6 +124,26 @@ Saved secret values are never returned. Groups include a stable `destination`:
 under Safety; conversation naming appears under Models. Use the catalog's
 group and field presentation metadata rather than hard-coding the layout.
 App preferences belong to each client, not the server.
+
+With `configuration.model-settings`, read `configuration/model-settings` for
+one read-only saved snapshot. It returns `api_version`, `revision`,
+`value_state: "saved"`, `read_only: true`, `activation_tracked`,
+`pending_activation`, and ordered `sections`. Each section includes `id`,
+`title`, `provider`, optional `enabled`, `summary_keys`, and `settings`.
+Fields reuse `SettingField` and add `display_value`, `value_source`
+(`configured`, `inherited`, `provider_default`, `credential_status`, or `unset`),
+optional `inherited_from` (another field's key), and `pending_activation`.
+Credentials have empty values/defaults and display only "Configured" or
+"Not configured". Source files and instructions are omitted.
+
+The overview includes disabled features and advanced tuning without moving their
+editors. Section membership comes from `model_sections` in the settings sidecar;
+`metadata.model_section` also identifies membership in ordinary catalog reads.
+Blank inherited models resolve from the same saved snapshot; decision-model
+provider defaults reuse the runtime provider registry. This is not live provider
+availability, per-request model usage, or verified running configuration.
+Activation tracking is conservative administrative history, as described below.
+Editing still uses the existing revision/preview/save/activation contracts.
 
 Source-free settings, instructions, and credential-inventory reads share a
 15-second configuration snapshot. Changes to installation-file metadata

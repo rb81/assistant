@@ -62,6 +62,15 @@ server/client release compatibility matrix yet: API version alone does not
 guarantee every feature exists. Disable unsupported features with an explanation,
 not an empty result. Schema availability does not prove provider readiness.
 
+For a unified model-settings view, require `configuration.model-settings` and
+read `GET /v2/configuration/model-settings`. Render its server-owned sections,
+including disabled features and advanced fields. Match its revision to the
+current editing catalog; never silently merge a newer snapshot into a draft.
+Use the supplied display values and provenance for inheritance/provider defaults,
+not a client-maintained model list. The response describes saved configuration
+only. Link each field's `group` back to its existing editor and preserve the
+normal preview/save/activation workflow.
+
 ## Reads, errors, and bounded data
 
 Use v2 for new clients. v1 reads remain a compatibility surface for older clients.

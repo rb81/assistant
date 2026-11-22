@@ -10,6 +10,91 @@
 #
 # Keys must match agent.yaml paths exactly; entries with no matching path are ignored
 # and an info notice is logged.
+#
+# Model overview sections select exact paths or subtrees (trailing "."). They do
+# not move settings out of their existing editors.
+model_sections:
+  - id: task
+    title: Task models & provider
+    paths: [agent.llm., agent.app.name, agent.app.referer_url]
+    summary: [agent.llm.model, agent.llm.fallback_model, agent.llm.base_url]
+    provider: agent.llm.base_url
+  - id: routing
+    title: Routing & naming
+    paths: [agent.routing., agent.naming.]
+    summary: [agent.routing.model, agent.naming.model]
+    provider: agent.llm.base_url
+  - id: limits
+    title: Generation limits & summarization
+    paths:
+      - agent.limits.max_iterations_per_task
+      - agent.limits.max_tokens_per_task
+      - agent.limits.message_history_window
+      - agent.limits.max_prompt_chars
+      - agent.limits.summarization_model
+      - agent.limits.summarization_max_tokens
+      - agent.limits.summarization_timeout_seconds
+      - agent.limits.summarization_keep_recent
+      - agent.limits.summarization_max_input_chars
+      - agent.limits.limit_approach_factor
+      - agent.limits.rate_limit_backoff_seconds
+    summary: [agent.limits.summarization_model]
+    provider: agent.llm.base_url
+  - id: screening
+    title: Decision-model screening
+    paths: [agent.security.decision_model.]
+    summary: [agent.security.decision_model.provider, agent.security.decision_model.model, agent.security.decision_model.url]
+    enabled: agent.security.decision_model.enabled
+    provider: agent.security.decision_model.provider
+  - id: development
+    title: Development supervisor
+    paths: [agent.security.development.]
+    summary: [agent.security.development.model]
+    provider: agent.llm.base_url
+    provider_override_model: agent.security.development.model
+    provider_override_url: https://openrouter.ai/api/v1
+  - id: research
+    title: Deep research
+    paths: [agent.deep_research.enabled, agent.deep_research.model, agent.deep_research.search_model, agent.deep_research.max_tool_calls, agent.deep_research.max_iterations, agent.deep_research.timeout_seconds]
+    summary: [agent.deep_research.model, agent.deep_research.search_model]
+    enabled: agent.deep_research.enabled
+    provider: agent.llm.base_url
+  - id: fusion
+    title: Multi-model analysis
+    paths: [agent.fusion.]
+    summary: [agent.fusion.analysis_models, agent.fusion.model]
+    enabled: agent.fusion.enabled
+    provider_url: https://openrouter.ai/api/v1
+  - id: search
+    title: Model-powered web search
+    paths: [agent.search.enabled, agent.search.openrouter_enabled, agent.search.primary_provider, agent.search.model, agent.search.engine, agent.search.max_results, agent.search.max_total_results, agent.search.max_tokens, agent.search.timeout_seconds, agent.search.search_context_size, agent.search.allowed_domains, agent.search.excluded_domains]
+    summary: [agent.search.primary_provider, agent.search.model]
+    enabled: agent.search.openrouter_enabled
+    provider_url: https://openrouter.ai/api/v1
+  - id: embeddings
+    title: Embeddings
+    paths: [agent.embeddings.]
+    summary: [agent.embeddings.model, agent.embeddings.base_url]
+    enabled: agent.embeddings.enabled
+    provider: agent.embeddings.base_url
+  - id: transcription
+    title: Transcription
+    paths: [agent.transcription.]
+    summary: [agent.transcription.model_path, agent.transcription.base_url]
+    enabled: agent.transcription.enabled
+    provider: agent.transcription.base_url
+  - id: speech
+    title: Speech generation
+    paths: [agent.tts.]
+    summary: [agent.tts.model, agent.tts.voice]
+    enabled: agent.tts.enabled
+    provider_url: https://openrouter.ai/api/v1
+  - id: tools
+    title: Model tools & shared spending limit
+    paths: [agent.model_service.]
+    summary: [agent.model_service.budget_usd, agent.model_service.budget_period_days]
+    enabled: agent.model_service.enabled
+    provider_url: https://openrouter.ai/api/v1
 settings:
   agent.tts.enabled:
     label: Enable text to speech
@@ -27,8 +112,13 @@ settings:
     label: Require Zero Data Retention on OpenRouter
     description: "Route OpenRouter model requests only through Zero Data Retention endpoints, including fallback models, screening, speech, and model tools. Requests fail if no eligible endpoint is available. Does not apply to other providers."
   agent.llm.allowed_providers:
+    model_blank_label: No provider restriction
     label: Allowed OpenRouter providers
     description: "Restrict OpenRouter requests to these provider slugs. Leave empty for no preference. The restriction combines with ZDR and requests fail if no eligible route remains."
+  agent.llm.fallback_model:
+    model_blank_label: No fallback model
+  agent.naming.model:
+    model_inherits: agent.llm.model
   agent.identity.name:
     label: Assistant name
     description: "The name your assistant uses in conversations and communications."
@@ -54,15 +144,22 @@ settings:
     label: Client acknowledgement timeout
     description: Route an offered but unacknowledged message to a fallback channel after this many seconds.
   agent.embeddings.dimensions:
+    model_blank_label: Auto-detected dimensions
     type: int
   agent.fusion.max_completion_tokens:
     label: Fusion output token limit
     type: int
     description: "Optional completion-token limit sent to OpenRouter's fusion tool. Leave blank for provider behavior; higher limits allow longer output and potentially higher charges."
+    model_blank_label: Provider default
+    model_blank_source: provider_default
   agent.fusion.temperature:
     label: Fusion temperature
     type: float
     description: "Optional sampling temperature sent to OpenRouter's fusion tool. Leave blank for provider behavior; lower values generally favor less varied output where supported."
+    model_blank_label: Provider default
+    model_blank_source: provider_default
+  agent.security.development.model:
+    model_inherits: agent.llm.model
   agent.database.password:
     secret: true
   agent.database.url:
@@ -158,6 +255,7 @@ settings:
 
   # Routing
   agent.routing.model:
+    model_inherits: agent.llm.model
     label: Request routing model
     description: "Model used to decide whether incoming requests start new work or continue a conversation. Choose an available model; routing adds provider calls and cost."
   agent.routing.timeout_seconds:
@@ -175,6 +273,7 @@ settings:
     label: Prompt size limit
     description: "Character threshold that triggers model-based history compaction. Lower for smaller context windows; summarization can lose details and adds model calls."
   agent.limits.summarization_model:
+    model_inherits: agent.llm.model
     label: History summary model
     description: "Model used to compact older task history when prompts grow too large. Choose one that preserves important details; summarization uses provider tokens."
   agent.limits.summarization_max_tokens:
@@ -485,6 +584,7 @@ settings:
 
   # Deep research
   agent.deep_research.model:
+    model_inherits: agent.llm.model
     label: Deep research model
     description: "Model used by the deep-research worker; blank reuses the main task model. Research may make many calls, so consider model cost as well as reasoning quality."
   agent.deep_research.search_model:
@@ -601,9 +701,13 @@ settings:
     label: Enable multi-model fusion
     description: "Expose OpenRouter's fusion tool when OpenRouter is configured. Fusion can use multiple models and additional provider tokens; enable only if needed."
   agent.fusion.analysis_models:
+    model_blank_label: Provider-selected models
+    model_blank_source: provider_default
     label: Fusion analysis models
     description: "List of model IDs passed to OpenRouter for fusion analysis. Leave blank for provider choices; additional or larger models can increase charges."
   agent.fusion.model:
+    model_blank_label: Provider-selected model
+    model_blank_source: provider_default
     label: Fusion synthesis model
     description: "Model ID passed to OpenRouter to combine fusion analyses. Leave blank for provider selection; choose a supported model with suitable quality and cost."
   agent.fusion.max_tool_calls:

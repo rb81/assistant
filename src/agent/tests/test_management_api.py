@@ -859,6 +859,112 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert set(groups) == {item["group"] for item in result["settings"]}
 
 
+def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_path):
+    import shutil
+    from pathlib import Path
+    from assistant_agent.settings_schema import catalog
+    from test_management import configured
+
+    source = Path(__file__).resolve().parents[2] / "config"
+    (tmp_path / "src/config").mkdir(parents=True)
+    for name in ("agent.yaml", "agent.schema.yaml", "AGENT.md.example"):
+        shutil.copyfile(source / name, tmp_path / "src/config" / name)
+    installation = configured(tmp_path)
+    installation.values["AGENT_LLM_MODEL"] = "example/primary"
+    installation.values["AGENT_SECURITY_DECISION_MODEL_MODEL"] = ""
+    installation.values["AGENT_SECURITY_DECISION_MODEL_URL"] = ""
+    installation.state["pending_configuration"] = ["AGENT_LLM_MODEL"]
+    installation.save()
+    service = ManagementService(tmp_path)
+    client = TestClient(create_app(tmp_path, TOKEN, service))
+    headers = {"Host": "127.0.0.1", "Authorization": "Bearer " + TOKEN}
+    try:
+        assert client.get("/v2/configuration/model-settings", headers={"Host": "127.0.0.1"}).status_code == 401
+        assert "configuration.model-settings" in client.get("/v2/health", headers=headers).json()["capabilities"]
+        response = client.get("/v2/configuration/model-settings", headers=headers)
+        assert response.status_code == 200, response.text
+        current = response.json()
+        assert current["revision"] == client.get("/v2/configuration/catalog", headers=headers).json()["revision"]
+        assert current["value_state"] == "saved" and current["read_only"]
+        assert current["activation_tracked"] and current["pending_activation"]
+        fields = [field for section in current["sections"] for field in section["settings"]]
+        keys = [field["key"] for field in fields]
+        assert len(keys) == len(set(keys))
+        assert set(keys) == {item["env"] for item in catalog() if item["metadata"].get("model_section")}
+        assert {
+            "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_ROUTING_MODEL", "AGENT_NAMING_MODEL",
+            "AGENT_LIMITS_SUMMARIZATION_MODEL", "AGENT_SECURITY_DECISION_MODEL_MODEL",
+            "AGENT_SECURITY_DEVELOPMENT_MODEL", "AGENT_DEEP_RESEARCH_MODEL", "AGENT_DEEP_RESEARCH_SEARCH_MODEL",
+            "AGENT_FUSION_ANALYSIS_MODELS", "AGENT_FUSION_MODEL", "AGENT_SEARCH_MODEL", "AGENT_EMBEDDINGS_MODEL",
+            "AGENT_TRANSCRIPTION_MODEL_PATH", "AGENT_TTS_MODEL", "AGENT_LLM_TEMPERATURE", "AGENT_MODEL_SERVICE_ENABLED",
+        } <= set(keys)
+        assert not {"AGENT_DATABASE_PASSWORD", "AGENT_SECURITY_SCRIPT_YOLO", "AGENT_SEARCH_EXA_API_KEY"} & set(keys)
+        assert "database-password" not in response.text and "model-key" not in response.text
+        assert "agent_yaml" not in current and "instructions" not in current
+        fields = {field["key"]: field for field in fields}
+        assert fields["AGENT_LLM_MODEL"]["pending_activation"]
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["display_value"] == "example/primary"
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["value_source"] == "inherited"
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["pending_activation"]
+        assert fields["AGENT_SECURITY_DEVELOPMENT_MODEL"]["inherited_from"] == "AGENT_LLM_MODEL"
+        assert fields["AGENT_FUSION_ANALYSIS_MODELS"]["display_value"] == "Provider-selected models"
+        assert fields["AGENT_SECURITY_DECISION_MODEL_MODEL"]["display_value"] == "perplexity/pplx-decider-v1.2"
+        assert fields["AGENT_LLM_OPENROUTER_API_KEY"]["display_value"] == "Configured"
+        assert fields["AGENT_LLM_OPENROUTER_API_KEY"]["value"] == fields["AGENT_LLM_OPENROUTER_API_KEY"]["default"] == ""
+        sections = {section["id"]: section for section in current["sections"]}
+        assert sections["speech"]["enabled"] is False and sections["speech"]["settings"]
+        assert sections["screening"]["enabled"] is False and sections["screening"]["settings"]
+    finally:
+        service.close()
+
+
+def test_model_settings_overview_updates_inheritance_provider_defaults_and_activation(tmp_path):
+    import shutil
+    from pathlib import Path
+    from test_management import configured
+
+    source = Path(__file__).resolve().parents[2] / "config"
+    (tmp_path / "src/config").mkdir(parents=True)
+    for name in ("agent.yaml", "agent.schema.yaml", "AGENT.md.example"):
+        shutil.copyfile(source / name, tmp_path / "src/config" / name)
+    installation = configured(tmp_path)
+    service = ManagementService(tmp_path)
+    try:
+        original = service.model_settings()
+        installation.values.update(
+            AGENT_DEEP_RESEARCH_MODEL="example/research",
+            AGENT_SECURITY_DEVELOPMENT_MODEL="example/supervisor",
+            AGENT_ROUTING_MODEL="",
+            AGENT_NAMING_MODEL="",
+            AGENT_LIMITS_SUMMARIZATION_MODEL="",
+            AGENT_SECURITY_DECISION_MODEL_PROVIDER="perplexity",
+            AGENT_SECURITY_DECISION_MODEL_MODEL="",
+            AGENT_SECURITY_DECISION_MODEL_URL="",
+        )
+        installation.state["pending_configuration"] = ["agent.yaml"]
+        installation.save()
+        updated = service.model_settings()
+        assert updated["revision"] != original["revision"]
+        fields = {field["key"]: field for section in updated["sections"] for field in section["settings"]}
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["display_value"] == "example/research"
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["value_source"] == "configured"
+        for key in ("AGENT_ROUTING_MODEL", "AGENT_NAMING_MODEL", "AGENT_LIMITS_SUMMARIZATION_MODEL"):
+            assert fields[key]["display_value"] == "model"
+            assert fields[key]["value_source"] == "inherited"
+        assert fields["AGENT_SECURITY_DECISION_MODEL_MODEL"]["display_value"] == "pplx-decider-latest"
+        assert fields["AGENT_SECURITY_DECISION_MODEL_URL"]["display_value"] == "https://api.perplexity.ai/v1/decisions"
+        assert all(field["pending_activation"] for field in fields.values())
+        installation.state["pending_configuration"] = []
+        installation.save()
+        active = service.model_settings()
+        assert active["activation_tracked"] and not active["pending_activation"]
+        installation.state.pop("pending_configuration")
+        installation.save()
+        assert not service.model_settings()["activation_tracked"]
+    finally:
+        service.close()
+
+
 def test_v2_approval_settings_share_a_safety_page(tmp_path):
     (tmp_path / "src/config").mkdir(parents=True)
     (tmp_path / "data").mkdir()

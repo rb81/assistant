@@ -77,6 +77,7 @@ INSTALLER_BUILD_VARIABLES = {
 API_TESTS = "src/agent/tests/test_management_api.py"
 TEST_EVIDENCE = {
     "configuration.read": (API_TESTS, "test_v2_configuration_exposes_settings_and_only_redacted_credentials"),
+    "configuration.model-settings": (API_TESTS, "test_model_settings_overview_is_complete_revision_bound_and_secret_safe"),
     "configuration.preview": (API_TESTS, "test_v2_configuration_preview_is_revision_checked_and_secret_safe"),
     "configuration.save": (API_TESTS, "test_v2_catalog_settings_preview_save_and_reload"),
     "configuration.check": (API_TESTS, "test_configuration_check_endpoint_reports_saved_problems_without_runtime"),
@@ -149,6 +150,8 @@ TEST_EVIDENCE = {
 REQUIREMENTS = (
     ("configuration.read", "src/agent/src/assistant_agent/management.py:Management.load",
      "GET", "/v2/configuration", None, None),
+    ("configuration.model-settings", "src/agent/src/assistant_agent/management_model_settings.py:overview",
+     "GET", "/v2/configuration/model-settings", None, None),
     ("configuration.preview", "src/agent/src/assistant_agent/management.py:Management.problems",
      "POST", "/v2/configuration/preview", None, None),
     ("configuration.save", "src/agent/src/assistant_agent/management.py:Management.save",
@@ -315,6 +318,7 @@ TUI_REQUIREMENTS = {
     "embeddings": ("search.maintenance",),
     "generate_database_password": ("credentials.generate-database-password",),
     "instruction_text": ("configuration.read",),
+    "model_settings": ("configuration.model-settings",),
     "lifecycle": ("service.lifecycle",),
     "load": ("configuration.read",),
     "logs": ("service.logs",),

@@ -32,7 +32,7 @@ from .management_contracts import (
     ProjectFileContentResponse, ProjectFilesResponse, RecordPageResponse, ServicesResponse,
     ConversationsResponse, TaskActivityResponse, TaskDeletionPreviewResponse, TaskMessagesResponse, TaskSummaryResponse,
     ClientAcknowledgmentRequest, ClientAcknowledgmentResponse, ClientHistoryResponse, ClientPollResponse,
-    DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse,
+    DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse, ModelSettingsResponse,
 )
 from . import settings_schema
 from .management_operations import OperationManager
@@ -554,8 +554,8 @@ class ManagementService:
             for spec in specs
         }
 
-    def configuration_v2(self, *, include_source=True, section=None, instructions=True, values=True):
-        backend = self.backend() if include_source else self.read_configuration_backend()
+    def configuration_v2(self, *, include_source=True, section=None, instructions=True, values=True, backend=None):
+        backend = backend or (self.backend() if include_source else self.read_configuration_backend())
         installation = backend.installation
         details = configuration_group_details()
         if section is not None and not any(item["id"] == section for item in details):
@@ -627,6 +627,17 @@ class ManagementService:
         else:
             result.pop("files")
         return result
+
+    def model_settings(self):
+        from .management_model_settings import overview
+        backend = self.read_configuration_backend()
+        configuration = self.configuration_v2(include_source=False, instructions=False, backend=backend)
+        configuration["settings"] = [
+            {**field, "value": "" if field["secret"] else redacted(field["value"], backend),
+             "default": "" if field["secret"] else redacted(field["default"], backend)}
+            for field in configuration["settings"]
+        ]
+        return overview(configuration, backend.installation.state)
 
     def _configuration_draft(self, payload):
         backend = self.backend()
@@ -1389,6 +1400,7 @@ def create_app(root, token, service=None):
                 "configuration.source.write", "configuration.source.backups",
                 "configuration.structured", "configuration.sections",
                 "configuration.activation",
+                "configuration.model-settings",
                 "operations.lookup",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
@@ -1415,6 +1427,10 @@ def create_app(root, token, service=None):
     @app.get("/v2/configuration/catalog", response_model=StructuredConfigurationResponse)
     def settings_catalog_v2():
         return service.configuration_v2(include_source=False, instructions=False, values=False)
+
+    @app.get("/v2/configuration/model-settings", response_model=ModelSettingsResponse)
+    def model_settings_v2():
+        return service.model_settings()
 
     @app.get("/v2/configuration/instructions")
     def instructions_v2():

@@ -268,6 +268,34 @@ class StructuredConfigurationResponse(BaseModel):
     read_only: Literal[False]
 
 
+class ModelSettingField(SettingField):
+    """Saved setting with a redacted, inheritance-aware overview display."""
+    display_value: str
+    value_source: Literal["configured", "inherited", "provider_default", "credential_status", "unset"]
+    inherited_from: str | None = None
+    pending_activation: bool = False
+
+
+class ModelSettingsSection(BaseModel):
+    id: str
+    title: str
+    enabled: bool | None = None
+    provider: str
+    summary_keys: list[str]
+    settings: list[ModelSettingField]
+
+
+class ModelSettingsResponse(BaseModel):
+    """One saved-configuration snapshot, not a claim about running models."""
+    api_version: Literal[2]
+    revision: str
+    value_state: Literal["saved"]
+    activation_tracked: bool
+    pending_activation: bool
+    sections: list[ModelSettingsSection]
+    read_only: Literal[True]
+
+
 class ConfigurationPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

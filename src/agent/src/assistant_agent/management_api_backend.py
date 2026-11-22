@@ -103,6 +103,12 @@ class ApiManagementBackend:
             self.installation.prompt_original = result["instructions"].encode()
         return self.instructions.decode() if self.instructions is not None else self.configuration["instructions"]
 
+    def model_settings(self):
+        result = self.client.model_settings()
+        if result["revision"] != self.configuration["revision"]:
+            raise SetupError("Configuration changed. Save or discard your draft, then reload settings.")
+        return result
+
     def draft(self):
         draft = copy.deepcopy(self.installation)
         draft.values = dict(self.values)

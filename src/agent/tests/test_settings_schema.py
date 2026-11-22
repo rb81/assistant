@@ -34,6 +34,23 @@ class SettingsSchemaTests(unittest.TestCase):
                 self.assertIn(item["type"], (str, int, float), item["path"])
         self.assertIs(types["agent.embeddings.dimensions"], int)
 
+    def test_model_subtrees_include_new_leaves_and_reject_overlapping_sections(self):
+        real = schema._load
+
+        def load(name):
+            data = real(name)
+            if name == "agent.yaml":
+                data["agent"]["llm"]["new_sampling_setting"] = 0.5
+            return data
+        with patch.object(schema, "_load", load):
+            fields = {item["env"]: item for item in schema.build_catalog()}
+        self.assertEqual(fields["AGENT_LLM_NEW_SAMPLING_SETTING"]["metadata"]["model_section"], "task")
+        sidecar = real("agent.schema.yaml")
+        sidecar["model_sections"].append({"id": "duplicate", "paths": ["agent.llm.model"]})
+        with patch.object(schema, "_load", side_effect=lambda name: sidecar if name == "agent.schema.yaml" else real(name)):
+            with self.assertRaisesRegex(ValueError, "multiple overview sections"):
+                schema.build_catalog()
+
 
 if __name__ == "__main__":
     unittest.main()

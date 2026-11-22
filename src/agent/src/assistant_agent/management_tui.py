@@ -261,7 +261,7 @@ class ManagementApp:
             "Services" if route.startswith(("Service", "Logs")) else
             "Activity" if route in {"Activity", "Tasks", "Memories", "Reminders", "Projects", "Scripts", "Record", "Events", "Objects"} else
             "Connections" if route == "Connections" or route.startswith("Connection:") else
-            "Settings" if route in {"Settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:")) else
+            "Settings" if route in {"Settings", "Model settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:")) else
             "Activity" if route == "Project deletion" else
             "Help" if route == "Help" else "Home")
 
@@ -273,6 +273,8 @@ class ManagementApp:
             return "Settings  /  " + self.groups[route[5:]][0]
         if route.startswith("Connection:"):
             return "Connections  /  " + self.groups[route[11:]][0]
+        if route == "Model settings":
+            return "Settings  /  Models & Voice  /  Overview"
         if route == "Record" and self.location.record:
             return "Activity  /  " + self.location.record["_kind"].title() + "  /  Details"
         return route.replace(":", "  /  ")
@@ -632,6 +634,12 @@ class ManagementApp:
                       report=False, quiet=background)
         elif route == "Credentials":
             self.render()
+        elif route == "Model settings":
+            def loaded(data):
+                self.cache[key] = data
+                if self.key() == key:
+                    self.render()
+            self.task("Reading saved model settings", self.backend.model_settings, loaded, report=False)
         elif route in {"Skills", "Skill"}:
             action, arguments = (
                 ("skills.list", {"offset": loc.page * 8, "limit": 8, "query": loc.query, "include_overlays": False})
@@ -773,6 +781,8 @@ class ManagementApp:
             self.edit_group(route.split(":", 1)[1])
         elif route == "Instructions":
             self.instructions()
+        elif route == "Model settings":
+            self.model_settings_screen()
         elif route in {"Skills", "Skill"}:
             self.skills_screen()
         elif route == "Review":
@@ -848,6 +858,8 @@ class ManagementApp:
             elif destination == "server":
                 choices += [("Services & health", "Services"), ("Search maintenance", "Search"),
                             ("Storage & recovery", "Storage"), ("Credentials", "Credentials")]
+            elif destination == "models":
+                choices.insert(0, ("Model settings overview", "Model settings"))
             route = SETTINGS_DESTINATIONS[destination]
             description = "Choose a task. Technical tuning stays inside its owning page."
         elif route == "Settings" and isinstance(self.backend, ApiManagementBackend):
@@ -879,6 +891,54 @@ class ManagementApp:
         self.put(route, description,
                  [self.action(label, partial(self.go, target)) for label, target in choices],
                  actions=[self.action("Review & save", self.review, primary=True)])
+
+    def model_settings_screen(self):
+        data = self.cache.get(self.key())
+        actions = [self.action("Search", self.search), self.action("Refresh", self.refresh)]
+        if data is None:
+            self.put("Model settings", "Reading one saved configuration snapshot.",
+                     [text(self.read_errors.get(self.key(), "Model settings have not been loaded yet."))],
+                     actions=actions)
+            return
+        items = [text("Saved settings only. Running models and provider availability are not verified."),
+                 text("Local draft changes are not shown. Edit through the existing settings pages.")]
+        if not data["activation_tracked"]:
+            items.append(text("Activation tracking is unavailable for earlier saves."))
+        elif data["pending_activation"]:
+            items.append(text("Saved changes are awaiting activation."))
+        else:
+            items.append(text("No tracked saved changes are awaiting activation."))
+        query = self.location.query.strip().lower()
+        matches = 0
+        for section in data["sections"]:
+            fields = [
+                field for field in section["settings"]
+                if not query or query in " ".join([
+                    section["title"], section["provider"], field["label"], field["key"],
+                    field["display_value"], field["metadata"].get("help", ""),
+                ]).lower()
+            ]
+            if not fields:
+                continue
+            matches += len(fields)
+            status = " / enabled" if section["enabled"] is True else " / disabled" if section["enabled"] is False else ""
+            items += [text(), text(section["title"] + status, style="class:title"),
+                      text("Provider / service: " + section["provider"])]
+            for field in fields:
+                value = field["display_value"]
+                if field["value_source"] == "inherited":
+                    value += " (inherited from " + field["inherited_from"] + ")"
+                elif field["value_source"] == "provider_default":
+                    value += " (provider default)"
+                if field["pending_activation"]:
+                    value += " / needs applying"
+                items.append(self.readable(field["label"] + ": " + value))
+                if field["group"] in self.groups:
+                    items.append(self.action("Edit " + field["label"], partial(self.go, "Form:" + field["group"])))
+        if not matches:
+            items.append(text("No model settings match this search."))
+        self.put("Model settings", "All model roles, including advanced settings and disabled features.",
+                 items, actions=actions)
 
     def storage(self):
         volume = bool(self.backend.installation.credential_volume)

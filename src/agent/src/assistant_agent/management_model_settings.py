@@ -1,0 +1,64 @@
+"""Read-only model overview derived from the shared settings snapshot."""
+from . import settings_schema
+from .security_screening import PROVIDERS, DEFAULT_PROVIDER
+
+
+def overview(configuration, state):
+    fields = {field["key"]: field for field in configuration["settings"]}
+    pending = set(state.get("pending_configuration", []))
+    sections = []
+    for descriptor in settings_schema.model_sections():
+        selected = []
+        for original in fields.values():
+            if original["metadata"].get("model_section") != descriptor["id"]:
+                continue
+            field = dict(original)
+            value = field["value"]
+            source, inherited_from = "configured", None
+            if field["secret"]:
+                field["value"] = field["default"] = ""
+                value = "Configured" if field["key"] in configuration["credential_names"] else "Not configured"
+                source = "credential_status"
+            elif not value.strip():
+                parent = field["metadata"].get("model_inherits")
+                if parent:
+                    inherited_from = settings_schema.derived_env_name(parent)
+                    inherited = fields[inherited_from]
+                    value = inherited["value"] or "Not configured"
+                    source = "inherited"
+                elif field["key"] in {"AGENT_SECURITY_DECISION_MODEL_MODEL", "AGENT_SECURITY_DECISION_MODEL_URL"}:
+                    provider = fields["AGENT_SECURITY_DECISION_MODEL_PROVIDER"]["value"] or DEFAULT_PROVIDER
+                    spec = PROVIDERS.get(provider.strip().lower())
+                    attribute = "model" if field["key"].endswith("_MODEL") else "url"
+                    value = getattr(spec, attribute, "") or "Not configured"
+                    source = "provider_default" if spec and getattr(spec, attribute) else "unset"
+                else:
+                    value = field["metadata"].get("model_blank_label") or "Not configured"
+                    source = field["metadata"].get("model_blank_source", "configured") if field["metadata"].get("model_blank_label") else "unset"
+            field.update(
+                display_value=value, value_source=source, inherited_from=inherited_from,
+                pending_activation=field["key"] in pending or inherited_from in pending
+                or bool(pending & {"agent.yaml", "setup"}),
+            )
+            selected.append(field)
+        if not selected:
+            continue
+        enabled_key = settings_schema.derived_env_name(descriptor["enabled"]) if descriptor.get("enabled") else None
+        provider_key = settings_schema.derived_env_name(descriptor["provider"]) if descriptor.get("provider") else None
+        provider = fields[provider_key]["value"] if provider_key else descriptor.get("provider_url", "")
+        override_key = descriptor.get("provider_override_model")
+        if override_key and fields[settings_schema.derived_env_name(override_key)]["value"].strip():
+            provider = descriptor["provider_override_url"]
+        sections.append({
+            "id": descriptor["id"], "title": descriptor["title"],
+            "provider": provider or "Not configured",
+            "enabled": fields[enabled_key]["value"] == "true" if enabled_key else None,
+            "summary_keys": [settings_schema.derived_env_name(path) for path in descriptor.get("summary", [])
+                             if settings_schema.derived_env_name(path) in fields],
+            "settings": selected,
+        })
+    return {
+        "api_version": 2, "revision": configuration["revision"], "value_state": "saved",
+        "activation_tracked": "pending_configuration" in state,
+        "pending_activation": bool(pending), "sections": sections, "read_only": True,
+    }

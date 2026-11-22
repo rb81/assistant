@@ -43,6 +43,12 @@ In the terminal interface:
 3. **Review & save**, then explicitly choose **Save & start**. To save without
    starting workers, choose **Save configuration** and start from Services later.
 
+Open **Settings > Models & Voice > Model settings overview** to see all saved
+model roles, providers, limits and tuning on one searchable page, including
+disabled features. Editor links keep the existing review/save workflow.
+The overview excludes unsaved drafts and does not verify running models or
+provider availability. It requires the updated Management API.
+
 The task agent requires nonempty instructions in `data/config/AGENT.md`.
 Starting workers may process existing inbox messages: use an assistant-owned
 mailbox and restrict senders before starting.

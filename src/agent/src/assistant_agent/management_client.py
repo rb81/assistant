@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from .management_contracts import (
     ConfigurationCheckResponse, FullHealthResponse, LogsResponse, ServicesResponse,
-    ManagementOperationResponse, StructuredConfigurationResponse,
+    ManagementOperationResponse, StructuredConfigurationResponse, ModelSettingsResponse,
 )
 from .setup import SetupError
 
@@ -99,6 +99,11 @@ class ManagementClient:
 
     def configuration_check(self):
         return self.read("configuration/check", ConfigurationCheckResponse)
+
+    def model_settings(self):
+        if "configuration.model-settings" not in self.health()["capabilities"]:
+            raise SetupError("This server does not support the model settings overview. Update the server first.")
+        return self.read("configuration/model-settings", ModelSettingsResponse)
 
     def read(self, resource, contract):
         try:

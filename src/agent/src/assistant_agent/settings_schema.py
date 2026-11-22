@@ -60,11 +60,21 @@ def build_catalog() -> list[dict[str, Any]]:
     defaults, sidecar = _load("agent.yaml"), _load("agent.schema.yaml")
     metadata = sidecar.get("settings") or {}
     types = sidecar_types(sidecar)
+    sections = sidecar.get("model_sections") or []
     catalog = []
     for path, default in leaves(defaults):
         if not path.startswith(PREFIX):
             continue
-        meta = metadata.get(path) or {}
+        meta = dict(metadata.get(path) or {})
+        owners = [
+            section["id"] for section in sections
+            if any(path.startswith(selector) if selector.endswith(".") else path == selector
+                   for selector in section["paths"])
+        ]
+        if len(owners) > 1:
+            raise ValueError("Model setting %s belongs to multiple overview sections" % path)
+        if owners:
+            meta["model_section"] = owners[0]
         catalog.append({
             "path": path,
             "env": derived_env_name(path),
@@ -91,6 +101,11 @@ def catalog() -> list[dict[str, Any]]:
 
 def catalog_by_env() -> dict[str, dict[str, Any]]:
     return {item["env"]: item for item in catalog()}
+
+
+def model_sections() -> list[dict[str, Any]]:
+    """Ordered model overview sections owned by the presentation sidecar."""
+    return _load("agent.schema.yaml").get("model_sections") or []
 
 
 def env_overrides() -> list[tuple[str, str, Optional[type]]]:
