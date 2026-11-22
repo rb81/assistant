@@ -201,6 +201,10 @@ Previous source is **not** a database backup. There is no automatic database
 rollback; downgrading across incompatible schema changes requires a compatible
 backup and an explicit recovery procedure.
 
+The installer writes recovery metadata to a temporary file before publishing it.
+If a metadata write fails, investigate the filesystem error before retrying;
+the installer does not stop services during that attempt.
+
 If moving an installation, stop the stack first and preserve all of `data/`.
 Resolve any launcher still pointing at the old location
 before registering the new one. Do not remove an unrelated installation's

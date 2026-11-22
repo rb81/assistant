@@ -60,6 +60,9 @@ finish() {
     status=$1
     trap - EXIT
     if [ -n "$LOG_PID" ]; then kill "$LOG_PID" 2>/dev/null || :; wait "$LOG_PID" 2>/dev/null || :; fi
+    if [ -n "$PENDING_TMP" ] && ! rm -f -- "$PENDING_TMP"; then
+        printf 'Could not remove temporary update metadata: %s\n' "$PENDING_TMP" >&2
+    fi
     if [ "$status" -ne 0 ]; then
         printf '\nInstallation is incomplete during: %s.\nDetails: %s\n' "$CURRENT" "$LOG" >&2
         if [ -f "$PENDING" ]; then
@@ -236,10 +239,18 @@ activate_update() {
     elif [ "$EXISTING" = 1 ] && [ "$GIT_CHECKOUT" = 0 ]; then
         BACKUP=$(mktemp -d "$DESTINATION.previous.XXXXXXXX")
     fi
-    {
+    CURRENT='recording update recovery information'
+    PENDING_TMP=$(mktemp "$PENDING.XXXXXXXX") \
+        || fail 'Could not create update recovery metadata. No services were stopped during this attempt.'
+    if ! {
         printf 'source=%s\nref=%s\nrevision=%s\nimage=%s\nprevious=%s\nwork=%s\n' \
             "$SOURCE" "$REF" "$REVISION" "$ASSISTANT_MANAGEMENT_IMAGE" "$BACKUP" "$WORK"
-    } > "$PENDING"
+    } > "$PENDING_TMP"; then
+        fail 'Could not write update recovery metadata. No services were stopped during this attempt.'
+    fi
+    mv -f -- "$PENDING_TMP" "$PENDING" \
+        || fail 'Could not publish update recovery metadata. No services were stopped during this attempt.'
+    PENDING_TMP=
     cp "$WORK/files" "$DESTINATION/data/.install-target-files"
     cp "$WORK/entries" "$DESTINATION/data/.install-target-entries"
     if [ -n "$SUPERSEDED_WORK" ] && [ "$SUPERSEDED_WORK" != "$WORK" ]; then
@@ -326,7 +337,7 @@ install_main() {
     mkdir "$LOCK" 2>/dev/null || fail "Another installer is running, or a stale lock exists: $LOCK"
     LOG=$DESTINATION/data/logs
     PENDING=$DESTINATION/data/.install-pending
-    WORK= BACKUP= START_PID= LOG_PID= RECOVERY_REVISION= SUPERSEDED_WORK=
+    WORK= BACKUP= START_PID= LOG_PID= RECOVERY_REVISION= SUPERSEDED_WORK= PENDING_TMP=
     trap 'finish $?' EXIT
     trap stop_start HUP INT TERM
     mkdir -p "$DESTINATION/data/logs"

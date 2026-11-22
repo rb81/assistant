@@ -68,6 +68,24 @@ def next_revision(repository):
     return git(repository, "rev-parse", "HEAD")
 
 
+def fail_pending_write(environment):
+    wrapper = r"""
+        printf() {
+            case "$1" in
+                'source=%s\nref=%s\nrevision=%s\nimage=%s\nprevious=%s\nwork=%s\n')
+                    command printf 'source=partial\n'
+                    return 1 ;;
+            esac
+            command printf "$@"
+        }
+        . "$1"
+    """
+    return subprocess.run(
+        ["sh", "-c", wrapper, "sh", str(ROOT / "install.sh")],
+        input="", text=True, capture_output=True, env=environment, timeout=20,
+    )
+
+
 def test_update_remembers_source_discovers_custom_install_and_preserves_data(update_installation):
     repository, destination, environment, install = update_installation
     result = install()
@@ -161,6 +179,46 @@ def test_failed_build_leaves_active_source_and_services_untouched(update_install
     assert (destination / "data/.installation").read_bytes() == before
     assert " stop\n" not in Path(environment["TRACE"]).read_text()
     assert not (destination / "data/.install-pending").exists()
+
+
+def test_failed_pending_write_does_not_create_invalid_recovery_record(update_installation):
+    repository, destination, environment, install = update_installation
+    assert install().returncode == 0
+    next_revision(repository)
+    Path(environment["TRACE"]).write_text("")
+    result = fail_pending_write(environment)
+    assert result.returncode != 0
+    assert "Could not write update recovery metadata" in result.stderr
+    assert "recording update recovery information" in result.stderr
+    assert not (destination / "data/.install-pending").exists()
+    assert not list((destination / "data").glob(".install-pending.*"))
+    assert not list(destination.parent.glob(destination.name + ".update.*"))
+    assert (destination / "src/version").read_text() == "one"
+    assert " stop\n" not in Path(environment["TRACE"]).read_text()
+
+
+def test_failed_replacement_pending_write_preserves_previous_recovery_record(update_installation):
+    repository, destination, environment, install = update_installation
+    subprocess.run(["git", "clone", "-q", str(repository), str(destination)], check=True)
+    assert install().returncode == 0
+    next_revision(repository)
+    assert install(FAIL_START="1").returncode != 0
+    pending = destination / "data/.install-pending"
+    original_pending = pending.read_bytes()
+    original_work = list(destination.parent.glob(destination.name + ".update.*"))
+
+    (repository / "src/version").write_text("three")
+    git(repository, "commit", "-qam", "Fix startup")
+    git(destination, "pull", "--ff-only")
+    Path(environment["TRACE"]).write_text("")
+    result = fail_pending_write(environment)
+    assert result.returncode != 0
+    assert "Could not write update recovery metadata" in result.stderr
+    assert pending.read_bytes() == original_pending
+    assert list(destination.parent.glob(destination.name + ".update.*")) == original_work
+    assert not list((destination / "data").glob(".install-pending.*"))
+    assert " stop\n" not in Path(environment["TRACE"]).read_text()
+    assert install().returncode == 0
 
 
 @pytest.mark.parametrize("failure", ["FAIL_START", "FAIL_VERIFY"])
