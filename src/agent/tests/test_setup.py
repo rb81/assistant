@@ -1343,6 +1343,31 @@ with tempfile.TemporaryDirectory() as root:
                     self.assertEqual(current.reconcile_grants(), [])
                 compose.assert_not_called()
 
+    def test_reconcile_grants_repairs_tool_cache_cleanup_database_access(self):
+        import assistant_agent.setup as setup_module
+
+        old_services = tuple(service for service in setup_module.AGENT_SERVICES if service != "tool-cache-cleanup")
+        for volume in (False, True):
+            with self.subTest(volume=volume), tempfile.TemporaryDirectory() as root, self.credential_volume_backend():
+                instance = self.saved_configuration(root)
+                instance.use_credential_volume = volume
+                instance.state["setup_complete"] = True
+                with patch.object(setup_module, "AGENT_SERVICES", old_services):
+                    instance.save()
+                reopened = Installation(root)
+                with patch.object(reopened, "compose", side_effect=["tool-cache-cleanup\n", ""]) as compose:
+                    self.assertEqual(reopened.reconcile_grants(), ["tool-cache-cleanup"])
+                self.assertEqual(compose.call_args.args[0],
+                                 ["up", "-d", "--no-deps", "--force-recreate", "tool-cache-cleanup"])
+                spec = yaml.safe_load((Path(root) / "data/.compose-secrets.yaml").read_text())["services"]["tool-cache-cleanup"]
+                self.assertEqual(spec["environment"]["AGENT_DATABASE_PASSWORD_FILE"],
+                                 "/run/secrets/AGENT_DATABASE_PASSWORD")
+                self.assertNotIn("AGENT_LLM_OPENROUTER_API_KEY_FILE", spec["environment"])
+                if volume:
+                    self.assertIn("AGENT_DATABASE_PASSWORD", reopened.credential_volume.record["grants"]["tool-cache-cleanup"])
+                else:
+                    self.assertIn("AGENT_DATABASE_PASSWORD", spec["secrets"])
+
     def test_overrides_problems_block_save_until_fixed(self):
         import questionary
         from assistant_agent.setup import draft_problems

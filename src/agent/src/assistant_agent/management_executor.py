@@ -259,6 +259,10 @@ def create_server(address, root, prepare_executor_restart=None):
                     LOGGER.warning("Management approval application incomplete (%s)", action)
                     persist_external_result(root, operation_id, succeeded=False, error=ApprovalApplicationIncomplete.MESSAGE)
                     self.respond(409, {"error": ApprovalApplicationIncomplete.MESSAGE})
+                except PublicSetupError as error:
+                    LOGGER.warning("Management executor operation failed (%s, PublicSetupError)", action)
+                    persist_external_result(root, operation_id, succeeded=False, error=str(error))
+                    self.respond(409, {"error": str(error)})
                 except SetupError:
                     LOGGER.warning("Management executor operation failed (%s, SetupError)", action)
                     message = "Management operation failed. Refresh current state and check server diagnostics."

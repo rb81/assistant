@@ -1961,6 +1961,40 @@ def test_internal_executor_requires_token_and_rejects_browser_origins(tmp_path):
         server.server_close()
 
 
+@pytest.mark.parametrize(("failure", "message"), [
+    (PublicSetupError("Docker is unavailable."), "Docker is unavailable."),
+    (SetupError("password=do-not-display"), "Management operation failed. Refresh current state and check server diagnostics."),
+])
+def test_internal_executor_reports_only_curated_operation_errors(tmp_path, failure, message):
+    import threading
+    from assistant_agent.management_executor import create_server
+
+    (tmp_path / "data").mkdir()
+    token_path(tmp_path).write_text(TOKEN + "\n")
+    token_path(tmp_path).chmod(0o600)
+    server = create_server(("127.0.0.1", 0), tmp_path)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        with patch.object(ManagementService, "_execute_operation_local", side_effect=failure), patch(
+                "assistant_agent.management_executor.persist_external_result") as persist:
+            response = httpx.post(
+                f"http://127.0.0.1:{server.server_address[1]}/v1/execute",
+                headers={"Authorization": "Bearer " + TOKEN},
+                json={"operation_id": "test-operation", "operation": {
+                    "operation": "service.lifecycle", "action": "apply", "confirmed": True,
+                }}, timeout=5,
+            )
+        assert response.status_code == 409
+        assert response.json()["error"] == message
+        assert "do-not-display" not in response.text
+        persist.assert_called_once_with(tmp_path, "test-operation", succeeded=False, error=message)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_internal_executor_bounds_concurrent_client_reads_without_blocking_polls(tmp_path):
     import threading
     from concurrent.futures import ThreadPoolExecutor

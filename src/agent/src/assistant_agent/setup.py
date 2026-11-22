@@ -33,7 +33,7 @@ from .validation import WEAK_PASSWORDS
 from .setup_privileges import prepare_sudo, terminal_authorization
 
 
-AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer",
+AGENT_SERVICES = ("downloader", "task-agent", "workspace-indexer", "tool-cache-cleanup",
                   "reminder-scheduler", "deep-research-agent", "supervisor", "heartbeat",
                   "telegram-receiver", "request-preprocessor")
 MODEL_SERVICES = ("task-agent", "deep-research-agent", "supervisor", "heartbeat")
