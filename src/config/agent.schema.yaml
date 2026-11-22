@@ -26,6 +26,9 @@ settings:
   agent.llm.zdr_only:
     label: Require Zero Data Retention on OpenRouter
     description: "Route OpenRouter model requests only through Zero Data Retention endpoints, including fallback models, screening, speech, and model tools. Requests fail if no eligible endpoint is available. Does not apply to other providers."
+  agent.llm.allowed_providers:
+    label: Allowed OpenRouter providers
+    description: "Restrict OpenRouter requests to these provider slugs. Leave empty for no preference. The restriction combines with ZDR and requests fail if no eligible route remains."
   agent.identity.name:
     label: Assistant name
     description: "The name your assistant uses in conversations and communications."

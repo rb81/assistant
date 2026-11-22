@@ -174,6 +174,15 @@ class TaskAgent:
         self.tool_result_cache = ToolResultCache(config)
         self.skill_store = SkillStore(db, config)
 
+    def create_llm(self) -> LlmClient:
+        return LlmClient(self.config)
+
+    def create_tool_runtime(self, job: dict[str, Any]) -> ToolRuntime:
+        return ToolRuntime(self.db, self.config, job)
+
+    def report_failure(self, job: dict[str, Any], status: str, reason: str, context: str) -> None:
+        notify_admin_job_failure(self.db, self.config, job, status, reason, context)
+
     def run_forever(self, stop_requested) -> None:
         interval = poll_interval_seconds(self.config, "agent.task_agent.poll_interval_seconds")
         run_poll_loop(
@@ -229,11 +238,11 @@ class TaskAgent:
     def process_job(self, job: dict[str, Any]) -> None:
         self.update_channel_status(job, "Running")
         try:
-            llm = LlmClient(self.config)
+            llm = self.create_llm()
         except RuntimeError as exc:
             reason = str(exc)
             self.db.update_job_status(job["id"], "needs_review", last_error=reason)
-            notify_admin_job_failure(self.db, self.config, job, "needs_review", reason, "task-agent configuration")
+            self.report_failure(job, "needs_review", reason, "task-agent configuration")
             return
 
         self.name_job(job)
@@ -259,7 +268,7 @@ class TaskAgent:
             job["_skill_context"] = SkillContext()
             job["_skill_lifecycle"] = self.skill_store.catalog()
             job["_skill_context"].restore(job.pop("_resume_skill_refs", {}), job["_skill_lifecycle"])
-        tool_runtime = ToolRuntime(self.db, self.config, job)
+        tool_runtime = self.create_tool_runtime(job)
         self.replay_approved_call(job, tool_runtime, history)
         tool_runtime.replay_approved_web_page(history)
         max_iterations, max_tokens = self.task_limits(job)
@@ -369,7 +378,7 @@ class TaskAgent:
                 self.create_checkpoint(job["id"], self.messages_for_call(base_messages, history, history_window), iteration + 1, total_tokens, reason)
                 self.memory_steward.consolidate(job, history, "needs_review", reason)
                 self.db.update_job_status(job["id"], "needs_review", last_error=reason)
-                notify_admin_job_failure(self.db, self.config, job, "needs_review", reason, "task-agent token budget")
+                self.report_failure(job, "needs_review", reason, "task-agent token budget")
                 return
 
         reason = "max iterations reached"
@@ -377,7 +386,7 @@ class TaskAgent:
         self.create_checkpoint(job["id"], self.messages_for_call(base_messages, history, history_window), max_iterations, total_tokens, reason)
         self.memory_steward.consolidate(job, history, "needs_review", reason)
         self.db.update_job_status(job["id"], "needs_review", last_error=reason)
-        notify_admin_job_failure(self.db, self.config, job, "needs_review", reason, "task-agent iteration budget")
+        self.report_failure(job, "needs_review", reason, "task-agent iteration budget")
 
     def still_owns_job(self, job_id: int) -> bool:
         current = self.db.fetch_one("SELECT status, locked_by FROM jobs WHERE id = %s", (job_id,))

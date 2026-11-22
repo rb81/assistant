@@ -3,7 +3,7 @@ import os
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .config import AppConfig, app_display_name, app_referer_url
 from .prompt_context import refresh_request_context
@@ -28,6 +28,7 @@ class LlmClient:
         timeout_seconds: Optional[int] = None,
         allow_fallback: bool = True,
         base_url: Optional[str] = None,
+        request_observer: Optional[Callable[[dict[str, Any]], None]] = None,
     ):
         self.config = config
         self.base_url = str(base_url or config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
@@ -44,6 +45,7 @@ class LlmClient:
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds or 180
         self.allow_fallback = allow_fallback
+        self.request_observer = request_observer
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """Send a chat completion request, retrying with the fallback model on transient errors."""
@@ -79,6 +81,8 @@ class LlmClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         apply_routing_policy(self.config, self.base_url, payload)
+        if self.request_observer is not None:
+            self.request_observer(payload)
         body = json.dumps(payload, default=str).encode("utf-8")
         request = urllib.request.Request(
             "%s/chat/completions" % self.base_url,
@@ -97,6 +101,8 @@ class LlmClient:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             msg = "LLM request failed with HTTP %s: %s" % (exc.code, detail)
+            if exc.code in {400, 404} and is_openrouter_url(self.base_url) and self.config.get_list("agent.llm.allowed_providers"):
+                msg += " Check the allowed OpenRouter providers, model availability, and ZDR settings."
             if exc.code in _RETRYABLE_HTTP_CODES:
                 raise _TransientLlmError(msg) from exc
             raise RuntimeError(msg) from exc

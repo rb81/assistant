@@ -59,6 +59,7 @@ GROUPS = {
     "models": ("Models & access", [
         field("AGENT_LLM_BASE_URL", "Provider API URL", "https://openrouter.ai/api/v1"),
         field("AGENT_LLM_ZDR_ONLY", "Require Zero Data Retention on OpenRouter", "false"),
+        field("AGENT_LLM_ALLOWED_PROVIDERS", "Allowed OpenRouter providers"),
         field("AGENT_LLM_MODEL", "Primary model"), field("AGENT_LLM_FALLBACK_MODEL", "Fallback model"),
         field("AGENT_LLM_OPENROUTER_API_KEY", "OpenRouter API key"), field("AGENT_LLM_OPENAI_API_KEY", "OpenAI-compatible API key"),
         field("AGENT_DATABASE_PASSWORD", "Database password"),

@@ -155,7 +155,7 @@ class PermissionActivationError(SetupError):
 
 SECTION_KEYS = {
     "identity": (("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_ADMIN_NAME", "AGENT_ADMIN_EMAIL", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS"), ()),
-    "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_DATABASE_PASSWORD"), ()),
+    "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ALLOWED_PROVIDERS", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_DATABASE_PASSWORD"), ()),
     "embeddings": ((), ("AGENT_EMBEDDINGS_",)),
     "email": (("SETUP_EMAIL_ENABLED", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_IDENTITY_EMAIL"), ("AGENT_EMAIL_IMAP_", "AGENT_EMAIL_SMTP_")),
     "calendar": ((), ("AGENT_CALENDAR_",)),
@@ -2602,6 +2602,11 @@ def draft_problems(instance):
 
     def problem(section, message):
         problems.append((section, message))
+
+    from .openrouter_policy import valid_provider_slugs
+    providers = [item.strip() for item in str(values.get("AGENT_LLM_ALLOWED_PROVIDERS", "")).split(",") if item.strip()]
+    if not valid_provider_slugs(providers):
+        problem("models", "Allowed OpenRouter providers must be comma-separated provider slugs")
 
     for name, _, caster in ENV_OVERRIDES:
         if caster is bool and name in values:

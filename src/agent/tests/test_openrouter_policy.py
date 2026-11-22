@@ -9,6 +9,7 @@ from assistant_agent.config import AppConfig
 from assistant_agent.llm_client import LlmClient
 from assistant_agent.model_service import OpenRouterModels
 from assistant_agent.security_screening import DecisionClient
+from assistant_agent.openrouter_policy import apply_routing_policy
 
 
 @pytest.mark.parametrize("url,enabled,expected", [
@@ -31,7 +32,7 @@ def test_llm_zdr_is_explicit_and_openrouter_only(url, enabled, expected):
 def test_fallback_keeps_zdr_enforcement():
     config = AppConfig({"agent": {"llm": {
         "base_url": "https://openrouter.ai/api/v1", "model": "primary",
-        "fallback_model": "fallback", "zdr_only": True,
+        "fallback_model": "fallback", "zdr_only": True, "allowed_providers": ["deepinfra"],
     }}})
     response = MagicMock()
     response.__enter__.return_value.read.return_value = b'{"choices":[]}'
@@ -42,7 +43,7 @@ def test_fallback_keeps_zdr_enforcement():
         LlmClient(config).chat([], [])
     bodies = [json.loads(call.args[0].data) for call in send.call_args_list]
     assert [body["model"] for body in bodies] == ["primary", "fallback"]
-    assert all(body["provider"] == {"zdr": True} for body in bodies)
+    assert all(body["provider"] == {"zdr": True, "only": ["deepinfra"]} for body in bodies)
 
 
 def test_global_policy_covers_model_tools_speech_and_openrouter_screening():
@@ -56,3 +57,26 @@ def test_global_policy_covers_model_tools_speech_and_openrouter_screening():
     with patch("assistant_agent.security_screening.open_https_request", return_value=response) as send:
         DecisionClient(config, api_key="fixture-key").decide({}, [])
     assert json.loads(send.call_args.args[0].data)["provider"] == {"zdr": True}
+
+
+def test_provider_allowlist_and_zdr_are_enforced_together_for_every_route():
+    config = AppConfig({"agent": {"llm": {"zdr_only": True, "allowed_providers": ["deepinfra", "azure"]}}})
+    for path in ("/chat/completions", "/audio/speech"):
+        with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"):
+            request = OpenRouterModels(config).request(path, {"model": "fixture"})
+        assert json.loads(request.data)["provider"] == {"only": ["deepinfra", "azure"], "zdr": True}
+    external = {}
+    apply_routing_policy(config, "https://example.com/v1", external)
+    assert external == {}
+
+
+def test_existing_provider_restrictions_are_intersected_without_broadening():
+    config = AppConfig({"agent": {"llm": {"allowed_providers": ["deepinfra", "azure"]}}})
+    payload = {"provider": {"zdr": True, "only": ["deepinfra/turbo"]}}
+    apply_routing_policy(config, "https://openrouter.ai/api/v1", payload)
+    assert payload["provider"] == {"zdr": True, "only": ["deepinfra/turbo"]}
+    with pytest.raises(ValueError, match="conflict"):
+        apply_routing_policy(config, "https://openrouter.ai/api/v1", {"provider": {"only": ["openai"]}})
+    with pytest.raises(ValueError, match="Invalid"):
+        apply_routing_policy(AppConfig({"agent": {"llm": {"allowed_providers": ["bad slug"]}}}),
+                             "https://openrouter.ai/api/v1", {})

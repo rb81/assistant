@@ -940,6 +940,7 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     fields = {item["key"]: item for item in current["settings"]}
     assert {item["env"] for item in catalog()} <= fields.keys()
     assert fields["AGENT_LLM_TEMPERATURE"]["data_type"] == "number"
+    assert fields["AGENT_LLM_ALLOWED_PROVIDERS"]["metadata"]["level"] == "basic"
     assert fields["AGENT_TRANSCRIPTION_API_TOKEN"]["secret"]
     assert not fields["AGENT_SANDBOX_REVOKE_TOKEN"]["editable"]
     assert fields["AGENT_CALENDAR_GOOGLE_2_CLIENT_SECRET"]["secret"]
@@ -970,6 +971,7 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
         "revision": current["revision"],
         "values": {
             "AGENT_LLM_TEMPERATURE": "0.35",
+            "AGENT_LLM_ALLOWED_PROVIDERS": "deepinfra,azure",
             "AGENT_MEMORY_STEWARD_MAX_TRANSCRIPT_BYTES": "123456",
             "AGENT_TRANSCRIPTION_API_TOKEN": secret,
             "AGENT_CALENDAR_GOOGLE_2_CALENDAR_ID": "work-calendar",
@@ -990,6 +992,8 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     response = client.post("/v2/configuration/preview", headers=headers, json=invalid)
     assert response.status_code == 200
     assert not response.json()["valid"]
+    invalid_providers = {**draft, "values": {"AGENT_LLM_ALLOWED_PROVIDERS": "invalid provider"}}
+    assert not client.post("/v2/configuration/preview", headers=headers, json=invalid_providers).json()["valid"]
     nonfinite = {**draft, "values": {"AGENT_LLM_TEMPERATURE": "nan"}}
     assert not client.post("/v2/configuration/preview", headers=headers, json=nonfinite).json()["valid"]
     for key, value in (("TASK_AGENT_WORKERS", "-1"), ("SANDBOX_RUN_CPUS", "nan"),
@@ -1049,6 +1053,7 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert replay.json()["id"] == response.json()["id"]
     saved = Installation(tmp_path)
     assert saved.values["AGENT_LLM_TEMPERATURE"] == "0.35"
+    assert saved.values["AGENT_LLM_ALLOWED_PROVIDERS"] == "deepinfra,azure"
     assert saved.values["AGENT_MEMORY_STEWARD_MAX_TRANSCRIPT_BYTES"] == "123456"
     assert saved.secret_values["AGENT_TRANSCRIPTION_API_TOKEN"] == secret
     assert saved.values["AGENT_CALENDAR_GOOGLE_2_CALENDAR_ID"] == "work-calendar"

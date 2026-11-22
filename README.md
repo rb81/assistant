@@ -74,6 +74,7 @@ Management API and database. The first build can take several minutes.
 | **[Documentation index](docs/README.md)** | All setup, integration, and development guides. |
 | **[Running Assistant](docs/running-assistant.md)** | Installation options, updates, backups, and troubleshooting. |
 | **[Configuration](docs/configuration.md)** | Settings, standing instructions, and credentials. |
+| **[Model performance testing](docs/model-performance-testing.md)** | Compare models using isolated simulations. |
 | **[Security](docs/security.md)** | Account isolation, permissions, approvals, and trust boundaries. |
 | **[Build a client](docs/building-clients.md)** | Connect an independent client to the Management API. |
 

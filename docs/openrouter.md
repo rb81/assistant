@@ -37,6 +37,26 @@ only on the Mac; there are no new server model-list refresh settings. The public
 catalog's `zdr=true` filter indicates eligible models, not account-specific
 availability, and does not replace request-time routing enforcement.
 
+## Restricting providers
+
+In **Models & access**, choose **Allowed OpenRouter providers**
+(`AGENT_LLM_ALLOWED_PROVIDERS` / `agent.llm.allowed_providers`). An empty
+selection means no preference. A nonempty selection sends `provider.only` on
+OpenRouter requests, including fallback models, model tools, speech and decision
+screening; it does not affect other API origins. It combines with global and
+feature-specific ZDR, not as an alternative to ZDR. If a model has no eligible
+endpoint, the request fails; neither restriction is silently removed.
+
+The macOS selector retrieves provider tags from public model endpoint lists, or
+from OpenRouter's ZDR endpoints list when global ZDR is on. Discovery does not
+require an OpenRouter key or a configured OpenRouter connection. Full discovery
+performs one request per catalog model and may take time. Lists are cached
+separately on the Mac; a failed refresh retains the previous list and reports
+the error. Saved providers missing from the current list are retained and
+highlighted so they can be removed. Public metadata does not guarantee that a
+specific model or account can use a provider; ZDR and account policies still
+apply at request time.
+
 ## Model Roles Across the System
 
 | Setting | Use |
