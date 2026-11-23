@@ -177,7 +177,7 @@ def run_role(role: str) -> None:
         LOGGER.info("role 'all' runs downloader, schedulers, agents, and supervisor sequentially")
         indexer = WorkspaceIndex(db, config)
         while not stopper():
-            EmailDownloader(db, config).sync_once()
+            EmailDownloader(db, config).poll_once()
             ReminderScheduler(db, config).run_once()
             DeepResearchAgent(db, config).run_once()
             indexer.run_idle_once()

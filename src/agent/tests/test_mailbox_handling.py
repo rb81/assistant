@@ -326,6 +326,17 @@ class MailboxHandlingTest(unittest.TestCase):
         downloader.config = AppConfig({"agent": {"email": {"subject_threading_fallback": subject_fallback}}})
         return downloader
 
+    def test_poll_once_processes_approved_email_before_sync(self) -> None:
+        downloader = self.thread_downloader(FakeThreadDatabase())
+        with patch("assistant_agent.approved_email_execution.mark_interrupted") as mark_interrupted, \
+                patch("assistant_agent.approved_email_execution.process_one", side_effect=[True, False]) as process_one, \
+                patch.object(downloader, "sync_once", return_value=3) as sync_once:
+            self.assertEqual(downloader.poll_once(), 3)
+
+        mark_interrupted.assert_called_once_with(downloader.db)
+        self.assertEqual(process_one.call_count, 2)
+        sync_once.assert_called_once_with()
+
     def test_imap_helpers_quote_provider_folders_and_normalize_status(self) -> None:
         self.assertEqual(imap_mailbox_arg("INBOX"), "INBOX")
         self.assertEqual(imap_mailbox_arg("[Gmail]/Sent Mail"), '"[Gmail]/Sent Mail"')
