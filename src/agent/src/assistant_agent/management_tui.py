@@ -56,8 +56,10 @@ STYLE = Style.from_dict({
 })
 SECTIONS = ("Home", "Services", "Activity", "Connections", "Settings", "Help")
 SETTINGS_DESTINATIONS = {
-    "assistant": "Assistant", "models": "Models & Voice", "connections": "Connections",
-    "safety": "Safety & Approvals", "server": "Server",
+    "assistant": "Assistant", "providers": "Providers & Privacy",
+    "models": "Models & Workflows", "knowledge": "Knowledge & Tools",
+    "connections": "Connections", "safety": "Safety & Approvals",
+    "operations": "System & Operations", "server": "Server",
 }
 SPINNER = ("|", "/", "-", "\\")
 
@@ -825,10 +827,11 @@ class ManagementApp:
                      "Assistant can take real actions. Keep backups and review permissions.", height=3),
                 self.action("[x] I understand the responsibilities" if self.backend.accepted else
                             "[ ] I understand the responsibilities", self.acknowledge),
-                self.action("1. Choose a model and API key", partial(self.go, "Form:models")),
-                self.action("2. Identity and timezone", partial(self.go, "Form:identity")),
-                self.action("3. Review assistant instructions", partial(self.go, "Instructions")),
-                self.action("4. Optional connections", partial(self.go, "Connections")),
+                self.action("1. Configure AI providers and credentials", partial(self.go, "Form:providers")),
+                self.action("2. Choose models and workflows", partial(self.go, "Form:models")),
+                self.action("3. Identity and timezone", partial(self.go, "Form:identity")),
+                self.action("4. Review assistant instructions", partial(self.go, "Instructions")),
+                self.action("5. Optional connections", partial(self.go, "Connections")),
             ]
         else:
             items += [
@@ -887,7 +890,8 @@ class ManagementApp:
                        if key.startswith(("advanced:", "catalog:", "calendar:")) or key == "deployment"]
             description = "Focused controls for limits, search, privacy, and background behavior."
         else:
-            choices = [(self.groups[key][0], "Form:" + key) for key in ("identity", "models", "security", "embeddings")
+            choices = [(self.groups[key][0], "Form:" + key)
+                       for key in ("providers", "provider-privacy", "models", "identity", "security", "embeddings")
                        if key in self.groups]
             choices += [("Assistant instructions", "Instructions"), ("Credentials", "Credentials"),
                         ("Search maintenance", "Search"), ("Storage & recovery", "Storage"),

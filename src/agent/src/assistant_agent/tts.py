@@ -24,6 +24,7 @@ from .requests import TransactionDatabase
 from .secret_store import read_secret
 from .transport_security import open_https_request
 from .openrouter_policy import require_zdr
+from .llm_providers import provider_is_disabled
 
 
 MAX_AUDIO_BYTES = 32 * 1024 * 1024
@@ -42,6 +43,7 @@ def settings(config):
 def configured(config):
     model, voice = settings(config)
     return (config.get_bool("agent.tts.enabled", False) and bool(model) and bool(voice)
+            and not provider_is_disabled(config, "openrouter")
             and bool(read_secret("AGENT_LLM_OPENROUTER_API_KEY")))
 
 
@@ -149,7 +151,7 @@ class TextToSpeech(ModelToolResources):
 
     def run(self, text=None, instructions=None, **unexpected):
         if not configured(self.config):
-            raise ModelServiceError("Text-to-speech is disabled or AGENT_LLM_OPENROUTER_API_KEY is missing")
+            raise ModelServiceError("Text-to-speech is disabled, OpenRouter is blocked, or its API key is missing")
         if unexpected:
             raise ModelServiceError(
                 "Unsupported text_to_speech arguments: %s. The administrator configures the model and voice; "

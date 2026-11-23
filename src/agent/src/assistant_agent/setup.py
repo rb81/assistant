@@ -28,7 +28,10 @@ from dotenv.parser import parse_stream
 from .secret_store import SECRET_NAMES, is_secret_name
 from . import settings_schema
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
-from .llm_providers import PROVIDER_CREDENTIALS, provider_for
+from .llm_providers import (
+    PROVIDER_CREDENTIALS, parse_model_reference, provider_base_url, provider_for,
+    provider_is_disabled, route_fallbacks, route_provider, validate_provider_url,
+)
 from .transport_security import validate_embedding_url, validate_https_url
 from .validation import WEAK_PASSWORDS
 from .setup_privileges import prepare_sudo, terminal_authorization
@@ -2681,12 +2684,40 @@ def draft_problems(instance):
                     raise ValueError
             except (TypeError, ValueError):
                 problem("advanced", f"{key} must be an integer from {low} to {high}")
+    routing_values = copy.deepcopy(instance.defaults.values)
+    for name, path, _ in ENV_OVERRIDES:
+        if name not in values:
+            continue
+        current = routing_values
+        *parents, leaf = path.split(".")
+        for part in parents:
+            current = current.setdefault(part, {})
+        current[leaf] = values[name]
+    routing_config = AppConfig(routing_values)
+    from .openrouter_policy import require_zdr_eligibility
     model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
-    if str(model_service_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
-        problem("advanced", "Model preset tool requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
+    if str(model_service_enabled).lower() in {"true", "1", "yes", "on"}:
+        if provider_is_disabled(routing_config, "openrouter"):
+            problem("advanced", "Model preset tool requires OpenRouter, which is disabled in provider settings")
+        if not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
+            problem("advanced", "Model preset tool requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
     tts_enabled = values.get("AGENT_TTS_ENABLED", instance.defaults.get("agent.tts.enabled", False))
-    if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
-        problem("advanced", "Text-to-speech requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
+    if str(tts_enabled).lower() in {"true", "1", "yes", "on"}:
+        if provider_is_disabled(routing_config, "openrouter"):
+            problem("advanced", "Text-to-speech requires OpenRouter, which is disabled in provider settings")
+        if not instance.secret_values.get("AGENT_LLM_OPENROUTER_API_KEY"):
+            problem("advanced", "Text-to-speech requires AGENT_LLM_OPENROUTER_API_KEY; configure it with setup secrets update AGENT_LLM_OPENROUTER_API_KEY")
+    if str(tts_enabled).lower() in {"true", "1", "yes", "on"} and (
+        routing_config.get_bool("agent.llm.zdr_only", False)
+        or routing_config.get_bool("agent.tts.zdr_only", False)
+    ):
+        try:
+            require_zdr_eligibility(
+                routing_config, "openrouter", str(routing_config.get("agent.tts.model", "") or ""),
+                scoped=True,
+            )
+        except ValueError as error:
+            problem("models", "Text-to-speech: " + str(error))
     approval_channel = values.get("AGENT_APPROVALS_CHANNEL", instance.defaults.get("agent.approvals.channel", "email"))
     if approval_channel in {"telegram", "both"}:
         enabled = values.get("AGENT_TELEGRAM_ENABLED", instance.defaults.get("agent.telegram.enabled", False))
@@ -2749,11 +2780,81 @@ def draft_problems(instance):
             raise RuntimeError
     except RuntimeError:
         problem("models", "A model and valid HTTPS model API URL without credentials are required")
-    model_config = AppConfig({"agent": {"llm": {
-        "provider": values.get("AGENT_LLM_PROVIDER", "auto"), "base_url": base_url,
-    }}})
-    provider = provider_for(model_config, base_url)
+    supported_providers = set(PROVIDER_CREDENTIALS)
+    for path in ("agent.providers.disabled", "agent.providers.priority"):
+        configured = routing_config.get_list(path)
+        if len(configured) != len(set(configured)) or any(item not in supported_providers for item in configured):
+            problem("models", "%s must contain distinct supported provider IDs" % path)
+    try:
+        provider = provider_for(routing_config, base_url)
+    except ValueError as error:
+        problem("models", str(error))
+        provider = "openrouter"
     required = {"AGENT_DATABASE_PASSWORD": "models", PROVIDER_CREDENTIALS[provider]: "models"}
+    model_routes = {
+        "task": "agent.llm.model",
+        "naming": "agent.naming.model",
+        "routing": "agent.routing.model",
+        "summarization": "agent.limits.summarization_model",
+        "memory": "agent.memory.steward.model",
+        "research": "agent.deep_research.model",
+        "research_search": "agent.deep_research.search_model",
+        "web_search": "agent.search.model",
+        "development": "agent.security.development.model",
+    }
+    active_routes = {
+        "task", "naming", "routing", "summarization", "development",
+    }
+    if routing_config.get_bool("agent.memory.steward.enabled", True):
+        active_routes.add("memory")
+    if routing_config.get_bool("agent.deep_research.enabled", True):
+        active_routes.add("research")
+        if (routing_config.get_bool("agent.search.openrouter_enabled", True)
+                and not provider_is_disabled(routing_config, "openrouter")):
+            active_routes.add("research_search")
+    if (routing_config.get_bool("agent.search.enabled", True)
+            and routing_config.get_bool("agent.search.openrouter_enabled", True)
+            and not provider_is_disabled(routing_config, "openrouter")):
+        active_routes.add("web_search")
+    for route, model_path in model_routes.items():
+        if route not in active_routes:
+            continue
+        try:
+            route_id = route_provider(routing_config, route)
+            route_url = provider_base_url(routing_config, route_id)
+            validate_https_url(route_url, "Model API URL")
+            validate_provider_url(route_id, route_url)
+        except (RuntimeError, ValueError) as error:
+            problem("models", str(error))
+            continue
+        credential = PROVIDER_CREDENTIALS[route_id]
+        if route_id == "openai-compatible" and not instance.secret_values.get(credential):
+            problem("models", "%s requires a saved provider credential" % route_id)
+        required.setdefault(credential, "models")
+        model = str(routing_config.get(model_path, "") or "").strip()
+        if not model:
+            model = str(routing_config.get("agent.llm.model", "") or "").strip()
+        try:
+            require_zdr_eligibility(routing_config, route_id, model)
+        except ValueError as error:
+            problem("models", "%s route: %s" % (route, error))
+        for fallback in route_fallbacks(routing_config, route, route_id):
+            try:
+                fallback_provider, fallback_model = parse_model_reference(fallback)
+                if provider_is_disabled(routing_config, fallback_provider):
+                    raise ValueError("Fallback route uses disabled provider %s" % fallback_provider)
+                fallback_url = provider_base_url(routing_config, fallback_provider)
+                validate_https_url(fallback_url, "Fallback model API URL")
+                validate_provider_url(fallback_provider, fallback_url)
+                fallback_credential = PROVIDER_CREDENTIALS[fallback_provider]
+                required.setdefault(fallback_credential, "models")
+                if route in {"research_search", "web_search"} and fallback_provider != "openrouter":
+                    raise ValueError("This route requires OpenRouter's web-search tool")
+                if route_id == fallback_provider and model == fallback_model:
+                    raise ValueError("Fallback model must differ from the primary model")
+                require_zdr_eligibility(routing_config, fallback_provider, fallback_model)
+            except (RuntimeError, ValueError) as error:
+                problem("models", "%s route fallback %r: %s" % (route, fallback, error))
     if values.get("SETUP_EMAIL_ENABLED") == "true":
         required.update(dict.fromkeys(("AGENT_EMAIL_IMAP_PASSWORD", "AGENT_EMAIL_SMTP_PASSWORD"), "email"))
         for name in ("AGENT_ADMIN_EMAIL", "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_USERNAME", "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_USERNAME", "AGENT_EMAIL_SMTP_FROM", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS"):
@@ -2827,17 +2928,24 @@ def draft_problems(instance):
     from .development_supervisor import configuration_errors
     for error in configuration_errors(security_config(instance)):
         problem("security", error)
-    if security_value(instance, "AGENT_SECURITY_DEVELOPMENT_MODEL", "").strip():
-        required.setdefault("AGENT_LLM_OPENROUTER_API_KEY", "security")
-    from .security_screening import PROVIDER_CHOICES
+    from .security_screening import PROVIDER_CHOICES, PROVIDERS as SCREENING_PROVIDERS
     for name in ("AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED", "AGENT_SECURITY_CONFIRM_NEW_ADMIN_CONVERSATIONS"):
         if security_value(instance, name, True) not in {"true", "false"}:
             problem("security", name + " must be true or false")
     if values.get("AGENT_SECURITY_DECISION_MODEL_ENABLED", "false") == "true":
         provider = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_PROVIDER", "openrouter") or "openrouter"
+        decision_model = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_MODEL")
+        decision_model = decision_model or getattr(SCREENING_PROVIDERS.get(provider), "model", "")
+        if provider_is_disabled(routing_config, provider):
+            problem("security", "Decision model provider %s is disabled" % provider)
         url = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_URL")
         if provider not in PROVIDER_CHOICES:
             problem("security", "Decision model provider must be one of " + ", ".join(PROVIDER_CHOICES))
+        if routing_config.get_bool("agent.llm.zdr_only", False):
+            try:
+                require_zdr_eligibility(routing_config, provider, decision_model)
+            except ValueError as error:
+                problem("security", "Decision model: " + str(error))
         try:
             if provider == "custom" and not url:
                 raise RuntimeError
@@ -2847,7 +2955,7 @@ def draft_problems(instance):
                     raise RuntimeError
         except RuntimeError:
             problem("security", "Decision model URL must be an HTTPS URL without credentials")
-        if provider == "custom" and not security_value(instance, "AGENT_SECURITY_DECISION_MODEL_MODEL"):
+        if provider == "custom" and not decision_model:
             problem("security", "A custom decision model requires a model identifier")
         if security_value(instance, "AGENT_SECURITY_DECISION_MODEL_ON_ERROR", "review") not in {"review", "reject", "allow"}:
             problem("security", "Decision model error handling must be review, reject or allow")

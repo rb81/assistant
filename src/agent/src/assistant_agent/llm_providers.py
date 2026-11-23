@@ -14,6 +14,100 @@ PROVIDER_CREDENTIALS = {
     "cloudflare": "AGENT_LLM_CLOUDFLARE_API_KEY",
     "openai-compatible": "AGENT_LLM_OPENAI_API_KEY",
 }
+PROVIDER_DEFAULT_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+}
+
+
+def route_provider(config, route):
+    """Resolve a route's provider, preserving the legacy task-provider setting."""
+    selected_path = "agent.model_routes.%s.provider" % route
+    selected = str(config.get(selected_path, "inherit") or "inherit").strip().lower()
+    if selected in {"", "inherit", "auto"}:
+        base_url = str(config.get("agent.llm.base_url", PROVIDER_DEFAULT_URLS["openrouter"]) or "")
+        provider = provider_for(config, base_url)
+    else:
+        if selected not in PROVIDER_CREDENTIALS:
+            raise ValueError("Unsupported model provider for route %s: %s" % (route, selected))
+        provider = selected
+    if provider_is_disabled(config, provider):
+        raise ValueError("Model route %s uses disabled provider %s" % (route, provider))
+    return provider
+
+
+def provider_is_disabled(config, provider):
+    return provider in {item.strip().lower() for item in config.get_list("agent.providers.disabled")}
+
+
+def provider_base_url(config, provider):
+    """Return a validated endpoint for one provider without changing global route selection."""
+    if provider in PROVIDER_DEFAULT_URLS:
+        if provider == "openrouter":
+            configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+            if configured and (urlsplit(configured).hostname or "").lower() == "openrouter.ai":
+                return configured
+        return PROVIDER_DEFAULT_URLS[provider]
+    if provider == "cloudflare":
+        account_id = str(config.get("agent.providers.cloudflare_account_id", "") or "").strip()
+        if not account_id:
+            configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+            parsed = urlsplit(configured)
+            parts = parsed.path.strip("/").split("/")
+            if (parsed.hostname or "").lower() == "api.cloudflare.com" and len(parts) >= 5:
+                account_id = parts[3]
+        if not account_id:
+            raise ValueError("Cloudflare Workers AI requires an account ID")
+        return "https://api.cloudflare.com/client/v4/accounts/%s/ai/v1" % quote(account_id, safe="")
+    if provider == "openai-compatible":
+        configured = str(config.get("agent.providers.openai_compatible_base_url", "") or "").strip()
+        if not configured:
+            legacy = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+            if provider_for(config, legacy) == "openai-compatible":
+                configured = legacy
+        if not configured:
+            raise ValueError("OpenAI-compatible provider requires its HTTPS API URL")
+        return configured.rstrip("/")
+    raise ValueError("Unsupported model provider: %s" % provider)
+
+
+def validate_provider_url(provider, base_url):
+    """Prevent a route from using one provider's policy with another provider's host."""
+    host = (urlsplit(base_url).hostname or "").lower()
+    native_hosts = {
+        "openai": "api.openai.com",
+        "anthropic": "api.anthropic.com",
+        "gemini": "generativelanguage.googleapis.com",
+        "cloudflare": "api.cloudflare.com",
+    }
+    if provider == "openrouter" and host != "openrouter.ai":
+        raise ValueError("OpenRouter provider requires an https://openrouter.ai API URL")
+    if provider in native_hosts and host != native_hosts[provider]:
+        raise ValueError("%s provider requires the official %s API host" % (provider, native_hosts[provider]))
+    if provider == "openai-compatible" and host == "openrouter.ai":
+        raise ValueError("OpenRouter URLs must use the OpenRouter provider policy")
+
+
+def route_fallbacks(config, route, primary_provider):
+    """Return ordered explicit provider:model candidates, including the legacy task fallback."""
+    fallbacks = config.get_list("agent.model_routes.%s.fallbacks" % route)
+    if fallbacks or route != "task":
+        return fallbacks
+    legacy = str(config.get("agent.llm.fallback_model", "") or "").strip()
+    return ["%s:%s" % (primary_provider, legacy)] if legacy else []
+
+
+def parse_model_reference(reference):
+    """Parse an explicit provider:model fallback without guessing a provider."""
+    if not isinstance(reference, str) or ":" not in reference:
+        raise ValueError("Fallback models must use provider:model identifiers")
+    provider, model = reference.split(":", 1)
+    provider, model = provider.strip().lower(), model.strip()
+    if provider not in PROVIDER_CREDENTIALS or not model:
+        raise ValueError("Fallback models must use a supported provider and non-empty model ID")
+    return provider, model
 
 
 def provider_for(config, base_url):

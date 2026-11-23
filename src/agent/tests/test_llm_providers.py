@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from assistant_agent.config import AppConfig
-from assistant_agent.llm_client import LlmClient
+from assistant_agent.llm_client import LlmClient, _TransientLlmError
 from assistant_agent.llm_providers import build_request, normalize_response, provider_for
 
 
@@ -129,3 +129,51 @@ def test_openai_sets_store_false_and_cloudflare_disables_gateway_payload_storage
 def test_native_provider_policies_require_the_official_api_host(provider, base_url):
     with pytest.raises(ValueError, match="official"):
         provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
+
+
+def test_explicit_model_route_uses_its_selected_provider():
+    config = AppConfig({"agent": {
+        "llm": {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "model": "gpt-4.1"},
+        "model_routes": {"task": {"provider": "openai", "fallbacks": []}},
+    }})
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+    with patch("assistant_agent.llm_client.read_secret", return_value="openai-key"), \
+            patch("assistant_agent.llm_client.refresh_request_context", side_effect=lambda messages, _: messages), \
+            patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
+        LlmClient(config, route="task").chat([{"role": "user", "content": "hello"}], [])
+    assert send.call_args.args[0].full_url == "https://api.openai.com/v1/chat/completions"
+
+
+def test_explicit_cross_provider_fallbacks_are_ordered_and_disabled_providers_block():
+    config = AppConfig({"agent": {
+        "llm": {"provider": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1"},
+        "model_routes": {"task": {
+            "provider": "openai", "fallbacks": ["anthropic:claude-sonnet-4-6", "gemini:gemini-2.5-flash"],
+        }},
+    }})
+    response = {"choices": [{"message": {"content": "recovered"}}]}
+    with patch("assistant_agent.llm_client.read_secret", side_effect=lambda name: name):
+        client = LlmClient(config, route="task")
+    with patch("assistant_agent.llm_client.read_secret", side_effect=lambda name: name), \
+            patch.object(client, "_chat_with_model", side_effect=[_TransientLlmError("busy"), response]) as send:
+        assert client.chat([], []) == response
+    assert send.call_args_list[1].kwargs == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "AGENT_LLM_ANTHROPIC_API_KEY",
+    }
+
+    disabled = AppConfig({
+        **config.values,
+        "agent": {
+            **config.values["agent"],
+            "providers": {"disabled": ["anthropic"]},
+        },
+    })
+    with patch("assistant_agent.llm_client.read_secret", side_effect=lambda name: name):
+        blocked = LlmClient(disabled, route="task")
+    with patch.object(blocked, "_chat_with_model", side_effect=_TransientLlmError("busy")) as send:
+        with pytest.raises(RuntimeError, match="disabled provider anthropic"):
+            blocked.chat([], [])
+    send.assert_called_once()

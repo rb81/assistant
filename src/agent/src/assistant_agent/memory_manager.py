@@ -435,6 +435,7 @@ class MemorySteward:
             temperature=0.0,
             max_tokens=max_tokens,
             timeout_seconds=self.config.get_int("agent.memory.steward.timeout_seconds", 45),
+            route="memory",
         )
 
     def task_query(

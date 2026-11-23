@@ -1,6 +1,5 @@
 """Independent, tool-free review of a complete development version."""
 
-import copy
 import json
 import re
 from http.client import HTTPException
@@ -122,11 +121,13 @@ def configuration_errors(config: AppConfig) -> list[str]:
     }:
         errors.append("agent.security.script_yolo must be a boolean")
     model = config.get("agent.security.development.model", "")
-    if not isinstance(model, str) or (model.strip() and not re.fullmatch(
-        r"[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._:/-]*", model.strip(),
-    )):
-        errors.append("Development supervisor model must be blank to use the agent model, "
-                      "or an OpenRouter provider/model ID (e.g. openai/gpt-sol-6.1)")
+    if not isinstance(model, str) or (
+        model.strip() and (
+            not re.fullmatch(r"[a-zA-Z0-9@][a-zA-Z0-9@._:/-]*", model.strip())
+            or model.strip().endswith("/")
+        )
+    ):
+        errors.append("Development supervisor model must be blank to use the agent model or a provider/model ID")
     for key, default in (("max_minutes", 30), ("max_runs", 20)):
         value = config.get("agent.security.development." + key, default)
         if (isinstance(value, bool) or not isinstance(value, (int, str))
@@ -137,16 +138,7 @@ def configuration_errors(config: AppConfig) -> list[str]:
 
 def _client(config: AppConfig) -> LlmClient:
     model = config.get("agent.security.development.model", "").strip()
-    if not model:
-        # The task chat configuration is the established default model/provider.
-        return LlmClient(config, temperature=0, allow_fallback=False)
-    values = copy.deepcopy(config.values)
-    values.setdefault("agent", {}).setdefault("llm", {}).update({
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key_env": "AGENT_LLM_OPENROUTER_API_KEY",
-        "model": model,
-    })
-    return LlmClient(AppConfig(values), temperature=0, allow_fallback=False)
+    return LlmClient(config, model=model or None, temperature=0, allow_fallback=False, route="development")
 
 
 def _unique_object(pairs):

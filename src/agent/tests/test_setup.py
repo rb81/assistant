@@ -596,11 +596,11 @@ with tempfile.TemporaryDirectory() as root:
     values = {spec.key: backend.value(spec) for spec in GROUPS["security"][1]}
     values["AGENT_SECURITY_DEVELOPMENT_MODEL"] = "invalid model"
     backend.stage("security", values)
-    assert any("OpenRouter provider/model ID" in message for _, message in backend.problems())
+    assert any("provider/model ID" in message for _, message in backend.problems())
     try:
         backend.save()
     except SetupError as exc:
-        assert "OpenRouter provider/model ID" in str(exc)
+        assert "provider/model ID" in str(exc)
     else:
         raise AssertionError("Invalid preset must not be saved")
     values["AGENT_SECURITY_DEVELOPMENT_MODEL"] = "openai/gpt-sol-6.1"
@@ -1277,25 +1277,24 @@ with tempfile.TemporaryDirectory() as root:
                 draft_problems(instance),
             )
 
-    def test_development_settings_validate_limits_and_model_override_credentials(self):
-        from assistant_agent.setup import draft_problems, secret_services
+    def test_development_settings_validate_limits_and_selected_provider_credentials(self):
+        from assistant_agent.setup import draft_problems
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)
             instance.values.update({"AGENT_LLM_BASE_URL": "https://api.openai.com/v1",
                                     "AGENT_SECURITY_DEVELOPMENT_MODEL": "openai/gpt-sol-6.1",
+                                    "AGENT_DEEP_RESEARCH_ENABLED": "false",
+                                    "AGENT_SEARCH_ENABLED": "false",
                                     "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "0",
                                     "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "1.5"})
             instance.secret_values["AGENT_LLM_OPENAI_API_KEY"] = "task-model-key"
             instance.secret_values.pop("AGENT_LLM_OPENROUTER_API_KEY")
             errors = [message for section, message in draft_problems(instance) if section == "security"]
-            self.assertEqual(len(errors), 3)
+            self.assertEqual(len(errors), 2)
             self.assertTrue(any("max_minutes" in error for error in errors))
             self.assertTrue(any("max_runs" in error for error in errors))
-            self.assertTrue(any("AGENT_LLM_OPENROUTER_API_KEY" in error for error in errors))
-            self.assertIn("task-agent", secret_services("AGENT_LLM_OPENROUTER_API_KEY"))
             instance.values.update({"AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "10",
                                     "AGENT_SECURITY_DEVELOPMENT_MAX_RUNS": "4"})
-            instance.secret_values["AGENT_LLM_OPENROUTER_API_KEY"] = "review-model-key"
             self.assertEqual(draft_problems(instance), [])
 
     def test_routing_intake_services_receive_the_model_key(self):

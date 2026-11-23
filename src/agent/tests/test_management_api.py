@@ -912,8 +912,11 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
         assert fields["AGENT_LLM_OPENROUTER_API_KEY"]["display_value"] == "Configured"
         assert fields["AGENT_LLM_OPENROUTER_API_KEY"]["value"] == fields["AGENT_LLM_OPENROUTER_API_KEY"]["default"] == ""
         sections = {section["id"]: section for section in current["sections"]}
-        assert sections["task"]["selection_keys"] == ["AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL"]
-        assert sections["speech"]["selection_keys"] == ["AGENT_TTS_MODEL"]
+        assert sections["task"]["selection_keys"] == [
+            "AGENT_MODEL_ROUTES_TASK_PROVIDER", "AGENT_LLM_MODEL",
+            "AGENT_LLM_FALLBACK_MODEL", "AGENT_MODEL_ROUTES_TASK_FALLBACKS",
+        ]
+        assert sections["speech"]["selection_keys"] == ["AGENT_MODEL_ROUTES_SPEECH_PROVIDER", "AGENT_TTS_MODEL"]
         assert sections["tools"]["selection_keys"] == []
         selector_keys = {key for section in current["sections"] for key in section["selection_keys"]}
         assert "AGENT_LLM_TEMPERATURE" not in selector_keys
@@ -931,7 +934,10 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
                 assert link["group"] in groups
                 assert link["field_key"] in section_fields
                 assert link["field_key"] not in section["selection_keys"]
-                assert link["destination"] in {"models", "advanced", "assistant", "safety", "connections"}
+                assert link["destination"] in {
+                    "models", "advanced", "assistant", "providers", "knowledge",
+                    "safety", "connections", "operations",
+                }
         assert sections["speech"]["enabled"] is False and sections["speech"]["settings"]
         assert sections["screening"]["enabled"] is False and sections["screening"]["settings"]
     finally:
@@ -1117,7 +1123,7 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     assert fields["SANDBOX_EGRESS_MODE"]["metadata"]["warning"]
     assert not fields["ASSISTANT_INSTALL_ROOT"]["editable"]
     catalog_response = client.get("/v2/configuration/catalog", headers=headers).json()
-    assert next(group for group in catalog_response["groups"] if group["id"] == "catalog:web_fetch")["destination"] == "models"
+    assert next(group for group in catalog_response["groups"] if group["id"] == "catalog:web_fetch")["destination"] == "knowledge"
     assert fields["AGENT_WEB_FETCH_ENABLED"]["metadata"]["level"] == "basic"
     for key in ("AGENT_WEB_FETCH_BASE_URL", "AGENT_WEB_FETCH_API_TOKEN"):
         assert fields[key]["metadata"]["level"] == "advanced"

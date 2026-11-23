@@ -16,16 +16,17 @@
 model_sections:
   - id: task
     title: Task models & provider
-    paths: [agent.llm., agent.app.name, agent.app.referer_url]
+    paths: [agent.llm., agent.app.name, agent.app.referer_url, agent.model_routes.task.]
     summary: [agent.llm.model, agent.llm.fallback_model, agent.llm.base_url]
-    selectors: [agent.llm.model, agent.llm.fallback_model]
-    provider: agent.llm.base_url
+    selectors: [agent.model_routes.task.provider, agent.llm.model, agent.llm.fallback_model, agent.model_routes.task.fallbacks]
+    provider: agent.model_routes.task.provider
   - id: routing
     title: Routing & naming
-    paths: [agent.routing., agent.naming.]
+    paths: [agent.routing., agent.naming., agent.model_routes.routing., agent.model_routes.naming.]
     summary: [agent.routing.model, agent.naming.model]
-    selectors: [agent.routing.model, agent.naming.model]
-    provider: agent.llm.base_url
+    selectors: [agent.model_routes.routing.provider, agent.routing.model, agent.model_routes.routing.fallbacks,
+                agent.model_routes.naming.provider, agent.naming.model, agent.model_routes.naming.fallbacks]
+    provider: agent.model_routes.routing.provider
   - id: limits
     title: Generation limits & summarization
     paths:
@@ -40,45 +41,50 @@ model_sections:
       - agent.limits.summarization_max_input_chars
       - agent.limits.limit_approach_factor
       - agent.limits.rate_limit_backoff_seconds
+      - agent.model_routes.summarization.
     summary: [agent.limits.summarization_model]
-    selectors: [agent.limits.summarization_model]
-    provider: agent.llm.base_url
+    selectors: [agent.model_routes.summarization.provider, agent.limits.summarization_model,
+                agent.model_routes.summarization.fallbacks]
+    provider: agent.model_routes.summarization.provider
   - id: screening
     title: Decision-model screening
     paths: [agent.security.decision_model.]
     summary: [agent.security.decision_model.provider, agent.security.decision_model.model, agent.security.decision_model.url]
-    selectors: [agent.security.decision_model.model]
+    selectors: [agent.security.decision_model.provider, agent.security.decision_model.model]
     enabled: agent.security.decision_model.enabled
     provider: agent.security.decision_model.provider
   - id: development
     title: Development supervisor
-    paths: [agent.security.development.]
+    paths: [agent.security.development., agent.model_routes.development.]
     summary: [agent.security.development.model]
-    selectors: [agent.security.development.model]
-    provider: agent.llm.base_url
-    provider_override_model: agent.security.development.model
-    provider_override_url: https://openrouter.ai/api/v1
+    selectors: [agent.model_routes.development.provider, agent.security.development.model,
+                agent.model_routes.development.fallbacks]
+    provider: agent.model_routes.development.provider
   - id: research
     title: Deep research
-    paths: [agent.deep_research.enabled, agent.deep_research.model, agent.deep_research.search_model, agent.deep_research.max_tool_calls, agent.deep_research.max_iterations, agent.deep_research.timeout_seconds]
+    paths: [agent.deep_research.enabled, agent.deep_research.model, agent.deep_research.search_model,
+            agent.deep_research.max_tool_calls, agent.deep_research.max_iterations, agent.deep_research.timeout_seconds,
+            agent.model_routes.research., agent.model_routes.research_search.]
     summary: [agent.deep_research.model, agent.deep_research.search_model]
-    selectors: [agent.deep_research.model, agent.deep_research.search_model]
+    selectors: [agent.model_routes.research.provider, agent.deep_research.model,
+                agent.model_routes.research.fallbacks, agent.model_routes.research_search.provider,
+                agent.deep_research.search_model, agent.model_routes.research_search.fallbacks]
     enabled: agent.deep_research.enabled
-    provider: agent.llm.base_url
+    provider: agent.model_routes.research.provider
   - id: fusion
     title: Multi-model analysis
-    paths: [agent.fusion.]
+    paths: [agent.fusion., agent.model_routes.fusion.]
     summary: [agent.fusion.analysis_models, agent.fusion.model]
-    selectors: [agent.fusion.analysis_models, agent.fusion.model]
+    selectors: [agent.model_routes.fusion.provider, agent.fusion.analysis_models, agent.fusion.model]
     enabled: agent.fusion.enabled
-    provider_url: https://openrouter.ai/api/v1
+    provider: agent.model_routes.fusion.provider
   - id: search
     title: Model-powered web search
-    paths: [agent.search.enabled, agent.search.openrouter_enabled, agent.search.primary_provider, agent.search.model, agent.search.engine, agent.search.max_results, agent.search.max_total_results, agent.search.max_tokens, agent.search.timeout_seconds, agent.search.search_context_size, agent.search.allowed_domains, agent.search.excluded_domains]
+    paths: [agent.search.enabled, agent.search.openrouter_enabled, agent.search.primary_provider, agent.search.model, agent.search.engine, agent.search.max_results, agent.search.max_total_results, agent.search.max_tokens, agent.search.timeout_seconds, agent.search.search_context_size, agent.search.allowed_domains, agent.search.excluded_domains, agent.model_routes.web_search.]
     summary: [agent.search.primary_provider, agent.search.model]
-    selectors: [agent.search.model]
+    selectors: [agent.model_routes.web_search.provider, agent.search.model, agent.model_routes.web_search.fallbacks]
     enabled: agent.search.openrouter_enabled
-    provider_url: https://openrouter.ai/api/v1
+    provider: agent.model_routes.web_search.provider
   - id: embeddings
     title: Embeddings
     paths: [agent.embeddings.]
@@ -95,11 +101,19 @@ model_sections:
     provider: agent.transcription.base_url
   - id: speech
     title: Speech generation
-    paths: [agent.tts.]
+    paths: [agent.tts., agent.model_routes.speech.]
     summary: [agent.tts.model, agent.tts.voice]
-    selectors: [agent.tts.model]
+    selectors: [agent.model_routes.speech.provider, agent.tts.model]
     enabled: agent.tts.enabled
-    provider_url: https://openrouter.ai/api/v1
+    provider: agent.model_routes.speech.provider
+  - id: memory
+    title: Memory stewardship
+    paths: [agent.memory.steward.model, agent.model_routes.memory.]
+    summary: [agent.memory.steward.model]
+    selectors: [agent.model_routes.memory.provider, agent.memory.steward.model,
+                agent.model_routes.memory.fallbacks]
+    enabled: agent.memory.steward.enabled
+    provider: agent.model_routes.memory.provider
   - id: tools
     title: Model tools & shared spending limit
     paths: [agent.model_service.]
@@ -136,6 +150,100 @@ settings:
   agent.llm.zdr_verified_models:
     label: Verified ZDR models
     description: "Exact model allowlist in provider:model format, such as openai:gpt-4.1. Required in ZDR-only mode. Verify model eligibility and all provider account/privacy controls before adding entries."
+  agent.providers.disabled:
+    type: list
+    label: Disabled providers
+    description: "Provider IDs blocked for model requests and route fallbacks. Credentials are retained if a provider is disabled."
+  agent.providers.priority:
+    type: list
+    label: Provider selection order
+    description: "Order configured providers in provider selectors. It does not silently change a model route; choose an explicit provider and model or configure provider:model fallbacks."
+  agent.providers.openai_compatible_base_url:
+    label: OpenAI-compatible provider URL
+    description: "HTTPS API base URL for a custom OpenAI-compatible provider."
+  agent.providers.cloudflare_account_id:
+    label: Cloudflare account ID
+    description: "Account ID used to build the Workers AI API URL. Verify AI Gateway and account-level Logpush controls separately."
+  agent.model_routes.task.provider:
+    label: Task provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider for ordinary task responses. Inherit uses the configured default provider."
+  agent.model_routes.task.fallbacks:
+    type: list
+    label: Task fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures, for example openai:gpt-4.1-mini."
+  agent.model_routes.naming.provider:
+    label: Naming provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used for task and workstream titles; inherit uses the default model provider."
+  agent.model_routes.naming.fallbacks:
+    type: list
+    label: Naming fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.routing.provider:
+    label: Request-routing provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used to classify incoming requests; inherit uses the default model provider."
+  agent.model_routes.routing.fallbacks:
+    type: list
+    label: Request-routing fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.summarization.provider:
+    label: Summarization provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used to summarize conversation history; inherit uses the default model provider."
+  agent.model_routes.summarization.fallbacks:
+    type: list
+    label: Summarization fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.memory.provider:
+    label: Memory provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used for memory stewardship; inherit uses the default model provider."
+  agent.model_routes.memory.fallbacks:
+    type: list
+    label: Memory fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.research.provider:
+    label: Research provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used for deep-research reasoning; inherit uses the default model provider."
+  agent.model_routes.research.fallbacks:
+    type: list
+    label: Research fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.research_search.provider:
+    label: Research search-model provider
+    enum: [openrouter]
+    description: "Deep-research web search currently uses OpenRouter's web-search tool."
+  agent.model_routes.research_search.fallbacks:
+    type: list
+    label: Research search-model fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.web_search.provider:
+    label: Web-search model provider
+    enum: [openrouter]
+    description: "Model-powered web search currently uses OpenRouter's web-search tool."
+  agent.model_routes.web_search.fallbacks:
+    type: list
+    label: Web-search model fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.fusion.provider:
+    label: Fusion provider
+    enum: [openrouter]
+    description: "Multi-model fusion currently uses OpenRouter's fusion tool."
+  agent.model_routes.development.provider:
+    label: Development-session provider
+    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Provider used by the development supervisor; inherit uses the default model provider."
+  agent.model_routes.development.fallbacks:
+    type: list
+    label: Development-session fallbacks
+    description: "Ordered provider:model pairs tried only after transient failures."
+  agent.model_routes.speech.provider:
+    label: Speech provider
+    enum: [openrouter]
+    description: "Only providers with a compatible speech-generation adapter are selectable."
   agent.llm.fallback_model:
     model_blank_label: No fallback model
   agent.naming.model:
@@ -726,7 +834,7 @@ settings:
   # Fusion
   agent.fusion.enabled:
     label: Enable multi-model fusion
-    description: "Expose OpenRouter's fusion tool when OpenRouter is configured. Fusion can use multiple models and additional provider tokens; enable only if needed."
+    description: "Expose OpenRouter's fusion tool only when the task route also uses OpenRouter. Fusion can use multiple models and additional provider tokens; enable only if needed."
   agent.fusion.analysis_models:
     model_blank_label: Provider-selected models
     model_blank_source: provider_default

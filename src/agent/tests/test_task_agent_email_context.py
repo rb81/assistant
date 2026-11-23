@@ -481,6 +481,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         self.assertEqual(job["task_summary"], "Create a female voice note and send it on Telegram")
         self.assertEqual(llm.call_args.kwargs, {
             "model": "example/cheap", "max_tokens": 60, "timeout_seconds": 15, "allow_fallback": False,
+            "route": "naming",
         })
 
     def test_naming_timeout_keeps_readable_fallback_and_manual_names_are_preserved(self):

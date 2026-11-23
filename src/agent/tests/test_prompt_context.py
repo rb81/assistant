@@ -250,11 +250,13 @@ class BuildPromptContextTest(unittest.TestCase):
         config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}}})
         client = LlmClient.__new__(LlmClient)
         client.config = config
+        client.provider = "openrouter"
         client.base_url = "https://example.invalid"
         client.api_key = "test-key"
         client.temperature = None
         client.max_tokens = None
         client.timeout_seconds = 1
+        client.request_observer = None
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"{}"
         clock = {"timezone": "Asia/Dubai", "utc": "2026-10-08T20:00:00+00:00", "local": "2026-10-09T00:00:00+04:00"}

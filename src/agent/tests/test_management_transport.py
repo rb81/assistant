@@ -136,11 +136,15 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.loaded = True
             ui.location.route = "Settings"
             ui.render()
-            assert {"Assistant", "Models & Voice", "Connections", "Safety & Approvals", "Server"} <= {
+            assert {"Assistant", "Providers & Privacy", "Models & Workflows", "Knowledge & Tools",
+                    "Connections", "Safety & Approvals", "System & Operations"} <= {
                 action.label for action in ui.actions}
             ui.location.route = "Settings:models"
             ui.render()
-            assert {"Assistant models", "Web search providers", "Web page reader"} <= {action.label for action in ui.actions}
+            assert {"Assistant models"} <= {action.label for action in ui.actions}
+            ui.location.route = "Settings:knowledge"
+            ui.render()
+            assert {"Web search providers", "Web page reader"} <= {action.label for action in ui.actions}
             ui.location.route = "Form:catalog:search"
             ui.render()
             preferred = ui.form["AGENT_SEARCH_PRIMARY_PROVIDER"]
@@ -150,7 +154,7 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.keep_draft()
             assert backend.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"
         backend.stage("identity", {"AGENT_IDENTITY_NAME": "API-managed assistant"})
-        backend.stage("models", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key"})
+        backend.stage("providers", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key"})
         database_group = next(group for group, (_, fields) in backend.groups.items()
                               if any(field.key == "AGENT_DATABASE_PASSWORD" for field in fields))
         backend.stage(database_group, {"AGENT_DATABASE_PASSWORD": "safe-test-database-password"})

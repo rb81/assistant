@@ -1,5 +1,7 @@
 """Read-only model overview derived from the shared settings snapshot."""
 from . import settings_schema
+from .config import AppConfig
+from .llm_providers import provider_for
 from .security_screening import PROVIDERS, DEFAULT_PROVIDER
 
 
@@ -47,9 +49,16 @@ def overview(configuration, state):
         enabled_key = settings_schema.derived_env_name(descriptor["enabled"]) if descriptor.get("enabled") else None
         provider_key = settings_schema.derived_env_name(descriptor["provider"]) if descriptor.get("provider") else None
         provider = fields[provider_key]["value"] if provider_key else descriptor.get("provider_url", "")
-        override_key = descriptor.get("provider_override_model")
-        if override_key and fields[settings_schema.derived_env_name(override_key)]["value"].strip():
-            provider = descriptor["provider_override_url"]
+        if provider in {"", "inherit", "auto"}:
+            global_provider = fields.get("AGENT_LLM_PROVIDER", {}).get("value", "auto")
+            global_url = fields.get("AGENT_LLM_BASE_URL", {}).get("value", "")
+            try:
+                provider = provider_for(
+                    AppConfig({"agent": {"llm": {"provider": global_provider, "base_url": global_url}}}),
+                    global_url,
+                )
+            except ValueError:
+                provider = "Not configured"
         available_keys = {field["key"] for field in selected}
         selection_keys = [settings_schema.derived_env_name(path) for path in descriptor.get("selectors", [])
                           if settings_schema.derived_env_name(path) in available_keys]

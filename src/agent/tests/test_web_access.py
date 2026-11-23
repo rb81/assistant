@@ -80,6 +80,7 @@ def test_only_explicit_openrouter_search_adds_the_hosted_tool(tmp_path, monkeypa
     monkeypatch.setenv("AGENT_LLM_OPENAI_API_KEY", "task-key")
     config = settings(tmp_path, search={"engine": "native", "model": "perplexity/sonar"})
     config.values["agent"]["llm"] = {"base_url": "https://models.example.org/v1"}
+    config.values["agent"]["model_routes"] = {"web_search": {"provider": "openrouter"}}
     job = {"id": 1}
     requests = []
     endpoints = []

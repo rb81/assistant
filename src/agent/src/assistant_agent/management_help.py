@@ -5,8 +5,13 @@ GROUP_HELP = {
     "identity": "Name your assistant and choose the timezone it uses.",
     "approvals": "Choose where to receive requests that need your approval. The approval email is your address, "
                  "not the assistant's mailbox.",
-    "models": "Choose the model provider and models used for ordinary tasks. Enter provider credentials and "
-              "the bundled database password. Model use can cost money; task limits are not a spending cap.",
+    "models": "Choose the provider and model for each model-backed task. Select the provider first, then choose "
+              "from that provider's available models. Model fallbacks are explicit provider:model pairs.",
+    "providers": "Configure provider credentials, disable providers, and order them in provider selectors. "
+                 "Choose an explicit provider and model for each route; use provider:model fallbacks to define "
+                 "cross-provider recovery.",
+    "provider-privacy": "Apply one strict Zero Data Retention policy to all model routes. Provider account and exact "
+                        "model eligibility must be verified; some provider controls remain account-level.",
     "email": "Connect a dedicated assistant mailbox for receiving requests and sending replies. "
              "Intake can move existing messages into archive or quarantine folders. Do not use your personal inbox.",
     "telegram": "Connect a Telegram bot and restrict who may use it. Numeric user IDs control access; "
@@ -24,6 +29,9 @@ GROUP_HELP = {
     "security": "Choose the development supervisor model and session limits, configure admin-email authentication "
                 "and optional content screening for messages and scripts. "
                 "Screening is an extra check, not a guarantee of safety or a replacement for script approvals.",
+    "knowledge": "Configure search, web reading, semantic retrieval, memory and workspace indexing. Review which "
+                 "external services receive search queries or indexed content.",
+    "operations": "Configure the database, deployment, task workers, service monitoring and operational limits.",
     "advanced:Calendar privacy": "Choose whether the assistant can read private details of existing events, "
                                  "including titles, descriptions, locations and attendees. Disabled by default; "
                                  "enabling this does not grant permission to edit or delete those events.",
@@ -88,9 +96,12 @@ PAGE_HELP = {
     "Settings": "Configure identity, model access, safety, search and instructions. Credentials, maintenance "
                 "and recovery have separate controls. Form changes stay in your draft until reviewed and saved.",
     "Settings:assistant": "Set identity, timezone, standing instructions and everyday assistant behavior.",
-    "Settings:models": "Choose model access, speech and search models. Provider use may send data externally and cost money.",
+    "Settings:providers": "Configure AI providers, credentials, priority, and provider-level privacy controls.",
+    "Settings:models": "Choose a provider and available model for each task. Explicit fallbacks can use another provider.",
+    "Settings:knowledge": "Configure search, web reading, semantic retrieval, memory and workspace indexing.",
     "Settings:connections": "Configure optional accounts and channels. Saved credentials do not verify connectivity.",
     "Settings:safety": "Review permissions, approval delivery, screening and allowed destinations.",
+    "Settings:operations": "Configure operational behavior, deployment, services and recovery.",
     "Settings:server": "Manage services, diagnostics, storage and recovery. Starting services can process existing requests.",
     "Advanced": "Tune privacy, task limits, email behavior, memory, web search, script networking, extra model "
                 "tools, speech and notifications. Move to an option to see what it controls before opening it.",

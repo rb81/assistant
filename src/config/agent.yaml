@@ -53,6 +53,14 @@ agent:
     password:
     url:
 
+  providers:
+    # Configured credentials activate a provider unless it is explicitly disabled.
+    disabled: []
+    # Optional ordering for default routes; explicit model routes take precedence.
+    priority: []
+    openai_compatible_base_url:
+    cloudflare_account_id:
+
   llm:
     provider: auto
     model: anthropic/claude-sonnet-4.6
@@ -69,6 +77,39 @@ agent:
     anthropic_api_key:
     gemini_api_key:
     cloudflare_api_key:
+
+  model_routes:
+    task:
+      provider: inherit
+      fallbacks: []
+    naming:
+      provider: inherit
+      fallbacks: []
+    routing:
+      provider: inherit
+      fallbacks: []
+    summarization:
+      provider: inherit
+      fallbacks: []
+    memory:
+      provider: inherit
+      fallbacks: []
+    research:
+      provider: inherit
+      fallbacks: []
+    research_search:
+      provider: openrouter
+      fallbacks: []
+    web_search:
+      provider: openrouter
+      fallbacks: []
+    fusion:
+      provider: openrouter
+    development:
+      provider: inherit
+      fallbacks: []
+    speech:
+      provider: openrouter
 
   model_service:
     enabled: false

@@ -5,7 +5,7 @@ from typing import Any
 from .config import AppConfig, agent_email, database_url
 from .time_utils import default_timezone
 from .secret_store import read_secret
-from .llm_providers import PROVIDER_CREDENTIALS, provider_for
+from .llm_providers import PROVIDER_CREDENTIALS, provider_for, provider_is_disabled, route_provider
 from .openrouter_policy import require_zdr_eligibility
 
 
@@ -111,7 +111,7 @@ def search_providers(config: AppConfig) -> tuple[str, ...]:
     available = []
     if config.get_bool("agent.search.exa_enabled", False):
         available.append("exa")
-    if config.get_bool("agent.search.openrouter_enabled", True):
+    if config.get_bool("agent.search.openrouter_enabled", True) and not provider_is_disabled(config, "openrouter"):
         try:
             has_key = is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
         except RuntimeError:
@@ -122,7 +122,16 @@ def search_providers(config: AppConfig) -> tuple[str, ...]:
 
 
 def fusion_configured(config: AppConfig) -> bool:
-    return config.get_bool("agent.fusion.enabled", True) and openrouter_configured(config)
+    if not config.get_bool("agent.fusion.enabled", True):
+        return False
+    try:
+        return (
+            route_provider(config, "task") == "openrouter"
+            and not provider_is_disabled(config, "openrouter")
+            and is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
+        )
+    except ValueError:
+        return False
 
 
 def calendar_configured(config: AppConfig) -> bool:
@@ -181,9 +190,14 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if role in ("task-agent", "all"):
         from .development_supervisor import configuration_errors
         errors.extend(configuration_errors(config))
-        if (str(config.get("agent.security.development.model", "")).strip()
-                and not is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))):
-            errors.append("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY")
+        try:
+            development_provider = route_provider(config, "development")
+            credential_name = PROVIDER_CREDENTIALS[development_provider]
+            if not is_set(read_secret(credential_name)):
+                errors.append("Development supervisor requires %s for the selected %s provider" %
+                              (credential_name, development_provider))
+        except ValueError as exc:
+            errors.append("Development supervisor: %s" % exc)
 
     deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
@@ -219,8 +233,15 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if role in ("workspace-indexer", "workspace-index-cron") and not shared_root_status(config)["available"]:
         errors.append("workspace indexer requires an available shared workspace root")
 
-    if role in ("task-agent", "all") and config.get_bool("agent.fusion.enabled", True) and not openrouter_configured(config):
-        errors.append("OpenRouter fusion is enabled but OpenRouter is not configured")
+    if role in ("task-agent", "all") and config.get_bool("agent.fusion.enabled", True):
+        try:
+            fusion_uses_openrouter = route_provider(config, "task") == "openrouter"
+        except ValueError:
+            fusion_uses_openrouter = False
+        if (fusion_uses_openrouter and
+                (provider_is_disabled(config, "openrouter")
+                 or not is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY")))):
+            errors.append("OpenRouter fusion is enabled but OpenRouter is not configured")
 
     # Note: AGENT_ADMIN_EMAIL and SMTP are recommended for task-agent but not required.
     # The agent can function via the workspace/dashboard without email.

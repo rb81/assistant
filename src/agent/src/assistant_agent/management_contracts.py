@@ -236,7 +236,9 @@ class SettingGroup(BaseModel):
     parent: str | None = None
     section: str | None = None
     basic: bool = False
-    destination: Literal["assistant", "models", "connections", "safety", "server"] = "assistant"
+    destination: Literal[
+        "assistant", "providers", "models", "connections", "knowledge", "safety", "operations", "server",
+    ] = "assistant"
 
 
 class FullConfigurationResponse(BaseModel):
@@ -280,7 +282,7 @@ class ModelSettingsLink(BaseModel):
     """Owning settings page for controls omitted from the quick model editor."""
     group: str
     title: str
-    destination: Literal["assistant", "models", "connections", "safety", "advanced"]
+    destination: Literal["assistant", "providers", "models", "connections", "knowledge", "safety", "operations", "advanced"]
     field_key: str
 
 

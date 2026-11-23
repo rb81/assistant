@@ -164,6 +164,7 @@ class DeepResearchAgent:
             self.config,
             model=self.config.get("agent.deep_research.model") or self.config.get("agent.llm.model"),
             timeout_seconds=self.config.get_int("agent.deep_research.timeout_seconds", 180),
+            route="research",
         )
         messages = self.build_messages(run, execution_job)
         ToolRuntime(self.db, self.config, execution_job).replay_approved_web_page(messages)

@@ -199,7 +199,7 @@ class RequestRouter:
 
         llm = LlmClient(self.config, model=self.config.get("agent.routing.model", "openai/gpt-4.1-mini"),
                         temperature=0.0, max_tokens=800, timeout_seconds=max(1, int(remaining())),
-                        allow_fallback=False)
+                        allow_fallback=False, route="routing")
         # This worker never assigns ownership: timed-out or late results have no side effects.
         with self.db.connect() as connection:
             connection.execute("SET TRANSACTION READ ONLY")

@@ -1,4 +1,5 @@
 """Provider model discovery using credentials held only by the management server."""
+import copy
 import hashlib
 import json
 import threading
@@ -8,7 +9,9 @@ import urllib.parse
 import urllib.request
 
 from .config import AppConfig
-from .llm_providers import PROVIDER_CREDENTIALS, provider_for
+from .llm_providers import (
+    PROVIDER_CREDENTIALS, provider_base_url, provider_for, provider_is_disabled,
+)
 from .openrouter_policy import is_openrouter_url, require_zdr
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
@@ -114,14 +117,29 @@ def _request(provider, base_url, api_key):
     return urllib.request.Request(url, headers=headers, method="GET")
 
 
-def discover_models(config: AppConfig):
+def discover_models(config: AppConfig, provider_id=None):
     base_url = str(config.get("agent.llm.base_url", "")).rstrip("/")
-    provider = provider_for(config, base_url)
+    if provider_id:
+        provider = str(provider_id).strip().lower()
+        if provider not in PROVIDER_CREDENTIALS:
+            raise ModelCatalogError("Unsupported model provider")
+        if provider_is_disabled(config, provider):
+            raise ModelCatalogError("Model discovery is disabled for this provider")
+        try:
+            base_url = provider_base_url(config, provider)
+        except ValueError as exc:
+            raise ModelCatalogError(str(exc)) from exc
+    else:
+        provider = provider_for(config, base_url)
     if provider == "openrouter":
         from .model_service import ModelServiceError, OpenRouterModels
         zdr = require_zdr(config)
         try:
-            models = OpenRouterModels(config).models(zdr_only=zdr)
+            values = copy.deepcopy(config.values)
+            llm = values.setdefault("agent", {}).setdefault("llm", {})
+            llm["provider"] = "openrouter"
+            llm["base_url"] = base_url
+            models = OpenRouterModels(AppConfig(values)).models(zdr_only=zdr)
         except ModelServiceError as exc:
             raise ModelCatalogError(str(exc)) from exc
         return {

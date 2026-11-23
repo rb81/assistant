@@ -247,6 +247,9 @@ def setting_presentation(group, spec):
     """Label, section, and help a client should show for one setting."""
     item = settings_schema.catalog_by_env().get(spec.key) or {}
     label, section = (item.get("metadata") or {}).get("label", spec.label), None
+    model_section = (item.get("metadata") or {}).get("model_section")
+    if model_section:
+        section = model_section.replace("_", " ").title()
     if spec.key == "AGENT_APPROVALS_CHANNEL":
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
@@ -319,15 +322,24 @@ def configuration_group_details():
             title = "Memory & workspace"
             help_text = "Choose whether Assistant maintains memories and indexes workspace files for search."
         owner = parent or name
+        group_name = name.removeprefix("catalog:")
         destination = (
+            "providers" if name in {"providers", "provider-privacy"} else
             "connections" if owner in {"email", "telegram", "calendar", "zoom", "dropbox"} else
-            "models" if owner in {"models", "embeddings", "transcription", "catalog:llm", "catalog:routing", "catalog:fusion",
-                                 "catalog:deep_research", "catalog:search", "catalog:web_fetch", "catalog:app",
-                                 "advanced:Model preset tool", "advanced:Web search", "advanced:Research and notifications"} else
-            "safety" if owner in {"approvals", "security", "catalog:security", "catalog:artifacts", "catalog:sandbox"} else
-            "server" if owner in {"deployment", "catalog:database", "catalog:task_agent", "catalog:supervisor",
-                                 "catalog:filesystem", "catalog:tool_result_cache", "catalog:conversion",
-                                 "catalog:workspace", "catalog:client", "catalog:heartbeat"} else "assistant"
+            "models" if owner in {"models", "embeddings", "transcription", "advanced:Model preset tool",
+                                 "advanced:Research and notifications"} or group_name in {
+                                     "llm", "model_routes", "routing", "fusion", "deep_research",
+                                     "speech", "tools",
+                                 } else
+            "knowledge" if owner in {"advanced:Memory and workspace indexing", "advanced:Web search"}
+            or group_name in {"memory", "context", "workspace", "filesystem", "tool_result_cache",
+                              "conversion", "web_fetch", "search", "prompt", "skills"} else
+            "safety" if owner in {"approvals", "security", "catalog:artifacts", "catalog:sandbox"}
+            or group_name in {"security", "artifacts", "sandbox"} else
+            "operations" if owner == "deployment" or group_name in {
+                "database", "task_agent", "supervisor", "client", "heartbeat", "reminders",
+            } else
+            "assistant" if group_name in {"identity", "app"} else "assistant"
         )
         details.append({
             "id": name, "title": title, "help": help_text, "parent": parent, "section": section,
@@ -340,7 +352,7 @@ def configuration_group_details():
 
 ESSENTIAL_GROUPS = (
     "identity", "models", "email", "telegram", "calendar", "zoom", "dropbox", "transcription",
-    "embeddings", "security",
+    "embeddings", "security", "providers", "provider-privacy",
 )
 
 
@@ -396,6 +408,34 @@ def configuration_groups():
     groups.setdefault("catalog:database", ("Database connection", []))[1].extend(database_credentials)
     groups.setdefault("catalog:routing", ("Routing & fallback", []))[1].extend(
         spec for spec in approval_and_naming if spec.key == "AGENT_NAMING_MODEL")
+
+    provider_keys = {
+        "AGENT_LLM_PROVIDER", "AGENT_LLM_BASE_URL", "AGENT_LLM_ALLOWED_PROVIDERS",
+        "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY",
+        "AGENT_LLM_ANTHROPIC_API_KEY", "AGENT_LLM_GEMINI_API_KEY",
+        "AGENT_LLM_CLOUDFLARE_API_KEY", "AGENT_PROVIDERS_DISABLED",
+        "AGENT_PROVIDERS_PRIORITY", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL",
+        "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID",
+    }
+    privacy_keys = {
+        "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ZDR_VERIFIED_PROVIDERS",
+        "AGENT_LLM_ZDR_VERIFIED_MODELS", "AGENT_MODEL_SERVICE_ZDR_ONLY",
+        "AGENT_TTS_ZDR_ONLY",
+    }
+    provider_fields, privacy_fields = [], []
+    for _, specs in groups.values():
+        retained = []
+        for spec in specs:
+            if spec.key in provider_keys:
+                provider_fields.append(spec)
+            elif spec.key in privacy_keys:
+                privacy_fields.append(spec)
+            else:
+                retained.append(spec)
+        specs[:] = retained
+    provider_fields.extend(groups.pop("catalog:providers", ("", []))[1])
+    groups["providers"] = ("AI providers", provider_fields)
+    groups["provider-privacy"] = ("Provider privacy & ZDR", privacy_fields)
     return groups
 
 
@@ -643,37 +683,25 @@ class ManagementService:
         ]
         return overview(configuration, backend.installation.state)
 
-    def model_catalog(self):
+    def model_catalog(self, provider_id=None):
         from .llm_catalog import discover_models
 
         backend = self.read_configuration_backend()
         values = copy.deepcopy(backend.installation.defaults.values)
-        agent = values.setdefault("agent", {})
-        llm = agent.setdefault("llm", {})
         catalog = settings_schema.catalog_by_env()
         specs = {
             spec.key: spec for _, group_specs in configuration_groups().values() for spec in group_specs
         }
-        for key, default in (
-            ("AGENT_LLM_PROVIDER", "auto"),
-            ("AGENT_LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-            ("AGENT_LLM_ZDR_ONLY", "false"),
-            ("AGENT_LLM_ALLOWED_PROVIDERS", ""),
-            ("AGENT_LLM_ZDR_VERIFIED_PROVIDERS", ""),
-            ("AGENT_LLM_ZDR_VERIFIED_MODELS", ""),
-        ):
-            spec = specs.get(key, Field(key, key, default))
+        for key, spec in specs.items():
             path = catalog.get(key, {}).get("path")
-            setting_value = backend.value(spec)
-            if path:
-                target = values
-                parts = path.split(".")
-                for part in parts[:-1]:
-                    target = target.setdefault(part, {})
-                target[parts[-1]] = setting_value
-            else:
-                llm[key.removeprefix("AGENT_LLM_").lower()] = setting_value
-        return discover_models(AppConfig(values))
+            if not path or spec.secret:
+                continue
+            target = values
+            parts = path.split(".")
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = backend.value(spec)
+        return discover_models(AppConfig(values), provider_id=provider_id)
 
     def _configuration_draft(self, payload):
         backend = self.backend()
@@ -1470,11 +1498,11 @@ def create_app(root, token, service=None):
         return service.model_settings()
 
     @app.get("/v2/configuration/models")
-    def model_catalog_v2():
+    def model_catalog_v2(provider: str | None = Query(default=None)):
         from .llm_catalog import ModelCatalogError
 
         try:
-            return service.model_catalog()
+            return service.model_catalog(provider_id=provider)
         except (ModelCatalogError, ValueError) as exc:
             raise PublicSetupError(str(exc)) from exc
 

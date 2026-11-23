@@ -10,7 +10,11 @@ from .prompt_context import refresh_request_context
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
 from .openrouter_policy import apply_routing_policy, is_openrouter_url, require_zdr_eligibility
-from .llm_providers import PROVIDER_CREDENTIALS, build_request, normalize_response, provider_for
+from .llm_providers import (
+    PROVIDER_CREDENTIALS, build_request, normalize_response, parse_model_reference,
+    provider_base_url, provider_for, provider_is_disabled, route_fallbacks, route_provider,
+    validate_provider_url,
+)
 
 
 LOGGER = logging.getLogger("assistant.llm_client")
@@ -30,20 +34,20 @@ class LlmClient:
         allow_fallback: bool = True,
         base_url: Optional[str] = None,
         request_observer: Optional[Callable[[dict[str, Any]], None]] = None,
+        route: Optional[str] = None,
     ):
         self.config = config
-        self.base_url = str(base_url or config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
+        self.route = route
+        if route:
+            self.provider = route_provider(config, route)
+            route_url = provider_base_url(config, self.provider)
+        else:
+            route_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))
+            self.provider = provider_for(config, route_url)
+        self.base_url = str(base_url or route_url).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
-        self.provider = provider_for(config, self.base_url)
-        if self.provider == "openrouter" and not is_openrouter_url(self.base_url):
-            raise ValueError("OpenRouter provider requires an https://openrouter.ai API URL")
-        credential_name = PROVIDER_CREDENTIALS[self.provider]
-        api_key = read_secret(credential_name)
-        if self.provider == "openai-compatible" and not api_key:
-            api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
-        if not api_key:
-            raise RuntimeError("%s is required for the selected model provider" % credential_name)
-        self.api_key = api_key
+        validate_provider_url(self.provider, self.base_url)
+        self.api_key = self._api_key(self.provider)
         self.model = model or config.get("agent.llm.model", "anthropic/claude-sonnet-4.6")
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -52,25 +56,57 @@ class LlmClient:
         self.request_observer = request_observer
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        """Send a chat completion request, retrying with the fallback model on transient errors."""
+        """Send a request and try only explicitly configured candidates after transient failures."""
         try:
             return self._chat_with_model(self.model, messages, tools)
         except _TransientLlmError as exc:
-            fallback = str(self.config.get("agent.llm.fallback_model") or "").strip()
-            if not self.allow_fallback or not fallback or fallback == self.model:
+            if not self.allow_fallback:
                 raise RuntimeError(str(exc)) from exc
-            LOGGER.warning(
-                "primary model %r returned transient error (%s); retrying with fallback model %r",
-                self.model,
-                exc,
-                fallback,
+            fallback_specs = (
+                route_fallbacks(self.config, self.route, self.provider)
+                if self.route else route_fallbacks(self.config, "task", self.provider)
             )
-            try:
-                return self._chat_with_model(fallback, messages, tools)
-            except _TransientLlmError as fallback_exc:
-                raise RuntimeError(str(fallback_exc)) from fallback_exc
+            last_error = exc
+            for fallback_spec in fallback_specs:
+                provider, fallback_model = parse_model_reference(fallback_spec)
+                if provider == self.provider and fallback_model == self.model:
+                    continue
+                if provider_is_disabled(self.config, provider):
+                    raise RuntimeError("Fallback route uses disabled provider %s" % provider)
+                fallback_url = provider_base_url(self.config, provider)
+                validate_https_url(fallback_url, "Fallback model API URL")
+                validate_provider_url(provider, fallback_url)
+                api_key = self._api_key(provider)
+                LOGGER.warning(
+                    "primary model %r returned transient error (%s); retrying with %s model %r",
+                    self.model, last_error, provider, fallback_model,
+                )
+                try:
+                    return self._chat_with_model(
+                        fallback_model, messages, tools, provider=provider,
+                        base_url=fallback_url, api_key=api_key,
+                    )
+                except _TransientLlmError as fallback_exc:
+                    last_error = fallback_exc
+            raise RuntimeError(str(last_error)) from last_error
 
-    def _chat_with_model(self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    @staticmethod
+    def _api_key(provider: str) -> str:
+        credential_name = PROVIDER_CREDENTIALS[provider]
+        api_key = read_secret(credential_name)
+        if provider == "openai-compatible" and not api_key:
+            api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("%s is required for the selected model provider" % credential_name)
+        return api_key
+
+    def _chat_with_model(
+        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+        *, provider: Optional[str] = None, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        provider = provider or self.provider
+        base_url = base_url or self.base_url
+        api_key = api_key or self.api_key
         payload = {
             "model": model,
             "messages": [{key: value for key, value in message.items() if key != "memory_ids"} for message in refresh_request_context(messages, self.config)],
@@ -84,17 +120,17 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        if self.provider == "openrouter":
-            apply_routing_policy(self.config, self.base_url, payload)
-        require_zdr_eligibility(self.config, self.provider, model)
+        if provider == "openrouter":
+            apply_routing_policy(self.config, base_url, payload)
+        require_zdr_eligibility(self.config, provider, model)
         if self.request_observer is not None:
             self.request_observer(payload)
-        url, provider_headers, body = build_request(self.provider, self.base_url, self.api_key, payload)
+        url, provider_headers, body = build_request(provider, base_url, api_key, payload)
         headers = {
             "Content-Type": "application/json",
             **provider_headers,
         }
-        if self.provider == "openrouter":
+        if provider == "openrouter":
             headers.update({
                 "HTTP-Referer": app_referer_url(self.config),
                 "X-Title": app_display_name(self.config),
@@ -107,11 +143,11 @@ class LlmClient:
         )
         try:
             with open_https_request(request, timeout=self.timeout_seconds) as response:
-                return normalize_response(self.provider, json.loads(response.read().decode("utf-8")))
+                return normalize_response(provider, json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             msg = "LLM request failed with HTTP %s: %s" % (exc.code, detail)
-            if exc.code in {400, 404} and is_openrouter_url(self.base_url) and self.config.get_list("agent.llm.allowed_providers"):
+            if exc.code in {400, 404} and is_openrouter_url(base_url) and self.config.get_list("agent.llm.allowed_providers"):
                 msg += " Check the allowed OpenRouter providers, model availability, and ZDR settings."
             if exc.code in _RETRYABLE_HTTP_CODES:
                 raise _TransientLlmError(msg) from exc

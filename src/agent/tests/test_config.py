@@ -50,7 +50,6 @@ class ConfigTest(unittest.TestCase):
     def test_obsolete_environment_overrides_are_ignored(self):
         retired = {
             "AGENT_MEMORY_RECENT_PROMPT_LIMIT": "agent.memory.recent_prompt_limit",
-            "AGENT_LLM_PROVIDER": "agent.llm.provider",
             "AGENT_MAX_DAILY_COST_USD": "agent.limits.max_daily_cost_usd",
             "AGENT_LIMITS_TOOL_TIMEOUT_DEFAULT_SECONDS": "agent.limits.tool_timeout_default_seconds",
             "AGENT_SUPERVISOR_REVIEW_MODEL": "agent.supervisor.review_model",

@@ -181,7 +181,7 @@ def test_native_form_navigation_preserves_a_draft_and_hides_api_keys():
             assert ui.backend.dirty
             ui.go("Form:identity")
             assert ui.form["AGENT_IDENTITY_NAME"].text == "New assistant"
-            ui.go("Form:models")
+            ui.go("Form:providers")
             ui.app.layout.focus(ui.form["AGENT_LLM_OPENROUTER_API_KEY"])
             pipe.send_text("PRIVATE-API-KEY")
             await asyncio.sleep(0.08)
@@ -206,7 +206,7 @@ def test_model_field_accepts_mouse_focus_and_typing():
             assert ui.app.layout.has_focus(ui.form["AGENT_LLM_MODEL"])
             pipe.send_text("clicked-model")
             await wait_for(lambda: ui.form["AGENT_LLM_MODEL"].text == "clicked-model")
-            assert ui.form["AGENT_LLM_BASE_URL"].text == "https://openrouter.ai/api/v1"
+            assert "AGENT_LLM_BASE_URL" not in ui.form
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -223,16 +223,10 @@ def test_keyboard_model_edit_review_and_save_preserves_other_fields_and_existing
         async with running(root) as (ui, pipe):
             ui.go("Settings")
             await asyncio.sleep(0.08)
-            pipe.send_text("\x1b[B\r")
+            pipe.send_text("\x1b[B\x1b[B\r")
             await wait_for(lambda: ui.location.route == "Form:models")
-            pipe.send_text("\x1b[B")
             await asyncio.sleep(0.08)
             assert ui.app.layout.has_focus(ui.form["AGENT_LLM_MODEL"])
-            pipe.send_text("\x1b[A")
-            await asyncio.sleep(0.08)
-            assert ui.app.layout.has_focus(ui.form["AGENT_LLM_BASE_URL"])
-            pipe.send_text("\x1b[B")
-            await asyncio.sleep(0.08)
             pipe.send_text("\x01\x0bnew-model\r")
             await asyncio.sleep(0.08)
             assert ui.app.layout.has_focus(ui.form["AGENT_LLM_FALLBACK_MODEL"])
@@ -613,6 +607,7 @@ def test_first_run_native_forms_review_and_confirm_save_persist_without_running_
             await asyncio.sleep(0.05)
             ui.go("Form:models")
             ui.form["AGENT_LLM_MODEL"].text = "chosen-model"
+            ui.go("Form:providers")
             ui.form["AGENT_LLM_OPENROUTER_API_KEY"].text = "PRIVATE-MODEL-KEY"
             ui.go("Form:catalog:database")
             ui.app.layout.focus(next(action.window for action in ui.actions
@@ -887,7 +882,7 @@ def test_insertion_marker_tracks_partial_edits_and_horizontal_scrolling_without_
     async def scenario(root):
         async with running(root) as (ui, pipe):
             ui.app.output.size = Size(rows=24, columns=76)
-            ui.go("Form:models")
+            ui.go("Form:providers")
             await asyncio.sleep(0.08)
             field = ui.form["AGENT_LLM_BASE_URL"]
             pipe.send_text("\x05\x1b[D\x1b[D")
@@ -1094,11 +1089,10 @@ def test_fast_keyboard_navigation_uses_the_new_screen_without_waiting_for_a_redr
         async with running(root) as (ui, pipe):
             ui.go("Settings")
             await asyncio.sleep(0.08)
-            pipe.send_text("\x1b[B\r\tfast-model\rfast-fallback")
+            pipe.send_text("\x1b[B\x1b[B\rfast-model\rfast-fallback")
             await wait_for(lambda: ui.location.route == "Form:models" and
                            ui.form["AGENT_LLM_FALLBACK_MODEL"].text == "fast-fallback")
             assert ui.form["AGENT_LLM_MODEL"].text == "fast-model"
-            assert ui.form["AGENT_LLM_BASE_URL"].text == "https://openrouter.ai/api/v1"
     with tempfile.TemporaryDirectory() as root:
         asyncio.run(scenario(Path(root)))
 
@@ -1183,14 +1177,14 @@ def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
                 if select.select([master], [], [], 0.1)[0]:
                     transcript += os.read(master, 65536)
         try:
-            wait_for_text(b"Provider API URL")
+            wait_for_text(b"Primary model")
             wait_for_text(b"[F1]")
             transcript = b""
             os.write(master, b"\x1bOP")
-            wait_for_text(b"OpenAI-compatible chat API")
+            wait_for_text(b"Provider model identifier")
             transcript = b""
             os.write(master, b"\x1b")
-            wait_for_text(b"Provider API URL")
+            wait_for_text(b"Primary model")
             os.write(master, b"\x11")
             wait_for_text(b"Leave Assistant?")
             os.write(master, b"\t\r")

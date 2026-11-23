@@ -16,6 +16,7 @@ from .model_resources import ModelServiceError, ModelToolResources, ProviderReje
 from .secret_store import read_secret
 from .transport_security import open_https_request
 from .openrouter_policy import apply_routing_policy, require_zdr, require_zdr_eligibility
+from .llm_providers import provider_is_disabled
 
 
 BASE_URL = "https://openrouter.ai/api/v1"
@@ -30,7 +31,11 @@ AUDIO_FORMATS = {"wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "webm", "pcm
 
 
 def configured(config) -> bool:
-    return config.get_bool("agent.model_service.enabled", False) and bool(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
+    return (
+        config.get_bool("agent.model_service.enabled", False)
+        and not provider_is_disabled(config, "openrouter")
+        and bool(read_secret("AGENT_LLM_OPENROUTER_API_KEY"))
+    )
 
 
 class OpenRouterModels:
@@ -38,6 +43,8 @@ class OpenRouterModels:
         self.config = config
 
     def request(self, path, payload=None, *, scoped_zdr=False):
+        if provider_is_disabled(self.config, "openrouter"):
+            raise ModelServiceError("OpenRouter is disabled in provider settings")
         key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not key:
             raise ModelServiceError("AGENT_LLM_OPENROUTER_API_KEY is required for the model service")

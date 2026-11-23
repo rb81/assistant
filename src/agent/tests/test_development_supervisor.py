@@ -36,7 +36,8 @@ class DevelopmentSupervisorTest(unittest.TestCase):
         client = self.client()
         with patch("assistant_agent.development_supervisor.LlmClient", return_value=client) as factory:
             result = review(self.config, self.brief, self.version, ["weather.example"], final=True)
-        factory.assert_called_once_with(self.config, temperature=0, allow_fallback=False)
+        factory.assert_called_once_with(self.config, model=None, temperature=0,
+                                        allow_fallback=False, route="development")
         messages, tools = client.chat.call_args.args
         self.assertEqual(tools, [])
         self.assertEqual(json.loads(messages[1]["content"]), {"trusted_admin_approved_brief": self.brief})
@@ -134,8 +135,9 @@ class DevelopmentSupervisorTest(unittest.TestCase):
                 "assistant_agent.development_supervisor.LlmClient", return_value=self.client(),
             ) as factory:
                 review(config, self.brief, self.version, [])
-                factory.assert_called_once_with(config, temperature=0, allow_fallback=False)
-        for model in ("default", "reviewer", "openai/", "/model", "openai/model name", None, True, 123):
+                factory.assert_called_once_with(config, model=None, temperature=0,
+                                                allow_fallback=False, route="development")
+        for model in ("openai/", "/model", "openai/model name", None, True, 123):
             config = AppConfig({"agent": {"security": {"development": {"model": model}}}})
             with self.subTest(model=model), patch("assistant_agent.development_supervisor.LlmClient") as factory:
                 with self.assertRaisesRegex(SupervisorError, "provider/model ID"):
@@ -150,7 +152,7 @@ class DevelopmentSupervisorTest(unittest.TestCase):
                     review(self.config, brief, version, hosts)
             factory.assert_not_called()
 
-    def test_direct_model_id_selects_openrouter_without_looking_up_a_preset(self):
+    def test_direct_model_id_uses_selected_route_without_looking_up_a_preset(self):
         config = AppConfig({"agent": {
             "llm": {"base_url": "https://task.example/v1", "model": "task-model"},
             "security": {"development": {"model": "openai/gpt-sol-6.1"}},
@@ -161,11 +163,11 @@ class DevelopmentSupervisorTest(unittest.TestCase):
             "assistant_agent.development_supervisor.LlmClient", return_value=client,
         ) as factory:
             review(config, self.brief, self.version, [])
-        selected = factory.call_args.args[0]
-        self.assertEqual(selected.get("agent.llm.model"), "openai/gpt-sol-6.1")
-        self.assertEqual(selected.get("agent.llm.base_url"), "https://openrouter.ai/api/v1")
-        self.assertEqual(selected.get("agent.llm.api_key_env"), "AGENT_LLM_OPENROUTER_API_KEY")
-        self.assertFalse(factory.call_args.kwargs["allow_fallback"])
+        self.assertEqual(factory.call_args.args, (config,))
+        self.assertEqual(factory.call_args.kwargs, {
+            "model": "openai/gpt-sol-6.1", "temperature": 0, "allow_fallback": False,
+            "route": "development",
+        })
         self.assertEqual(config.get("agent.llm.model"), "task-model")
 
     def test_defaults_and_environment_overrides_are_safe_and_independent(self):
@@ -218,19 +220,21 @@ class DevelopmentSupervisorTest(unittest.TestCase):
                 self.assertEqual(config.get("agent.security.development.model"), "")
                 with patch("assistant_agent.development_supervisor.LlmClient", return_value=self.client()) as factory:
                     review(config, self.brief, self.version, [])
-                factory.assert_called_once_with(config, temperature=0, allow_fallback=False)
+                factory.assert_called_once_with(config, model=None, temperature=0,
+                                                allow_fallback=False, route="development")
 
     def test_role_validation_checks_limits_model_and_needed_existing_credential(self):
         from assistant_agent.validation import validate_role_config
         config = AppConfig({"agent": {"llm": {"base_url": "https://task.example/v1", "model": "task"},
                                     "search": {"enabled": False},
+                                    "fusion": {"enabled": False},
                                     "security": {"development": {"max_runs": -1, "model": "openai/gpt-sol-6.1"}}}})
         with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
             "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "AGENT_LLM_OPENAI_API_KEY" else None,
         ):
             errors = validate_role_config("task-agent", config)
         self.assertTrue(any("max_runs" in error for error in errors))
-        self.assertIn("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY", errors)
+        self.assertFalse(any("Development supervisor" in error for error in errors))
         config.values["agent"]["security"]["development"]["model"] = ""
         with patch("assistant_agent.validation.database_url", return_value="database-url"), patch(
             "assistant_agent.validation.read_secret", side_effect=lambda name: "task-key" if name == "AGENT_LLM_OPENAI_API_KEY" else None,

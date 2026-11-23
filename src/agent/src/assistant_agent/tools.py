@@ -36,7 +36,6 @@ from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .llm_client import LlmClient
 from .memory_store import MemoryStore
 from .model_service import MODEL_SERVICE_TOOL, ModelService, configured as model_service_configured
-from .openrouter_policy import is_openrouter_url
 from .replies import reminder_delivery
 from .requests import TransactionDatabase
 from .secret_store import read_secret
@@ -726,16 +725,14 @@ class ToolRuntime:
         ]
 
         try:
-            task_origin = str(self.config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))
-            same_provider = is_openrouter_url(task_origin)
             llm = LlmClient(
                 self.config,
                 model=search_model,
                 temperature=0.0,
                 max_tokens=self.config.get_int("agent.search.max_tokens", 3000),
                 timeout_seconds=timeout,
-                base_url=task_origin if same_provider else "https://openrouter.ai/api/v1",
-                allow_fallback=same_provider,
+                route="research_search" if self.search_model_override else "web_search",
+                allow_fallback=True,
             )
             tool = openrouter_web_search_tool(
                 self.config, max_results=max_results, search_context_size=context or None,
