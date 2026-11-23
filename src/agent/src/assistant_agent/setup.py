@@ -29,7 +29,7 @@ from .secret_store import SECRET_NAMES, is_secret_name
 from . import settings_schema
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
 from .llm_providers import (
-    PROVIDER_CREDENTIALS, parse_model_reference, provider_base_url, provider_for,
+    PROVIDER_CREDENTIALS, parse_model_reference, provider_base_url, provider_credential_name, provider_for,
     provider_is_disabled, route_fallbacks, route_provider, validate_provider_url,
 )
 from .transport_security import validate_embedding_url, validate_https_url
@@ -1712,7 +1712,7 @@ def interactive(options):
                                      "gemini-2.5-flash", "", "AGENT_LLM_GEMINI_API_KEY"),
             "Cloudflare Workers AI": ("cloudflare", "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
                                       "@cf/meta/llama-3.1-8b-instruct", "", "AGENT_LLM_CLOUDFLARE_API_KEY"),
-            "OpenAI-compatible": ("openai-compatible", previous_url, "", "", "AGENT_LLM_OPENAI_API_KEY"),
+            "OpenAI-compatible": ("openai-compatible", previous_url, "", "", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"),
         }
         by_id = {entry[0]: name for name, entry in provider_options.items()}
         configured = instance.values.get("AGENT_LLM_PROVIDER", "auto")
@@ -2790,7 +2790,8 @@ def draft_problems(instance):
     except ValueError as error:
         problem("models", str(error))
         provider = "openrouter"
-    required = {"AGENT_DATABASE_PASSWORD": "models", PROVIDER_CREDENTIALS[provider]: "models"}
+    required = {"AGENT_DATABASE_PASSWORD": "models",
+                provider_credential_name(provider, instance.secret_values.get): "models"}
     model_routes = {
         "task": "agent.llm.model",
         "naming": "agent.naming.model",
@@ -2827,7 +2828,7 @@ def draft_problems(instance):
         except (RuntimeError, ValueError) as error:
             problem("models", str(error))
             continue
-        credential = PROVIDER_CREDENTIALS[route_id]
+        credential = provider_credential_name(route_id, instance.secret_values.get)
         if route_id == "openai-compatible" and not instance.secret_values.get(credential):
             problem("models", "%s requires a saved provider credential" % route_id)
         required.setdefault(credential, "models")
@@ -2846,7 +2847,7 @@ def draft_problems(instance):
                 fallback_url = provider_base_url(routing_config, fallback_provider)
                 validate_https_url(fallback_url, "Fallback model API URL")
                 validate_provider_url(fallback_provider, fallback_url)
-                fallback_credential = PROVIDER_CREDENTIALS[fallback_provider]
+                fallback_credential = provider_credential_name(fallback_provider, instance.secret_values.get)
                 required.setdefault(fallback_credential, "models")
                 if route in {"research_search", "web_search"} and fallback_provider != "openrouter":
                     raise ValueError("This route requires OpenRouter's web-search tool")

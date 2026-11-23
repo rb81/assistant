@@ -71,6 +71,27 @@ not a client-maintained model list. The response describes saved configuration
 only. Link each field's `group` back to its existing editor and preserve the
 normal preview/save/activation workflow.
 
+Settings fields carry `metadata.section` for provider-specific blocks. Keep these
+headings rather than deriving provider headings from model-role metadata.
+Native provider endpoint fields include their defaults in the normal settings
+snapshot; do not make users enter a shared URL to select a native provider.
+
+Render `metadata.selection` values `single`, `multiple`, and `ordered` as
+selection controls. Local options and display labels are in `choices` and
+`choice_labels`. When `choices_source` is present, require
+`configuration.choices` and load
+`GET /v2/configuration/choices?key=<setting-key>`. Model fields may supply
+`&provider=<provider-id>` so a draft provider selection loads the right list
+before the route is saved. The response has `key`, `choices`, `choice_labels`,
+and `warnings`; show discovery failures and retain unavailable saved entries
+without offering them as new selections. Ordered selections must expose
+reordering. The wire value remains a comma-separated string for compatibility;
+that is not a suitable editing control.
+
+The direct-provider model-attestation list enumerates model IDs even before
+verification. This does not relax inference enforcement or prove eligibility.
+Provider credentials must be saved before authenticated discovery can use them.
+
 ## Reads, errors, and bounded data
 
 Use v2 for new clients. v1 reads remain a compatibility surface for older clients.

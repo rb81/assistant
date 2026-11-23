@@ -308,6 +308,14 @@ class ModelSettingsResponse(BaseModel):
     read_only: Literal[True]
 
 
+class SettingChoicesResponse(BaseModel):
+    """Explicit options for one setting; provider discovery failures remain visible."""
+    key: str
+    choices: list[str]
+    choice_labels: dict[str, str]
+    warnings: list[str]
+
+
 class ConfigurationPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

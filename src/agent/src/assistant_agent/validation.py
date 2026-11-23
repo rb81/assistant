@@ -5,7 +5,7 @@ from typing import Any
 from .config import AppConfig, agent_email, database_url
 from .time_utils import default_timezone
 from .secret_store import read_secret
-from .llm_providers import PROVIDER_CREDENTIALS, provider_for, provider_is_disabled, route_provider
+from .llm_providers import provider_credential_name, provider_for, provider_is_disabled, route_provider
 from .openrouter_policy import require_zdr_eligibility
 
 
@@ -48,7 +48,7 @@ def is_set(value: Any) -> bool:
 
 def has_model_api_key(config: AppConfig) -> bool:
     provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
-    return is_set(read_secret(PROVIDER_CREDENTIALS[provider]))
+    return is_set(read_secret(provider_credential_name(provider, read_secret)))
 
 
 def uses_openrouter(config: AppConfig) -> bool:
@@ -192,7 +192,7 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         errors.extend(configuration_errors(config))
         try:
             development_provider = route_provider(config, "development")
-            credential_name = PROVIDER_CREDENTIALS[development_provider]
+            credential_name = provider_credential_name(development_provider, read_secret)
             if not is_set(read_secret(credential_name)):
                 errors.append("Development supervisor requires %s for the selected %s provider" %
                               (credential_name, development_provider))
@@ -207,7 +207,7 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
 
     if model_required:
         provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
-        credential_name = PROVIDER_CREDENTIALS[provider]
+        credential_name = provider_credential_name(provider, read_secret)
         if not is_set(read_secret(credential_name)):
             errors.append("%s requires %s for the selected %s provider" % (role, credential_name, provider))
 

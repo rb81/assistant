@@ -393,8 +393,9 @@ FIELD_HELP = {
                                   "(example: example.com,subsidiary.com). This is not the outgoing-recipient allowlist.",
     "AGENT_LLM_PROVIDER": "Provider protocol: OpenAI-compatible chat API, OpenAI, Anthropic, Gemini, or Cloudflare. "
                           "Auto-detect preserves existing installations.",
-    "AGENT_LLM_BASE_URL": "HTTPS API base URL for the selected provider. OpenRouter, OpenAI and Cloudflare use the "
-                          "OpenAI-compatible chat API; Claude and Gemini use native APIs. Do not include credentials or query strings.",
+    "AGENT_LLM_BASE_URL": "Legacy HTTPS URL used for automatic provider detection and existing endpoint overrides. "
+                          "Native providers have prefilled endpoints in their own provider sections. Changing the "
+                          "default provider updates this value automatically. Do not include credentials or query strings.",
     "AGENT_LLM_MODEL": "Provider model identifier used for ordinary tasks, for example anthropic/claude-sonnet-4.6 "
                       "on OpenRouter. It must be available to your configured provider account.",
     "AGENT_LLM_FALLBACK_MODEL": "Alternative model used when the primary model cannot complete a request. "
@@ -413,13 +414,14 @@ FIELD_HELP = {
                                      "eligibility you verified for the configured account.",
     "AGENT_LLM_OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
                           "Create it in your provider account; set account-level spending limits there.",
-    "AGENT_LLM_OPENAI_API_KEY": "Credential for a non-OpenRouter OpenAI-compatible provider. It must match your Provider API URL.",
+    "AGENT_LLM_OPENAI_API_KEY": "Credential for the native OpenAI API. Custom OpenAI-compatible endpoints have a separate credential.",
     "AGENT_SEARCH_EXA_API_KEY": "Exa API credential used for web search when Exa is selected as the search provider.",
     "AGENT_WEB_FETCH_API_TOKEN": "API token for the external web page reader.",
     "AGENT_WEB_FETCH_MANAGED_TOKEN": "Locally generated credential for the managed web page reader.",
     "AGENT_LLM_ANTHROPIC_API_KEY": "Anthropic API credential used with the native Claude Messages API.",
     "AGENT_LLM_GEMINI_API_KEY": "Google AI Studio Gemini Developer API key. This route cannot satisfy strict ZDR.",
     "AGENT_LLM_CLOUDFLARE_API_KEY": "Cloudflare API token for Workers AI; use a token scoped to the required account and AI permissions.",
+    "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY": "Credential for the custom OpenAI-compatible endpoint, separate from native OpenAI.",
     "AGENT_DATABASE_PASSWORD": "Password for the bundled PostgreSQL database. Generate one only for a fresh install. "
                          "For existing data, use its current password; change it through Credentials to coordinate rotation.",
     "SETUP_EMAIL_ENABLED": "Start email intake as part of the app. It can process existing messages and move "

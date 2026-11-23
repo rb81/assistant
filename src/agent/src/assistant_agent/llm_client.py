@@ -11,8 +11,8 @@ from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
 from .openrouter_policy import apply_routing_policy, is_openrouter_url, require_zdr_eligibility
 from .llm_providers import (
-    PROVIDER_CREDENTIALS, build_request, normalize_response, parse_model_reference,
-    provider_base_url, provider_for, provider_is_disabled, route_fallbacks, route_provider,
+    build_request, normalize_response, parse_model_reference,
+    provider_base_url, provider_credential_name, provider_for, provider_is_disabled, route_fallbacks, route_provider,
     validate_provider_url,
 )
 
@@ -42,8 +42,11 @@ class LlmClient:
             self.provider = route_provider(config, route)
             route_url = provider_base_url(config, self.provider)
         else:
-            route_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))
-            self.provider = provider_for(config, route_url)
+            legacy_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))
+            if not base_url:
+                validate_https_url(legacy_url, "Model API base URL")
+            self.provider = provider_for(config, legacy_url)
+            route_url = base_url or provider_base_url(config, self.provider)
         self.base_url = str(base_url or route_url).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
         validate_provider_url(self.provider, self.base_url)
@@ -92,10 +95,8 @@ class LlmClient:
 
     @staticmethod
     def _api_key(provider: str) -> str:
-        credential_name = PROVIDER_CREDENTIALS[provider]
+        credential_name = provider_credential_name(provider, read_secret)
         api_key = read_secret(credential_name)
-        if provider == "openai-compatible" and not api_key:
-            api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError("%s is required for the selected model provider" % credential_name)
         return api_key

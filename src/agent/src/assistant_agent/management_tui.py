@@ -24,7 +24,7 @@ from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Box, Checkbox, Dialog, TextArea
+from prompt_toolkit.widgets import Box, Checkbox, CheckboxList, Dialog, RadioList, TextArea
 
 from .management_api_backend import ApiManagementBackend
 from .management_help import ACTION_HELP, SERVICE_HELP, credential_help, field_help, page_help
@@ -117,6 +117,97 @@ def checkbox_field(label, checked):
     widget.window.wrap_lines = Condition(lambda: True)
     widget.window.right_margins = []
     return widget
+
+
+class SelectionField(CheckboxList):
+    """A multi-selection preserves saved unavailable entries and explicit priority order."""
+
+    def __init__(self, value, choices, labels=None, *, ordered=False):
+        self.ordered = ordered
+        self.labels = labels or {}
+        selected = [item.strip() for item in value.split(",") if item.strip()]
+        super().__init__(values=[("", "No choices loaded")], default_values=selected)
+        self.current_values = selected
+        self.set_choices(choices, self.labels)
+        self.window.height = Dimension(min=1, max=8)
+        if ordered:
+            self.control.key_bindings.add("c-up")(lambda event: self.move(-1))
+            self.control.key_bindings.add("c-down")(lambda event: self.move(1))
+
+    @property
+    def text(self):
+        return ",".join(self.current_values)
+
+    def set_choices(self, choices, labels=None):
+        self.labels = labels or self.labels
+        self.available_choices = list(choices)
+        selected = list(self.current_values)
+        values = selected + [value for value in choices if value not in selected]
+        self.values = [(value, (str(selected.index(value) + 1) + ". " if self.ordered and value in selected else "") +
+                        self.labels.get(value, value) +
+                        (" (saved; unavailable)" if value not in choices else "")) for value in values]
+        if not self.values:
+            self.values = [("", "No configured choices; load choices after saving provider setup")]
+        self._selected_index = 0
+
+    def _handle_enter(self):
+        value = self.values[self._selected_index][0]
+        if value and (value in self.available_choices or value in self.current_values):
+            super()._handle_enter()
+            if self.ordered:
+                self.set_choices(self.available_choices)
+                self._selected_index = next((index for index, item in enumerate(self.values)
+                                             if item[0] == value), 0)
+
+    def move(self, offset):
+        value = self.values[self._selected_index][0]
+        if value not in self.current_values:
+            return
+        index = self.current_values.index(value)
+        target = index + offset
+        if 0 <= target < len(self.current_values):
+            self.current_values[index], self.current_values[target] = self.current_values[target], value
+            self.set_choices(self.available_choices)
+            self._selected_index = target
+
+
+class OptionField(RadioList):
+    """A single-choice list retains an unavailable saved option until it is changed."""
+
+    def __init__(self, value, choices, labels=None, *, on_change=None):
+        self.labels = labels or {}
+        self.available_choices = list(choices)
+        self.on_change = on_change
+        values = list(choices)
+        if value not in values:
+            values.insert(0, value)
+        super().__init__([(item, self.option_label(item)) for item in values],
+                         default=value)
+        self.window.height = Dimension(min=1, max=8)
+
+    def set_choices(self, choices, labels=None):
+        self.labels = labels or self.labels
+        self.available_choices = list(choices)
+        values = list(choices)
+        if self.current_value not in values:
+            values.insert(0, self.current_value)
+        self.values = [(item, self.option_label(item)) for item in values]
+        self._selected_index = 0
+
+    def option_label(self, value):
+        label = self.labels.get(value, value) or "Not set"
+        return label + (" (saved; unavailable)" if value and value not in self.available_choices else "")
+
+    def _handle_enter(self):
+        if self.values[self._selected_index][0] in self.available_choices:
+            previous = self.current_value
+            super()._handle_enter()
+            if self.current_value != previous and self.on_change:
+                self.on_change()
+
+    @property
+    def text(self):
+        return self.current_value
 
 
 class Action:
@@ -1305,14 +1396,26 @@ class ManagementApp:
             title = specs[0].label
         if self.form_group != key:
             self.form_group = key
-            self.form = {
-                spec.key: checkbox_field(spec.label, self.backend.value(spec).lower() == "true") if spec.boolean else
-                input_field(self.backend.value(spec), password=spec.secret)
-                for spec in specs
-            }
+            self.form = {}
+            for spec in specs:
+                metadata = getattr(self.backend, "field_metadata", {}).get(spec.key, {})
+                value = self.backend.value(spec)
+                choices = metadata.get("choices", metadata.get("enum", []))
+                if spec.boolean:
+                    widget = checkbox_field(spec.label, value.lower() == "true")
+                elif not spec.secret and metadata.get("selection") in {"multiple", "ordered"}:
+                    widget = SelectionField(value, choices, metadata.get("choice_labels"),
+                                            ordered=metadata["selection"] == "ordered")
+                elif not spec.secret and (choices or metadata.get("selection") == "single"):
+                    widget = OptionField(value, choices, metadata.get("choice_labels"),
+                                         on_change=partial(self.clear_dependent_choices, spec.key))
+                else:
+                    widget = input_field(value, password=spec.secret)
+                self.form[spec.key] = widget
         items = []
         advanced = key in self.advanced_forms
         has_advanced = False
+        current_section = None
         for spec in specs:
             widget = self.form[spec.key]
             restriction = getattr(self.backend, "restrictions", {}).get(spec.key)
@@ -1324,6 +1427,10 @@ class ManagementApp:
                 has_advanced = True
                 if not advanced:
                     continue
+            section = metadata.get("section")
+            if section and section != current_section:
+                items.extend([text(section, style="class:title"), text()])
+                current_section = section
             help_text = metadata.get("help") or field_help(spec)
             choices = metadata.get("choices")
             options = "Allowed values: " + ", ".join(choices) if choices and not spec.secret else ""
@@ -1334,7 +1441,16 @@ class ManagementApp:
                 suffix = " (configured; blank keeps it)" if spec.secret and spec.key in self.backend.credentials else ""
                 items.extend([text(spec.label + suffix, height=Dimension(min=1, max=4)), widget])
                 if options:
-                    items.append(text(options))
+                    if not isinstance(widget, (SelectionField, OptionField)):
+                        items.append(text(options))
+                if isinstance(widget, SelectionField) and widget.ordered:
+                    items.append(text("Select in priority order; Ctrl-Up / Ctrl-Down reorders selected entries."))
+                if metadata.get("choices_source"):
+                    items.append(self.action("Load choices: " + spec.label,
+                                             partial(self.load_setting_choices, spec.key),
+                                             help_text="Load available choices from the saved provider configuration."))
+                for warning in metadata.get("choice_warnings", []):
+                    items.append(text(warning, height=Dimension(min=1, max=4), style="class:error"))
                 items.append(text())
         for child, metadata in getattr(self.backend, "group_metadata", {}).items():
             if only or metadata.get("parent") != key or child not in self.groups:
@@ -1359,6 +1475,37 @@ class ManagementApp:
         visible = [widget for widget in self.form.values() if widget in items]
         if visible:
             self.app.layout.focus(visible[0])
+
+    def clear_dependent_choices(self, provider_key):
+        for key, metadata in getattr(self.backend, "field_metadata", {}).items():
+            if metadata.get("choices_source") != "models":
+                continue
+            if metadata.get("provider_key") != provider_key and provider_key != "AGENT_LLM_PROVIDER":
+                continue
+            metadata.pop("choices", None)
+            widget = self.form.get(key)
+            if isinstance(widget, OptionField):
+                widget.set_choices([])
+
+    def load_setting_choices(self, key):
+        target = self.form.get(key)
+        form_values = {name: widget.text for name, widget in self.form.items()
+                       if isinstance(widget, OptionField)}
+        def loaded(result):
+            widget = self.form.get(key)
+            if widget is not target:
+                return
+            if any(self.form[name].text != value for name, value in form_values.items()):
+                raise SetupError("Selections changed while choices were loading. Load choices again.")
+            if not isinstance(widget, (SelectionField, OptionField)):
+                raise SetupError("This setting does not support selection lists.")
+            metadata = self.backend.field_metadata[key]
+            metadata["choices"] = result["choices"]
+            metadata["choice_labels"] = result["choice_labels"]
+            metadata["choice_warnings"] = result["warnings"]
+            widget.set_choices(result["choices"], result["choice_labels"])
+            self.render()
+        self.task("Loading choices", lambda: self.backend.setting_choices(key, form_values), loaded, report=False)
 
     def toggle_advanced(self, key):
         if key in self.advanced_forms:

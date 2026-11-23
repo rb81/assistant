@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 from .management_client import ManagementClient
-from .management_contracts import SettingField
+from .management_contracts import SettingField, SettingChoicesResponse
 from .setup import SetupError, validate_secret
 
 
@@ -108,6 +108,17 @@ class ApiManagementBackend:
         if result["revision"] != self.configuration["revision"]:
             raise SetupError("Configuration changed. Save or discard your draft, then reload settings.")
         return result
+
+    def setting_choices(self, key, form_values=None):
+        resource = "configuration/choices?key=" + quote(key, safe="")
+        metadata = self.field_metadata.get(key, {})
+        values = {**self.values, **(form_values or {})}
+        provider = values.get(metadata.get("provider_key"), "")
+        if provider in {"", "auto", "inherit"}:
+            provider = values.get("AGENT_LLM_PROVIDER", "")
+        if metadata.get("choices_source") == "models" and provider not in {"", "auto", "inherit"}:
+            resource += "&provider=" + quote(provider, safe="")
+        return self.client.read(resource, SettingChoicesResponse)
 
     def draft(self):
         draft = copy.deepcopy(self.installation)

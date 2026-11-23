@@ -38,6 +38,15 @@ def test_model_overview_reports_unsupported_and_incompatible_servers():
             client.model_settings()
 
 
+def test_terminal_model_choices_use_the_form_provider_instead_of_the_saved_route(tmp_path):
+    backend = ApiManagementBackend(tmp_path, Mock())
+    backend.values = {"AGENT_LLM_PROVIDER": "openrouter", "AGENT_MODEL_ROUTES_TASK_PROVIDER": "inherit"}
+    backend.field_metadata = {"AGENT_LLM_MODEL": {"choices_source": "models",
+                                                "provider_key": "AGENT_MODEL_ROUTES_TASK_PROVIDER"}}
+    backend.setting_choices("AGENT_LLM_MODEL", {"AGENT_MODEL_ROUTES_TASK_PROVIDER": "anthropic"})
+    assert backend.client.read.call_args.args[0] == "configuration/choices?key=AGENT_LLM_MODEL&provider=anthropic"
+
+
 def test_tui_model_overview_keeps_saved_values_and_links_existing_editors(tmp_path):
     from assistant_agent.management_api import ManagementService
     from test_management import configured
@@ -82,7 +91,10 @@ def test_tui_model_overview_keeps_saved_values_and_links_existing_editors(tmp_pa
             primary.handler()
             assert ui.location.route == "Model:AGENT_LLM_MODEL"
             assert set(ui.form) == {"AGENT_LLM_MODEL"}
-            ui.form["AGENT_LLM_MODEL"].text = "example/quick-edit"
+            model_choice = ui.form["AGENT_LLM_MODEL"]
+            model_choice.set_choices(["example/quick-edit"])
+            model_choice._selected_index = 1
+            model_choice._handle_enter()
             ui.save_form()
             assert backend.values["AGENT_LLM_MODEL"] == "example/quick-edit"
             ui.location.route = "Model:AGENT_LLM_MODEL"
@@ -149,7 +161,8 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.render()
             preferred = ui.form["AGENT_SEARCH_PRIMARY_PROVIDER"]
             assert "Allowed values: openrouter, exa" in ui.control_topics[preferred.control][1]
-            preferred.text = "exa"
+            preferred._selected_index = 1
+            preferred._handle_enter()
             ui.form["AGENT_SEARCH_EXA_ENABLED"].checked = True
             ui.keep_draft()
             assert backend.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"

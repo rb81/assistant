@@ -10,7 +10,7 @@ import urllib.request
 
 from .config import AppConfig
 from .llm_providers import (
-    PROVIDER_CREDENTIALS, provider_base_url, provider_for, provider_is_disabled,
+    PROVIDER_CREDENTIALS, provider_base_url, provider_credential_name, provider_for, provider_is_disabled,
 )
 from .openrouter_policy import SAFETY_RETENTION_WARNING, is_openrouter_url, require_zdr
 from .secret_store import read_secret
@@ -117,7 +117,7 @@ def _request(provider, base_url, api_key):
     return urllib.request.Request(url, headers=headers, method="GET")
 
 
-def discover_models(config: AppConfig, provider_id=None):
+def discover_models(config: AppConfig, provider_id=None, *, credential_reader=None):
     base_url = str(config.get("agent.llm.base_url", "")).rstrip("/")
     if provider_id:
         provider = str(provider_id).strip().lower()
@@ -139,7 +139,7 @@ def discover_models(config: AppConfig, provider_id=None):
             llm = values.setdefault("agent", {}).setdefault("llm", {})
             llm["provider"] = "openrouter"
             llm["base_url"] = base_url
-            models = OpenRouterModels(AppConfig(values)).models(zdr_only=zdr)
+            models = OpenRouterModels(AppConfig(values), credential_reader=credential_reader).models(zdr_only=zdr)
         except ModelServiceError as exc:
             raise ModelCatalogError(str(exc)) from exc
         return {
@@ -158,10 +158,9 @@ def discover_models(config: AppConfig, provider_id=None):
         if provider not in config.get_list("agent.llm.zdr_verified_providers"):
             raise ModelCatalogError("Verify the provider account and add it to the verified ZDR provider list")
 
-    credential_name = PROVIDER_CREDENTIALS[provider]
-    api_key = read_secret(credential_name)
-    if provider == "openai-compatible" and not api_key:
-        api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
+    credential_reader = credential_reader or read_secret
+    credential_name = provider_credential_name(provider, credential_reader)
+    api_key = credential_reader(credential_name)
     if not api_key:
         raise ModelCatalogError("%s is required for model discovery" % credential_name)
 

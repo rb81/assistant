@@ -16,17 +16,16 @@ from .model_resources import ModelServiceError, ModelToolResources, ProviderReje
 from .secret_store import read_secret
 from .transport_security import open_https_request
 from .openrouter_policy import apply_routing_policy, require_zdr, require_zdr_eligibility
-from .llm_providers import provider_is_disabled
+from .llm_providers import provider_base_url, provider_is_disabled
 
 
-BASE_URL = "https://openrouter.ai/api/v1"
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_INPUT_BYTES = 20 * 1024 * 1024
 MAX_PROMPT_BYTES = 200000
 MAX_OUTPUT_TOKENS = 16384
 _catalog_lock = threading.Lock()
-_catalog: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
+_catalog: dict[tuple[str, bool], tuple[float, list[dict[str, Any]]]] = {}
 AUDIO_FORMATS = {"wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "webm", "pcm16", "pcm24"}
 
 
@@ -39,22 +38,24 @@ def configured(config) -> bool:
 
 
 class OpenRouterModels:
-    def __init__(self, config):
+    def __init__(self, config, *, credential_reader=None):
         self.config = config
+        self.credential_reader = credential_reader
 
     def request(self, path, payload=None, *, scoped_zdr=False):
         if provider_is_disabled(self.config, "openrouter"):
             raise ModelServiceError("OpenRouter is disabled in provider settings")
-        key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
+        key = (self.credential_reader or read_secret)("AGENT_LLM_OPENROUTER_API_KEY")
         if not key:
             raise ModelServiceError("AGENT_LLM_OPENROUTER_API_KEY is required for the model service")
+        base_url = provider_base_url(self.config, "openrouter")
         if payload is not None:
-            apply_routing_policy(self.config, BASE_URL, payload, scoped_zdr=scoped_zdr)
+            apply_routing_policy(self.config, base_url, payload, scoped_zdr=scoped_zdr)
             if require_zdr(self.config, scoped=scoped_zdr):
                 require_zdr_eligibility(self.config, "openrouter", str(payload.get("model") or ""),
                                         scoped=scoped_zdr)
         return urllib.request.Request(
-            BASE_URL + path,
+            base_url + path,
             data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
             headers={
                 "Authorization": "Bearer " + key,
@@ -69,8 +70,9 @@ class OpenRouterModels:
         if zdr_only is None:
             zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
         zdr_only = require_zdr(self.config, scoped=zdr_only)
+        cache_key = (provider_base_url(self.config, "openrouter"), zdr_only)
         with _catalog_lock:
-            cached = _catalog.get(zdr_only)
+            cached = _catalog.get(cache_key)
             if cached and time.monotonic() - cached[0] < 300:
                 models = cached[1]
             else:
@@ -90,7 +92,7 @@ class OpenRouterModels:
                     for model in models
                 ):
                     raise ModelServiceError("OpenRouter returned an invalid model catalog")
-                _catalog[zdr_only] = (time.monotonic(), models)
+                _catalog[cache_key] = (time.monotonic(), models)
         return models
 
     @staticmethod

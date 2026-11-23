@@ -6,6 +6,29 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.llm_client import LlmClient, _TransientLlmError
 from assistant_agent.llm_providers import build_request, normalize_response, provider_for
+from assistant_agent.llm_providers import provider_base_url, provider_credential_name
+
+
+def test_provider_sections_use_their_own_endpoints_and_preserve_legacy_custom_keys():
+    config = AppConfig({"agent": {"providers": {
+        "anthropic_base_url": "https://api.anthropic.com",
+        "cloudflare_account_id": "example",
+        "cloudflare_base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+    }}})
+    assert provider_base_url(config, "anthropic") == "https://api.anthropic.com"
+    assert provider_base_url(config, "cloudflare") == "https://api.cloudflare.com/client/v4/accounts/example/ai/v1"
+    keys = {"AGENT_LLM_OPENAI_API_KEY": "legacy"}
+    assert provider_credential_name("openai-compatible", keys.get) == "AGENT_LLM_OPENAI_API_KEY"
+    keys["AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"] = "dedicated"
+    assert provider_credential_name("openai-compatible", keys.get) == "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"
+    legacy = AppConfig({"agent": {"llm": {"base_url": "https://api.openai.com/custom/v1"}}})
+    assert provider_base_url(legacy, "openai") == "https://api.openai.com/custom/v1"
+
+
+@pytest.mark.parametrize("endpoint", ["http://api.openai.com/v1", "https://example.com/v1"])
+def test_native_provider_endpoint_controls_reject_insecure_or_wrong_provider_urls(endpoint):
+    with pytest.raises(ValueError):
+        provider_base_url(AppConfig({"agent": {"providers": {"openai_base_url": endpoint}}}), "openai")
 
 
 @pytest.mark.parametrize(("provider", "base_url", "model", "expected_url", "header"), [

@@ -15,7 +15,7 @@
 # not move settings out of their existing editors.
 model_sections:
   - id: task
-    title: Task models & provider
+    title: Task responses
     paths: [agent.llm., agent.app.name, agent.app.referer_url, agent.model_routes.task.]
     summary: [agent.llm.model, agent.llm.fallback_model, agent.llm.base_url]
     selectors: [agent.model_routes.task.provider, agent.llm.model, agent.llm.fallback_model, agent.model_routes.task.fallbacks]
@@ -137,30 +137,58 @@ settings:
     label: Require Zero Data Retention routing
     description: "Use OpenRouter's ZDR routing and model catalog without manual verification allowlists. Safety Retention may still be permitted by account privacy settings or a guardrail; this is a warning, not a setup, startup or usage blocker. Direct providers require verified accounts and exact models; Gemini Developer API and custom OpenAI-compatible providers are not eligible. Hosted tools have separate data policies; other providers may have additional eligibility limits."
   agent.llm.provider:
-    label: Model provider
+    label: Default model provider
     enum: [auto, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
     description: "Select the native API protocol. Auto-detect preserves existing installations; custom OpenAI-compatible endpoints use their own URL and credential."
+  agent.llm.base_url:
+    label: Legacy provider URL
   agent.llm.allowed_providers:
+    selection: multiple
+    choices_source: openrouter-providers
     model_blank_label: No provider restriction
     label: Allowed OpenRouter hosting providers
     description: "Restrict OpenRouter requests to these provider slugs. Leave empty for no preference. The restriction combines with ZDR and requests fail if no eligible route remains."
   agent.llm.zdr_verified_providers:
+    selection: multiple
     label: Verified ZDR provider accounts
     description: "Direct provider account IDs you have verified for ZDR (openai, anthropic, cloudflare). This is an administrator attestation; the application cannot inspect provider account controls. OpenRouter uses its own ZDR routing and does not require an entry. Gemini Developer API and custom endpoints are never accepted."
   agent.llm.zdr_verified_models:
+    selection: multiple
+    choices_source: verified-models
     label: Verified ZDR models
     description: "Exact direct-provider model allowlist in provider:model format, such as openai:gpt-4.1. Required for direct providers in ZDR-only mode, not for OpenRouter. Verify model eligibility and provider account/privacy controls before adding entries."
   agent.providers.disabled:
+    selection: multiple
     type: list
     label: Disabled providers
     description: "Provider IDs blocked for model requests and route fallbacks. Credentials are retained if a provider is disabled."
   agent.providers.priority:
+    selection: ordered
     type: list
     label: Provider selection order
     description: "Order configured providers in provider selectors. It does not silently change a model route; choose an explicit provider and model or configure provider:model fallbacks."
   agent.providers.openai_compatible_base_url:
     label: OpenAI-compatible provider URL
     description: "HTTPS API base URL for a custom OpenAI-compatible provider."
+  agent.providers.openai_compatible_api_key:
+    label: API key
+    secret: true
+    description: "Credential for this custom endpoint, separate from native OpenAI. Existing installations may continue using their saved OpenAI key until this is set."
+  agent.providers.openrouter_base_url:
+    label: API endpoint
+    description: "OpenRouter API endpoint. The standard endpoint is already configured."
+  agent.providers.openai_base_url:
+    label: API endpoint
+    description: "Native OpenAI API endpoint. The standard endpoint is already configured."
+  agent.providers.anthropic_base_url:
+    label: API endpoint
+    description: "Native Anthropic Messages API endpoint. The standard endpoint is already configured."
+  agent.providers.gemini_base_url:
+    label: API endpoint
+    description: "Gemini Developer API endpoint. The standard endpoint is already configured."
+  agent.providers.cloudflare_base_url:
+    label: API endpoint
+    description: "Workers AI endpoint template. Assistant substitutes your Cloudflare account ID."
   agent.providers.cloudflare_account_id:
     label: Cloudflare account ID
     description: "Account ID used to build the Workers AI API URL. Verify AI Gateway and account-level Logpush controls separately."
@@ -300,10 +328,13 @@ settings:
   agent.llm.openai_api_key:
     secret: true
   agent.llm.anthropic_api_key:
+    label: Anthropic API key
     secret: true
   agent.llm.gemini_api_key:
+    label: Gemini API key
     secret: true
   agent.llm.cloudflare_api_key:
+    label: Cloudflare API token
     secret: true
   agent.email.imap_password:
     secret: true

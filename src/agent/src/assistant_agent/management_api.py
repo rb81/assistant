@@ -33,7 +33,7 @@ from .management_contracts import (
     ProjectFileContentResponse, ProjectFilesResponse, RecordPageResponse, ServicesResponse,
     ConversationsResponse, TaskActivityResponse, TaskDeletionPreviewResponse, TaskMessagesResponse, TaskSummaryResponse,
     ClientAcknowledgmentRequest, ClientAcknowledgmentResponse, ClientHistoryResponse, ClientPollResponse,
-    DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse, ModelSettingsResponse,
+    DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse, ModelSettingsResponse, SettingChoicesResponse,
 )
 from . import settings_schema
 from .config import AppConfig
@@ -208,6 +208,20 @@ ADVANCED_GROUP_PARENTS = {
     "advanced:Calendar privacy": "calendar", "advanced:Email behavior": "email",
 }
 CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
+AI_PROVIDERS = {
+    "openrouter": "OpenRouter", "openai": "OpenAI", "anthropic": "Anthropic",
+    "gemini": "Gemini", "cloudflare": "Cloudflare", "openai-compatible": "OpenAI Compatible",
+}
+AI_PROVIDER_FIELDS = {
+    "OpenRouter": ["AGENT_PROVIDERS_OPENROUTER_BASE_URL", "AGENT_LLM_OPENROUTER_API_KEY",
+                   "AGENT_LLM_ALLOWED_PROVIDERS"],
+    "OpenAI": ["AGENT_PROVIDERS_OPENAI_BASE_URL", "AGENT_LLM_OPENAI_API_KEY"],
+    "Anthropic": ["AGENT_PROVIDERS_ANTHROPIC_BASE_URL", "AGENT_LLM_ANTHROPIC_API_KEY"],
+    "Gemini": ["AGENT_PROVIDERS_GEMINI_BASE_URL", "AGENT_LLM_GEMINI_API_KEY"],
+    "Cloudflare": ["AGENT_PROVIDERS_CLOUDFLARE_BASE_URL", "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID",
+                   "AGENT_LLM_CLOUDFLARE_API_KEY"],
+    "OpenAI Compatible": ["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"],
+}
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
     "AGENT_SEARCH_PRIMARY_PROVIDER": ("openrouter", "exa"),
@@ -250,6 +264,10 @@ def setting_presentation(group, spec):
     model_section = (item.get("metadata") or {}).get("model_section")
     if model_section:
         section = model_section.replace("_", " ").title()
+    if group == "providers":
+        section = next((title for title, keys in AI_PROVIDER_FIELDS.items() if spec.key in keys), "General")
+    elif group == "provider-privacy":
+        section = ("Direct-provider verification" if "VERIFIED" in spec.key else "ZDR routing")
     if spec.key == "AGENT_APPROVALS_CHANNEL":
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
@@ -434,6 +452,9 @@ def configuration_groups():
                 retained.append(spec)
         specs[:] = retained
     provider_fields.extend(groups.pop("catalog:providers", ("", []))[1])
+    order = ["AGENT_LLM_PROVIDER", "AGENT_PROVIDERS_DISABLED", "AGENT_PROVIDERS_PRIORITY",
+             *[key for keys in AI_PROVIDER_FIELDS.values() for key in keys], "AGENT_LLM_BASE_URL"]
+    provider_fields.sort(key=lambda spec: order.index(spec.key) if spec.key in order else len(order))
     groups["providers"] = ("AI providers", provider_fields)
     groups["provider-privacy"] = ("Provider privacy & ZDR", privacy_fields)
     return groups
@@ -619,6 +640,8 @@ class ManagementService:
                 file["values"] = redacted(file["values"], backend)
         catalog = {item["env"]: item for item in settings_schema.catalog()}
         calendars = configured_calendars(backend)
+        from .management_choices import provider_choices_metadata
+        provider_metadata = provider_choices_metadata(backend)
         settings = [
             {
                 "group": group, "key": spec.key, "label": presentation[0],
@@ -632,7 +655,12 @@ class ManagementService:
                 ),
                 "metadata": {
                     **catalog.get(spec.key, {}).get("metadata", {}),
-                    "level": "basic" if basic_setting(spec.key) else "advanced",
+                    "level": "basic" if basic_setting(spec.key) or group in {"providers", "provider-privacy"} else "advanced",
+                    **({"selection": "ordered", "choices_source": "route-models"}
+                       if spec.key.startswith("AGENT_MODEL_ROUTES_") and spec.key.endswith("_FALLBACKS") else {}),
+                    **provider_metadata.get(spec.key, {}),
+                    **({"level": "advanced"}
+                       if spec.key == "AGENT_LLM_BASE_URL" else {}),
                     **({"choices": list(DEPLOYMENT_CHOICES[spec.key])} if spec.key in DEPLOYMENT_CHOICES else {}),
                     **({"choices": list(SETTING_CHOICES[spec.key])} if spec.key in SETTING_CHOICES else {}),
                     **({"choice_labels": CHOICE_LABELS[spec.key]} if spec.key in CHOICE_LABELS else {}),
@@ -687,6 +715,19 @@ class ManagementService:
         from .llm_catalog import discover_models
 
         backend = self.read_configuration_backend()
+        return discover_models(self._model_configuration(backend), provider_id=provider_id,
+                               credential_reader=backend.credentials.get)
+
+    def setting_choices(self, key, provider_id=None):
+        from .management_choices import setting_choices
+
+        if key not in self._setting_specs():
+            raise PublicSetupError("This setting is unavailable. Reload the settings catalog.")
+        backend = self.read_configuration_backend()
+        return setting_choices(self._model_configuration(backend), backend, key, provider_id=provider_id)
+
+    @staticmethod
+    def _model_configuration(backend):
         values = copy.deepcopy(backend.installation.defaults.values)
         catalog = settings_schema.catalog_by_env()
         specs = {
@@ -701,7 +742,7 @@ class ManagementService:
             for part in parts[:-1]:
                 target = target.setdefault(part, {})
             target[parts[-1]] = backend.value(spec)
-        return discover_models(AppConfig(values), provider_id=provider_id)
+        return AppConfig(values)
 
     def _configuration_draft(self, payload):
         backend = self.backend()
@@ -743,6 +784,13 @@ class ManagementService:
             grouped.setdefault(group, {})[key] = value
         for group, group_values in grouped.items():
             backend.stage_fields([field for field in groups[group][1] if field.key in group_values], group_values)
+        if values.get("AGENT_LLM_PROVIDER") not in {None, "", "auto"} and "AGENT_LLM_BASE_URL" not in values:
+            from .llm_providers import provider_base_url
+            try:
+                backend.values["AGENT_LLM_BASE_URL"] = provider_base_url(
+                    self._model_configuration(backend), values["AGENT_LLM_PROVIDER"])
+            except ValueError as exc:
+                raise PublicSetupError(str(exc)) from exc
         removals = payload.get("remove_credentials", [])
         if (not isinstance(removals, list) or len(removals) > 512
                 or any(not isinstance(name, str) or not is_secret_name(name) for name in removals)
@@ -1466,6 +1514,7 @@ def create_app(root, token, service=None):
                 "configuration.activation",
                 "configuration.model-settings",
                 "configuration.model-catalog",
+                "configuration.choices",
                 "operations.lookup",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
@@ -1510,6 +1559,15 @@ def create_app(root, token, service=None):
     def instructions_v2():
         backend = service.read_configuration_backend()
         return {"revision": service.revision(backend.installation), "instructions": backend.instruction_text()}
+
+    @app.get("/v2/configuration/choices", response_model=SettingChoicesResponse)
+    def setting_choices_v2(key: str = Query(max_length=128), provider: str | None = Query(None, max_length=32)):
+        from .llm_catalog import ModelCatalogError
+
+        try:
+            return service.setting_choices(key, provider_id=provider)
+        except (ModelCatalogError, ValueError) as exc:
+            raise PublicSetupError(str(exc)) from exc
 
     @app.get("/v2/configuration/activation")
     def configuration_activation_v2():

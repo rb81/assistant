@@ -15,7 +15,23 @@ Explicit native providers must use their official hosts; use
 | Anthropic Claude | `https://api.anthropic.com` | `AGENT_LLM_ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | Gemini Developer API | `https://generativelanguage.googleapis.com/v1beta` | `AGENT_LLM_GEMINI_API_KEY` | `gemini-2.5-flash` |
 | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/<account-id>/ai/v1` | `AGENT_LLM_CLOUDFLARE_API_KEY` | `@cf/meta/llama-3.1-8b-instruct` |
-| OpenAI-compatible | Your HTTPS API base URL | `AGENT_LLM_OPENAI_API_KEY` | Provider-specific |
+| OpenAI-compatible | Your HTTPS API base URL | `AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY` | Provider-specific |
+
+**AI providers** contains a separate block for each provider, like Calendar's
+provider blocks. Native endpoint URLs are prefilled; Cloudflare substitutes
+your account ID into its prefilled Workers AI URL. Only custom OpenAI-compatible
+services require you to supply an endpoint. Their dedicated credential is
+separate from OpenAI's; existing installations keep using their old saved key
+until a dedicated one is set. The legacy shared URL is an advanced migration
+setting, not a required setup step for native providers.
+
+Provider activation, selector ordering, hosting-provider restrictions and ZDR
+verification use selection lists in both clients, not comma-separated text
+editors. macOS lists are searchable; ordered selections have move controls.
+In the terminal, use Space to select entries and Ctrl-Up / Ctrl-Down to reorder
+priority and fallback lists. Use **Load choices** after selecting a route's
+provider; **Keep draft** before moving between settings pages. Saved choices
+that disappear from discovery stay visible until you remove or replace them.
 
 Use the model identifier supplied by the selected provider. The macOS client can
 discover models for configured providers through the authenticated Management

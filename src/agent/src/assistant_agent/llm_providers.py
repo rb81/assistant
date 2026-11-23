@@ -4,6 +4,8 @@ import json
 import re
 from urllib.parse import quote, urlsplit
 
+from .transport_security import validate_https_url
+
 
 PROVIDERS = ("auto", "openrouter", "openai", "anthropic", "gemini", "cloudflare", "openai-compatible")
 PROVIDER_CREDENTIALS = {
@@ -12,7 +14,7 @@ PROVIDER_CREDENTIALS = {
     "anthropic": "AGENT_LLM_ANTHROPIC_API_KEY",
     "gemini": "AGENT_LLM_GEMINI_API_KEY",
     "cloudflare": "AGENT_LLM_CLOUDFLARE_API_KEY",
-    "openai-compatible": "AGENT_LLM_OPENAI_API_KEY",
+    "openai-compatible": "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY",
 }
 PROVIDER_DEFAULT_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
@@ -20,6 +22,15 @@ PROVIDER_DEFAULT_URLS = {
     "anthropic": "https://api.anthropic.com",
     "gemini": "https://generativelanguage.googleapis.com/v1beta",
 }
+
+
+def provider_credential_name(provider, available):
+    """Prefer a dedicated custom-endpoint key while preserving existing installations."""
+    primary = PROVIDER_CREDENTIALS[provider]
+    if provider != "openai-compatible":
+        return primary
+    names = (primary, "AGENT_LLM_OPENAI_API_KEY", "AGENT_LLM_OPENROUTER_API_KEY")
+    return next((name for name in names if available(name)), primary)
 
 
 def route_provider(config, route):
@@ -45,11 +56,13 @@ def provider_is_disabled(config, provider):
 def provider_base_url(config, provider):
     """Return a validated endpoint for one provider without changing global route selection."""
     if provider in PROVIDER_DEFAULT_URLS:
-        if provider == "openrouter":
-            configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
-            if configured and (urlsplit(configured).hostname or "").lower() == "openrouter.ai":
-                return configured
-        return PROVIDER_DEFAULT_URLS[provider]
+        endpoint = str(config.get("agent.providers.%s_base_url" % provider) or PROVIDER_DEFAULT_URLS[provider]).rstrip("/")
+        configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+        if (endpoint == PROVIDER_DEFAULT_URLS[provider] and configured
+                and (urlsplit(configured).hostname or "").lower() == urlsplit(endpoint).hostname):
+            endpoint = configured
+        validate_provider_url(provider, endpoint)
+        return endpoint
     if provider == "cloudflare":
         account_id = str(config.get("agent.providers.cloudflare_account_id", "") or "").strip()
         if not account_id:
@@ -60,7 +73,11 @@ def provider_base_url(config, provider):
                 account_id = parts[3]
         if not account_id:
             raise ValueError("Cloudflare Workers AI requires an account ID")
-        return "https://api.cloudflare.com/client/v4/accounts/%s/ai/v1" % quote(account_id, safe="")
+        template = str(config.get("agent.providers.cloudflare_base_url") or
+                       "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1")
+        endpoint = template.replace("{account_id}", quote(account_id, safe="")).rstrip("/")
+        validate_provider_url(provider, endpoint)
+        return endpoint
     if provider == "openai-compatible":
         configured = str(config.get("agent.providers.openai_compatible_base_url", "") or "").strip()
         if not configured:
@@ -69,12 +86,18 @@ def provider_base_url(config, provider):
                 configured = legacy
         if not configured:
             raise ValueError("OpenAI-compatible provider requires its HTTPS API URL")
-        return configured.rstrip("/")
+        endpoint = configured.rstrip("/")
+        validate_provider_url(provider, endpoint)
+        return endpoint
     raise ValueError("Unsupported model provider: %s" % provider)
 
 
 def validate_provider_url(provider, base_url):
     """Prevent a route from using one provider's policy with another provider's host."""
+    try:
+        validate_https_url(base_url, "Provider API URL")
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
     host = (urlsplit(base_url).hostname or "").lower()
     native_hosts = {
         "openai": "api.openai.com",

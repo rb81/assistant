@@ -884,7 +884,8 @@ def test_insertion_marker_tracks_partial_edits_and_horizontal_scrolling_without_
             ui.app.output.size = Size(rows=24, columns=76)
             ui.go("Form:providers")
             await asyncio.sleep(0.08)
-            field = ui.form["AGENT_LLM_BASE_URL"]
+            field = ui.form["AGENT_PROVIDERS_OPENROUTER_BASE_URL"]
+            ui.app.layout.focus(field)
             pipe.send_text("\x05\x1b[D\x1b[D")
             await asyncio.sleep(0.08)
             screen = ui.app.renderer._last_screen

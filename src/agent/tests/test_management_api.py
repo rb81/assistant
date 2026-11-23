@@ -847,6 +847,9 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert any(item["key"] == "AGENT_LLM_OPENROUTER_API_KEY" and item["value"] == ""
                and item["secret"] for item in result["settings"])
     settings = {item["key"]: item for item in result["settings"]}
+    from assistant_agent.settings_schema import catalog
+    assert len(settings) == len(result["settings"]), "Every setting must have exactly one editor"
+    assert {item["env"] for item in catalog()} <= settings.keys(), "No configured setting may be omitted"
     assert all(item["metadata"].get("help") for item in result["settings"])
     assert settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["label"] == "Client ID"
     assert settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["metadata"]["section"] == "Zoho"
@@ -857,6 +860,50 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert groups["calendar:zoho_2"]["section"] == settings["AGENT_CALENDAR_ZOHO_CLIENT_ID"]["metadata"]["section"]
     assert groups["catalog:fusion"]["help"] and groups["catalog:fusion"]["parent"] is None
     assert set(groups) == {item["group"] for item in result["settings"]}
+    provider_fields = [item for item in result["settings"] if item["group"] == "providers"]
+    assert {item["metadata"]["section"] for item in provider_fields} == {
+        "General", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "Cloudflare", "OpenAI Compatible",
+    }
+    assert all(item["metadata"]["section"] != "Task" for item in provider_fields)
+    for provider in ("OPENROUTER", "OPENAI", "ANTHROPIC", "GEMINI", "CLOUDFLARE"):
+        endpoint = settings[f"AGENT_PROVIDERS_{provider}_BASE_URL"]
+        assert endpoint["value"].startswith("https://")
+        assert endpoint["metadata"]["level"] == "basic"
+    assert settings["AGENT_LLM_ANTHROPIC_API_KEY"]["label"] == "Anthropic API key"
+    assert settings["AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"]["metadata"]["section"] == "OpenAI Compatible"
+    assert settings["AGENT_LLM_ZDR_VERIFIED_MODELS"]["metadata"]["selection"] == "multiple"
+    assert settings["AGENT_MODEL_ROUTES_TASK_FALLBACKS"]["metadata"]["selection"] == "ordered"
+
+
+def test_setting_choices_are_authenticated_and_use_typed_responses(tmp_path):
+    service = ManagementService(tmp_path)
+    result = {"key": "AGENT_LLM_MODEL", "choices": ["example/model"],
+              "choice_labels": {"example/model": "Example"}, "warnings": []}
+    service.setting_choices = Mock(return_value=result)
+    try:
+        client = TestClient(create_app(tmp_path, TOKEN, service))
+        url = "/v2/configuration/choices?key=AGENT_LLM_MODEL&provider=openrouter"
+        assert client.get(url, headers={"Host": "127.0.0.1"}).status_code == 401
+        response = client.get(url, headers={"Host": "127.0.0.1", "Authorization": "Bearer " + TOKEN})
+        assert response.status_code == 200 and response.json() == result
+        service.setting_choices.assert_called_once_with("AGENT_LLM_MODEL", provider_id="openrouter")
+    finally:
+        service.close()
+
+
+def test_default_provider_selection_updates_legacy_endpoint_without_manual_entry(tmp_path):
+    from test_management import configured
+
+    configured(tmp_path)
+    service = ManagementService(tmp_path)
+    try:
+        snapshot = service.configuration_v2(include_source=False, instructions=False)
+        draft, _, _ = service._configuration_draft({
+            "revision": snapshot["revision"], "values": {"AGENT_LLM_PROVIDER": "openai"},
+        })
+        assert draft.values["AGENT_LLM_BASE_URL"] == "https://api.openai.com/v1"
+    finally:
+        service.close()
 
 
 def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_path):
@@ -972,7 +1019,7 @@ def test_provider_model_catalog_is_authenticated_and_keeps_credentials_server_si
         "data": [{"id": "gpt-4.1"}, {"id": "gpt-4.1-mini"}],
     }).encode()
     try:
-        with patch("assistant_agent.llm_catalog.read_secret", return_value="private-model-key"), \
+        with patch("assistant_agent.llm_catalog.read_secret", side_effect=AssertionError("Use saved credentials")), \
                 patch("assistant_agent.llm_catalog.open_https_request", return_value=response) as send:
             assert client.get("/v2/configuration/models", headers={"Host": "127.0.0.1"}).status_code == 401
             result = client.get("/v2/configuration/models", headers=headers)
@@ -982,6 +1029,16 @@ def test_provider_model_catalog_is_authenticated_and_keeps_credentials_server_si
         assert [model["id"] for model in result.json()["models"]] == ["gpt-4.1"]
         assert "private-model-key" not in result.text
         assert send.call_args.args[0].full_url == "https://api.openai.com/v1/models"
+        assert send.call_args.args[0].get_header("Authorization") == "Bearer private-model-key"
+        response.__enter__.return_value.read.return_value = b'{"data":[{"id":"openai/gpt-4.1"}]}'
+        with patch("assistant_agent.model_service._catalog", {}), \
+                patch("assistant_agent.model_service.read_secret", side_effect=AssertionError("Use saved credentials")), \
+                patch("assistant_agent.model_service.open_https_request", return_value=response) as send:
+            result = client.get("/v2/configuration/choices?key=AGENT_LLM_MODEL&provider=openrouter", headers=headers)
+        assert result.status_code == 200 and result.json()["choices"] == ["openai/gpt-4.1"]
+        saved_key = installation.secret_values["AGENT_LLM_OPENROUTER_API_KEY"]
+        assert send.call_args.args[0].get_header("Authorization") == "Bearer " + saved_key
+        assert saved_key not in result.text
     finally:
         service.close()
 
