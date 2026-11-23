@@ -40,11 +40,13 @@ Development tasks waiting for a matching recorded approval remain paused for
 review; finalizing all open sessions is required before task completion.
 
 Script requests offer **Approve once**, **Approve always**, and **Deny**.
-Website requests also support a grant for this script version or all approved
-scripts. **Once** permits one execution, not the whole job. Provide feedback
-before deciding if useful. Email replies must quote the original request and
-start with `APPROVE ONCE`, `APPROVE ALWAYS`, `APPROVE ALWAYS FOR ALL SCRIPTS`
-(websites only), or `DENY`; full script manifests are attached.
+Host access is bound to the reviewed script version and requested hosts.
+**Once** permits one execution, not the whole job. Provide feedback before
+deciding if useful. Email replies must quote the original request and start
+with `APPROVE ONCE`, `APPROVE ALWAYS`, or `DENY`; full script manifests are
+attached. Older email or Telegram script/host approvals without a content
+binding require a fresh request; management can instead show a current,
+version-bound review.
 See [network access approvals](sandbox.md#network-access-approvals).
 
 Telegram `/permissions` shows versions, host grants, legacy rules, and approval
@@ -77,9 +79,45 @@ confirmation. Sender authentication and enabled decision-model screening still
 apply; suspicious content can still be held. Follow-ups add context, not admin
 authority, script/host permission, limit increases, or safety-hold clearance.
 
-For a fresh admin task email, Telegram can show the message with **Confirm &
-start**. This processes the held request without a second confirmation screen
-and grants no script permissions.
+For a fresh admin task email, Telegram offers **Confirm & start**. The notice
+shows the sender, subject, email-header date, attachments and a short,
+explicitly labeled AI summary from the configured naming model. The email is
+untrusted input; the summary is not authoritative. If the model fails, the
+notice says the summary is unavailable. The client and terminal approval
+inboxes can display the original text. This confirmation grants no script
+permissions.
+
+An approved inbound email is queued atomically with the one-use decision.
+The downloader, not Telegram or the task agent, processes it using its existing
+writable attachment and artifact storage. The client and **Activity → Permission
+requests** in the terminal show recent `pending`, `running`, `succeeded`,
+`failed`, and `uncertain` outcomes; Telegram's approval inbox shows recent
+outcomes too. Queued does not mean a task has started. A stopped downloader
+leaves work queued. An interrupted or failed attempt is not automatically
+replayed: after 30 minutes a still-running claim is shown as uncertain, and it
+may still complete. Check the email and task records before taking further
+action. Never reset the IMAP checkpoint or blindly reapprove an uncertain item.
+
+For an uncertain item with a known Message-ID, this read-only query shows
+whether the email, request and task exist. Replace the placeholder with the
+exact Message-ID shown in the approval review:
+
+```sh
+docker compose --env-file data/.env exec -T postgres \
+  psql -U assistant -d assistant -v ON_ERROR_STOP=1 -v message_id='<MESSAGE_ID>' <<'SQL'
+SELECT e.id AS email_id, e.is_actionable, r.id AS request_id,
+       r.status AS request_status, r.metadata->>'queued' AS request_queued,
+       j.id AS job_id, j.status AS job_status
+FROM emails e
+LEFT JOIN request_messages r ON r.email_id = e.id
+LEFT JOIN jobs j ON j.trigger_email_id = e.id OR j.trigger_request_id = r.id
+WHERE e.message_id = :'message_id'
+ORDER BY r.id, j.id;
+SQL
+```
+
+No rows does not prove that no files or external actions exist; an email row
+without a request or task may be a partial ingest. Investigate before retrying.
 
 When email approvals are selected, the system sends a new, unthreaded email
 only to `AGENT_ADMIN_EMAIL`. It contains a random OTP, a SHA-256 request hash,
@@ -107,8 +145,9 @@ Plain administrator questions are recorded as sent messages, so a reply can
 provide ordinary task guidance without another routine confirmation.
 Version-bound clarification emails that include an OTP/hash can be answered by
 retaining the original message. Neither grants script or host permissions.
-Approving a job review resumes it and records the transition without a separate
-acknowledgment email; explicit `/admin` commands email their results.
+Email approval replies receive the decision result; an email-processing
+acknowledgment means queued, not completed. Explicit `/admin` commands email
+their results.
 
 ## Commands
 

@@ -6,12 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
-from .approval_actions import apply_approval, deny_approval
 from .approval_channels import channels, review_label, review_summary, telegram_admins
 from .email_approvals import (
     ApprovalDeliveryError, EmailApprovals, approval_keyboard, telegram_approval_summary, telegram_permission_summary,
 )
 from .requests import TransactionDatabase
+from .management_errors import ApprovalApplicationIncomplete
 from .telegram import answer_callback
 
 
@@ -463,9 +463,26 @@ class TelegramAdmin:
         service = EmailApprovals(self.db, self.config)
         row = service.telegram_pending(callback_id, sender)
         value = row["value"]
+        def display_summary():
+            payload = value["payload"]
+            if payload.get("kind") not in {"email", "screened_email"}:
+                return value["summary"]
+            from .email_review import review_card, review_email
+
+            review = payload.get("review") or review_email(payload)
+            return review_card(review, screened=payload["kind"] == "screened_email",
+                               screening=review.get("screening") or "")
+
+        def decide(decision, instruction=""):
+            from .management_approvals import decide_channel_approval
+
+            return decide_channel_approval(
+                self.db, self.config, row["key"].removeprefix("email-approval:"),
+                decision, instruction, actor="telegram-admin", callback_id=callback_id, sender=sender,
+            )
         if action == "details":
             from .admin_commands import redact_secrets
-            content = str(redact_secrets(value["summary"]))
+            content = str(redact_secrets(display_summary()))
             if value["payload"].get("kind") == "permission":
                 self.permissions(sender, "pcode", value["payload"]["version_id"])
                 self.client.call("sendDocument", {"chat_id": sender, "caption": "Full approval context and assessments"},
@@ -517,15 +534,9 @@ class TelegramAdmin:
                 if action == "once" and value["payload"].get("scheduled"):
                     raise ValueError("Scheduled scripts need Always allow or Deny.")
                 feedback = self.db.get_state("permission-feedback:%s:%s" % (callback_id, sender)) or {}
-                payload = service.consume_telegram(callback_id, sender)
-                try:
-                    result = script_permissions.apply_decision(self.db, payload, action, feedback.get("text", ""), "telegram-admin")
-                except ValueError:
-                    job = self.job(sender, payload["job_id"])
-                    if script_permissions.approval_payload(job) == payload and job["status"] == "needs_review":
-                        script_permissions.send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
-                    raise
-                self.send(sender, result, job_id=payload["job_id"])
+                decision = {"once": "approve_once", "always": "approve_always", "deny": "deny"}[action]
+                result = decide(decision, feedback.get("text", ""))
+                self.send(sender, result, job_id=value["payload"]["job_id"])
                 self.db.execute("DELETE FROM runtime_state WHERE key = %s",
                                 ("permission-feedback:%s:%s" % (callback_id, sender),))
             else:
@@ -557,27 +568,16 @@ class TelegramAdmin:
         elif network and action in {"once", "always"}:
             raise ValueError("Legacy website requests cannot grant access. Request fresh combined script and host approval.")
         elif network and action in {"block", "blockall", "cancel"}:
-            from .network_access import apply_decision
-            payload = service.consume_telegram(callback_id, sender)
-            try:
-                result = apply_decision(self.db, payload, action, "", "telegram-admin")
-            except Exception:
-                from .network_access import approval_payload, send_approval
-                job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'", (payload["job_id"],))
-                if job and approval_payload(job) == payload:
-                    send_approval(self.db, self.config, job, ":retry:" + secrets.token_hex(12))
-                raise
+            result = decide({"block": "block_once", "blockall": "block_always", "cancel": "cancel_job"}[action])
             self.send(sender, result[:3500], [[("Back", "ui:home:0")]])
         elif action == "review":
-            self.send(sender, telegram_approval_summary(value["summary"]),
+            self.send(sender, telegram_approval_summary(display_summary()),
                       [[(button["text"], button["callback_data"]) for button in row]
                        for row in approval_keyboard(callback_id, value["payload"])])
         elif action == "deny" and not network:
-            payload = service.consume_telegram(callback_id, sender, denied=True)
-            self.send(sender, deny_approval(self.db, payload), [[("Back", "ui:home:0")]])
+            self.send(sender, decide("deny"), [[("Back", "ui:home:0")]])
         elif action == "ok" and not network:
-            payload = service.consume_telegram(callback_id, sender)
-            result = apply_approval(self.db, self.config, payload)
+            result = decide("approve")
             from .admin_commands import redact_secrets
             self.send(sender, str(redact_secrets(result))[:3500], [[("Back", "ui:home:0")]])
         else:
@@ -644,7 +644,24 @@ class TelegramAdmin:
                                AND value->'telegram_admin_ids' ? %s
                                ORDER BY updated_at DESC LIMIT 20""", (sender,),
                         )
-                        self.send(sender, "Pending approvals (expired ones can be renewed):" if rows else "No pending approvals.",
+                        recent = self.db.fetch_all(
+                            """SELECT value->>'status' AS status, value->'review' AS review
+                               FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'
+                               ORDER BY updated_at DESC LIMIT 10""",
+                        )
+                        from .admin_commands import redact_secrets
+                        status_labels = {"pending": "queued", "running": "processing",
+                                         "succeeded": "processed", "failed": "stopped before processing",
+                                         "uncertain": "outcome uncertain; check email and task before retrying"}
+                        status_lines = [
+                            "%s: %s" % ((row.get("review") or {}).get("subject") or "Email",
+                                       status_labels.get(row.get("status"), "unknown"))
+                            for row in recent
+                        ]
+                        heading = "Pending approvals (expired ones can be renewed):" if rows else "No pending approvals."
+                        if status_lines:
+                            heading += "\n\nRecent approved email:\n" + "\n".join(status_lines)
+                        self.send(sender, str(redact_secrets(heading)),
                                   [[(str(row["value"]["summary"]).splitlines()[0][:45],
                                      "ap:%s:review" % row["value"]["callback_id"])] for row in rows] +
                                   [[("Back", "ui:attention:0")]])
@@ -693,6 +710,6 @@ class TelegramAdmin:
                                   "Archive is available here without deleting data.", [[("Back", "ui:stream:%s" % identifier)]])
                     else:
                         raise ValueError("Unknown menu action")
-        except (ValueError, ApprovalDeliveryError) as exc:
+        except (ValueError, ApprovalDeliveryError, ApprovalApplicationIncomplete) as exc:
             self.send(sender, str(exc), [[("Back", "ui:home:0")]])
         return True

@@ -1002,6 +1002,18 @@ with tempfile.TemporaryDirectory() as root:
         self.assertIn("clamav_net", task_agent["networks"])
         self.assertNotIn(mount, configuration["services"]["sandbox"]["volumes"])
 
+    def test_downloader_can_process_approved_email_without_channel_worker_mounts(self):
+        repository = Path(__file__).resolve().parents[2]
+        services = yaml.safe_load((repository / "docker-compose.yml").read_text())["services"]
+        downloader = services["downloader"]
+        self.assertIn("../data/private/artifacts:/data/private/artifacts", downloader["volumes"])
+        self.assertIn("../data/share:/data/share", downloader["volumes"])
+        self.assertIn("clamav_net", downloader["networks"])
+        self.assertIn("transcription_net", downloader["networks"])
+        for name in ("task-agent", "telegram-receiver"):
+            self.assertNotIn("../data/private/artifacts/attachments:/data/private/artifacts/attachments",
+                             services[name]["volumes"])
+
     def test_compose_segments_service_networks_without_management_api(self):
         repository = Path(__file__).resolve().parents[2]
         configuration = yaml.safe_load((repository / "docker-compose.yml").read_text())

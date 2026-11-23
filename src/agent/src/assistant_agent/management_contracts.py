@@ -174,6 +174,7 @@ class TaskDeletionPreviewResponse(BaseModel):
 
 class ApprovalsResponse(BaseModel):
     approvals: list[dict[str, Any]]
+    executions: list[dict[str, Any]] = Field(default_factory=list)
     limit: int
     offset: int
 

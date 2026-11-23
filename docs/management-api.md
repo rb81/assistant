@@ -62,7 +62,7 @@ for both protocol versions. Existing `/v1` reads remain compatible.
 | `GET tasks/{id}/activity` | Tool calls across the whole thread (`since`) |
 | `GET tasks/{id}/deletion-preview` | Deletion inventory, blockers, digest |
 | `GET tasks/summary` | Task counts |
-| `GET approvals` | Version-bound reviews and non-actionable explanations |
+| `GET approvals` | Version-bound reviews, non-actionable explanations, and recent email execution outcomes |
 | `GET permissions/{view}` | Sandbox host rules or history |
 | `GET projects/{id}/files` | Attached files and ownership metadata |
 | `GET projects/{id}/files/{file_id}/content` | Bounded base64 content chunk |
@@ -346,6 +346,14 @@ malware scan and updates require the current digest. Project-file reads require
 membership in that project. Chunked transfers do not imply resumable atomic
 uploads. Approval decisions use the exact displayed opaque reference/version;
 expired or changed reviews cannot be approved. Database reset requires `RESET`.
+Email reviews include `action.review`, with sender, subject, header date,
+attachments and an explicitly labeled generated summary or unavailable fallback.
+`action.parts` retains the original review material for compatible clients; do
+not display attachment bytes by default. The `executions` array contains up to
+50 recent approved-email statuses and no raw email or credentials. `pending`
+means durably queued, not processed; `uncertain` requires reconciliation and
+must not be retried automatically. Older servers may omit `executions` and
+`action.review`.
 
 ## CLI/TUI and checks
 

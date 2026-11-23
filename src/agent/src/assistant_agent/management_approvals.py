@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from .management_errors import ApprovalApplicationIncomplete
 from .requests import TransactionDatabase
 
 
+LOGGER = logging.getLogger("assistant.management_approvals")
 _APPROVAL_KEY = re.compile(r"^email-approval:([a-f0-9]{64})$")
 _REFERENCE_KEY = "management-approval-ref:"
 _MAX_LIST_LIMIT = 100
@@ -241,6 +243,11 @@ def _current_job(db, payload: dict[str, Any], request_key: str) -> dict[str, Any
     request = (job.get("metadata") or {}).get(request_key) or {}
     if request.get("id") != payload.get("request_id"):
         raise ValueError("This approval request is no longer current.")
+    if payload.get("request_fingerprint"):
+        from .approval_binding import request_fingerprint
+
+        if not hmac.compare_digest(str(payload["request_fingerprint"]), request_fingerprint(request)):
+            raise ValueError("This approval request has changed.")
     if payload.get("kind") == "permission":
         if int(request.get("version_id", -1)) != int(payload.get("version_id", -2)):
             raise ValueError("This script permission request has changed.")
@@ -292,6 +299,8 @@ def _email_action(payload: dict[str, Any]) -> dict[str, Any]:
         parts.append(item)
 
     action_type = "screened_email_release" if payload.get("kind") == "screened_email" else "email_ingestion"
+    from .email_review import review_email
+
     return {
         "type": action_type,
         "effect": (
@@ -302,6 +311,7 @@ def _email_action(payload: dict[str, Any]) -> dict[str, Any]:
         "folder": payload.get("folder", ""),
         "thread_id": payload.get("thread_id", ""),
         "existing_job": _json_value(payload.get("job")),
+        "review": payload.get("review") or review_email(payload),
         "headers": headers,
         "parts": parts,
         "decision_options": ["approve", "deny"],
@@ -561,20 +571,20 @@ def list_approvals(
     return result
 
 
-def _decision_instruction(kind: str, decision: str, instruction: str) -> tuple[str, bool]:
+def _decision_instruction(kind: str, decision: str, instruction: str, *, channel_feedback: bool = False) -> tuple[str, bool]:
     instruction = str(instruction or "").strip()
     if kind == "permission":
         item = _PERMISSION_DECISIONS.get(decision)
         if not item:
             raise ValueError("Permission decisions must be approve_once, approve_always, or deny.")
-        if decision == "deny" and instruction:
+        if decision == "deny" and instruction and not channel_feedback:
             raise ValueError("Feedback is not accepted with a denied permission request.")
         return item + (("\n" + instruction) if instruction else ""), False
     if kind == "network":
         item = _NETWORK_DECISIONS.get(decision)
         if not item:
             raise ValueError("Network decisions must be block_once, block_always, or cancel_job.")
-        if decision == "cancel_job" and instruction:
+        if decision == "cancel_job" and instruction and not channel_feedback:
             raise ValueError("Feedback is not accepted when cancelling a network request.")
         return item + (("\n" + instruction) if instruction else ""), False
     if decision not in {"approve", "deny"}:
@@ -582,6 +592,122 @@ def _decision_instruction(kind: str, decision: str, instruction: str) -> tuple[s
     if decision == "deny" and instruction:
         raise ValueError("Feedback is not accepted with a denied approval.")
     return instruction, decision == "deny"
+
+
+def _apply_decision(tx, config, digest, pending, action, decision, instruction, *, actor):
+    """Consume and apply database actions, or record external work, in one transaction."""
+    if decision not in action.get("decision_options", []):
+        raise ValueError("This decision is not available for the reviewed approval.")
+    instruction_text, denied = _decision_instruction(
+        pending["payload"]["kind"], decision, instruction, channel_feedback=actor != "admin",
+    )
+    kind = pending["payload"]["kind"]
+    consumed = EmailApprovals(tx, config)._consume(
+        digest, pending["otp_hash"], denied=denied or (kind == "permission" and decision == "deny"),
+    )
+    _delete_references(tx, "email-approval:" + digest)
+    if not denied and kind in {"email", "screened_email"}:
+        from .approved_email_execution import enqueue
+
+        return enqueue(tx, digest, pending, instruction_text), None
+    if kind in {"permission", "network", "review"} or denied:
+        from .approval_actions import apply_approval, deny_approval
+
+        result = (deny_approval(tx, consumed, actor=actor) if denied else
+                  apply_approval(tx, config, consumed, instruction_text, actor=actor))
+        return result, None
+    return None, (consumed, instruction_text, actor)
+
+
+def _apply_external(db, config, external):
+    if external is None:
+        return None
+    from .approval_actions import apply_approval
+
+    consumed, instruction, actor = external
+    try:
+        return apply_approval(db, config, consumed, instruction, actor=actor)
+    except Exception as exc:
+        LOGGER.error("Approved action failed after consumption (%s); outcome may be partial", type(exc).__name__)
+        raise ApprovalApplicationIncomplete() from None
+
+
+def decide_channel_approval(db, config, digest, decision, instruction="", *, actor,
+                            otp_hash=None, callback_id=None, sender=None):
+    """Apply a channel-authenticated decision using the same domain transaction."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("Invalid approval reference.")
+    if not isinstance(instruction, str) or len(instruction) > 20_000:
+        raise ValueError("Instruction must be text no longer than 20000 characters.")
+    if actor == "admin-email":
+        if not isinstance(otp_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", otp_hash):
+            raise ValueError("Invalid approval credential.")
+    elif actor == "telegram-admin":
+        from .approval_channels import telegram_admins
+
+        if (channels(config) not in {"telegram", "both"} or sender not in telegram_admins(config)
+                or not isinstance(callback_id, str) or not re.fullmatch(r"[a-f0-9]{24}", callback_id)):
+            raise ValueError("Administrator permission is required.")
+    else:
+        raise ValueError("Invalid approval channel.")
+    guidance_unused = False
+    with db.connect() as conn:
+        tx = TransactionDatabase(conn)
+        row = tx.fetch_one(
+            "SELECT key, value, updated_at FROM runtime_state WHERE key = %s FOR UPDATE",
+            ("email-approval:" + digest,),
+        )
+        if not row:
+            raise ValueError("Approval is expired, invalid, or already used. Send a fresh request.")
+        _, pending = _valid_pending(row, _configured_admin(config))
+        if (pending["payload"].get("kind") in {"permission", "network"}
+                and not pending["payload"].get("request_fingerprint")):
+            raise ValueError("This older approval cannot be safely bound to its reviewed details. Request a fresh approval.")
+        if _expires(pending.get("expires")) <= datetime.now(timezone.utc):
+            raise ValueError("This approval has expired. Request a fresh approval.")
+        if otp_hash is not None and not hmac.compare_digest(pending["otp_hash"], otp_hash):
+            raise ValueError("Approval is expired, invalid, or already used. Send a fresh request.")
+        if callback_id is not None and (
+            pending.get("callback_id") != callback_id or sender not in pending.get("telegram_admin_ids", [])
+        ):
+            raise ValueError("Administrator permission is required.")
+        source = tx.fetch_one(
+            "SELECT value FROM runtime_state WHERE key = %s FOR UPDATE", (pending.get("source_key"),),
+        )
+        if not source or source["value"].get("status") not in {"sent", "delivery_uncertain", "client_queued"}:
+            raise ValueError("This approval request is still being delivered or is no longer available.")
+        if actor == "admin-email" and channels(config) == "telegram" and not source["value"].get("email_fallback"):
+            raise ValueError("Email approval fallback was not attempted.")
+        if actor == "admin-email" and decision is None:
+            kind = pending["payload"]["kind"]
+            if kind == "permission":
+                from .script_permissions import parse_decision
+
+                choice, instruction = parse_decision(instruction)
+                decision = {"once": "approve_once", "always": "approve_always", "deny": "deny"}[choice]
+            elif kind == "network":
+                from .network_access import parse_email_decision
+
+                choice, instruction = parse_email_decision(instruction)
+                decision = {"block": "block_once", "blockall": "block_always", "cancel": "cancel_job"}.get(choice)
+                if decision is None:
+                    raise ValueError("Start the reply with BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB.")
+            else:
+                decision = "approve"
+                if kind == "command" and instruction:
+                    words = pending["payload"].get("subject", "").split()
+                    if len(words) < 2 or words[1] not in {"review", "instruct"}:
+                        instruction = ""
+                        guidance_unused = True
+        action, _ = _stored_action(tx, config, pending["payload"])
+        result, external = _apply_decision(
+            tx, config, digest, pending, action, decision, instruction, actor=actor,
+        )
+    result = result if external is None else _apply_external(db, config, external)
+    if guidance_unused:
+        result += ("\n\nAdditional text was not applied: this command has no LLM job. "
+                   "Use /admin instruct JOB_ID for job guidance.")
+    return result
 
 
 def decide_approval(
@@ -638,43 +764,7 @@ def decide_approval(
         if (_fingerprint(action) != reviewed.get("action_fingerprint")
                 or domain_version != reviewed.get("domain_version")):
             raise ValueError("The action changed after it was reviewed. Refresh the approval list.")
-        if decision not in action.get("decision_options", []):
-            raise ValueError("This decision is not available for the reviewed approval.")
-        instruction_text, denied = _decision_instruction(
-            pending["payload"]["kind"], decision, instruction,
+        result, external_apply = _apply_decision(
+            tx, config, digest, pending, action, decision, instruction, actor="admin",
         )
-
-        # These domain actions are database-only and run under the same row
-        # locks and transaction as one-use consumption.
-        transactional = pending["payload"]["kind"] in {"permission", "network", "review"}
-        consumed = EmailApprovals(tx, config)._consume(digest, pending["otp_hash"], denied=denied)
-        tx.execute(
-            "DELETE FROM runtime_state WHERE key = %s",
-            (_REFERENCE_KEY + approval_id,),
-        )
-        tx.execute(
-            "DELETE FROM runtime_state WHERE key LIKE %s AND value->>'approval_key' = %s",
-            (_REFERENCE_KEY + "%", approval_key),
-        )
-        if transactional:
-            from .approval_actions import apply_approval, deny_approval
-
-            if denied:
-                result = deny_approval(tx, consumed)
-            else:
-                result = apply_approval(tx, config, consumed, instruction_text)
-        else:
-            external_apply = (consumed, denied, instruction_text)
-
-    if external_apply:
-        from .approval_actions import apply_approval, deny_approval
-
-        consumed, denied, instruction_text = external_apply
-        try:
-            if denied:
-                result = deny_approval(db, consumed)
-            else:
-                result = apply_approval(db, config, consumed, instruction_text)
-        except Exception:
-            raise ApprovalApplicationIncomplete() from None
-    return result
+    return result if external_apply is None else _apply_external(db, config, external_apply)

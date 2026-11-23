@@ -166,6 +166,8 @@ class ApiManagementBackend:
         kind = payload["kind"]
         if kind == "summary":
             return self.client.get("tasks/summary")
+        if kind == "approvals":
+            return self.client.get(f"approvals?limit=50&offset={payload.get('page', 0) * 50}")
         if kind in {"tasks", "memories", "reminders", "projects", "scripts", "research"}:
             resource = f"records/{kind}"
             if payload.get("id"):
@@ -180,6 +182,12 @@ class ApiManagementBackend:
         if kind == "mutate":
             return self.mutate(payload["action"], payload.get("id"), payload.get("body", ""))
         raise SetupError("Unsupported terminal management read.")
+
+    def decide_approval(self, approval, decision):
+        return self.client.operation({
+            "operation": "approval.decide", "approval_id": approval["approval_id"],
+            "version": approval["version"], "decision": decision, "confirmed": True,
+        })
 
     def mutate(self, action, identifier=None, body=""):
         return self.client.operation({"operation": "record.mutate", "action": action,

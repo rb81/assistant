@@ -181,6 +181,11 @@ remain read-only. Credentials are replace/remove workflows, not secret read-back
 Approval decisions require the displayed opaque reference and version. Do not
 extract OTPs or approve changed/expired/redacted reviews. Task/project deletions
 require current server previews/digests and exact contract confirmations.
+For email, show `action.review` by default and offer original message text
+separately. Label AI-generated summaries and preserve the original as the
+authority. Show `executions` states separately from the decision; queued is not
+completed, and uncertain outcomes require reconciliation. Older servers may
+omit these fields.
 Database reset requires the literal `RESET` confirmation.
 
 ## Client channels, polling, and fallback

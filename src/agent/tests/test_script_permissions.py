@@ -47,6 +47,21 @@ def approve(runtime, item, kind="run", targets=None, decision="always"):
     return payload
 
 
+def test_bound_decision_rejects_request_changed_after_review(runtime):
+    item = version(runtime)
+    with pytest.raises(permissions.PermissionRequired) as raised:
+        permissions.request(runtime, item, "run", [], "Daily report")
+    pending = raised.value.request
+    runtime.job["metadata"] = {"permission_request": pending}
+    payload = permissions.approval_payload(runtime.job)
+    changed = {**pending, "purpose": "Changed after review"}
+    runtime.db.execute("UPDATE jobs SET status = 'needs_review', metadata = %s WHERE id = %s",
+                       (permissions.Jsonb({"permission_request": changed}), runtime.job["id"]))
+    with pytest.raises(ValueError, match="request has changed"):
+        permissions.apply_decision(runtime.db, payload, "once")
+    assert not runtime.db.fetch_all("SELECT id FROM sandbox_permission_grants")
+
+
 def test_new_versions_include_helpers_arguments_workdir_but_not_image_or_config(runtime):
     original = version(runtime)
     assert version(runtime)["id"] == original["id"]

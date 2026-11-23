@@ -7,7 +7,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from psycopg.conninfo import make_conninfo
@@ -96,6 +96,10 @@ def test_client_only_approval_is_delivered_without_email_or_otp_and_consumed_onc
     approval = single_approval(db, config)
     decide_approval(db, config, approval["approval_id"], approval["version"], "deny")
     assert db.fetch_one("SELECT status FROM jobs WHERE id = %s", (job["id"],))["status"] == "cancelled"
+    assert db.fetch_one(
+        "SELECT output_data->>'reason' AS reason FROM task_logs WHERE job_id = %s AND event_type = 'status_change' ORDER BY sequence DESC LIMIT 1",
+        (job["id"],),
+    )["reason"] == "admin denied approval"
     with pytest.raises(ValueError):
         decide_approval(db, config, approval["approval_id"], approval["version"], "deny")
 
@@ -128,29 +132,13 @@ def test_command_review_shows_exact_command_without_otp_material_and_consumes_on
         decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
 
 
-@pytest.mark.parametrize("kind", ["command", "email"])
-def test_external_action_failure_reports_consumed_approval_without_claiming_no_changes(db, config, kind):
-    payload = (
-        {"kind": "command", "subject": "/admin cancel 14", "body": ""}
-        if kind == "command" else
-        {
-            "kind": "email",
-            "raw": base64.b64encode(email_bytes()).decode("ascii"),
-            "folder": "INBOX",
-            "thread_id": "failed-email",
-            "job": None,
-        }
-    )
+def test_external_action_failure_reports_consumed_approval_without_claiming_no_changes(db, config):
+    payload = {"kind": "command", "subject": "/admin cancel 14", "body": ""}
     create_pending(db, config, payload)
     approval = single_approval(db, config)
     failure = RuntimeError("sensitive provider detail")
 
-    patch_target = (
-        "assistant_agent.admin_commands.AdminCommands.execute"
-        if kind == "command" else
-        "assistant_agent.email_ingest.EmailDownloader.ingest_raw"
-    )
-    with patch(patch_target, side_effect=failure):
+    with patch("assistant_agent.admin_commands.AdminCommands.execute", side_effect=failure):
         with pytest.raises(ApprovalApplicationIncomplete) as raised:
             decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
 
@@ -461,7 +449,7 @@ def email_bytes():
         ("screened_email", "screened_email_release"),
     ],
 )
-def test_email_reviews_show_message_and_attachment_contents_then_use_existing_domain_path(
+def test_email_reviews_show_message_and_attachment_contents_then_enqueue_execution(
     db, config, kind, expected_type,
 ):
     raw = email_bytes()
@@ -484,22 +472,213 @@ def test_email_reviews_show_message_and_attachment_contents_then_use_existing_do
     assert base64.b64decode(attachment["content_base64"]) == b"untrusted attachment"
     assert "otp_hash" not in repr(action)
 
-    if kind == "email":
-        with patch("assistant_agent.email_ingest.EmailDownloader.ingest_raw", return_value=None) as ingest:
-            assert decide_approval(
-                db, config, approval["approval_id"], approval["version"], "approve",
-                "Continue with the request.",
-            ) == "Email approved for processing."
-        assert ingest.call_args.args[0] == raw
-        assert ingest.call_args.kwargs["approved_instruction"] == "Continue with the request."
-    else:
-        with patch("assistant_agent.email_ingest.EmailDownloader.ingest_raw", return_value=None) as ingest:
-            assert decide_approval(
-                db, config, approval["approval_id"], approval["version"], "approve",
-                "Reviewed and released.",
-            ) == "Email released for processing."
-        assert ingest.call_args.args[0] == raw
-        assert ingest.call_args.kwargs["security_approved"] == "Reviewed and released."
+    with patch("assistant_agent.email_ingest.EmailDownloader.ingest_raw") as ingest:
+        assert decide_approval(
+            db, config, approval["approval_id"], approval["version"], "approve",
+            "Continue with the request.",
+        ) == "Approval recorded. Email processing is queued."
+    ingest.assert_not_called()
+    queued = db.fetch_one("SELECT value FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")
+    assert queued["value"]["status"] == "pending"
+    assert queued["value"]["instruction"] == "Continue with the request."
+    assert base64.b64decode(queued["value"]["payload"]["raw"]) == raw
+
+
+def test_email_execution_is_claimed_once_and_retains_uncertain_failure(db, config):
+    from assistant_agent.approved_email_execution import mark_interrupted, process_one
+    from assistant_agent.email_ingest import IngestResult
+
+    payload = {"kind": "email", "raw": base64.b64encode(email_bytes()).decode(),
+               "folder": "INBOX", "thread_id": "thread-once", "job": None}
+    create_pending(db, config, payload)
+    approval = single_approval(db, config)
+    decide_approval(db, config, approval["approval_id"], approval["version"], "approve", "Use bullets")
+    downloader = MagicMock()
+    downloader.ingest_raw.return_value = IngestResult(True, True, "<request@example.com>")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _: process_one(db, downloader), range(4)))
+    assert sum(results) == 1
+    downloader.ingest_raw.assert_called_once()
+    assert downloader.ingest_raw.call_args.kwargs["approved_instruction"] == "Use bullets"
+    row = db.fetch_one("SELECT value FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")
+    assert row["value"]["status"] == "uncertain"
+    assert row["value"]["error"] == "email_record_missing"
+    assert "payload" in row["value"]
+
+    create_pending(db, config, {**payload, "thread_id": "thread-failure"}, "another-email")
+    approval = single_approval(db, config)
+    decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
+    downloader.reset_mock()
+    downloader.ingest_raw.side_effect = OSError("private provider detail")
+    assert process_one(db, downloader)
+    assert not process_one(db, downloader)
+    uncertain = db.fetch_one(
+        "SELECT value FROM runtime_state WHERE key LIKE 'approved-email-execution:%%' AND value->>'error' = 'OSError'"
+    )["value"]
+    assert uncertain["error"] == "OSError"
+    assert "private provider detail" not in str(uncertain)
+    assert downloader.ingest_raw.call_count == 1
+
+    with db.connect() as conn:
+        conn.execute("ALTER TABLE runtime_state DISABLE TRIGGER runtime_state_set_updated_at")
+        conn.execute(
+            """UPDATE runtime_state SET value = value || '{"status":"running"}'::jsonb,
+               updated_at = now() - interval '31 minutes'
+               WHERE key LIKE 'approved-email-execution:%%' AND value->>'status' = 'uncertain'"""
+        )
+        conn.execute("ALTER TABLE runtime_state ENABLE TRIGGER runtime_state_set_updated_at")
+    mark_interrupted(db)
+    assert not process_one(db, downloader)
+    assert db.fetch_one(
+        "SELECT value->>'status' AS status FROM runtime_state WHERE value->>'error' = 'execution_interrupted_or_still_running'"
+    )["status"] == "uncertain"
+
+
+def test_enqueue_failure_rolls_back_approval_consumption(db, config):
+    payload = {"kind": "email", "raw": base64.b64encode(email_bytes()).decode(),
+               "folder": "INBOX", "thread_id": "thread-rollback", "job": None}
+    create_pending(db, config, payload)
+    approval = single_approval(db, config)
+    with patch("assistant_agent.approved_email_execution.enqueue", side_effect=RuntimeError("database unavailable")):
+        with pytest.raises(RuntimeError):
+            decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
+    assert db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    assert not db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")
+
+
+def test_downloader_processes_approved_email_and_attachment_into_one_job(db, config, tmp_path):
+    from assistant_agent.approved_email_execution import process_one
+    from assistant_agent.email_ingest import EmailDownloader
+    from assistant_agent.request_router import RoutingDecision
+
+    config.values["agent"]["artifacts"] = {"raw_root": str(tmp_path)}
+    payload = {"kind": "email", "raw": base64.b64encode(email_bytes()).decode(),
+               "folder": "INBOX", "thread_id": "thread-attachment", "job": None}
+    create_pending(db, config, payload)
+    approval = single_approval(db, config)
+    decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
+    downloader = EmailDownloader(db, config)
+    with patch.object(downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"]}), \
+            patch.object(downloader, "process_artifacts"), \
+            patch("assistant_agent.request_router.RequestRouter.route",
+                  return_value=RoutingDecision("thread-attachment", "new", "New request")):
+        assert process_one(db, downloader)
+        assert not process_one(db, downloader)
+    email_row = db.fetch_one("SELECT * FROM emails WHERE message_id = %s", ("<request@example.com>",))
+    assert email_row is not None
+    assert Path(email_row["attachments"][0]["path"]).read_bytes() == b"untrusted attachment"
+    assert db.fetch_one("SELECT count(*) AS total FROM request_messages WHERE email_id = %s", (email_row["id"],))["total"] == 1
+    assert db.fetch_one("SELECT count(*) AS total FROM jobs WHERE trigger_email_id = %s", (email_row["id"],))["total"] == 1
+    execution = db.fetch_one("SELECT value FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")["value"]
+    assert execution["status"] == "succeeded"
+    assert "payload" not in execution
+
+
+def test_email_telegram_and_management_compete_for_same_one_use_decision(db, config):
+    from assistant_agent.email_approvals import approval_reply
+    from assistant_agent.management_approvals import decide_channel_approval
+
+    config.values["agent"].update({
+        "approvals": {"channel": "both"},
+        "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+    })
+    payload = {"kind": "email", "raw": base64.b64encode(email_bytes()).decode(),
+               "folder": "INBOX", "thread_id": "thread-race", "job": None}
+    with patch("assistant_agent.telegram.TelegramClient"), \
+            patch("assistant_agent.email_approvals.send_admin_email") as send:
+        assert EmailApprovals(db, config).request("race", payload, "Email")
+    message = EmailMessage()
+    message.set_content(send.call_args.args[2])
+    token, digest, _ = approval_reply(message)
+    pending = db.get_state("email-approval:" + digest)
+    approval = single_approval(db, config)
+    with pytest.raises(ValueError, match="invalid|credential"):
+        decide_channel_approval(db, config, digest, "approve", actor="admin-email", otp_hash="0" * 64)
+    with pytest.raises(ValueError, match="permission"):
+        decide_channel_approval(db, config, digest, "approve", actor="telegram-admin",
+                                callback_id=pending["callback_id"], sender="456")
+
+    def decide(channel):
+        try:
+            if channel == "email":
+                return decide_channel_approval(db, config, digest, None, actor="admin-email",
+                                               otp_hash=hashlib.sha256(token.encode()).hexdigest())
+            if channel == "telegram":
+                return decide_channel_approval(db, config, digest, "approve", actor="telegram-admin",
+                                               callback_id=pending["callback_id"], sender="123")
+            return decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(decide, ["email", "telegram", "management"]))
+    assert results.count("Approval recorded. Email processing is queued.") == 1
+    assert db.fetch_one("SELECT count(*) AS total FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")["total"] == 1
+
+
+@pytest.mark.parametrize("model_fails", [False, True])
+def test_email_approval_summary_is_concise_and_original_remains_reviewable(db, config, model_fails):
+    config.values["agent"].update({
+        "approvals": {"channel": "both"},
+        "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+    })
+    message = EmailMessage()
+    message["From"] = "admin@example.com"
+    message["Subject"] = "R\u00e9sum\u00e9 request"
+    message["Date"] = "Mon, 23 Nov 2026 10:00:00 +0000"
+    message["Message-ID"] = "<summary@example.com>"
+    message.set_content("Private original body, not the summary.")
+    message.add_attachment(b"attachment contents", maintype="application", subtype="octet-stream",
+                           filename="report.bin")
+    payload = {"kind": "email", "raw": base64.b64encode(message.as_bytes()).decode(),
+               "folder": "INBOX", "thread_id": "summary-thread", "job": None}
+    response = {"choices": [{"message": {"content": "Prepare a report."}}]}
+    with patch("assistant_agent.telegram.TelegramClient") as telegram, \
+            patch("assistant_agent.email_approvals.send_admin_email") as send, \
+            patch("assistant_agent.llm_client.LlmClient") as llm:
+        if model_fails:
+            llm.return_value.chat.side_effect = RuntimeError("model unavailable")
+        else:
+            llm.return_value.chat.return_value = response
+        assert EmailApprovals(db, config).request("summary", payload, "dump of original")
+    for delivery in (send.call_args.args[2], telegram.return_value.call.call_args.args[1]["text"]):
+        assert "Private original body" not in delivery
+        assert "attachment contents" not in delivery
+        assert "admin@example.com" in delivery and "R\u00e9sum\u00e9 request" in delivery
+        assert "23 Nov 2026" in delivery and "report.bin" in delivery
+        assert ("Summary unavailable" if model_fails else "AI-generated summary: Prepare a report.") in delivery
+    action = single_approval(db, config)["action"]
+    assert action["review"]["summary_source"] == ("unavailable" if model_fails else "ai")
+    assert any("Private original body" in (part.get("content") or "") for part in action["parts"])
+
+
+def test_email_channel_rejects_changed_or_unbound_legacy_network_action(db, config):
+    from assistant_agent.management_approvals import decide_channel_approval
+    from assistant_agent.network_access import approval_payload
+
+    job = create_job(db)
+    request = {"id": "request", "hosts": ["first.example.com"], "urls": [], "purpose": "Read public data"}
+    db.execute("UPDATE jobs SET metadata = %s WHERE id = %s",
+               (Jsonb({"network_request": request}), job["id"]))
+    job = db.fetch_one("SELECT * FROM jobs WHERE id = %s", (job["id"],))
+    payload = approval_payload(job)
+    create_pending(db, config, payload)
+    row = db.fetch_one("SELECT key, value FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    digest = row["key"].removeprefix("email-approval:")
+    db.execute("UPDATE jobs SET metadata = %s WHERE id = %s",
+               (Jsonb({"network_request": {**request, "hosts": ["changed.example.com"]}}), job["id"]))
+    with pytest.raises(ValueError, match="changed"):
+        decide_channel_approval(db, config, digest, None, "BLOCK ONCE", actor="admin-email",
+                                otp_hash=row["value"]["otp_hash"])
+    assert db.fetch_one("SELECT key FROM runtime_state WHERE key = %s", (row["key"],))
+
+    db.execute("DELETE FROM runtime_state WHERE key = %s", (row["key"],))
+    create_pending(db, config, {key: value for key, value in payload.items() if key != "request_fingerprint"},
+                   source_id="legacy-network")
+    row = db.fetch_one("SELECT key, value FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    with pytest.raises(ValueError, match="older approval"):
+        decide_channel_approval(db, config, row["key"].removeprefix("email-approval:"), None, "BLOCK ONCE",
+                                actor="admin-email", otp_hash=row["value"]["otp_hash"])
 
 
 def test_changed_after_review_expires_and_invalid_decisions_fail_closed(db, config):

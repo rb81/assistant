@@ -1,4 +1,5 @@
 import os
+import hashlib
 import smtplib
 import tempfile
 import unittest
@@ -83,21 +84,19 @@ class ApprovalReplyTest(unittest.TestCase):
         from assistant_agent.email_ingest import EmailDownloader
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config, downloader.db = self.config, MagicMock()
-        job = {"id": 12, "updated_at": "2026-10-28T17:00:00+00:00", "metadata": {}}
-        downloader.db.fetch_one.side_effect = [None, job, {"id": 12}]
+        downloader.db.fetch_one.return_value = None
         message = reply("Continue.")
         message.add_alternative(
             "<div>Continue.</div><blockquote>" + self.confirmation.replace("\n", "<br>") + "</blockquote>",
             subtype="html",
         )
-        payload = {"kind": "review", "job_id": 12, "version": job["updated_at"]}
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload) as consume, patch(
-            "assistant_agent.email_approvals.EmailApprovals.request"
-        ) as another_request:
+        with patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Task resumed.") as decide, \
+                patch("assistant_agent.email_approvals.EmailApprovals.request") as another_request, \
+                patch("assistant_agent.admin_commands.AdminCommands.reply"):
             result = downloader.ingest_raw(message.as_bytes())
         self.assertTrue(result.inserted)
-        consume.assert_called_once_with("a" * 32, "b" * 64)
-        self.assertIn("status = 'queued'", downloader.db.fetch_one.call_args.args[0])
+        decide.assert_called_once_with(downloader.db, self.config, "b" * 64, None, "Continue.",
+                                       actor="admin-email", otp_hash=hashlib.sha256(("a" * 32).encode()).hexdigest())
         another_request.assert_not_called()
 
     def test_network_email_decision_applies_silently_and_explains_missing_decision(self):
@@ -105,35 +104,29 @@ class ApprovalReplyTest(unittest.TestCase):
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config, downloader.db = self.config, MagicMock()
         downloader.db.fetch_one.return_value = None
-        payload = {"kind": "network", "job_id": 17, "request_id": "abc"}
         for body, applied in (("BLOCK ALWAYS\nOnly the API.", True), ("Looks fine", False)):
             with self.subTest(body=body), patch(
-                "assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload
-            ), patch("assistant_agent.network_access.apply_decision") as apply, patch(
+                "assistant_agent.management_approvals.decide_channel_approval",
+                **({"return_value": "Blocked"} if applied else {"side_effect": ValueError("Decision required")})
+            ) as decide, patch(
                 "assistant_agent.admin_commands.AdminCommands.reply"
             ) as admin_reply:
                 result = downloader.ingest_raw(reply(body + "\n\n" + self.confirmation).as_bytes())
             self.assertTrue(result.inserted)
-            if applied:
-                apply.assert_called_once_with(downloader.db, payload, "blockall", "Only the API.", "admin-email")
-                admin_reply.assert_not_called()
-            else:
-                apply.assert_not_called()
-                self.assertIn("already handled", admin_reply.call_args.args[1])
+            self.assertEqual(decide.call_args.args[4], body)
+            self.assertEqual(admin_reply.call_args.args[1], "Blocked" if applied else "Decision required")
 
     def test_script_permission_email_uses_explicit_decision_and_optional_feedback(self):
         from assistant_agent.email_ingest import EmailDownloader
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config, downloader.db = self.config, MagicMock()
         downloader.db.fetch_one.return_value = None
-        payload = {"kind": "permission", "job_id": 17, "request_id": "abc"}
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), \
-                patch("assistant_agent.script_permissions.apply_decision") as apply, \
+        with patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Approved") as decide, \
                 patch("assistant_agent.admin_commands.AdminCommands.reply") as admin_reply:
             result = downloader.ingest_raw(reply("APPROVE ALWAYS\nPublic data only.\n\n" + self.confirmation).as_bytes())
         self.assertTrue(result.inserted)
-        apply.assert_called_once_with(downloader.db, payload, "always", "Public data only.", "admin-email")
-        admin_reply.assert_not_called()
+        self.assertEqual(decide.call_args.args[4], "APPROVE ALWAYS\nPublic data only.")
+        self.assertEqual(admin_reply.call_args.args[1], "Approved")
 
     def test_approval_attachment_contains_complete_script_manifest(self):
         config = AppConfig({"agent": {"admin": {"email": "admin@example.com"}, "email": {"smtp_port": 587}}})
@@ -508,22 +501,15 @@ class ApprovalReplyTest(unittest.TestCase):
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config = self.config
         downloader.db = MagicMock()
-        job = {"id": 12, "updated_at": "2026-10-28T17:00:00+00:00",
-               "last_error": "Tool failed three times", "metadata": {}}
-        downloader.db.fetch_one.side_effect = [None, job, {"id": 12}]
-        payload = {"kind": "review", "job_id": 12, "version": job["updated_at"]}
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
-            "assistant_agent.admin_commands.send_admin_email"
-        ) as send, patch("assistant_agent.email_ingest.RequestService.receive_request") as receive:
+        downloader.db.fetch_one.return_value = None
+        with patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Task resumed.") as decide, \
+                patch("assistant_agent.admin_commands.AdminCommands.reply") as send, \
+                patch("assistant_agent.email_ingest.RequestService.receive_request") as receive:
             result = downloader.ingest_raw(reply("Try a different approach.\n\n" + self.confirmation).as_bytes())
         self.assertTrue(result.inserted)
         self.assertFalse(result.queued)
-        update = downloader.db.fetch_one.call_args
-        self.assertIn("status = 'queued'", update.args[0])
-        self.assertEqual(update.args[1][1], 12)
-        self.assertEqual(update.args[1][0].obj["admin_review_override"]["instruction"], "Try a different approach.")
-        self.assertEqual(downloader.db.log_event.call_args.args, (12, "status_change"))
-        send.assert_not_called()
+        self.assertEqual(decide.call_args.args[4], "Try a different approach.")
+        self.assertEqual(send.call_args.args[1], "Task resumed.")
         receive.assert_not_called()
 
     def test_stale_job_review_approval_does_not_resume_or_acknowledge(self):
@@ -532,14 +518,13 @@ class ApprovalReplyTest(unittest.TestCase):
         downloader.config = self.config
         downloader.db = MagicMock()
         downloader.db.fetch_one.return_value = None
-        payload = {"kind": "review", "job_id": 12, "version": "2026-10-28T17:00:00+00:00"}
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
-            "assistant_agent.admin_commands.send_admin_email"
+        with patch("assistant_agent.management_approvals.decide_channel_approval", side_effect=ValueError("Task changed")), patch(
+            "assistant_agent.admin_commands.AdminCommands.reply"
         ) as send, patch.object(downloader, "apply_email_review_override") as resume:
             result = downloader.ingest_raw(reply(self.confirmation).as_bytes())
         self.assertFalse(result.queued)
         resume.assert_not_called()
-        send.assert_not_called()
+        self.assertEqual(send.call_args.args[1], "Task changed")
 
     def test_explicit_admin_command_still_sends_its_result(self):
         from assistant_agent.email_ingest import EmailDownloader
@@ -547,13 +532,11 @@ class ApprovalReplyTest(unittest.TestCase):
         downloader.config = self.config
         downloader.db = MagicMock()
         downloader.db.fetch_one.return_value = None
-        payload = {"kind": "command", "subject": "/admin status", "body": ""}
-        with patch("assistant_agent.email_approvals.EmailApprovals.consume", return_value=payload), patch(
-            "assistant_agent.admin_commands.AdminCommands.execute", return_value="Status report"
-        ) as execute, patch("assistant_agent.admin_commands.send_admin_email") as send:
+        with patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Status report") as decide, \
+                patch("assistant_agent.admin_commands.send_admin_email") as send:
             result = downloader.ingest_raw(reply(self.confirmation).as_bytes())
         self.assertFalse(result.queued)
-        execute.assert_called_once_with("/admin status", "", confirmed=True)
+        decide.assert_called_once()
         send.assert_called_once_with(self.config, "Assistant admin response", "Status report")
 
 
@@ -943,6 +926,7 @@ class ApprovalDatabaseTest(unittest.TestCase):
         chat.assert_not_called()
 
     def test_ordinary_admin_email_waits_then_replays_original_without_credentials(self):
+        from assistant_agent.approved_email_execution import process_one
         from assistant_agent.email_ingest import EmailDownloader
         downloader = EmailDownloader.__new__(EmailDownloader)
         downloader.config = self.config
@@ -966,7 +950,8 @@ class ApprovalDatabaseTest(unittest.TestCase):
                 downloader, "acceptance_context", return_value={"reasons": ["explicit_sender_policy"]}
             ), patch.object(downloader, "process_artifacts") as artifacts, patch(
                 "assistant_agent.email_ingest.RequestService.receive_request"
-            ) as receive, patch("assistant_agent.email_approvals.send_admin_email") as send:
+            ) as receive, patch("assistant_agent.email_approvals.send_admin_email") as send, \
+                    patch("assistant_agent.admin_commands.AdminCommands.reply"):
                 pending = downloader.ingest_raw(original.as_bytes())
                 self.assertFalse(pending.queued)
                 receive.assert_not_called()
@@ -974,10 +959,11 @@ class ApprovalDatabaseTest(unittest.TestCase):
                 self.assertEqual(list(Path(root).iterdir()), [])
                 confirmation = send.call_args.args[2]
                 result = downloader.ingest_raw(reply("Use bullet points.\n\n" + confirmation).as_bytes())
+                self.assertFalse(result.queued)
+                self.assertTrue(process_one(downloader.db, downloader))
                 attachments = artifacts.call_args.args[1]
                 self.assertEqual(len(attachments), 1)
                 self.assertEqual(Path(attachments[0]["path"]).read_bytes(), b"report")
-        self.assertTrue(result.queued)
         request = receive.call_args.args[0]
         self.assertEqual(request.thread_id, "<reply@example.com>")
         self.assertTrue(request.metadata["routing"]["fallback"])

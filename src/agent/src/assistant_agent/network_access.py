@@ -178,10 +178,13 @@ def request_summary(job: dict[str, Any], request: dict[str, Any]) -> str:
 
 
 def approval_payload(job: dict[str, Any]) -> Optional[dict[str, Any]]:
+    from .approval_binding import request_fingerprint
+
     request = (job.get("metadata") or {}).get("network_request")
     if not request or not request.get("id"):
         return None
-    return {"kind": "network", "job_id": int(job["id"]), "request_id": str(request["id"])}
+    return {"kind": "network", "job_id": int(job["id"]), "request_id": str(request["id"]),
+            "request_fingerprint": request_fingerprint(request)}
 
 
 def send_approval(db, config, job: dict[str, Any], source_suffix: str = "") -> bool:

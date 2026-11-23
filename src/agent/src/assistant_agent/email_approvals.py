@@ -333,6 +333,23 @@ class EmailApprovals:
         )
         if not claimed:
             return False
+        try:
+            if payload.get("kind") in {"email", "screened_email"}:
+                from .email_review import review_card, review_email
+
+                review = payload.get("review") or review_email(payload, self.config)
+                screening = ""
+                if payload["kind"] == "screened_email":
+                    screening = next(
+                        (line.partition(":")[2].strip() for line in summary.splitlines()
+                         if line.startswith("Screening:")), review.get("screening") or "",
+                    )
+                review = {**review, "screening": screening}
+                payload = {**payload, "review": review}
+                summary = review_card(review, screened=payload["kind"] == "screened_email", screening=screening)
+        except Exception:
+            self.db.execute("DELETE FROM runtime_state WHERE key = %s AND value->>'status' = 'sending'", (source_key,))
+            raise
         token = secrets.token_urlsafe(24)
         pending = {
             "admin": admin, "payload": payload, "source_id": source_id,

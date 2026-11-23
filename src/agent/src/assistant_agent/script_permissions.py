@@ -367,12 +367,15 @@ def request(runtime, version, kind, targets=None, purpose=""):
 
 
 def approval_payload(job):
+    from .approval_binding import request_fingerprint
+
     pending = (job.get("metadata") or {}).get("permission_request")
     if not pending:
         return None
     return {"kind": "permission", "job_id": job["id"], "request_id": pending["id"],
             "permission_type": pending["kind"], "reusable": pending["reusable"],
             "version_id": pending["version_id"],
+            "request_fingerprint": request_fingerprint(pending),
             **({"scheduled": True, "recurring": bool(pending["scheduled"].get("recurrence"))}
                if pending.get("scheduled") else {})}
 
@@ -508,6 +511,11 @@ def apply_decision(db, payload, decision, feedback="", actor="admin"):
         if not job:
             raise ValueError("This request was already handled or the task changed.")
         pending = job["metadata"]["permission_request"]
+        if payload.get("request_fingerprint"):
+            from .approval_binding import request_fingerprint
+
+            if payload["request_fingerprint"] != request_fingerprint(pending):
+                raise ValueError("This script permission request has changed.")
         version = tx.fetch_one(
             """SELECT v.*, s.blocked FROM sandbox_script_versions v JOIN sandbox_scripts s ON s.id = v.script_id
                WHERE v.id = %s AND s.id = %s FOR UPDATE OF v""", (pending["version_id"], script["id"]),

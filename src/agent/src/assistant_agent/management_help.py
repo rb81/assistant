@@ -75,6 +75,9 @@ PAGE_HELP = {
             "Tab into the log text and use arrows or Page Up / Page Down to scroll; no service is changed.",
     "Activity": "Browse live tasks, stored memories, reminders, projects and registered scripts. Opening a list "
                 "or record does not change it. Changes to live records require confirmation.",
+    "Approvals": "Review pending one-use decisions and recent email processing outcomes.",
+    "Approval": "Inspect the exact action before choosing a decision. Script versions and hosts remain reviewable.",
+    "Approval original": "Read the original untrusted email text. Return to the review to make a decision.",
     "Tasks": "Inspect queued, running, completed or failed requests. Open a task for its result, event history "
              "and controls such as retry, instruction or cancellation. Retrying may repeat external actions.",
     "Memories": "Inspect persistent facts and preferences used by the assistant. Open a memory to edit, pin, "

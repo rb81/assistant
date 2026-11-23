@@ -103,11 +103,20 @@ def execute(db, config, request):
             raise ValueError("Explicit confirmation is required")
         return TaskDeletionService(db).delete(request.get("task_id"), request.get("preview_digest"))
     if kind == "approvals.list":
-        from .management_approvals import list_approvals
+        from .management_approvals import _transport_redact, list_approvals
         limit, offset = request.get("limit", 50), request.get("offset", 0)
         if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 1_000_000:
             raise ValueError("Invalid approval page")
+        from .approved_email_execution import PREFIX
+        rows = db.fetch_all(
+            """SELECT value->>'status' AS status, value->'review' AS review,
+                      value->>'error' AS error, updated_at
+               FROM runtime_state WHERE key LIKE %s ORDER BY updated_at DESC LIMIT 50""",
+            (PREFIX + "%",),
+        )
         return {"approvals": list_approvals(db, config, limit=limit, offset=offset),
+                "executions": [{**row, "review": _transport_redact(row["review"])[0],
+                                "updated_at": row["updated_at"].isoformat()} for row in rows],
                 "limit": limit, "offset": offset}
     if kind == "approval.decide":
         from .management_approvals import decide_approval

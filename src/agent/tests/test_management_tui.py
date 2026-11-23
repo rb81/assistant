@@ -102,6 +102,56 @@ def test_native_services_render_structured_rows_and_keep_one_application():
         asyncio.run(scenario(Path(root)))
 
 
+def test_approval_inbox_uses_summary_and_keeps_original_optional(tmp_path):
+    async def scenario():
+        async with running(tmp_path) as (ui, _pipe):
+            approval = {
+                "approval_id": "a" * 32, "version": "version", "kind": "email",
+                "status": "pending", "actionable": True,
+                "action": {
+                    "type": "email_ingestion", "decision_options": ["approve", "deny"],
+                    "review": {"summary": "Prepare a report.", "summary_source": "ai",
+                               "sender": "admin@example.com", "subject": "Report",
+                               "date": "Today", "attachments": []},
+                    "parts": [{"content_type": "text/plain", "filename": None,
+                               "content": "Private original text."}],
+                },
+            }
+            response = {"approvals": [approval], "executions": []}
+            with patch.object(ui.backend, "request", return_value=response), \
+                    patch.object(ui.backend, "decide_approval", create=True) as decide:
+                ui.go("Approvals")
+                await wait_for(lambda: not ui.busy and ui.key() in ui.cache)
+                next(action.handler for action in ui.actions if action.label.startswith("Report /"))()
+                await asyncio.sleep(0.08)
+                screen = "\n".join(snapshot(ui))
+                assert "Prepare a report." in screen
+                assert "Private original text." not in screen
+                next(action.handler for action in ui.actions if action.label == "View original message")()
+                await asyncio.sleep(0.08)
+                assert "Private original text." in "\n".join(snapshot(ui))
+                ui.back()
+                ui.confirm_action = Mock()
+                next(action.handler for action in ui.actions if action.label == "Approve")()
+                ui.confirm_action.call_args.args[3]()
+                decide.assert_called_once_with(approval, "approve")
+    asyncio.run(scenario())
+
+
+def test_legacy_email_approval_fields_fall_back_to_headers_and_attachment_names():
+    from assistant_agent.management_tui import email_review_fields
+
+    fields = email_review_fields({
+        "headers": [{"name": "From", "value": "admin@example.com"},
+                    {"name": "Subject", "value": "Report"}],
+        "parts": [{"filename": "report.pdf", "content_base64": "private"}],
+    })
+    assert fields["sender"] == "admin@example.com"
+    assert fields["subject"] == "Report"
+    assert fields["attachments"] == ["report.pdf"]
+    assert "Summary unavailable" in fields["summary"]
+
+
 def test_skills_load_preferences_on_open_and_edit_instructions_only(tmp_path):
     async def scenario():
         async with running(tmp_path) as (ui, _pipe):
@@ -1411,7 +1461,7 @@ def test_long_confirmation_explanations_are_scrollable_without_submitting_the_ac
 def test_every_record_mutation_is_wired_to_the_expected_confirmed_backend_action():
     cases = [
         ("Tasks", "Retry task", "retry", False), ("Tasks", "Cancel task", "cancel", False),
-        ("Tasks", "Approve review", "review", False), ("Tasks", "Add instruction", "instruct", True),
+        ("Tasks", "Add instruction", "instruct", True),
         ("Memories", "Edit", "update-memory", True), ("Memories", "Pin", "pin-memory", False),
         ("Memories", "Unpin", "unpin-memory", False), ("Memories", "Delete", "delete-memory", False),
         ("Memories", "Approve suggestion", "approve-memory", False),

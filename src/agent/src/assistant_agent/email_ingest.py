@@ -168,13 +168,22 @@ class EmailDownloader:
         )
         run_poll_loop(
             stop_requested,
-            self.sync_once,
+            self.poll_once,
             interval,
             should_sleep=lambda _count: True,
             on_result=lambda count: LOGGER.info("download sync complete, inserted %s email(s)", count),
             logger=LOGGER,
             error_message="download sync failed",
         )
+
+    def poll_once(self) -> int:
+        from .approved_email_execution import mark_interrupted, process_one
+
+        mark_interrupted(self.db)
+        for _ in range(10):
+            if not process_one(self.db, self):
+                break
+        return self.sync_once()
 
     def sync_once(self) -> int:
         host = self.config.get("agent.email.imap_host")
@@ -325,82 +334,19 @@ class EmailDownloader:
                         LOGGER.warning("admin approval rejected from an unauthorized or automated sender: %s", message_id)
                         return IngestResult(inserted=True, queued=False, message_id=message_id)
                     token, digest, instruction = approval
-                    payload = EmailApprovals(self.db, self.config).consume(token, digest)
-                    if payload["kind"] == "permission":
-                        from . import script_permissions
-                        try:
-                            decision, feedback = script_permissions.parse_decision(instruction)
-                            script_permissions.apply_decision(self.db, payload, decision, feedback, "admin-email")
-                        except ValueError as exc:
-                            job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'",
-                                                    (payload["job_id"],))
-                            if job and script_permissions.approval_payload(job) == payload:
-                                script_permissions.send_approval(self.db, self.config, job, ":retry:" + message_id)
-                            AdminCommands(self.db, self.config).reply(parsed, str(exc))
-                        return IngestResult(inserted=True, queued=False, message_id=message_id)
-                    if payload["kind"] == "screened_email":
-                        return self.ingest_raw(
-                            base64.b64decode(payload["raw"]), payload["folder"],
-                            approved_thread_id=payload["thread_id"], security_approved=instruction,
+                    from .management_approvals import decide_channel_approval
+                    from .management_errors import ApprovalApplicationIncomplete
+                    try:
+                        response = decide_channel_approval(
+                            self.db, self.config, digest, None, instruction,
+                            actor="admin-email", otp_hash=hashlib.sha256(token.encode()).hexdigest(),
                         )
-                    if payload["kind"] == "email":
-                        current = self.db.fetch_one(
-                            "SELECT * FROM jobs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting', 'needs_review')",
-                            (payload["thread_id"],),
-                        )
-                        snapshot = {"id": current["id"], "review_version": str(current["updated_at"]) if current["status"] == "needs_review" else None} if current else None
-                        if snapshot != payload["job"]:
-                            raise ValueError("The target job has changed. Send a fresh request.")
-                        return self.ingest_raw(
-                            base64.b64decode(payload["raw"]), payload["folder"], approved_instruction=instruction,
-                            approved_thread_id=payload["thread_id"],
-                            approved_review=current if current and current["status"] == "needs_review" else None,
-                        )
-                    if payload["kind"] == "network":
-                        from . import network_access
-                        decision, feedback = network_access.parse_email_decision(instruction)
-                        if decision is None:
-                            job = self.db.fetch_one("SELECT * FROM jobs WHERE id = %s AND status = 'needs_review'", (payload["job_id"],))
-                            response = ("No decision found. Reply to the new approval email with the first line set to "
-                                        "BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB; optional feedback can follow. "
-                                        "Network-only approvals are retired; ask the agent for combined script and host approval.")
-                            if job and network_access.approval_payload(job) == payload:
-                                network_access.send_approval(self.db, self.config, job, ":retry:" + message_id)
-                            else:
-                                response = "This network request was already handled or the task changed."
-                        else:
-                            try:
-                                network_access.apply_decision(self.db, payload, decision, feedback, "admin-email")
-                                return IngestResult(inserted=True, queued=False, message_id=message_id)
-                            except ValueError as exc:
-                                response = str(exc)
+                    except (ValueError, ApprovalApplicationIncomplete) as exc:
+                        response = str(exc)
+                    try:
                         AdminCommands(self.db, self.config).reply(parsed, response)
-                        return IngestResult(inserted=True, queued=False, message_id=message_id)
-                    if payload["kind"] == "review":
-                        job = self.db.fetch_one(
-                            "SELECT * FROM jobs WHERE id = %s AND status = 'needs_review' AND updated_at = %s",
-                            (payload["job_id"], payload["version"]),
-                        )
-                        if not job:
-                            raise ValueError("The job has changed since this approval was requested. Send /admin review JOB_ID again.")
-                        self.apply_email_review_override(job, 0, instruction)
-                        return IngestResult(inserted=True, queued=False, message_id=message_id)
-                    else:
-                        body = payload["body"]
-                        guidance_unused = False
-                        if instruction:
-                            words = payload["subject"].split()
-                            if len(words) >= 2 and words[1] in {"review", "instruct"}:
-                                body = (body + "\n\n" + instruction).strip()
-                            else:
-                                guidance_unused = True
-                        try:
-                            response = AdminCommands(self.db, self.config).execute(payload["subject"], body, confirmed=True)
-                        except (ValueError, TypeError) as exc:
-                            response = "Command error: %s" % exc
-                        if guidance_unused:
-                            response += "\n\nAdditional text was not applied: this command has no LLM job. Use /admin instruct JOB_ID for job guidance."
-                    AdminCommands(self.db, self.config).reply(parsed, response)
+                    except Exception as exc:
+                        LOGGER.warning("Could not send approval result (%s)", type(exc).__name__)
                     return IngestResult(inserted=True, queued=False, message_id=message_id)
             except ValueError as exc:
                 LOGGER.warning("admin approval rejected for %s: %s", message_id, exc)

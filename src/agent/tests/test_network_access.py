@@ -130,5 +130,12 @@ def test_send_approval_uses_network_payload():
         approvals.return_value.request.return_value = True
         assert network_access.send_approval(MagicMock(), CONFIG, job)
     source, payload, summary = approvals.return_value.request.call_args.args
-    assert payload == {"kind": "network", "job_id": 7, "request_id": "abc"}
+    from assistant_agent.approval_binding import request_fingerprint
+
+    assert payload == {
+        "kind": "network",
+        "job_id": 7,
+        "request_id": "abc",
+        "request_fingerprint": request_fingerprint(job["metadata"]["network_request"]),
+    }
     assert "api.data.com" in summary and "Approve once" in summary

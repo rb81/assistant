@@ -1,4 +1,6 @@
+import base64
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,11 +59,16 @@ def test_approval_delivery_obeys_selected_channels_and_shares_one_record(mode, e
 @pytest.mark.parametrize("mode", ["telegram", "both"])
 def test_email_confirmation_button_processes_request_without_second_review(ui, mode):
     db = ui.db
+    message = EmailMessage()
+    message["From"] = "admin@example.com"
+    message["Subject"] = "Script Testing"
+    message.set_content("Prepare the report.")
     with patch("assistant_agent.email_approvals.send_admin_email"), patch(
         "assistant_agent.telegram.TelegramClient"
-    ) as telegram:
+    ) as telegram, patch("assistant_agent.llm_client.LlmClient") as llm:
+        llm.return_value.chat.return_value = {"choices": [{"message": {"content": "Prepare the report."}}]}
         EmailApprovals(db, config(mode)).request(
-            "email:12", {"kind": "email", "raw": "original-email", "folder": "INBOX"},
+            "email:12", {"kind": "email", "raw": base64.b64encode(message.as_bytes()).decode(), "folder": "INBOX"},
             "Email from your configured admin address. Confirm you sent this to start processing.\n"
             "Subject: Script Testing\n\nPrepare the report.",
         )
@@ -70,22 +77,23 @@ def test_email_confirmation_button_processes_request_without_second_review(ui, m
     buttons = [button for row in message["reply_markup"]["inline_keyboard"] for button in row]
     confirm = next(button for button in buttons if button["text"] == "Confirm & start")
     assert "Subject: Script Testing" in message["text"]
-    assert "Prepare the report." in message["text"]
+    assert "AI-generated summary: Prepare the report." in message["text"]
     assert {button["text"] for button in buttons} == {"Confirm & start", "Deny", "Details"}
     _, callback_id, action = confirm["callback_data"].split(":")
     assert action == "ok"
-    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
-            patch.object(EmailApprovals, "consume_telegram", return_value=pending["payload"]) as consume, \
-            patch("assistant_agent.telegram_admin.apply_approval", return_value="Task queued.") as apply:
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"key": "email-approval:" + "d" * 64, "value": pending}), \
+            patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Task queued.") as decide:
         ui.approval("123", callback_id, action)
-    consume.assert_called_once_with(callback_id, "123")
-    apply.assert_called_once_with(db, ui.config, pending["payload"])
+    decide.assert_called_once_with(db, ui.config, "d" * 64, "approve", "",
+                                   actor="telegram-admin", callback_id=callback_id, sender="123")
     assert ui.client.call.call_count == 1
     assert ui.client.call.call_args.args[1]["text"] == "Task queued."
 
 
 def test_email_approval_inbox_review_offers_direct_confirmation(ui):
-    pending = {"payload": {"kind": "email"},
+    pending = {"payload": {"kind": "email", "review": {"summary": "Summary unavailable", "summary_source": "unavailable",
+                                                          "sender": "admin@example.com", "subject": "Script Testing",
+                                                          "date": "Not provided", "attachments": []}},
                "summary": "Email from your configured admin address.\nSubject: Script Testing",
                "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
@@ -114,12 +122,11 @@ def test_security_approval_shows_context_and_runs_directly_from_first_message(ui
     assert {button["text"] for button in buttons} == {"Approve once", "Deny & cancel task", "Details"}
     approve = next(button for button in buttons if button["text"] == "Approve once")
     _, callback_id, action = approve["callback_data"].split(":")
-    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
-            patch.object(EmailApprovals, "consume_telegram", return_value=payload) as consume, \
-            patch("assistant_agent.telegram_admin.apply_approval", return_value="Task resumed.") as apply:
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"key": "email-approval:" + "d" * 64, "value": pending}), \
+            patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Task resumed.") as decide:
         ui.approval("123", callback_id, action)
-    consume.assert_called_once_with(callback_id, "123")
-    apply.assert_called_once_with(ui.db, ui.config, payload)
+    decide.assert_called_once_with(ui.db, ui.config, "d" * 64, "approve", "",
+                                   actor="telegram-admin", callback_id=callback_id, sender="123")
     assert ui.client.call.call_args.args[1]["text"] == "Task resumed."
 
 
@@ -127,21 +134,17 @@ def test_security_approval_shows_context_and_runs_directly_from_first_message(ui
 def test_deny_review_cancels_only_unchanged_paused_task_without_approving(ui, stale):
     payload = {"kind": "review", "job_id": 12, "version": "version"}
     pending = {"payload": payload, "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
-    ui.db.fetch_one.return_value = None if stale else {"id": 12}
-    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
-            patch.object(EmailApprovals, "consume_telegram", return_value=payload) as consume, \
-            patch("assistant_agent.telegram_admin.apply_approval") as approve:
+    result = {"side_effect": ValueError("This task has changed")} if stale else {"return_value": "Task cancelled"}
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"key": "email-approval:" + "d" * 64, "value": pending}), \
+            patch("assistant_agent.management_approvals.decide_channel_approval", **result) as decide:
         if stale:
             with pytest.raises(ValueError, match="task has changed"):
                 ui.approval("123", "a" * 24, "deny")
         else:
             ui.approval("123", "a" * 24, "deny")
             assert "Task cancelled" in ui.client.call.call_args.args[1]["text"]
-    consume.assert_called_once_with("a" * 24, "123", denied=True)
-    approve.assert_not_called()
-    query, params = ui.db.fetch_one.call_args.args
-    assert "status = 'needs_review' AND updated_at = %s" in query
-    assert params == (12, "version")
+    decide.assert_called_once_with(ui.db, ui.config, "d" * 64, "deny", "",
+                                   actor="telegram-admin", callback_id="a" * 24, sender="123")
 
 
 def test_legacy_network_delivery_only_offers_blocks_and_cancellation():
@@ -248,11 +251,11 @@ def test_permission_decision_applies_optional_feedback_without_generic_job_revie
     pending = {"payload": {"kind": "permission", "job_id": 12, "request_id": "request"},
                "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
     ui.db.get_state.return_value = {"text": "Public data only."}
-    with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), \
-            patch.object(EmailApprovals, "consume_telegram", return_value=pending["payload"]), \
-            patch("assistant_agent.script_permissions.apply_decision", return_value="Approved") as apply:
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"key": "email-approval:" + "d" * 64, "value": pending}), \
+            patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Approved") as decide:
         ui.approval("123", "a" * 24, "once")
-    apply.assert_called_once_with(ui.db, pending["payload"], "once", "Public data only.", "telegram-admin")
+    decide.assert_called_once_with(ui.db, ui.config, "d" * 64, "approve_once", "Public data only.",
+                                   actor="telegram-admin", callback_id="a" * 24, sender="123")
     assert ui.client.call.call_args.args[1] == {"chat_id": "123", "text": "Approved"}
 
 
@@ -571,7 +574,7 @@ def test_expired_approval_offers_renewal_without_consuming_or_running(ui, kind, 
                "summary": "Task", "expires": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()}
     with patch.object(EmailApprovals, "telegram_pending", return_value={"value": pending}), patch.object(
         EmailApprovals, "consume_telegram"
-    ) as consume, patch("assistant_agent.telegram_admin.apply_approval") as execute:
+    ) as consume, patch("assistant_agent.management_approvals.decide_channel_approval") as execute:
         ui.approval("123", "a" * 24, action)
     assert "Request fresh approval" in str(ui.client.call.call_args)
     consume.assert_not_called()
@@ -597,7 +600,7 @@ def test_guidance_reply_is_scoped_to_prompt_and_cannot_approve_security_action(u
     ui.db.get_state.return_value = pending
     message = {"from": {"id": 123}, "text": "Use a different voice", "reply_to_message": {"message_id": 80}}
     with patch("assistant_agent.telegram_admin.TransactionDatabase") as database, patch(
-        "assistant_agent.telegram_admin.apply_approval"
+        "assistant_agent.management_approvals.decide_channel_approval"
     ) as approve:
         assert ui.input_reply(message)
     database.return_value.add_job_instruction.assert_called_once_with(12, "Use a different voice", "telegram-admin")
@@ -610,7 +613,7 @@ def test_reply_to_agent_question_message_becomes_guidance_without_approval(ui):
     ui.db.get_state.side_effect = lambda key, default=None: (
         {"job_id": 12} if key == "telegram-admin-question:9:123:80" else None)
     with patch("assistant_agent.telegram_admin.TransactionDatabase") as database, patch(
-        "assistant_agent.telegram_admin.apply_approval"
+        "assistant_agent.management_approvals.decide_channel_approval"
     ) as approve:
         database.return_value.add_job_instruction.return_value = "requeued"
         assert ui.input_reply({"from": {"id": 123}, "text": "Use the work account",
@@ -631,7 +634,7 @@ def test_admin_prompt_does_not_force_quote_and_accepts_plain_guidance(ui):
     pending = ui.db.set_state.call_args.args[1]
     ui.db.get_state.return_value = pending
     with patch("assistant_agent.telegram_admin.TransactionDatabase") as database, \
-            patch("assistant_agent.telegram_admin.apply_approval") as approve:
+            patch("assistant_agent.management_approvals.decide_channel_approval") as approve:
         assert ui.input_reply({"from": {"id": 123}, "message_id": 81, "text": "Keep the approved scope"})
     approve.assert_not_called()
     assert any(call.args[0] == "telegram-admin-reply:9:123:message:81"

@@ -84,6 +84,20 @@ def clean(value):
     return "".join(char for char in str(value) if char in "\n\t" or ord(char) >= 32 and not 127 <= ord(char) < 160)
 
 
+def email_review_fields(action):
+    headers = {str(item.get("name", "")).lower(): item.get("value")
+               for item in action.get("headers", [])}
+    return {
+        "summary": "Summary unavailable; review the original message before deciding.",
+        "sender": headers.get("from"),
+        "subject": headers.get("subject"),
+        "date": headers.get("date"),
+        "message_id": headers.get("message-id"),
+        "attachments": [part["filename"] for part in action.get("parts", []) if part.get("filename")],
+        **(action.get("review") or {}),
+    }
+
+
 class InsertionCursor(Processor):
     def apply_transformation(self, ti):
         fragments = explode_text_fragments(ti.fragments)
@@ -352,7 +366,7 @@ class ManagementApp:
         route = self.location.route
         return label == (
             "Services" if route.startswith(("Service", "Logs")) else
-            "Activity" if route in {"Activity", "Tasks", "Memories", "Reminders", "Projects", "Scripts", "Record", "Events", "Objects"} else
+            "Activity" if route in {"Activity", "Tasks", "Memories", "Reminders", "Projects", "Scripts", "Record", "Events", "Objects", "Approvals", "Approval", "Approval original"} else
             "Connections" if route == "Connections" or route.startswith("Connection:") else
             "Settings" if route in {"Settings", "Model settings", "Credentials", "Review", "Instructions", "Advanced", "Storage", "Search", "Pending deletions"} or route.startswith(("Form:", "Settings:", "Model:")) else
             "Activity" if route == "Project deletion" else
@@ -717,6 +731,13 @@ class ManagementApp:
                 if self.key() == key:
                     self.render()
             self.task("Loading " + route.lower(), partial(self.backend.request, request), loaded, report=False)
+        elif route == "Approvals":
+            def loaded(result):
+                self.cache[key] = result
+                if self.key() == key:
+                    self.render()
+            self.task("Loading approvals", partial(self.backend.request, {"kind": "approvals", "page": loc.page}),
+                      loaded, report=False)
         elif route == "Logs":
             def loaded(value):
                 changed = value != self.cache.get(key)
@@ -868,6 +889,12 @@ class ManagementApp:
             self.service()
         elif route == "Record":
             self.record()
+        elif route == "Approvals":
+            self.approvals()
+        elif route == "Approval":
+            self.approval_detail()
+        elif route == "Approval original":
+            self.approval_original()
         elif route == "Logs":
             self.logs()
         elif route.startswith(("Form:", "Connection:")):
@@ -966,6 +993,7 @@ class ManagementApp:
             description = "Drafts stay in memory until reviewed. Saving and starting services are separate choices."
         elif route == "Activity":
             choices = [
+                ("Permission requests", "Approvals"),
                 ("Tasks", "Tasks"), ("Memories", "Memories"), ("Reminders", "Reminders"),
                 ("Projects & workstreams", "Projects"), ("Script permissions", "Scripts"),
             ]
@@ -1336,7 +1364,7 @@ class ManagementApp:
                        self.action("Add instruction", partial(self.mutate_text, "instruct", identifier, "")),
                        self.action("Cancel task", partial(self.mutate, "cancel", identifier), danger=True)]
             if row.get("status") == "needs_review":
-                items.insert(0, self.action("Approve review", partial(self.mutate, "review", identifier)))
+                items.insert(0, self.action("Open permission requests", partial(self.go, "Approvals")))
         elif kind == "Memories":
             buttons = [self.action("Edit", partial(self.mutate_text, "update-memory", identifier, row["content"])),
                        self.action("Unpin" if row.get("pinned") else "Pin",
@@ -1358,6 +1386,105 @@ class ManagementApp:
             ]
         self.put("Details", "Tab or click into text to scroll it. Actions require confirmation.",
                  items, actions=buttons)
+
+    def approvals(self):
+        result = self.cache.get(self.key())
+        items = []
+        if result is None:
+            items.append(text("Loading permission requests.", height=2))
+        else:
+            for approval in result["approvals"]:
+                action = approval.get("action") or {}
+                review = email_review_fields(action) if action.get("type") in {
+                    "email_ingestion", "screened_email_release",
+                } else action.get("review") or {}
+                label = review.get("subject") or approval.get("kind") or "Review"
+                items.append(self.action(
+                    "%s / %s" % (clean(label), clean(approval.get("status", "unknown"))),
+                    partial(self.go, "Approval", approval),
+                    help_text="Review the exact action and available decisions.",
+                ))
+            for execution in result.get("executions", []):
+                review = execution.get("review") or {}
+                items.append(self.readable("%s / %s / %s / %s" % (
+                    review.get("subject") or "Approved email",
+                    execution.get("status") or "unknown",
+                    review.get("message_id") or "Message ID unavailable",
+                    execution.get("updated_at") or "Time unavailable",
+                )))
+                if execution.get("status") == "uncertain":
+                    items.append(self.readable("The outcome may be partial. Check the email and task before taking further action."))
+            if not items:
+                items.append(text("Nothing needs your approval on this page."))
+        buttons = [self.action("Refresh", self.refresh)]
+        if self.location.page:
+            buttons.append(self.action("Previous", partial(self.approvals_page, -1)))
+        if result and len(result["approvals"]) == 50:
+            buttons.append(self.action("Next", partial(self.approvals_page, 1)))
+        self.put("Permission requests", "Review before deciding; approvals are one-use.", items, actions=buttons)
+
+    def approvals_page(self, delta):
+        self.location.page += delta
+        self.render()
+        self.refresh()
+
+    def approval_detail(self):
+        approval = self.location.record
+        action = approval.get("action") or {}
+        items = []
+        if action.get("type") in {"email_ingestion", "screened_email_release"}:
+            review = email_review_fields(action)
+            for label, key in (("AI-generated summary" if review.get("summary_source") == "ai" else "Summary", "summary"),
+                               ("From (email header)", "sender"), ("Subject", "subject"),
+                               ("Date (email header)", "date"), ("Message ID", "message_id"), ("Screening", "screening"),
+                               ("Attachments", "attachments")):
+                value = review.get(key)
+                if value:
+                    items.extend([text(label, style="class:title"), self.readable(
+                        ", ".join(value) if isinstance(value, list) else str(value)), text()])
+            items.append(self.action("View original message", partial(self.go, "Approval original", approval)))
+        else:
+            items.append(self.readable(json.dumps(action, ensure_ascii=False, indent=2)))
+        if approval.get("reason"):
+            items.append(self.readable(approval["reason"]))
+        buttons = []
+        if approval.get("actionable") and approval.get("approval_id") and approval.get("version"):
+            labels = {"approve": "Approve", "deny": "Deny", "approve_once": "Allow once",
+                      "approve_always": "Allow this script version", "block_once": "Block once",
+                      "block_always": "Block always", "cancel_job": "Cancel task"}
+            for decision in action.get("decision_options", []):
+                if decision in labels:
+                    buttons.append(self.action(
+                        labels[decision], partial(self.approval_decide, approval, decision),
+                        help_text="Confirm this one-use decision for the reviewed action.",
+                    ))
+                else:
+                    items.append(self.readable("An unsupported decision requires a newer terminal client."))
+        self.put("Review permission", "Review the action and its details before deciding.", items, actions=buttons)
+
+    def approval_original(self):
+        action = self.location.record.get("action") or {}
+        parts = action.get("parts") or []
+        plain = [part.get("content") for part in parts if not part.get("filename")
+                 and part.get("content_type") == "text/plain" and part.get("content")]
+        content = plain or [part.get("content") for part in parts if not part.get("filename")
+                            and part.get("content_type") == "text/html" and part.get("content")]
+        self.put("Original email", "Message content is untrusted.", [
+            self.readable("\n\n".join(content) if content else "No text content is available."),
+        ], actions=[self.action("Back", self.back)])
+
+    def approval_decide(self, approval, decision):
+        self.confirm_action(
+            "Confirm decision", "Apply %s to the reviewed approval? This decision is one-use." % decision,
+            "Confirm", partial(self.backend.decide_approval, approval, decision),
+            lambda _result: self.approval_decided(),
+        )
+
+    def approval_decided(self):
+        self.cache.clear()
+        self.location = Location("Approvals")
+        self.render()
+        self.app.loop.call_soon(self.refresh)
 
     def mutate(self, action, identifier):
         self.confirm_action(
