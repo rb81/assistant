@@ -380,15 +380,33 @@ FIELD_HELP = {
     "AGENT_ORG_SECURITY_EMAIL": "Security contact supplied as organizational context. This is not a separate mailbox login.",
     "AGENT_ORG_INTERNAL_EMAIL_DOMAINS": "Domains the assistant should recognize as internal, separated by commas "
                                   "(example: example.com,subsidiary.com). This is not the outgoing-recipient allowlist.",
-    "AGENT_LLM_BASE_URL": "HTTPS base URL of the OpenAI-compatible chat API, such as "
-                         "https://openrouter.ai/api/v1. Do not include an API key, query string or chat/completions suffix.",
+    "AGENT_LLM_PROVIDER": "Provider protocol: OpenAI-compatible chat API, OpenAI, Anthropic, Gemini, or Cloudflare. "
+                          "Auto-detect preserves existing installations.",
+    "AGENT_LLM_BASE_URL": "HTTPS API base URL for the selected provider. OpenRouter, OpenAI and Cloudflare use the "
+                          "OpenAI-compatible chat API; Claude and Gemini use native APIs. Do not include credentials or query strings.",
     "AGENT_LLM_MODEL": "Provider model identifier used for ordinary tasks, for example anthropic/claude-sonnet-4.6 "
                       "on OpenRouter. It must be available to your configured provider account.",
     "AGENT_LLM_FALLBACK_MODEL": "Alternative model used when the primary model cannot complete a request. "
                                "Choose one available through the same provider endpoint.",
+    "AGENT_LLM_ZDR_ONLY": "Fail closed unless the provider account and exact model are listed in the verified ZDR "
+                          "allowlists. Gemini Developer API and custom OpenAI-compatible routes are blocked. "
+                          "OpenRouter Safety Retention endpoints must be excluded in privacy settings or a guardrail. "
+                          "Hosted tools have separate data policies; other providers may have additional eligibility limits.",
+    "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "Comma-separated provider accounts whose retention controls you verified "
+                                        "(openrouter, openai, anthropic, cloudflare). This is an administrator "
+                                        "attestation; account settings cannot be inspected by this app. For Cloudflare, "
+                                        "verify AI Gateway logging, caching and Logpush settings.",
+    "AGENT_LLM_ZDR_VERIFIED_MODELS": "Exact model allowlist in provider:model format, for example openai:gpt-4.1. "
+                                     "Only add models whose ZDR eligibility you verified for the configured account.",
     "AGENT_LLM_OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
                           "Create it in your provider account; set account-level spending limits there.",
     "AGENT_LLM_OPENAI_API_KEY": "Credential for a non-OpenRouter OpenAI-compatible provider. It must match your Provider API URL.",
+    "AGENT_SEARCH_EXA_API_KEY": "Exa API credential used for web search when Exa is selected as the search provider.",
+    "AGENT_WEB_FETCH_API_TOKEN": "API token for the external web page reader.",
+    "AGENT_WEB_FETCH_MANAGED_TOKEN": "Locally generated credential for the managed web page reader.",
+    "AGENT_LLM_ANTHROPIC_API_KEY": "Anthropic API credential used with the native Claude Messages API.",
+    "AGENT_LLM_GEMINI_API_KEY": "Google AI Studio Gemini Developer API key. This route cannot satisfy strict ZDR.",
+    "AGENT_LLM_CLOUDFLARE_API_KEY": "Cloudflare API token for Workers AI; use a token scoped to the required account and AI permissions.",
     "AGENT_DATABASE_PASSWORD": "Password for the bundled PostgreSQL database. Generate one only for a fresh install. "
                          "For existing data, use its current password; change it through Credentials to coordinate rotation.",
     "SETUP_EMAIL_ENABLED": "Start email intake as part of the app. It can process existing messages and move "
@@ -543,8 +561,9 @@ FIELD_HELP = {
                                   "this grants network access, not script execution permission.",
     "AGENT_MODEL_SERVICE_ENABLED": "Enable optional OpenRouter preset tools for text, images and audio. "
                                      "Requires AGENT_LLM_OPENROUTER_API_KEY. Ordinary task-model access is configured separately.",
-    "AGENT_MODEL_SERVICE_ZDR_ONLY": "Restrict preset-model selection and routing to supported Zero Data Retention "
-                                      "options. This is a provider routing policy, not a claim that data stays local.",
+    "AGENT_MODEL_SERVICE_ZDR_ONLY": "Restrict preset-model selection and routing to OpenRouter ZDR-compatible "
+                                      "options. Safety Retention endpoints may still be used unless excluded in "
+                                      "OpenRouter privacy settings or a guardrail. Data is still sent remotely.",
     "AGENT_MODEL_SERVICE_BUDGET_USD": "Rolling USD threshold shared by preset tools and text-to-speech. Checked "
                                        "before each request, so the final request may exceed it. Does not cover "
                                        "ordinary task calls; set hard account limits with your provider.",
@@ -552,8 +571,9 @@ FIELD_HELP = {
                                                "from 1 to 365 days. This is not a calendar-month reset.",
     "AGENT_TTS_ENABLED": "Allow dedicated text-to-speech through OpenRouter. Requires AGENT_LLM_OPENROUTER_API_KEY "
                          "and uses the shared preset/speech budget. Text leaves this computer for synthesis.",
-    "AGENT_TTS_ZDR_ONLY": "Require supported Zero Data Retention speech models and routing. "
-                          "This restricts provider use; speech synthesis is still remote.",
+    "AGENT_TTS_ZDR_ONLY": "Require OpenRouter ZDR-compatible speech models and routing. Safety Retention endpoints "
+                          "may still be used unless excluded in OpenRouter privacy settings or a guardrail. "
+                          "Speech synthesis is still remote.",
     "AGENT_TTS_MODEL": "OpenRouter speech-model slug. The selected voice must be supported by this model. "
                        "List choices with python -m assistant_agent.tts voices in the runtime environment.",
     "AGENT_TTS_VOICE": "Voice identifier supported by the chosen speech model. Voice names are model-specific, "

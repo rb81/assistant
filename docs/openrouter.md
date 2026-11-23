@@ -1,15 +1,16 @@
 # OpenRouter Integration
 
 Assistant uses OpenRouter for its default LLM endpoint and optional hosted
-search, model-preset, and speech features.
+search, model-preset, and speech features. Native OpenAI, Claude, Gemini, and
+Cloudflare Workers AI routes are covered in [Native Model Providers](model-providers.md).
 
 ## LLM Client
 
-`src/agent/src/assistant_agent/llm_client.py` provides `LlmClient`. Its defaults
-are `https://openrouter.ai/api/v1`, `POST /chat/completions`, and the protected
-`AGENT_LLM_OPENROUTER_API_KEY`. For another HTTPS `agent.llm.base_url`,
-`AGENT_LLM_OPENAI_API_KEY` takes precedence; the OpenRouter key is the fallback.
-Plain HTTP endpoints are rejected.
+`src/agent/src/assistant_agent/llm_client.py` provides `LlmClient`. OpenRouter
+uses `https://openrouter.ai/api/v1`, `POST /chat/completions`, and the protected
+`AGENT_LLM_OPENROUTER_API_KEY`. Other provider routes use their native request
+format or the configured OpenAI-compatible endpoint. Plain HTTP endpoints are
+rejected.
 
 ## Request Shape
 
@@ -17,25 +18,36 @@ Chat requests contain `model`, `messages`, `temperature`, and `max_tokens`.
 `tools` and `tool_choice: "auto"` are included only when tools are supplied.
 Request-time context is refreshed before sending.
 
-Requests include `Authorization: Bearer ...`, `HTTP-Referer` from
+OpenRouter requests include `Authorization: Bearer ...`, `HTTP-Referer` from
 `app_referer_url(config)`, and `X-Title` from `app_display_name(config)`.
 
-## Installation-wide ZDR
+## OpenRouter ZDR routing
 
 Enable **Require Zero Data Retention on OpenRouter** in model settings
 (`agent.llm.zdr_only` / `AGENT_LLM_ZDR_ONLY`, default `false`) to add
-`"provider": {"zdr": true}` to every request sent to OpenRouter's HTTPS origin.
-This includes task/fallback calls, research/search, preset and speech generation,
-and OpenRouter decision screening. Requests to other providers are unchanged.
-An unavailable ZDR route fails rather than falling back to unrestricted routing.
-Stricter existing preset/speech policies are not relaxed.
+`"provider": {"zdr": true}` to requests sent to OpenRouter. The generalized
+`AGENT_LLM_ZDR_ONLY` policy also requires a verified provider account and exact
+model allowlist across eligible native providers, task fallbacks, and separate
+model paths. An unavailable or unverified route fails rather than falling back
+to unrestricted routing. Stricter preset/speech policies are not relaxed.
 
-The macOS client's model selector maintains separate public full/ZDR catalogs,
+OpenRouter's ZDR routing can include **Safety Retention** endpoints if permitted
+by the account's privacy settings and guardrails. These endpoints may retain
+prompts and responses for abuse prevention. For strict ZDR, select **ZDR only**
+for both Google and other models in OpenRouter's privacy settings or an
+applicable guardrail. Assistant does not verify those settings. OpenRouter's hosted tools and plugins,
+including web search, have separate retention
+policies and are not covered by its inference ZDR routing.
+See [OpenRouter's ZDR documentation](https://openrouter.ai/docs/guides/features/zdr).
+
+The macOS client's OpenRouter model selector maintains separate public full/ZDR catalogs,
 filters by the field's capabilities, and supports weekly automatic refresh,
 manual refresh, or automatic refresh disabled. These controls and caches live
 only on the Mac; there are no new server model-list refresh settings. The public
 catalog's `zdr=true` filter indicates eligible models, not account-specific
-availability, and does not replace request-time routing enforcement.
+availability, and does not replace request-time routing enforcement. The
+authenticated model-catalog endpoint covers configured native providers; see
+[Native Model Providers](model-providers.md).
 
 ## Restricting providers
 

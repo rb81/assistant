@@ -1,0 +1,98 @@
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from assistant_agent.config import AppConfig
+from assistant_agent.llm_catalog import ModelCatalogError, _models, _request, discover_models
+from assistant_agent.llm_providers import provider_for
+
+
+def catalog_config(provider="openai", base_url="https://api.openai.com/v1", **llm):
+    return AppConfig({"agent": {"llm": {
+        "provider": provider,
+        "base_url": base_url,
+        **llm,
+    }}})
+
+
+def test_native_model_discovery_uses_server_credentials_and_filters_strict_allowlist():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps({
+        "data": [{"id": "gpt-4.1"}, {"id": "gpt-4.1-mini"}],
+    }).encode()
+    with patch("assistant_agent.llm_catalog.read_secret", return_value="private-key"), \
+            patch("assistant_agent.llm_catalog.open_https_request", return_value=response) as send:
+        result = discover_models(catalog_config(
+            zdr_only=True,
+            zdr_verified_providers=["openai"],
+            zdr_verified_models=["openai:gpt-4.1"],
+        ))
+    request = send.call_args.args[0]
+    assert request.full_url == "https://api.openai.com/v1/models"
+    assert request.get_header("Authorization") == "Bearer private-key"
+    assert result["models"] == [{"id": "gpt-4.1", "name": "gpt-4.1"}]
+    assert result["zdr_only"] is True
+
+
+def test_strict_model_discovery_rejects_unverified_and_non_zdr_providers():
+    with pytest.raises(ModelCatalogError, match="does not provide strict"):
+        discover_models(catalog_config(
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            zdr_only=True,
+        ))
+    with pytest.raises(ModelCatalogError, match="Verify the provider account"):
+        discover_models(catalog_config(zdr_only=True))
+
+
+def test_openrouter_url_cannot_be_selected_with_a_different_provider_policy():
+    with pytest.raises(ValueError, match="OpenRouter URLs must use"):
+        provider_for(
+            AppConfig({"agent": {"llm": {"provider": "openai"}}}),
+            "https://openrouter.ai/api/v1",
+        )
+
+
+def test_cloudflare_discovery_returns_only_workers_ai_models_and_gateway_warning():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps({
+        "result": [
+            {"name": "@cf/meta/llama-3.1-8b-instruct"},
+            {"name": "@cf/mistral/model"},
+            {"name": "external/model"},
+        ],
+    }).encode()
+    config = catalog_config(
+        provider="cloudflare",
+        base_url="https://api.cloudflare.com/client/v4/accounts/example/ai/v1",
+    )
+    with patch("assistant_agent.llm_catalog.read_secret", return_value="private-token"), \
+            patch("assistant_agent.llm_catalog.open_https_request", return_value=response) as send:
+        result = discover_models(config)
+    request = send.call_args.args[0]
+    assert request.full_url == (
+        "https://api.cloudflare.com/client/v4/accounts/example/ai/models/search?page=1&per_page=1000"
+    )
+    assert [model["id"] for model in result["models"]] == [
+        "@cf/meta/llama-3.1-8b-instruct", "@cf/mistral/model",
+    ]
+    assert "Logpush" in result["warning"]
+
+
+def test_native_catalog_requests_use_provider_auth_and_gemini_capability_filtering():
+    anthropic = _request("anthropic", "https://api.anthropic.com", "secret")
+    assert anthropic.full_url == "https://api.anthropic.com/v1/models?limit=1000"
+    assert anthropic.get_header("X-api-key") == "secret"
+    assert anthropic.get_header("Anthropic-version") == "2023-06-01"
+    gemini = _request(
+        "gemini", "https://generativelanguage.googleapis.com/v1beta", "secret"
+    )
+    assert gemini.full_url.endswith("/v1beta/models?pageSize=1000")
+    assert gemini.get_header("X-goog-api-key") == "secret"
+    assert _models({
+        "models": [
+            {"name": "models/gemini-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-embedding", "supportedGenerationMethods": ["embedContent"]},
+        ],
+    }, "gemini") == [{"id": "models/gemini-flash", "name": "models/gemini-flash"}]

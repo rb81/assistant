@@ -118,14 +118,24 @@ settings:
     description: "Choose a voice advertised by the selected model. If none are advertised, enter its supported voice identifier."
   agent.tts.zdr_only:
     label: Require ZDR for speech
-    description: "Use only Zero Data Retention speech endpoints. Installation-wide ZDR already enforces this when enabled."
+    description: "Use OpenRouter's ZDR routing for speech. Safety Retention endpoints may still be used unless excluded in OpenRouter privacy settings or a guardrail. Installation-wide OpenRouter ZDR also applies."
   agent.llm.zdr_only:
-    label: Require Zero Data Retention on OpenRouter
-    description: "Route OpenRouter model requests only through Zero Data Retention endpoints, including fallback models, screening, speech, and model tools. Requests fail if no eligible endpoint is available. Does not apply to other providers."
+    label: Require verified Zero Data Retention
+    description: "Block model routes unless the provider account and exact model are verified in the ZDR allowlists. Gemini Developer API and custom OpenAI-compatible providers are not eligible. OpenRouter Safety Retention endpoints must be excluded in privacy settings or a guardrail. Hosted tools have separate data policies; other providers may have additional eligibility limits."
+  agent.llm.provider:
+    label: Model provider
+    enum: [auto, openrouter, openai, anthropic, gemini, cloudflare, openai-compatible]
+    description: "Select the native API protocol. Auto-detect preserves existing installations; custom OpenAI-compatible endpoints use their own URL and credential."
   agent.llm.allowed_providers:
     model_blank_label: No provider restriction
-    label: Allowed OpenRouter providers
+    label: Allowed OpenRouter hosting providers
     description: "Restrict OpenRouter requests to these provider slugs. Leave empty for no preference. The restriction combines with ZDR and requests fail if no eligible route remains."
+  agent.llm.zdr_verified_providers:
+    label: Verified ZDR provider accounts
+    description: "Provider account IDs you have verified for ZDR (openrouter, openai, anthropic, cloudflare). This is an administrator attestation; the application cannot inspect provider account controls. Gemini Developer API and custom endpoints are never accepted."
+  agent.llm.zdr_verified_models:
+    label: Verified ZDR models
+    description: "Exact model allowlist in provider:model format, such as openai:gpt-4.1. Required in ZDR-only mode. Verify model eligibility and all provider account/privacy controls before adding entries."
   agent.llm.fallback_model:
     model_blank_label: No fallback model
   agent.naming.model:
@@ -180,6 +190,12 @@ settings:
   agent.llm.openrouter_api_key:
     secret: true
   agent.llm.openai_api_key:
+    secret: true
+  agent.llm.anthropic_api_key:
+    secret: true
+  agent.llm.gemini_api_key:
+    secret: true
+  agent.llm.cloudflare_api_key:
     secret: true
   agent.email.imap_password:
     secret: true

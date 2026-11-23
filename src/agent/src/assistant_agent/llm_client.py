@@ -9,7 +9,8 @@ from .config import AppConfig, app_display_name, app_referer_url
 from .prompt_context import refresh_request_context
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
-from .openrouter_policy import apply_routing_policy, is_openrouter_url
+from .openrouter_policy import apply_routing_policy, is_openrouter_url, require_zdr_eligibility
+from .llm_providers import PROVIDER_CREDENTIALS, build_request, normalize_response, provider_for
 
 
 LOGGER = logging.getLogger("assistant.llm_client")
@@ -33,12 +34,15 @@ class LlmClient:
         self.config = config
         self.base_url = str(base_url or config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
-        if is_openrouter_url(self.base_url):
+        self.provider = provider_for(config, self.base_url)
+        if self.provider == "openrouter" and not is_openrouter_url(self.base_url):
+            raise ValueError("OpenRouter provider requires an https://openrouter.ai API URL")
+        credential_name = PROVIDER_CREDENTIALS[self.provider]
+        api_key = read_secret(credential_name)
+        if self.provider == "openai-compatible" and not api_key:
             api_key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
-        else:
-            api_key = read_secret("AGENT_LLM_OPENAI_API_KEY") or read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not api_key:
-            raise RuntimeError("model API key is required for task-agent")
+            raise RuntimeError("%s is required for the selected model provider" % credential_name)
         self.api_key = api_key
         self.model = model or config.get("agent.llm.model", "anthropic/claude-sonnet-4.6")
         self.temperature = temperature
@@ -80,24 +84,30 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        apply_routing_policy(self.config, self.base_url, payload)
+        if self.provider == "openrouter":
+            apply_routing_policy(self.config, self.base_url, payload)
+        require_zdr_eligibility(self.config, self.provider, model)
         if self.request_observer is not None:
             self.request_observer(payload)
-        body = json.dumps(payload, default=str).encode("utf-8")
-        request = urllib.request.Request(
-            "%s/chat/completions" % self.base_url,
-            data=body,
-            headers={
-                "Authorization": "Bearer %s" % self.api_key,
-                "Content-Type": "application/json",
+        url, provider_headers, body = build_request(self.provider, self.base_url, self.api_key, payload)
+        headers = {
+            "Content-Type": "application/json",
+            **provider_headers,
+        }
+        if self.provider == "openrouter":
+            headers.update({
                 "HTTP-Referer": app_referer_url(self.config),
                 "X-Title": app_display_name(self.config),
-            },
+            })
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
             method="POST",
         )
         try:
             with open_https_request(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return normalize_response(self.provider, json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             msg = "LLM request failed with HTTP %s: %s" % (exc.code, detail)

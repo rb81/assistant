@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -934,6 +934,48 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
                 assert link["destination"] in {"models", "advanced", "assistant", "safety", "connections"}
         assert sections["speech"]["enabled"] is False and sections["speech"]["settings"]
         assert sections["screening"]["enabled"] is False and sections["screening"]["settings"]
+    finally:
+        service.close()
+
+
+def test_provider_model_catalog_is_authenticated_and_keeps_credentials_server_side(tmp_path):
+    import json
+    import shutil
+    from pathlib import Path
+    from test_management import configured
+
+    source = Path(__file__).resolve().parents[2] / "config"
+    (tmp_path / "src/config").mkdir(parents=True)
+    for name in ("agent.yaml", "agent.schema.yaml", "AGENT.md.example"):
+        shutil.copyfile(source / name, tmp_path / "src/config" / name)
+    installation = configured(tmp_path)
+    installation.values.update({
+        "AGENT_LLM_PROVIDER": "openai",
+        "AGENT_LLM_BASE_URL": "https://api.openai.com/v1",
+        "AGENT_LLM_ZDR_ONLY": "true",
+        "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "openai",
+        "AGENT_LLM_ZDR_VERIFIED_MODELS": "openai:gpt-4.1",
+    })
+    installation.secret_values["AGENT_LLM_OPENAI_API_KEY"] = "private-model-key"
+    installation.save()
+    service = ManagementService(tmp_path)
+    client = TestClient(create_app(tmp_path, TOKEN, service))
+    headers = {"Host": "127.0.0.1", "Authorization": "Bearer " + TOKEN}
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps({
+        "data": [{"id": "gpt-4.1"}, {"id": "gpt-4.1-mini"}],
+    }).encode()
+    try:
+        with patch("assistant_agent.llm_catalog.read_secret", return_value="private-model-key"), \
+                patch("assistant_agent.llm_catalog.open_https_request", return_value=response) as send:
+            assert client.get("/v2/configuration/models", headers={"Host": "127.0.0.1"}).status_code == 401
+            result = client.get("/v2/configuration/models", headers=headers)
+        assert result.status_code == 200, result.text
+        assert result.json()["provider"] == "openai"
+        assert result.json()["zdr_only"] is True
+        assert [model["id"] for model in result.json()["models"]] == ["gpt-4.1"]
+        assert "private-model-key" not in result.text
+        assert send.call_args.args[0].full_url == "https://api.openai.com/v1/models"
     finally:
         service.close()
 

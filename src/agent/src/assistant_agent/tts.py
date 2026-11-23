@@ -70,7 +70,8 @@ def audio_formats(model):
 
 class OpenRouterSpeech(OpenRouterModels):
     def synthesize(self, payload, record_generation):
-        request = self.request("/audio/speech", payload)
+        request = self.request("/audio/speech", payload,
+                               scoped_zdr=self.config.get_bool("agent.tts.zdr_only", False))
         request.add_header("Accept", "audio/*")
         try:
             with open_https_request(request, timeout=180) as response:

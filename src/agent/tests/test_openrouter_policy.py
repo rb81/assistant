@@ -15,11 +15,13 @@ from assistant_agent.openrouter_policy import apply_routing_policy
 @pytest.mark.parametrize("url,enabled,expected", [
     ("https://openrouter.ai/api/v1", True, {"zdr": True}),
     ("https://openrouter.ai/api/v1", False, None),
-    ("https://api.openai.com/v1", True, None),
-    ("https://openrouter.ai.example.test/v1", True, None),
 ])
-def test_llm_zdr_is_explicit_and_openrouter_only(url, enabled, expected):
-    config = AppConfig({"agent": {"llm": {"base_url": url, "zdr_only": enabled}}})
+def test_llm_zdr_applies_to_verified_openrouter_routes(url, enabled, expected):
+    config = AppConfig({"agent": {"llm": {
+        "base_url": url, "zdr_only": enabled,
+        "zdr_verified_providers": ["openrouter"],
+        "zdr_verified_models": ["openrouter:anthropic/claude-sonnet-4.6"],
+    }}})
     response = MagicMock()
     response.__enter__.return_value.read.return_value = b'{"choices":[]}'
     with patch("assistant_agent.llm_client.read_secret", return_value="fixture-key"), \
@@ -29,10 +31,22 @@ def test_llm_zdr_is_explicit_and_openrouter_only(url, enabled, expected):
     assert json.loads(send.call_args.args[0].data).get("provider") == expected
 
 
+def test_zdr_blocks_unverified_direct_provider():
+    config = AppConfig({"agent": {"llm": {"base_url": "https://api.openai.com/v1", "zdr_only": True}}})
+    with patch("assistant_agent.llm_client.read_secret", return_value="fixture-key"), \
+            patch("assistant_agent.llm_client.refresh_request_context", side_effect=lambda messages, _: messages), \
+            patch("assistant_agent.llm_client.open_https_request") as send:
+        with pytest.raises(ValueError, match="account retention controls"):
+            LlmClient(config).chat([], [])
+    send.assert_not_called()
+
+
 def test_fallback_keeps_zdr_enforcement():
     config = AppConfig({"agent": {"llm": {
         "base_url": "https://openrouter.ai/api/v1", "model": "primary",
         "fallback_model": "fallback", "zdr_only": True, "allowed_providers": ["deepinfra"],
+        "zdr_verified_providers": ["openrouter"],
+        "zdr_verified_models": ["openrouter:primary", "openrouter:fallback"],
     }}})
     response = MagicMock()
     response.__enter__.return_value.read.return_value = b'{"choices":[]}'
@@ -47,7 +61,10 @@ def test_fallback_keeps_zdr_enforcement():
 
 
 def test_global_policy_covers_model_tools_speech_and_openrouter_screening():
-    config = AppConfig({"agent": {"llm": {"zdr_only": True}}})
+    config = AppConfig({"agent": {"llm": {
+        "zdr_only": True, "zdr_verified_providers": ["openrouter"],
+        "zdr_verified_models": ["openrouter:fixture", "openrouter:perplexity/pplx-decider-v1.2"],
+    }}})
     with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"):
         for path in ("/chat/completions", "/audio/speech"):
             request = OpenRouterModels(config).request(path, {"model": "fixture"})
@@ -60,7 +77,10 @@ def test_global_policy_covers_model_tools_speech_and_openrouter_screening():
 
 
 def test_provider_allowlist_and_zdr_are_enforced_together_for_every_route():
-    config = AppConfig({"agent": {"llm": {"zdr_only": True, "allowed_providers": ["deepinfra", "azure"]}}})
+    config = AppConfig({"agent": {"llm": {
+        "zdr_only": True, "allowed_providers": ["deepinfra", "azure"],
+        "zdr_verified_providers": ["openrouter"], "zdr_verified_models": ["openrouter:fixture"],
+    }}})
     for path in ("/chat/completions", "/audio/speech"):
         with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"):
             request = OpenRouterModels(config).request(path, {"model": "fixture"})
@@ -80,3 +100,20 @@ def test_existing_provider_restrictions_are_intersected_without_broadening():
     with pytest.raises(ValueError, match="Invalid"):
         apply_routing_policy(AppConfig({"agent": {"llm": {"allowed_providers": ["bad slug"]}}}),
                              "https://openrouter.ai/api/v1", {})
+
+
+def test_zdr_only_blocks_unverified_providers_and_models_and_gemini():
+    from assistant_agent.openrouter_policy import require_zdr_eligibility
+
+    config = AppConfig({"agent": {"llm": {"zdr_only": True}}})
+    with pytest.raises(ValueError, match="account retention controls"):
+        require_zdr_eligibility(config, "openai", "gpt-4.1")
+    verified = AppConfig({"agent": {"llm": {
+        "zdr_only": True, "zdr_verified_providers": ["openai"],
+        "zdr_verified_models": ["openai:gpt-4.1"],
+    }}})
+    require_zdr_eligibility(verified, "openai", "gpt-4.1")
+    with pytest.raises(ValueError, match="retention eligibility"):
+        require_zdr_eligibility(verified, "openai", "gpt-4.1-mini")
+    with pytest.raises(ValueError, match="Gemini Developer API"):
+        require_zdr_eligibility(verified, "gemini", "gemini-2.5-flash")

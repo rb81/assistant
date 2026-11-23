@@ -28,6 +28,7 @@ from dotenv.parser import parse_stream
 from .secret_store import SECRET_NAMES, is_secret_name
 from . import settings_schema
 from .config import ENV_OVERRIDES, AppConfig, validate_database_url
+from .llm_providers import PROVIDER_CREDENTIALS, provider_for
 from .transport_security import validate_embedding_url, validate_https_url
 from .validation import WEAK_PASSWORDS
 from .setup_privileges import prepare_sudo, terminal_authorization
@@ -124,7 +125,8 @@ PROMPT_DEFAULTS = {
     "AGENT_ADMIN_NAME": "agent.admin.name", "AGENT_ADMIN_EMAIL": "agent.admin.email",
     "AGENT_ORG_NAME": "agent.org.name", "AGENT_ORG_SECURITY_EMAIL": "agent.org.security_email",
     "AGENT_APP_TIMEZONE": "agent.app.timezone",
-    "AGENT_LLM_BASE_URL": "agent.llm.base_url", "AGENT_LLM_MODEL": "agent.llm.model",
+    "AGENT_LLM_PROVIDER": "agent.llm.provider", "AGENT_LLM_BASE_URL": "agent.llm.base_url",
+    "AGENT_LLM_MODEL": "agent.llm.model",
     "AGENT_LLM_FALLBACK_MODEL": "agent.llm.fallback_model",
     "AGENT_CALENDAR_ENABLED": "agent.calendar.enabled", "AGENT_ZOOM_ENABLED": "agent.zoom.enabled",
     "AGENT_DROPBOX_ENABLED": "agent.dropbox.enabled", "AGENT_DROPBOX_ALLOW_EXPORTS": "agent.dropbox.allow_exports",
@@ -155,7 +157,12 @@ class PermissionActivationError(SetupError):
 
 SECTION_KEYS = {
     "identity": (("AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_ADMIN_NAME", "AGENT_ADMIN_EMAIL", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS"), ()),
-    "models": (("AGENT_LLM_BASE_URL", "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ALLOWED_PROVIDERS", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_DATABASE_PASSWORD"), ()),
+    "models": (("AGENT_LLM_PROVIDER", "AGENT_LLM_BASE_URL", "AGENT_LLM_ZDR_ONLY",
+                "AGENT_LLM_ALLOWED_PROVIDERS", "AGENT_LLM_ZDR_VERIFIED_PROVIDERS",
+                "AGENT_LLM_ZDR_VERIFIED_MODELS", "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL",
+                "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY",
+                "AGENT_LLM_ANTHROPIC_API_KEY", "AGENT_LLM_GEMINI_API_KEY",
+                "AGENT_LLM_CLOUDFLARE_API_KEY", "AGENT_DATABASE_PASSWORD"), ()),
     "embeddings": ((), ("AGENT_EMBEDDINGS_",)),
     "email": (("SETUP_EMAIL_ENABLED", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS", "AGENT_IDENTITY_EMAIL"), ("AGENT_EMAIL_IMAP_", "AGENT_EMAIL_SMTP_")),
     "calendar": ((), ("AGENT_CALENDAR_",)),
@@ -316,7 +323,7 @@ def secret_services(name):
         return ("postgres", "management-reader", *AGENT_SERVICES)
     if name == "AGENT_DATABASE_URL":
         return ("management-reader", *AGENT_SERVICES)
-    if name in ("AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY"):
+    if name in PROVIDER_CREDENTIALS.values():
         return (*MODEL_SERVICES, *ROUTING_SERVICES)
     if name in {"AGENT_SEARCH_EXA_API_KEY", "AGENT_WEB_FETCH_API_TOKEN"}:
         return TOOL_SERVICES
@@ -1691,16 +1698,38 @@ def interactive(options):
 
     def models():
         previous_url = instance.values.get("AGENT_LLM_BASE_URL") or instance.defaults.get("agent.llm.base_url") or "https://openrouter.ai/api/v1"
-        provider = answer(questionary.select("Model provider", choices=["OpenRouter", "OpenAI-compatible"],
-                                            default="OpenRouter" if "openrouter.ai" in previous_url else "OpenAI-compatible"))
-        default = "https://openrouter.ai/api/v1" if provider == "OpenRouter" else "https://api.openai.com/v1"
-        instance.values["AGENT_LLM_BASE_URL"] = previous_url if (provider == "OpenRouter") == ("openrouter.ai" in previous_url) else default
-        text("AGENT_LLM_BASE_URL", "Model API base URL", default)
-        credential("AGENT_LLM_OPENROUTER_API_KEY" if provider == "OpenRouter" else "AGENT_LLM_OPENAI_API_KEY")
-        text("AGENT_LLM_MODEL", "Primary model identifier", "anthropic/claude-sonnet-4.6" if provider == "OpenRouter" else "gpt-4.1")
-        text("AGENT_LLM_FALLBACK_MODEL", "Fallback model identifier (optional)", "openai/gpt-5.4" if provider == "OpenRouter" else "")
-        instance.values["AGENT_SEARCH_ENABLED"] = str(provider == "OpenRouter").lower()
-        if provider != "OpenRouter":
+        provider_options = {
+            "OpenRouter": ("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.6",
+                           "openai/gpt-5.4", "AGENT_LLM_OPENROUTER_API_KEY"),
+            "OpenAI": ("openai", "https://api.openai.com/v1", "gpt-4.1", "gpt-4.1-mini",
+                       "AGENT_LLM_OPENAI_API_KEY"),
+            "Anthropic Claude": ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-6", "",
+                                 "AGENT_LLM_ANTHROPIC_API_KEY"),
+            "Gemini Developer API": ("gemini", "https://generativelanguage.googleapis.com/v1beta",
+                                     "gemini-2.5-flash", "", "AGENT_LLM_GEMINI_API_KEY"),
+            "Cloudflare Workers AI": ("cloudflare", "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
+                                      "@cf/meta/llama-3.1-8b-instruct", "", "AGENT_LLM_CLOUDFLARE_API_KEY"),
+            "OpenAI-compatible": ("openai-compatible", previous_url, "", "", "AGENT_LLM_OPENAI_API_KEY"),
+        }
+        by_id = {entry[0]: name for name, entry in provider_options.items()}
+        configured = instance.values.get("AGENT_LLM_PROVIDER", "auto")
+        try:
+            inferred = provider_for(instance.defaults, previous_url)
+        except ValueError:
+            inferred = "openai-compatible"
+        host_guess = by_id.get(inferred, "OpenAI-compatible")
+        default_provider = by_id.get(configured, host_guess)
+        provider_name = answer(questionary.select("Model provider", choices=list(provider_options),
+                                                  default=default_provider))
+        provider, default_url, default_model, default_fallback, credential_name = provider_options[provider_name]
+        instance.values["AGENT_LLM_PROVIDER"] = provider
+        instance.values["AGENT_LLM_BASE_URL"] = previous_url if provider == "openai-compatible" else default_url
+        text("AGENT_LLM_BASE_URL", "Model API base URL", default_url)
+        credential(credential_name)
+        text("AGENT_LLM_MODEL", "Primary model identifier", default_model)
+        text("AGENT_LLM_FALLBACK_MODEL", "Fallback model identifier (optional)", default_fallback)
+        instance.values["AGENT_SEARCH_ENABLED"] = str(provider == "openrouter").lower()
+        if provider != "openrouter":
             instance.values["AGENT_FUSION_ENABLED"] = "false"
         current_password = instance.secret_values.get("AGENT_DATABASE_PASSWORD")
         if current_password and current_password not in WEAK_PASSWORDS:
@@ -2720,7 +2749,11 @@ def draft_problems(instance):
             raise RuntimeError
     except RuntimeError:
         problem("models", "A model and valid HTTPS model API URL without credentials are required")
-    required = {"AGENT_DATABASE_PASSWORD": "models", ("AGENT_LLM_OPENROUTER_API_KEY" if "openrouter.ai" in base_url else "AGENT_LLM_OPENAI_API_KEY"): "models"}
+    model_config = AppConfig({"agent": {"llm": {
+        "provider": values.get("AGENT_LLM_PROVIDER", "auto"), "base_url": base_url,
+    }}})
+    provider = provider_for(model_config, base_url)
+    required = {"AGENT_DATABASE_PASSWORD": "models", PROVIDER_CREDENTIALS[provider]: "models"}
     if values.get("SETUP_EMAIL_ENABLED") == "true":
         required.update(dict.fromkeys(("AGENT_EMAIL_IMAP_PASSWORD", "AGENT_EMAIL_SMTP_PASSWORD"), "email"))
         for name in ("AGENT_ADMIN_EMAIL", "AGENT_EMAIL_IMAP_HOST", "AGENT_EMAIL_IMAP_USERNAME", "AGENT_EMAIL_SMTP_HOST", "AGENT_EMAIL_SMTP_USERNAME", "AGENT_EMAIL_SMTP_FROM", "AGENT_EMAIL_ACTIONABLE_SENDERS", "AGENT_EMAIL_ALLOWED_RECIPIENT_DOMAINS"):

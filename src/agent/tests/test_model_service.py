@@ -413,7 +413,11 @@ def test_zdr_catalog_cache_is_separate_and_retains_audio_metadata(monkeypatch):
     monkeypatch.setattr("assistant_agent.model_service._catalog", {})
     monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
     all_models = OpenRouterModels(AppConfig({}))
-    zdr_models = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    zdr_models = OpenRouterModels(AppConfig({"agent": {
+        "model_service": {"zdr_only": True},
+        "llm": {"zdr_verified_providers": ["openrouter"],
+               "zdr_verified_models": ["openrouter:test/audio"]},
+    }}))
     with patch("assistant_agent.model_service.open_https_request", side_effect=[
         io.BytesIO(json.dumps({"data": MODELS}).encode()),
         io.BytesIO(json.dumps({"data": [MODELS[2]]}).encode()),
@@ -430,7 +434,11 @@ def test_zdr_catalog_cache_is_separate_and_retains_audio_metadata(monkeypatch):
 def test_zdr_discovery_never_falls_back_to_cached_all_models(monkeypatch, data):
     monkeypatch.setattr("assistant_agent.model_service._catalog", {})
     monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
-    client = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    client = OpenRouterModels(AppConfig({"agent": {
+        "model_service": {"zdr_only": True},
+        "llm": {"zdr_verified_providers": ["openrouter"],
+               "zdr_verified_models": ["openrouter:test/audio"]},
+    }}))
     with patch("assistant_agent.model_service.open_https_request", side_effect=[
         io.BytesIO(json.dumps({"data": MODELS}).encode()),
         io.BytesIO(json.dumps({"data": data}).encode()),
@@ -451,7 +459,11 @@ def test_zdr_discovery_failure_does_not_use_expired_or_unrestricted_catalog(monk
     })
     monkeypatch.setattr("assistant_agent.model_service.time.monotonic", lambda: 1001)
     monkeypatch.setattr("assistant_agent.model_service.read_secret", lambda name: "test-key")
-    client = OpenRouterModels(AppConfig({"agent": {"model_service": {"zdr_only": True}}}))
+    client = OpenRouterModels(AppConfig({"agent": {
+        "model_service": {"zdr_only": True},
+        "llm": {"zdr_verified_providers": ["openrouter"],
+               "zdr_verified_models": ["openrouter:test/audio"]},
+    }}))
     error = urllib.error.HTTPError("url", 503, "unavailable", {}, io.BytesIO(b"private"))
     with patch("assistant_agent.model_service.open_https_request", side_effect=error) as request:
         with pytest.raises(ModelServiceError, match=r"discovery failed \(HTTP 503\)"):

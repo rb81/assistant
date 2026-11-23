@@ -55,6 +55,21 @@ def test_catalog_does_not_compute_effective_values(tmp_path):
         service.close()
 
 
+def test_zdr_settings_warn_about_safety_retention(tmp_path):
+    service = ManagementService(tmp_path)
+    try:
+        catalog = service.configuration_v2(include_source=False, instructions=False, values=False)
+        fields = {field["key"]: field for field in catalog["settings"]}
+        for key in ("AGENT_LLM_ZDR_ONLY", "AGENT_MODEL_SERVICE_ZDR_ONLY", "AGENT_TTS_ZDR_ONLY"):
+            help_text = fields[key]["metadata"]["help"]
+            assert "Safety Retention" in help_text
+            assert "privacy settings or a guardrail" in help_text
+        assert "other providers" in fields["AGENT_LLM_ZDR_ONLY"]["metadata"]["help"]
+        assert "Hosted tools" in fields["AGENT_LLM_ZDR_ONLY"]["metadata"]["help"]
+    finally:
+        service.close()
+
+
 def test_lost_receipt_can_be_looked_up_without_replaying(tmp_path):
     service = ManagementService(tmp_path)
     token = "a" * 64

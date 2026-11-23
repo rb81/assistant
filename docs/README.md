@@ -24,6 +24,7 @@ instructions live in the [client repository](https://github.com/rb81/assistant-c
 | **[Calendars and meetings](calendar-providers.md)** | Google, Outlook, Zoho, and Zoom |
 | **[Dropbox](dropbox.md)** | Scoped file import and export |
 | **[OpenRouter](openrouter.md)** | Models, provider settings, and hosted tools |
+| **[Native model providers](model-providers.md)** | OpenAI, Claude, Gemini, Cloudflare Workers AI, model discovery, and strict ZDR |
 | **[Model performance testing](model-performance-testing.md)** | Compare models with simulated tools and a separate judge |
 | **[Web access](web-access.md)** | Search providers and reading public web pages |
 

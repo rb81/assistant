@@ -42,6 +42,8 @@ class AudioResponse(io.BytesIO):
 def speech(tmp_path, monkeypatch):
     config = AppConfig({"agent": {
         "tts": {"enabled": True, "zdr_only": True, "model": MODEL["id"], "voice": "alloy"},
+        "llm": {"zdr_verified_providers": ["openrouter"],
+                "zdr_verified_models": ["openrouter:" + MODEL["id"]]},
         "model_service": {"enabled": False},
         "filesystem": {"shared_root": str(tmp_path), "require_mount": False},
         "workspace": {"index": {"enabled": False}}, "embeddings": {"enabled": False},
@@ -130,7 +132,10 @@ def test_global_and_speech_zdr_merge_into_one_request_flag(speech, global_zdr, s
     def synthesize_request(payload, record_generation):
         # Exercise the actual final serialization, not only the speech tool's intermediate payload.
         with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"):
-            request = speech.client.request("/audio/speech", payload)
+            request = speech.client.request(
+                "/audio/speech", payload,
+                scoped_zdr=speech.config.get_bool("agent.tts.zdr_only", False),
+            )
         sent.append(request.data.decode())
         record_generation("gen-tts-test")
         return MP3, "audio/mpeg", "gen-tts-test"

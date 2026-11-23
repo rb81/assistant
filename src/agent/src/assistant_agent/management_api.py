@@ -1,4 +1,5 @@
 """Versioned host management API."""
+import copy
 import hmac
 from typing import Literal
 import hashlib
@@ -35,6 +36,7 @@ from .management_contracts import (
     DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse, ModelSettingsResponse,
 )
 from . import settings_schema
+from .config import AppConfig
 from .management_operations import OperationManager
 from .management_events import EventBuffer
 from .secret_store import is_secret_name
@@ -130,12 +132,14 @@ DEPLOYMENT_WARNINGS = {
     "ASSISTANT_MANAGEMENT_PORT": "Applying a port change interrupts the management connection.",
 }
 BASIC_SETTINGS = {
-    "AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_MODEL", "AGENT_LLM_BASE_URL",
-    "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_ADMIN_EMAIL",
+    "AGENT_IDENTITY_NAME", "AGENT_APP_TIMEZONE", "AGENT_LLM_PROVIDER", "AGENT_LLM_MODEL", "AGENT_LLM_BASE_URL",
+    "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY", "AGENT_LLM_ANTHROPIC_API_KEY",
+    "AGENT_LLM_GEMINI_API_KEY", "AGENT_LLM_CLOUDFLARE_API_KEY", "AGENT_ADMIN_EMAIL",
     "SETUP_EMAIL_ENABLED", "AGENT_TELEGRAM_ENABLED", "AGENT_TELEGRAM_BOT_TOKEN",
     "AGENT_TELEGRAM_ALLOWED_USER_IDS", "AGENT_APPROVALS_CHANNEL",
     "AGENT_ADMIN_NAME", "AGENT_ORG_NAME", "AGENT_ORG_SECURITY_EMAIL", "AGENT_ORG_INTERNAL_EMAIL_DOMAINS",
-    "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ALLOWED_PROVIDERS", "AGENT_LLM_FALLBACK_MODEL",
+    "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ALLOWED_PROVIDERS", "AGENT_LLM_ZDR_VERIFIED_PROVIDERS",
+    "AGENT_LLM_ZDR_VERIFIED_MODELS", "AGENT_LLM_FALLBACK_MODEL",
     "AGENT_TTS_ENABLED", "AGENT_TTS_MODEL", "AGENT_TTS_VOICE",
     "AGENT_MODEL_SERVICE_ENABLED", "AGENT_MODEL_SERVICE_BUDGET_USD",
     "AGENT_SEARCH_ENABLED", "AGENT_DEEP_RESEARCH_ENABLED", "AGENT_FUSION_ENABLED",
@@ -638,6 +642,38 @@ class ManagementService:
             for field in configuration["settings"]
         ]
         return overview(configuration, backend.installation.state)
+
+    def model_catalog(self):
+        from .llm_catalog import discover_models
+
+        backend = self.read_configuration_backend()
+        values = copy.deepcopy(backend.installation.defaults.values)
+        agent = values.setdefault("agent", {})
+        llm = agent.setdefault("llm", {})
+        catalog = settings_schema.catalog_by_env()
+        specs = {
+            spec.key: spec for _, group_specs in configuration_groups().values() for spec in group_specs
+        }
+        for key, default in (
+            ("AGENT_LLM_PROVIDER", "auto"),
+            ("AGENT_LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+            ("AGENT_LLM_ZDR_ONLY", "false"),
+            ("AGENT_LLM_ALLOWED_PROVIDERS", ""),
+            ("AGENT_LLM_ZDR_VERIFIED_PROVIDERS", ""),
+            ("AGENT_LLM_ZDR_VERIFIED_MODELS", ""),
+        ):
+            spec = specs.get(key, Field(key, key, default))
+            path = catalog.get(key, {}).get("path")
+            setting_value = backend.value(spec)
+            if path:
+                target = values
+                parts = path.split(".")
+                for part in parts[:-1]:
+                    target = target.setdefault(part, {})
+                target[parts[-1]] = setting_value
+            else:
+                llm[key.removeprefix("AGENT_LLM_").lower()] = setting_value
+        return discover_models(AppConfig(values))
 
     def _configuration_draft(self, payload):
         backend = self.backend()
@@ -1401,6 +1437,7 @@ def create_app(root, token, service=None):
                 "configuration.structured", "configuration.sections",
                 "configuration.activation",
                 "configuration.model-settings",
+                "configuration.model-catalog",
                 "operations.lookup",
                 "configuration.check", "services.read", "services.logs", "services.lifecycle",
                 "credentials.read", "credentials.write", "credentials.storage", "records.read", "records.mutate", "projects.manage",
@@ -1431,6 +1468,15 @@ def create_app(root, token, service=None):
     @app.get("/v2/configuration/model-settings", response_model=ModelSettingsResponse)
     def model_settings_v2():
         return service.model_settings()
+
+    @app.get("/v2/configuration/models")
+    def model_catalog_v2():
+        from .llm_catalog import ModelCatalogError
+
+        try:
+            return service.model_catalog()
+        except (ModelCatalogError, ValueError) as exc:
+            raise PublicSetupError(str(exc)) from exc
 
     @app.get("/v2/configuration/instructions")
     def instructions_v2():

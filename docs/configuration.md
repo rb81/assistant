@@ -86,6 +86,7 @@ enabling email intake or outbound email. See
 - [Telegram and voice](telegram-and-voice.md)
 - [Memory and embeddings](memory-system.md)
 - [OpenRouter](openrouter.md)
+- [Native model providers](model-providers.md)
 
 Older schema/layout installations may need the separate
 [layout transition release](https://github.com/rb81/assistant/releases/tag/layout-transition)

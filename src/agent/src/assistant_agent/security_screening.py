@@ -22,7 +22,7 @@ from typing import Any, Optional
 from .config import AppConfig, app_display_name, app_referer_url
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
-from .openrouter_policy import apply_routing_policy
+from .openrouter_policy import apply_routing_policy, require_zdr_eligibility
 
 
 LOGGER = logging.getLogger("assistant.security_screening")
@@ -215,11 +215,21 @@ class DecisionClient:
         self.api_key = api_key or read_secret(secret)
         if not self.api_key:
             raise DecisionError("%s is not configured" % secret)
+        if provider != "openrouter":
+            try:
+                require_zdr_eligibility(config, provider, self.model)
+            except ValueError as exc:
+                raise DecisionError(str(exc)) from exc
         self.timeout = max(1, config.get_int("agent.security.decision_model.timeout_seconds", 20))
 
     def decide(self, state: dict[str, Any], questions: list[Question]) -> dict[str, Answer]:
         body = self.translator.request(self.model, state, questions)
         apply_routing_policy(self.config, self.url, body)
+        if self.provider != "openrouter":
+            try:
+                require_zdr_eligibility(self.config, self.provider, self.model)
+            except ValueError as exc:
+                raise DecisionError(str(exc)) from exc
         payload = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + self.api_key}
         if self.provider == "openrouter":

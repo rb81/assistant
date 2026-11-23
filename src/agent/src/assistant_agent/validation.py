@@ -5,6 +5,8 @@ from typing import Any
 from .config import AppConfig, agent_email, database_url
 from .time_utils import default_timezone
 from .secret_store import read_secret
+from .llm_providers import PROVIDER_CREDENTIALS, provider_for
+from .openrouter_policy import require_zdr_eligibility
 
 
 EXAMPLE_VALUES = {
@@ -44,12 +46,13 @@ def is_set(value: Any) -> bool:
     return bool(text) and text not in EXAMPLE_VALUES
 
 
-def has_model_api_key() -> bool:
-    return is_set(read_secret("AGENT_LLM_OPENROUTER_API_KEY")) or is_set(read_secret("AGENT_LLM_OPENAI_API_KEY"))
+def has_model_api_key(config: AppConfig) -> bool:
+    provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
+    return is_set(read_secret(PROVIDER_CREDENTIALS[provider]))
 
 
 def uses_openrouter(config: AppConfig) -> bool:
-    return "openrouter.ai" in str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")).lower()
+    return provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))) == "openrouter"
 
 
 def openrouter_configured(config: AppConfig) -> bool:
@@ -188,11 +191,24 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
     if model_required and uses_openrouter(config) and not openrouter_configured(config):
         errors.append("%s uses OpenRouter and requires AGENT_LLM_OPENROUTER_API_KEY" % role)
 
-    if model_required and not uses_openrouter(config) and not has_model_api_key():
-        errors.append("%s requires AGENT_LLM_OPENROUTER_API_KEY or AGENT_LLM_OPENAI_API_KEY" % role)
+    if model_required:
+        provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
+        credential_name = PROVIDER_CREDENTIALS[provider]
+        if not is_set(read_secret(credential_name)):
+            errors.append("%s requires %s for the selected %s provider" % (role, credential_name, provider))
 
     if model_required and not is_set(config.get("agent.llm.model")):
         errors.append("%s requires agent.llm.model" % role)
+    if model_required and config.get_bool("agent.llm.zdr_only", False):
+        models = [config.get("agent.llm.model"), config.get("agent.llm.fallback_model")]
+        for model in models:
+            if not model:
+                continue
+            try:
+                provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
+                require_zdr_eligibility(config, provider, str(model))
+            except ValueError as exc:
+                errors.append("%s" % exc)
 
     if role in ("task-agent", "all") and config.get_bool("agent.search.enabled", True) and not search_configured(config):
         errors.append("Web search is enabled but no search provider is available")
@@ -373,7 +389,7 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
             "internal_email_domains": config.get_list("agent.org.internal_email_domains"),
         },
         "llm": {
-            "available": has_model_api_key(),
+            "available": has_model_api_key(config),
             "model": config.get("agent.llm.model"),
             "base_url": config.get("agent.llm.base_url"),
             "uses_openrouter": uses_openrouter(config),

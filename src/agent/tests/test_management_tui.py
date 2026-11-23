@@ -410,7 +410,7 @@ def test_every_checkbox_can_be_toggled_and_left_with_arrows_or_tab():
     async def scenario(root):
         async with running(root) as (ui, pipe):
             ui.app.output.size = Size(rows=24, columns=76)
-            for group, (_, specs) in GROUPS.items():
+            for group, (_, specs) in ui.groups.items():
                 booleans = [spec for spec in specs if spec.boolean]
                 if not booleans:
                     continue
@@ -614,6 +614,7 @@ def test_first_run_native_forms_review_and_confirm_save_persist_without_running_
             ui.go("Form:models")
             ui.form["AGENT_LLM_MODEL"].text = "chosen-model"
             ui.form["AGENT_LLM_OPENROUTER_API_KEY"].text = "PRIVATE-MODEL-KEY"
+            ui.go("Form:catalog:database")
             ui.app.layout.focus(next(action.window for action in ui.actions
                                      if action.label == "Generate secure database password"))
             pipe.send_text("\r")
@@ -1105,7 +1106,7 @@ def test_fast_keyboard_navigation_uses_the_new_screen_without_waiting_for_a_redr
 def test_discarding_model_form_also_discards_its_generated_password():
     async def scenario(root):
         async with running(root) as (ui, pipe):
-            ui.go("Form:models")
+            ui.go("Form:catalog:database")
             ui.generate_password()
             await wait_for(lambda: not ui.busy)
             assert ui.form["AGENT_DATABASE_PASSWORD"].text
@@ -1220,7 +1221,7 @@ def test_every_screen_and_form_renders_at_minimum_size_with_reachable_controls()
                 "Instructions", "Review", "Storage", "Search", "Credentials", "Pending deletions",
                 "Tasks", "Memories", "Reminders", "Projects", "Scripts",
             )]
-            routes += [("Form:" + group, None) for group in GROUPS]
+            routes += [("Form:" + group, None) for group in ui.groups]
             routes += [("Connection:" + group, None) for group in
                        ("email", "telegram", "calendar", "zoom", "dropbox", "transcription")]
             routes += [("Service", service), ("Logs", service), ("Events", row), ("Objects", row)]
@@ -1248,7 +1249,7 @@ def test_every_screen_and_form_renders_at_minimum_size_with_reachable_controls()
                         assert "About:" in screen and "[F1]" in screen, (route, screen)
                         assert action.help_text, (route, action.label)
                     if ui.form and ui.form_group != "instructions":
-                        for spec in GROUPS[ui.form_group][1]:
+                        for spec in ui.groups[ui.form_group][1]:
                             ui.app.layout.focus(ui.form[spec.key])
                             assert ui.context_topic() == (spec.label, field_help(spec)), (route, spec.key)
                     if ui.form:
@@ -1314,7 +1315,7 @@ def test_context_help_changes_with_keyboard_focus_and_f1_preserves_edits_at_mini
 def test_context_help_explains_every_field_and_keeps_secret_values_out_of_help():
     async def scenario(root):
         async with running(root) as (ui, pipe):
-            for group, (_, specs) in GROUPS.items():
+            for group, (_, specs) in ui.groups.items():
                 ui.go("Form:" + group)
                 for spec in specs:
                     widget = ui.form[spec.key]

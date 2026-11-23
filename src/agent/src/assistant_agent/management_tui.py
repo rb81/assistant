@@ -1342,7 +1342,8 @@ class ManagementApp:
             items.append(self.action("Hide advanced controls" if advanced else "Show advanced controls",
                                      partial(self.toggle_advanced, key),
                                      help_text="Show or hide technical controls for this page. Draft values are preserved."))
-        if not only and key == "models" and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
+        has_database_password = any(spec.key == "AGENT_DATABASE_PASSWORD" for spec in self.groups[key][1])
+        if not only and has_database_password and not self.backend.installation.secret_values.get("AGENT_DATABASE_PASSWORD"):
             items.insert(0, self.action("Generate secure database password", self.generate_password))
         group_help = getattr(self.backend, "group_metadata", {}).get(key, {}).get("help")
         self.put(title, group_help or page_help("Form:" + key),
@@ -1363,6 +1364,8 @@ class ManagementApp:
         self.render()
 
     def generate_password(self):
+        if "AGENT_DATABASE_PASSWORD" not in self.form:
+            return
         widget = self.form["AGENT_DATABASE_PASSWORD"]
         def loaded(password):
             widget.text = password

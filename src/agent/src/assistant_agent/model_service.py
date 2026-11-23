@@ -15,7 +15,7 @@ from .config import app_display_name, app_referer_url
 from .model_resources import ModelServiceError, ModelToolResources, ProviderRejected, validate_media
 from .secret_store import read_secret
 from .transport_security import open_https_request
-from .openrouter_policy import apply_routing_policy, require_zdr
+from .openrouter_policy import apply_routing_policy, require_zdr, require_zdr_eligibility
 
 
 BASE_URL = "https://openrouter.ai/api/v1"
@@ -37,12 +37,15 @@ class OpenRouterModels:
     def __init__(self, config):
         self.config = config
 
-    def request(self, path, payload=None):
+    def request(self, path, payload=None, *, scoped_zdr=False):
         key = read_secret("AGENT_LLM_OPENROUTER_API_KEY")
         if not key:
             raise ModelServiceError("AGENT_LLM_OPENROUTER_API_KEY is required for the model service")
         if payload is not None:
-            apply_routing_policy(self.config, BASE_URL, payload)
+            apply_routing_policy(self.config, BASE_URL, payload, scoped_zdr=scoped_zdr)
+            if require_zdr(self.config, scoped=scoped_zdr):
+                require_zdr_eligibility(self.config, "openrouter", str(payload.get("model") or ""),
+                                        scoped=scoped_zdr)
         return urllib.request.Request(
             BASE_URL + path,
             data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
@@ -59,28 +62,36 @@ class OpenRouterModels:
         if zdr_only is None:
             zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
         zdr_only = require_zdr(self.config, scoped=zdr_only)
+        if zdr_only and "openrouter" not in self.config.get_list("agent.llm.zdr_verified_providers"):
+            raise ModelServiceError(
+                "OpenRouter account retention controls must be verified and listed in AGENT_LLM_ZDR_VERIFIED_PROVIDERS"
+            )
         with _catalog_lock:
             cached = _catalog.get(zdr_only)
             if cached and time.monotonic() - cached[0] < 300:
-                return cached[1]
-            path = "/models?output_modalities=all"
-            if zdr_only:
-                path += "&zdr=true"
-            try:
-                with open_https_request(self.request(path), timeout=30) as response:
-                    data = self.read_json(response)
-            except urllib.error.HTTPError as exc:
-                raise ModelServiceError("OpenRouter model discovery failed (HTTP %s)" % exc.code) from exc
-            except (urllib.error.URLError, OSError) as exc:
-                raise ModelServiceError("OpenRouter model discovery failed: %s" % exc) from exc
-            models = data.get("data")
-            if not isinstance(models, list) or (not models and not zdr_only) or any(
-                not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
-                for model in models
-            ):
-                raise ModelServiceError("OpenRouter returned an invalid model catalog")
-            _catalog[zdr_only] = (time.monotonic(), models)
-            return models
+                models = cached[1]
+            else:
+                path = "/models?output_modalities=all"
+                if zdr_only:
+                    path += "&zdr=true"
+                try:
+                    with open_https_request(self.request(path), timeout=30) as response:
+                        data = self.read_json(response)
+                except urllib.error.HTTPError as exc:
+                    raise ModelServiceError("OpenRouter model discovery failed (HTTP %s)" % exc.code) from exc
+                except (urllib.error.URLError, OSError) as exc:
+                    raise ModelServiceError("OpenRouter model discovery failed: %s" % exc) from exc
+                models = data.get("data")
+                if not isinstance(models, list) or (not models and not zdr_only) or any(
+                    not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
+                    for model in models
+                ):
+                    raise ModelServiceError("OpenRouter returned an invalid model catalog")
+                _catalog[zdr_only] = (time.monotonic(), models)
+        if zdr_only:
+            eligible = set(self.config.get_list("agent.llm.zdr_verified_models"))
+            models = [model for model in models if "openrouter:" + model["id"] in eligible]
+        return models
 
     @staticmethod
     def read_json(response):
@@ -95,9 +106,9 @@ class OpenRouterModels:
             raise ModelServiceError("OpenRouter response must be an object")
         return data
 
-    def complete(self, payload):
+    def complete(self, payload, *, scoped_zdr=False):
         try:
-            with open_https_request(self.request("/chat/completions", payload), timeout=180) as response:
+            with open_https_request(self.request("/chat/completions", payload, scoped_zdr=scoped_zdr), timeout=180) as response:
                 if payload.get("stream"):
                     return self.read_stream(response)
                 return self.read_json(response)
@@ -399,7 +410,9 @@ class ModelService(ModelToolResources):
         self.attach_files(request["messages"], files, model)
         call_id = self.reserve(preset)
         try:
-            response = self.client.complete(request)
+            response = self.client.complete(
+                request, scoped_zdr=self.config.get_bool("agent.model_service.zdr_only", False)
+            )
         except ProviderRejected:
             self.settle(call_id, "failed", {"cost": 0})
             raise
