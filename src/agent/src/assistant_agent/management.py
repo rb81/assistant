@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import AppConfig
+from .llm_providers import PROVIDER_CREDENTIALS
 from .management_errors import ApprovalApplicationIncomplete, PERMISSION_ACTIVATION_ERROR
 from .secret_store import SECRET_NAMES
 from .setup import (
@@ -17,6 +18,10 @@ from .setup import (
     draft_problems, ensure_docker_access, installation_lock, read_regular, validate_secret,
 )
 DEFAULT_PATHS = {key: path for key, path, _ in ENV_OVERRIDES}
+PROVIDER_ENABLE_SETTINGS = {
+    "AGENT_PROVIDERS_%s_ENABLED" % provider.upper().replace("-", "_"): provider
+    for provider in PROVIDER_CREDENTIALS
+}
 SERVICE_NAMES = {
     "web-reader": "Managed web page reader",
     "web-reader-gateway": "Web page reader gateway",
@@ -177,6 +182,11 @@ class Management:
     def value(self, spec):
         if spec.secret:
             return ""
+        if spec.key in PROVIDER_ENABLE_SETTINGS:
+            disabled = self.value(Field("AGENT_PROVIDERS_DISABLED", "Provider availability"))
+            return str(PROVIDER_ENABLE_SETTINGS[spec.key] not in {
+                item.strip().lower() for item in disabled.split(",")
+            }).lower()
         if spec.key in self.values:
             if spec.boolean:
                 return str(AppConfig({"value": self.values[spec.key]}).get_bool("value")).lower()
@@ -201,8 +211,23 @@ class Management:
 
     def stage_fields(self, specs, values):
         changes = []
+        disabled_key = "AGENT_PROVIDERS_DISABLED"
+        original_disabled = self.value(Field(disabled_key, "Provider availability"))
+        original_list = AppConfig({"disabled": original_disabled.lower()}).get_list("disabled")
+        disabled = AppConfig({"disabled": values.get(disabled_key, original_disabled).lower()}).get_list("disabled")
         for spec in specs:
             value = values[spec.key] if spec.secret else values[spec.key].strip()
+            if spec.key == disabled_key:
+                continue
+            if spec.key in PROVIDER_ENABLE_SETTINGS:
+                if value not in {"true", "false"}:
+                    raise PublicSetupError("Provider Enabled controls must be true or false.")
+                provider = PROVIDER_ENABLE_SETTINGS[spec.key]
+                if value == "true":
+                    disabled = [item for item in disabled if item != provider]
+                elif provider not in disabled:
+                    disabled.append(provider)
+                continue
             if spec.secret:
                 if value:
                     validate_secret(spec.key, value)
@@ -212,6 +237,8 @@ class Management:
                 if self.installation.state.get("setup_complete") and not spec.secret and value == self.value(spec):
                     continue
                 changes.append((spec.secret, spec.key, value))
+        if disabled != original_list:
+            changes.append((False, disabled_key, ",".join(disabled)))
         for secret, key, value in changes:
             target = self.credentials if secret else self.values
             if target.get(key) != value:

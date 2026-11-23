@@ -28,6 +28,16 @@ from assistant_agent.secret_store import read_secret
 
 
 class ConfigTest(unittest.TestCase):
+    def test_enabling_last_disabled_provider_clears_legacy_yaml_default(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
+            config_file.write("agent:\n  providers:\n    disabled: [openai]\n")
+            config_file.flush()
+            with patch.dict(os.environ, {"AGENT_CONFIG": config_file.name}, clear=True):
+                self.assertEqual(load_config().get_list("agent.providers.disabled"), ["openai"])
+            with patch.dict(os.environ, {"AGENT_CONFIG": config_file.name,
+                                         "AGENT_PROVIDERS_DISABLED": ""}, clear=True):
+                self.assertEqual(load_config().get_list("agent.providers.disabled"), [])
+
     def test_new_admin_conversation_confirmation_environment_override(self):
         for enabled in ("true", "false"):
             with self.subTest(enabled=enabled), patch.dict(

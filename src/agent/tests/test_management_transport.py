@@ -157,6 +157,15 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.location.route = "Settings:knowledge"
             ui.render()
             assert {"Web search providers", "Web page reader"} <= {action.label for action in ui.actions}
+            ui.location.route = "Form:providers"
+            ui.render()
+            enable = ui.form["AGENT_PROVIDERS_GEMINI_ENABLED"]
+            assert enable.checked
+            assert enable.control in ui.control_topics
+            assert ui.form["AGENT_PROVIDERS_DISABLED"].control not in ui.control_topics
+            enable.checked = False
+            ui.keep_draft()
+            assert backend.payload()["values"]["AGENT_PROVIDERS_GEMINI_ENABLED"] == "false"
             ui.location.route = "Form:catalog:search"
             ui.render()
             preferred = ui.form["AGENT_SEARCH_PRIMARY_PROVIDER"]

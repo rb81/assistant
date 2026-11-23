@@ -158,10 +158,11 @@ settings:
     label: Verified ZDR models
     description: "Exact direct-provider model allowlist in provider:model format, such as openai:gpt-4.1. Required for direct providers in ZDR-only mode, not for OpenRouter. Verify model eligibility and provider account/privacy controls before adding entries."
   agent.providers.disabled:
+    hidden: true
     selection: multiple
     type: list
-    label: Disabled providers
-    description: "Provider IDs blocked for model requests and route fallbacks. Credentials are retained if a provider is disabled."
+    label: Provider availability
+    description: "Compatibility storage for disabled provider IDs. Use the Enabled toggle in each provider block. Disabled providers cannot serve model requests or fallbacks; their credentials are retained."
   agent.providers.priority:
     selection: ordered
     type: list

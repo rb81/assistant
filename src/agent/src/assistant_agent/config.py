@@ -86,7 +86,8 @@ def load_config() -> AppConfig:
                 _set_nested(values, path_name, None)
             elif env_name == "AGENT_SECURITY_DEVELOPMENT_MODEL":
                 _set_nested(values, path_name, "")
-            elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS", "AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS"}:
+            elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS",
+                              "AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS", "AGENT_PROVIDERS_DISABLED"}:
                 _set_nested(values, path_name, [])
             continue
         if caster is int:

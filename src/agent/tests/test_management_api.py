@@ -873,6 +873,48 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert settings["AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"]["metadata"]["section"] == "OpenAI Compatible"
     assert settings["AGENT_LLM_ZDR_VERIFIED_MODELS"]["metadata"]["selection"] == "multiple"
     assert settings["AGENT_MODEL_ROUTES_TASK_FALLBACKS"]["metadata"]["selection"] == "ordered"
+    assert settings["AGENT_PROVIDERS_DISABLED"]["metadata"]["hidden"] is True
+    for provider, section in {
+        "openrouter": "OpenRouter", "openai": "OpenAI", "anthropic": "Anthropic",
+        "gemini": "Gemini", "cloudflare": "Cloudflare", "openai-compatible": "OpenAI Compatible",
+    }.items():
+        control = settings["AGENT_PROVIDERS_" + provider.upper().replace("-", "_") + "_ENABLED"]
+        assert control["label"] == "Enabled" and control["boolean"]
+        assert control["metadata"]["section"] == section
+        assert control["metadata"]["provider_enablement"] == provider
+
+
+def test_provider_enable_controls_preserve_saved_state_credentials_and_runtime_policy(tmp_path):
+    from assistant_agent.llm_providers import provider_is_disabled
+    from test_management import configured
+
+    installation = configured(tmp_path)
+    installation.values["AGENT_PROVIDERS_DISABLED"] = "anthropic,openai"
+    installation.secret_values["AGENT_LLM_ANTHROPIC_API_KEY"] = "fixture-anthropic-key"
+    installation.save()
+    service = ManagementService(tmp_path)
+    try:
+        snapshot = service.configuration_v2(include_source=False, instructions=False)
+        settings = {item["key"]: item for item in snapshot["settings"]}
+        assert settings["AGENT_PROVIDERS_ANTHROPIC_ENABLED"]["value"] == "false"
+        assert settings["AGENT_PROVIDERS_OPENROUTER_ENABLED"]["value"] == "true"
+        changes = {
+            "AGENT_PROVIDERS_ANTHROPIC_ENABLED": "true",
+            "AGENT_PROVIDERS_GEMINI_ENABLED": "false",
+        }
+        draft, _, _ = service._configuration_draft({"revision": snapshot["revision"], "values": changes})
+        config = service._model_configuration(draft)
+        assert not provider_is_disabled(config, "anthropic")
+        assert provider_is_disabled(config, "gemini")
+        assert draft.values["AGENT_PROVIDERS_DISABLED"] == "openai,gemini"
+        assert not changes.keys() & draft.values.keys(), "Controls must not create parallel persisted policy"
+        assert draft.credentials == installation.secret_values
+        draft.save()
+        reopened = service.backend()
+        assert reopened.values["AGENT_PROVIDERS_DISABLED"] == "openai,gemini"
+        assert reopened.credentials == installation.secret_values
+    finally:
+        service.close()
 
 
 def test_setting_choices_are_authenticated_and_use_typed_responses(tmp_path):

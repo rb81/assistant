@@ -6,7 +6,7 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.llm_catalog import ModelCatalogError
 from assistant_agent.management_choices import provider_choices_metadata, setting_choices
-from assistant_agent.management_tui import ManagementApp, OptionField, SelectionField
+from assistant_agent.management_tui import ManagementApp, OptionField, SelectionField, checkbox_field
 
 
 def backend():
@@ -39,6 +39,31 @@ def test_provider_selectors_follow_saved_priority_without_changing_routes():
     metadata = provider_choices_metadata(item)
     assert metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["inherit", "openai", "openrouter"]
     assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openai", "openrouter", "anthropic"]
+
+
+def test_terminal_provider_toggle_updates_draft_selectors_without_losing_saved_selection():
+    enabled = checkbox_field("Enabled", True)
+    selected = OptionField("openai", ["openai", "openrouter"])
+    ui = SimpleNamespace(
+        backend=SimpleNamespace(
+            values={"AGENT_PROVIDERS_OPENROUTER_ENABLED": "true"},
+            field_metadata={
+                "AGENT_PROVIDERS_PRIORITY": {"choices": ["openai", "openrouter"]},
+                "AGENT_PROVIDERS_OPENAI_ENABLED": {"provider_enablement": "openai"},
+                "AGENT_PROVIDERS_OPENROUTER_ENABLED": {"provider_enablement": "openrouter"},
+                "AGENT_LLM_PROVIDER": {"enum": ["auto", "openrouter", "openai"]},
+            }),
+        form={"AGENT_PROVIDERS_OPENAI_ENABLED": enabled, "AGENT_LLM_PROVIDER": selected},
+    )
+    ManagementApp.refresh_provider_choices(ui)
+    assert selected.available_choices == ["auto", "openai", "openrouter"]
+    enabled.checked = False
+    ManagementApp.refresh_provider_choices(ui)
+    assert selected.available_choices == ["auto", "openrouter"]
+    assert selected.text == "openai"
+    enabled.checked = True
+    ManagementApp.refresh_provider_choices(ui)
+    assert selected.available_choices == ["auto", "openai", "openrouter"]
 
 
 def test_cloudflare_attestation_choices_exclude_unsupported_partner_routes():

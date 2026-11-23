@@ -25,7 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .management import GROUPS, Field, Management
+from .management import GROUPS, PROVIDER_ENABLE_SETTINGS, Field, Management
 from .management_contracts import (
     ApprovalsResponse, ConfigurationCheckResponse, ConfigurationPreviewRequest, ConfigurationPreviewResponse,
     ConfigurationResponse, CredentialsResponse, CredentialStorageStatusResponse, FullConfigurationResponse, FullHealthResponse,
@@ -222,6 +222,8 @@ AI_PROVIDER_FIELDS = {
                    "AGENT_LLM_CLOUDFLARE_API_KEY"],
     "OpenAI Compatible": ["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"],
 }
+for key, provider in PROVIDER_ENABLE_SETTINGS.items():
+    AI_PROVIDER_FIELDS[AI_PROVIDERS[provider]].insert(0, key)
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
     "AGENT_SEARCH_PRIMARY_PROVIDER": ("openrouter", "exa"),
@@ -313,6 +315,9 @@ def setting_presentation(group, spec):
     label = re.sub(r" \((?:[a-z0-9]+(?:, | or ))+[a-z0-9]+\)$", "", label)
     normalized = re.sub(r"^(AGENT_CALENDAR_(?:GOOGLE|OUTLOOK|ZOHO))_[2-9]_", r"\1_", spec.key)
     explanation = FIELD_HELP.get(normalized) or (item.get("metadata") or {}).get("description")
+    if spec.key in PROVIDER_ENABLE_SETTINGS:
+        explanation = ("Allow this provider for model requests and fallbacks when its setup is complete. "
+                       "Turning it off keeps saved credentials. Review and apply changes to activate them.")
     if provider and explanation:
         # The provider is already clear from the section or account heading.
         explanation = re.sub(r"^(?:Google|Outlook|Zoho): ", "", explanation)
@@ -452,6 +457,7 @@ def configuration_groups():
                 retained.append(spec)
         specs[:] = retained
     provider_fields.extend(groups.pop("catalog:providers", ("", []))[1])
+    provider_fields.extend(Field(key, "Enabled", "true", boolean=True) for key in PROVIDER_ENABLE_SETTINGS)
     order = ["AGENT_LLM_PROVIDER", "AGENT_PROVIDERS_DISABLED", "AGENT_PROVIDERS_PRIORITY",
              *[key for keys in AI_PROVIDER_FIELDS.values() for key in keys], "AGENT_LLM_BASE_URL"]
     provider_fields.sort(key=lambda spec: order.index(spec.key) if spec.key in order else len(order))
@@ -659,6 +665,8 @@ class ManagementService:
                     **({"selection": "ordered", "choices_source": "route-models"}
                        if spec.key.startswith("AGENT_MODEL_ROUTES_") and spec.key.endswith("_FALLBACKS") else {}),
                     **provider_metadata.get(spec.key, {}),
+                    **({"provider_enablement": PROVIDER_ENABLE_SETTINGS[spec.key]}
+                       if spec.key in PROVIDER_ENABLE_SETTINGS else {}),
                     **({"level": "advanced"}
                        if spec.key == "AGENT_LLM_BASE_URL" else {}),
                     **({"choices": list(DEPLOYMENT_CHOICES[spec.key])} if spec.key in DEPLOYMENT_CHOICES else {}),

@@ -25,9 +25,15 @@ separate from OpenAI's; existing installations keep using their old saved key
 until a dedicated one is set. The legacy shared URL is an advanced migration
 setting, not a required setup step for native providers.
 
-Provider activation, selector ordering, hosting-provider restrictions and ZDR
-verification use selection lists in both clients, not comma-separated text
-editors. macOS lists are searchable; ordered selections have move controls.
+Each provider block has an **Enabled** toggle in both clients. On allows model
+requests and fallbacks once that provider's credentials and setup are complete;
+off blocks them without deleting credentials. Existing disabled-provider choices
+carry over automatically. Review, save, and apply changes as usual. Enabling a
+provider does not select it for any model route or bypass privacy requirements.
+
+Selector ordering, hosting-provider restrictions and ZDR verification use
+selection lists, not comma-separated text editors. macOS lists are searchable;
+ordered selections have move controls.
 In the terminal, use Space to select entries and Ctrl-Up / Ctrl-Down to reorder
 priority and fallback lists. Use **Load choices** after selecting a route's
 provider; **Keep draft** before moving between settings pages. Saved choices

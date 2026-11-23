@@ -482,8 +482,41 @@ def test_viewing_an_unchanged_form_does_not_create_a_dirty_draft_or_pin_defaults
         backend = management(root)
         before = dict(backend.values)
         backend.stage("email", {spec.key: backend.value(spec) for spec in GROUPS["email"][1]})
+        from assistant_agent.management_api import configuration_groups
+        specs = configuration_groups()["providers"][1]
+        backend.stage_fields(specs, {spec.key: backend.value(spec) for spec in specs})
         assert backend.values == before
         assert not backend.dirty
+
+
+def test_invalid_provider_enable_controls_do_not_partially_stage_changes(tmp_path):
+    from assistant_agent.management import Field
+
+    configured(tmp_path)
+    backend = management(tmp_path)
+    specs = [Field("AGENT_PROVIDERS_OPENAI_ENABLED", "Enabled", "true", boolean=True),
+             Field("AGENT_PROVIDERS_GEMINI_ENABLED", "Enabled", "true", boolean=True)]
+    before = dict(backend.values)
+    with pytest.raises(SetupError, match="true or false"):
+        backend.stage_fields(specs, {specs[0].key: "false", specs[1].key: "invalid"})
+    assert backend.values == before
+    assert not backend.dirty
+
+
+def test_provider_enable_controls_read_yaml_defaults_and_accept_legacy_writes(tmp_path):
+    from assistant_agent.management import Field
+
+    configured(tmp_path)
+    backend = management(tmp_path)
+    backend.installation.defaults = AppConfig({"agent": {"providers": {"disabled": ["openai"]}}})
+    enabled = Field("AGENT_PROVIDERS_OPENAI_ENABLED", "Enabled", "true", boolean=True)
+    storage = Field("AGENT_PROVIDERS_DISABLED", "Provider availability")
+    assert backend.value(enabled) == "false"
+    backend.stage_fields([enabled], {enabled.key: "true"})
+    assert backend.values[storage.key] == ""
+    assert backend.value(enabled) == "true"
+    backend.stage_fields([storage], {storage.key: "openai"})
+    assert backend.value(enabled) == "false"
 
 
 def test_editing_unrelated_settings_preserves_existing_profiles_until_explicitly_disabled():

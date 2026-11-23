@@ -120,11 +120,13 @@ def input_field(value="", *, password=False, multiline=False, height=1, scrollba
     return widget
 
 
-def checkbox_field(label, checked):
+def checkbox_field(label, checked, *, on_change=None):
     widget = Checkbox(label, checked=checked)
     bindings = KeyBindings()
     def toggle(event):
         widget.checked = not widget.checked
+        if on_change:
+            on_change()
     bindings.add(" ")(toggle)
     bindings.add("enter")(toggle)
     widget.control.key_bindings = bindings
@@ -1529,7 +1531,9 @@ class ManagementApp:
                 value = self.backend.value(spec)
                 choices = metadata.get("choices", metadata.get("enum", []))
                 if spec.boolean:
-                    widget = checkbox_field(spec.label, value.lower() == "true")
+                    widget = checkbox_field(
+                        spec.label, value.lower() == "true",
+                        on_change=self.refresh_provider_choices if metadata.get("provider_enablement") else None)
                 elif not spec.secret and metadata.get("selection") in {"multiple", "ordered"}:
                     widget = SelectionField(value, choices, metadata.get("choice_labels"),
                                             ordered=metadata["selection"] == "ordered")
@@ -1539,6 +1543,7 @@ class ManagementApp:
                 else:
                     widget = input_field(value, password=spec.secret)
                 self.form[spec.key] = widget
+            self.refresh_provider_choices()
         items = []
         advanced = key in self.advanced_forms
         has_advanced = False
@@ -1550,6 +1555,8 @@ class ManagementApp:
                 items.extend([text(spec.label + " (read only)"), text(restriction, height=2), text()])
                 continue
             metadata = getattr(self.backend, "field_metadata", {}).get(spec.key, {})
+            if metadata.get("hidden"):
+                continue
             if not only and isinstance(self.backend, ApiManagementBackend) and metadata.get("level") == "advanced":
                 has_advanced = True
                 if not advanced:
@@ -1602,6 +1609,26 @@ class ManagementApp:
         visible = [widget for widget in self.form.values() if widget in items]
         if visible:
             self.app.layout.focus(visible[0])
+
+    def refresh_provider_choices(self):
+        metadata = getattr(self.backend, "field_metadata", {})
+        configured = metadata.get("AGENT_PROVIDERS_PRIORITY", {}).get("choices", [])
+        controls = {key: item["provider_enablement"] for key, item in metadata.items()
+                    if item.get("provider_enablement")}
+        if not controls:
+            return
+        disabled = {provider for key, provider in controls.items()
+                    if not (self.form[key].checked if key in self.form else self.backend.values.get(key) == "true")}
+        for key, item in metadata.items():
+            if key != "AGENT_LLM_PROVIDER" and not (
+                    key.startswith("AGENT_MODEL_ROUTES_") and key.endswith("_PROVIDER")):
+                continue
+            choices = [value for value in ("auto", "inherit", *configured)
+                       if value in item.get("enum", []) and value not in disabled]
+            item["choices"] = choices
+            widget = self.form.get(key)
+            if isinstance(widget, OptionField):
+                widget.set_choices(choices)
 
     def clear_dependent_choices(self, provider_key):
         for key, metadata in getattr(self.backend, "field_metadata", {}).items():
