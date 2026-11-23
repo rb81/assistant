@@ -12,7 +12,7 @@ from .config import AppConfig
 from .llm_providers import (
     PROVIDER_CREDENTIALS, provider_base_url, provider_for, provider_is_disabled,
 )
-from .openrouter_policy import is_openrouter_url, require_zdr
+from .openrouter_policy import SAFETY_RETENTION_WARNING, is_openrouter_url, require_zdr
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
 
@@ -146,7 +146,7 @@ def discover_models(config: AppConfig, provider_id=None):
             "provider": provider,
             "models": [{"id": model["id"], "name": model.get("name") or model["id"]} for model in models],
             "zdr_only": zdr,
-            "warning": "OpenRouter Safety Retention endpoints require a separate account policy or guardrail.",
+            "warning": SAFETY_RETENTION_WARNING,
         }
 
     zdr = require_zdr(config)

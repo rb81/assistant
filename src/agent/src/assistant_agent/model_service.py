@@ -69,10 +69,6 @@ class OpenRouterModels:
         if zdr_only is None:
             zdr_only = self.config.get_bool("agent.model_service.zdr_only", False)
         zdr_only = require_zdr(self.config, scoped=zdr_only)
-        if zdr_only and "openrouter" not in self.config.get_list("agent.llm.zdr_verified_providers"):
-            raise ModelServiceError(
-                "OpenRouter account retention controls must be verified and listed in AGENT_LLM_ZDR_VERIFIED_PROVIDERS"
-            )
         with _catalog_lock:
             cached = _catalog.get(zdr_only)
             if cached and time.monotonic() - cached[0] < 300:
@@ -95,9 +91,6 @@ class OpenRouterModels:
                 ):
                     raise ModelServiceError("OpenRouter returned an invalid model catalog")
                 _catalog[zdr_only] = (time.monotonic(), models)
-        if zdr_only:
-            eligible = set(self.config.get_list("agent.llm.zdr_verified_models"))
-            models = [model for model in models if "openrouter:" + model["id"] in eligible]
         return models
 
     @staticmethod

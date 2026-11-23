@@ -35,6 +35,23 @@ def test_native_model_discovery_uses_server_credentials_and_filters_strict_allow
     assert result["zdr_only"] is True
 
 
+def test_openrouter_discovery_warns_without_attestations_or_hiding_zdr_models(monkeypatch):
+    monkeypatch.setattr("assistant_agent.model_service._catalog", {})
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps({
+        "data": [{"id": "example/model"}],
+    }).encode()
+    with patch("assistant_agent.model_service.read_secret", return_value="fixture-key"), \
+            patch("assistant_agent.model_service.open_https_request", return_value=response) as send:
+        result = discover_models(catalog_config(
+            provider="openrouter", base_url="https://openrouter.ai/api/v1", zdr_only=True,
+        ))
+    assert result["models"] == [{"id": "example/model", "name": "example/model"}]
+    assert "zdr=true" in send.call_args.args[0].full_url
+    assert "Safety Retention" in result["warning"]
+    assert "does not block" in result["warning"]
+
+
 def test_strict_model_discovery_rejects_unverified_and_non_zdr_providers():
     with pytest.raises(ModelCatalogError, match="does not provide strict"):
         discover_models(catalog_config(

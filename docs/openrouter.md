@@ -23,19 +23,23 @@ OpenRouter requests include `Authorization: Bearer ...`, `HTTP-Referer` from
 
 ## OpenRouter ZDR routing
 
-Enable **Require Zero Data Retention on OpenRouter** in model settings
+Enable **Require Zero Data Retention routing** in Providers & Privacy
 (`agent.llm.zdr_only` / `AGENT_LLM_ZDR_ONLY`, default `false`) to add
 `"provider": {"zdr": true}` to requests sent to OpenRouter. The generalized
-`AGENT_LLM_ZDR_ONLY` policy also requires a verified provider account and exact
-model allowlist across eligible native providers, task fallbacks, and separate
-model paths. An unavailable or unverified route fails rather than falling back
-to unrestricted routing. Stricter preset/speech policies are not relaxed.
+`AGENT_LLM_ZDR_ONLY` policy requires verified accounts and exact model allowlists
+for direct native providers. OpenRouter uses its own ZDR routing and filtered
+model catalog; no manual provider or model attestation is required for OpenRouter,
+including fallbacks, model tools, speech and screening. Unavailable ZDR routes
+fail rather than falling back to unrestricted routing. Stricter preset/speech
+policies are not relaxed.
 
 OpenRouter's ZDR routing can include **Safety Retention** endpoints if permitted
 by the account's privacy settings and guardrails. These endpoints may retain
 prompts and responses for abuse prevention. For strict ZDR, select **ZDR only**
 for both Google and other models in OpenRouter's privacy settings or an
-applicable guardrail. Assistant does not verify those settings. OpenRouter's hosted tools and plugins,
+applicable guardrail. Assistant does not verify those settings. This caveat is
+advisory: it surfaces warnings, not installation, startup, or usage errors.
+OpenRouter's hosted tools and plugins,
 including web search, have separate retention
 policies and are not covered by its inference ZDR routing.
 See [OpenRouter's ZDR documentation](https://openrouter.ai/docs/guides/features/zdr).

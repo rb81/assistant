@@ -621,6 +621,21 @@ with tempfile.TemporaryDirectory() as root:
         instance.save()
         return instance
 
+    def test_openrouter_zdr_setup_needs_no_safety_retention_attestations(self):
+        from assistant_agent.setup import draft_problems
+
+        with tempfile.TemporaryDirectory() as root:
+            instance = self.saved_configuration(root)
+            instance.values.update({
+                "AGENT_LLM_ZDR_ONLY": "true",
+                "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "",
+                "AGENT_LLM_ZDR_VERIFIED_MODELS": "",
+                "AGENT_TTS_ENABLED": "true",
+                "AGENT_SECURITY_DECISION_MODEL_ENABLED": "true",
+                "AGENT_SECURITY_DECISION_MODEL_PROVIDER": "openrouter",
+            })
+            self.assertEqual(draft_problems(instance), [])
+
     def test_existing_configuration_picker_retains_unedited_settings_and_pending_secrets(self):
         import questionary
         with tempfile.TemporaryDirectory() as root:

@@ -84,6 +84,12 @@ def run_role(role: str) -> None:
             LOGGER.error("configuration error: %s", error)
         raise SystemExit(78)
 
+    if (config.get_bool("agent.llm.zdr_only", False)
+            or config.get_bool("agent.model_service.zdr_only", False)
+            or config.get_bool("agent.tts.zdr_only", False)):
+        from .openrouter_policy import SAFETY_RETENTION_WARNING
+        LOGGER.warning("%s", SAFETY_RETENTION_WARNING)
+
     if role in ("downloader", "all") and config.get_bool("agent.security.email_authentication.enabled", True):
         from .email_authentication import admin_domain_warning
         warning = admin_domain_warning(config)

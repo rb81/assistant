@@ -415,8 +415,6 @@ def test_zdr_catalog_cache_is_separate_and_retains_audio_metadata(monkeypatch):
     all_models = OpenRouterModels(AppConfig({}))
     zdr_models = OpenRouterModels(AppConfig({"agent": {
         "model_service": {"zdr_only": True},
-        "llm": {"zdr_verified_providers": ["openrouter"],
-               "zdr_verified_models": ["openrouter:test/audio"]},
     }}))
     with patch("assistant_agent.model_service.open_https_request", side_effect=[
         io.BytesIO(json.dumps({"data": MODELS}).encode()),

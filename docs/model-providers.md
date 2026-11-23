@@ -37,19 +37,22 @@ services, and decision-model screening uses its own supported provider list.
 
 ## Strict Zero Data Retention
 
-`AGENT_LLM_ZDR_ONLY=true` applies a fail-closed policy to every routed model
-request and its fallback candidates. Set `AGENT_LLM_ZDR_VERIFIED_PROVIDERS` to
-the provider accounts whose retention controls you verified, and
-`AGENT_LLM_ZDR_VERIFIED_MODELS` to exact `provider:model` entries. These are
-administrator attestations; Assistant cannot inspect provider account settings.
-Unverified routes and models are blocked before a request is sent. The same
-policy is checked on separate model paths, including OpenRouter model tools,
-speech, and screening. Provider-specific ZDR controls can only make this policy
-stricter.
+`AGENT_LLM_ZDR_ONLY=true` applies ZDR routing to every routed model
+request and its fallback candidates. For direct providers, set
+`AGENT_LLM_ZDR_VERIFIED_PROVIDERS` to the accounts whose retention controls you
+verified, and `AGENT_LLM_ZDR_VERIFIED_MODELS` to exact `provider:model` entries.
+These are administrator attestations; Assistant cannot inspect provider account settings.
+Unverified direct-provider routes and models are blocked before a request is
+sent. ZDR routing is also applied on separate model paths, including OpenRouter
+model tools, speech, and screening. Provider-specific ZDR controls can only
+make this policy stricter.
 
-- **OpenRouter:** also set the account's ZDR privacy control or a guardrail to
-  exclude Safety Retention endpoints. `provider.zdr=true` alone can permit
-  those endpoints. Hosted tools have separate retention policies.
+- **OpenRouter:** uses `provider.zdr=true` and OpenRouter's ZDR-filtered model
+  catalog without manual verification allowlists. Safety Retention endpoints
+  may still be permitted by account privacy settings or a guardrail. Review
+  those controls to exclude Safety Retention if desired. This caveat is
+  warning-only and does not block installation, startup, model discovery or
+  usage. Hosted tools have separate retention policies.
 - **OpenAI and Anthropic:** verify ZDR is enabled for the account and that each
   selected model is eligible. OpenAI requests set `store: false`; that request
   option does not establish account-level ZDR.

@@ -10,8 +10,8 @@ GROUP_HELP = {
     "providers": "Configure provider credentials, disable providers, and order them in provider selectors. "
                  "Choose an explicit provider and model for each route; use provider:model fallbacks to define "
                  "cross-provider recovery.",
-    "provider-privacy": "Apply one strict Zero Data Retention policy to all model routes. Provider account and exact "
-                        "model eligibility must be verified; some provider controls remain account-level.",
+    "provider-privacy": "Apply Zero Data Retention routing across model routes. Direct providers require verified "
+                        "accounts and exact models. OpenRouter Safety Retention is an advisory account-level warning.",
     "email": "Connect a dedicated assistant mailbox for receiving requests and sending replies. "
              "Intake can move existing messages into archive or quarantine folders. Do not use your personal inbox.",
     "telegram": "Connect a Telegram bot and restrict who may use it. Numeric user IDs control access; "
@@ -399,16 +399,18 @@ FIELD_HELP = {
                       "on OpenRouter. It must be available to your configured provider account.",
     "AGENT_LLM_FALLBACK_MODEL": "Alternative model used when the primary model cannot complete a request. "
                                "Choose one available through the same provider endpoint.",
-    "AGENT_LLM_ZDR_ONLY": "Fail closed unless the provider account and exact model are listed in the verified ZDR "
-                          "allowlists. Gemini Developer API and custom OpenAI-compatible routes are blocked. "
-                          "OpenRouter Safety Retention endpoints must be excluded in privacy settings or a guardrail. "
+    "AGENT_LLM_ZDR_ONLY": "Use OpenRouter's ZDR routing without manual verification allowlists. Safety Retention "
+                          "may still be permitted by account privacy settings or a guardrail; this warning does not "
+                          "block installation, startup or usage. Direct providers require verified accounts and models. "
+                          "Gemini Developer API and custom OpenAI-compatible routes are blocked. "
                           "Hosted tools have separate data policies; other providers may have additional eligibility limits.",
     "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "Comma-separated provider accounts whose retention controls you verified "
-                                        "(openrouter, openai, anthropic, cloudflare). This is an administrator "
-                                        "attestation; account settings cannot be inspected by this app. For Cloudflare, "
+                                        "(openai, anthropic, cloudflare). OpenRouter does not require an entry. "
+                                        "This is an administrator attestation; account settings cannot be inspected by this app. For Cloudflare, "
                                         "verify AI Gateway logging, caching and Logpush settings.",
     "AGENT_LLM_ZDR_VERIFIED_MODELS": "Exact model allowlist in provider:model format, for example openai:gpt-4.1. "
-                                     "Only add models whose ZDR eligibility you verified for the configured account.",
+                                     "Required for direct providers, not OpenRouter. Only add models whose ZDR "
+                                     "eligibility you verified for the configured account.",
     "AGENT_LLM_OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
                           "Create it in your provider account; set account-level spending limits there.",
     "AGENT_LLM_OPENAI_API_KEY": "Credential for a non-OpenRouter OpenAI-compatible provider. It must match your Provider API URL.",

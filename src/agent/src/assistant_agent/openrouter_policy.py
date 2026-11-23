@@ -4,6 +4,11 @@ from urllib.parse import urlsplit
 
 
 _PROVIDER_SLUG = re.compile(r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?")
+SAFETY_RETENTION_WARNING = (
+    "OpenRouter ZDR routing may include Safety Retention endpoints depending on account "
+    "privacy settings or a guardrail. Review those settings to exclude Safety Retention. "
+    "Assistant cannot verify them; this warning does not block startup or requests."
+)
 
 
 def valid_provider_slugs(providers: list[str]) -> bool:
@@ -20,12 +25,14 @@ def require_zdr(config, *, scoped=False) -> bool:
 
 
 def require_zdr_eligibility(config, provider: str, model: str, *, scoped=False) -> None:
-    """Fail closed unless an administrator has verified both provider policy and exact model."""
+    """Use OpenRouter's routing enforcement; require attestations for eligible direct providers."""
     if not require_zdr(config, scoped=scoped):
+        return
+    if provider == "openrouter":
         return
     if provider == "gemini":
         raise ValueError("Gemini Developer API does not provide strict zero data retention")
-    if provider not in {"openrouter", "openai", "anthropic", "cloudflare"}:
+    if provider not in {"openai", "anthropic", "cloudflare"}:
         raise ValueError("Provider %s is not verified for strict zero data retention" % provider)
     verified_providers = config.get_list("agent.llm.zdr_verified_providers")
     verified_models = config.get_list("agent.llm.zdr_verified_models")
@@ -71,5 +78,5 @@ def apply_routing_policy(config, url: str, payload: dict, *, scoped_zdr=False) -
             if not providers:
                 raise ValueError("OpenRouter provider restrictions conflict; update the configured providers")
         policy["only"] = providers
-    if require_zdr(config):
+    if require_zdr(config, scoped=scoped_zdr):
         payload.setdefault("provider", {})["zdr"] = True
