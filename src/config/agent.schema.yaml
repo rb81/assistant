@@ -41,6 +41,8 @@ model_sections:
       - agent.limits.summarization_max_input_chars
       - agent.limits.limit_approach_factor
       - agent.limits.rate_limit_backoff_seconds
+      - agent.limits.repeated_tool_result_limit
+      - agent.limits.incomplete_response_limit
       - agent.model_routes.summarization.
     summary: [agent.limits.summarization_model]
     selectors: [agent.model_routes.summarization.provider, agent.limits.summarization_model,
@@ -121,6 +123,63 @@ model_sections:
     enabled: agent.model_service.enabled
     provider_url: https://openrouter.ai/api/v1
 settings:
+  agent.naming.max_tokens_per_call:
+    label: Naming output tokens
+    minimum: 64
+    maximum: 131072
+    description: Total output capacity for titles and short email summaries, including any reasoning.
+  agent.routing.max_tokens_per_call:
+    label: Routing output tokens
+    minimum: 64
+    maximum: 131072
+    description: Total output capacity for request classification, including any reasoning.
+  agent.llm.reasoning.mode: &reasoning_mode
+    label: Reasoning policy
+    enum: [auto, provider_default, "off", effort, budget]
+    choice_labels:
+      auto: Auto (low when advertised)
+      provider_default: Provider default
+      "off": Off (when supported)
+      effort: Selected effort
+      budget: Thinking-token budget (when supported)
+    description: "Auto uses advertised low effort, or a supported fitting thinking-token budget, otherwise provider default. Off and explicit settings fail when unsupported. A thinking-token budget is not available for every model."
+  agent.llm.reasoning.effort: &reasoning_effort
+    label: Reasoning effort
+    enum: [minimal, low, medium, high, xhigh, max]
+    description: "Used only with Selected effort. Effort influences thinking but is not a hard token cap. Start with low for tool execution; increase only when evaluations justify it."
+  agent.llm.reasoning.max_tokens: &reasoning_budget
+    label: Maximum thinking tokens
+    minimum: 1
+    maximum: 131072
+    description: "Used with Thinking-token budget, or Auto when only a budget is advertised. Total output tokens must be larger to leave room for the answer. Unsupported hard budgets fail explicitly; they are never silently converted to effort."
+  agent.model_routes.naming.reasoning.mode: *reasoning_mode
+  agent.model_routes.naming.reasoning.effort: *reasoning_effort
+  agent.model_routes.naming.reasoning.max_tokens: *reasoning_budget
+  agent.model_routes.routing.reasoning.mode: *reasoning_mode
+  agent.model_routes.routing.reasoning.effort: *reasoning_effort
+  agent.model_routes.routing.reasoning.max_tokens: *reasoning_budget
+  agent.model_routes.summarization.reasoning.mode: *reasoning_mode
+  agent.model_routes.summarization.reasoning.effort: *reasoning_effort
+  agent.model_routes.summarization.reasoning.max_tokens: *reasoning_budget
+  agent.model_routes.memory.reasoning.mode: *reasoning_mode
+  agent.model_routes.memory.reasoning.effort: *reasoning_effort
+  agent.model_routes.memory.reasoning.max_tokens: *reasoning_budget
+  agent.model_routes.research.reasoning.mode: *reasoning_mode
+  agent.model_routes.research.reasoning.effort: *reasoning_effort
+  agent.model_routes.research.reasoning.max_tokens: *reasoning_budget
+  agent.model_routes.development.reasoning.mode: *reasoning_mode
+  agent.model_routes.development.reasoning.effort: *reasoning_effort
+  agent.model_routes.development.reasoning.max_tokens: *reasoning_budget
+  agent.limits.repeated_tool_result_limit:
+    label: Repeated unchanged tool results
+    minimum: 2
+    maximum: 20
+    description: "Warn after this many identical read-only tool results or identical failures in recent execution. One further unchanged result pauses for review. New arguments or changed results are treated as new evidence."
+  agent.limits.incomplete_response_limit:
+    label: Incomplete model response limit
+    minimum: 1
+    maximum: 10
+    description: "Pause after this many consecutive truncated or empty model responses. The runtime does not silently raise output or task budgets."
   agent.tts.enabled:
     label: Enable text to speech
     description: "Let the assistant create spoken audio. Requires a saved OpenRouter API key."

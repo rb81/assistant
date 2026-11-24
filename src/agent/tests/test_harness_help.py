@@ -162,6 +162,8 @@ def test_idle_refresh_indexes_help_even_when_workspace_file_indexing_is_disabled
     config = AppConfig({"agent": {"workspace": {"index": {"enabled": False}},
                                 "embeddings": {"model": "test", "dimensions": 2}}})
     indexer = WorkspaceIndex(db, config)
-    with patch.object(indexer.embedding_maintenance, "refresh_pending", return_value={"refreshed": 0}):
+    with patch.object(indexer.embedding_maintenance, "refresh_pending", return_value={"refreshed": 0}), \
+            patch("assistant_agent.micro_skills.SkillStore.refresh_one", return_value=False) as skills:
         indexer.refresh_embeddings()
     assert embed.call_count == len(topics)
+    skills.assert_called_once()

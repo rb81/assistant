@@ -23,6 +23,31 @@ from assistant_agent.tool_result_cache import ToolResultCache
 
 
 class ToolResultCacheTest(unittest.TestCase):
+    def test_cached_file_reads_remain_bounded_even_when_full_read_is_requested(self):
+        from unittest.mock import MagicMock
+        from assistant_agent.tools import ToolRuntime
+        with tempfile.TemporaryDirectory() as root:
+            config = AppConfig({"agent": {"filesystem": {"shared_root": root, "require_mount": False}}})
+            cache = ToolResultCache(config)
+            result = cache.cache_result(1, "context_search", {"items": ["x" * 50000]})
+            runtime = ToolRuntime(MagicMock(), config, {"id": 1})
+            first = runtime.file_read(result["cached_output_path"], max_bytes=100000)
+            second = runtime.file_read(result["cached_output_path"], offset=first["next_offset"])
+            self.assertEqual(first["bytes_read"], 8192)
+            self.assertTrue(first["truncated"])
+            self.assertEqual(second["offset"], first["next_offset"])
+            self.assertEqual(second["bytes_read"], 8192)
+
+    def test_model_receives_cache_pointer_not_full_large_nested_result(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = ToolResultCache(AppConfig({"agent": {"filesystem": {"shared_root": root}}}))
+            original = {"items": [{"body": "x" * 50000}], "complete": True}
+            model = cache.model_result(1, "context_search", original)
+            self.assertLess(len(json.dumps(model)), 2000)
+            self.assertTrue(model["items_omitted"])
+            self.assertIn("not empty", model["retrieval"])
+            self.assertEqual(json.loads(Path(model["cached_output_path"]).read_text())["result"], original)
+
     def test_command_result_is_cached_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = AppConfig(

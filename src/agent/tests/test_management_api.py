@@ -1090,12 +1090,17 @@ def test_provider_model_catalog_is_authenticated_and_keeps_credentials_server_si
         assert "private-model-key" not in result.text
         assert send.call_args.args[0].full_url == "https://api.openai.com/v1/models"
         assert send.call_args.args[0].get_header("Authorization") == "Bearer private-model-key"
-        response.__enter__.return_value.read.return_value = b'{"data":[{"id":"openai/gpt-4.1"}]}'
+        response.__enter__.return_value.read.return_value = b'{"data":[{"id":"openai/gpt-4.1","reasoning":{"supported_efforts":["low","high"],"supports_max_tokens":false,"mandatory":true,"provider_internal":"unrelated"}}]}'
         with patch("assistant_agent.model_service._catalog", {}), \
                 patch("assistant_agent.model_service.read_secret", side_effect=AssertionError("Use saved credentials")), \
                 patch("assistant_agent.model_service.open_https_request", return_value=response) as send:
             result = client.get("/v2/configuration/choices?key=AGENT_LLM_MODEL&provider=openrouter", headers=headers)
+            models = client.get("/v2/configuration/models?provider=openrouter", headers=headers)
         assert result.status_code == 200 and result.json()["choices"] == ["openai/gpt-4.1"]
+        assert models.status_code == 200, models.text
+        capabilities = models.json()["models"][0]["reasoning"]
+        assert capabilities["mandatory"] and capabilities["supported_efforts"] == ["low", "high"]
+        assert "provider_internal" not in capabilities
         saved_key = installation.secret_values["AGENT_LLM_OPENROUTER_API_KEY"]
         assert send.call_args.args[0].get_header("Authorization") == "Bearer " + saved_key
         assert saved_key not in result.text
@@ -2090,7 +2095,7 @@ def test_management_research_start_is_atomic_and_uses_research_workflow(db, tmp_
     agent.complete_run(resumed, "November is suitable.", {})
     assert db.fetch_one("SELECT status FROM jobs WHERE id = %s", (source["id"],))["status"] == "queued"
     with patch("assistant_agent.tools.search_configured", return_value=False):
-        with pytest.raises(ValueError, match="requires OpenRouter"):
+        with pytest.raises(ValueError, match="requires an available web search provider"):
             execute_management(db, AppConfig({}), {
                 "kind": "research.start", "question": "Cannot start",
                 "client_id": CLIENT_ID,

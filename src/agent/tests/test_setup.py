@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
+from conftest import complete_model_settings
 from assistant_agent.setup import Installation, SetupError, atomic_write, configure_docker_boot, interactive, parse_environment, prepare_internal_tls, prompt_calendar_providers, render_environment, setup_failure_message, validate_draft
 from assistant_agent.setup import ADVANCED_SETTINGS, advanced_value_error, prompt_advanced_settings
 from assistant_agent.setup import DockerCommandError, start_saved_containers
@@ -626,10 +627,7 @@ with tempfile.TemporaryDirectory() as root:
         instance.values.update({"AGENT_MODEL_ROUTES_" + route + "_PROVIDER": "openrouter"
                                 for route in ("TASK", "NAMING", "ROUTING", "SUMMARIZATION", "MEMORY",
                                               "RESEARCH", "DEVELOPMENT", "RESEARCH_SEARCH", "WEB_SEARCH")})
-        instance.values.update(dict.fromkeys(
-            ("AGENT_NAMING_MODEL", "AGENT_ROUTING_MODEL", "AGENT_LIMITS_SUMMARIZATION_MODEL",
-             "AGENT_MEMORY_STEWARD_MODEL", "AGENT_DEEP_RESEARCH_MODEL", "AGENT_SECURITY_DEVELOPMENT_MODEL",
-             "AGENT_DEEP_RESEARCH_SEARCH_MODEL", "AGENT_SEARCH_MODEL"), "model"))
+        complete_model_settings(instance.values, "model")
         instance.values["AGENT_PROVIDERS_ENABLED"] = "openrouter"
         instance.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
         instance.save()
@@ -637,6 +635,9 @@ with tempfile.TemporaryDirectory() as root:
 
     def test_openrouter_zdr_setup_needs_no_safety_retention_attestations(self):
         from assistant_agent.setup import draft_problems
+        from assistant_agent.openrouter_policy import require_zdr_eligibility
+        from assistant_agent.tts import settings as speech_settings
+        from assistant_agent.config import AppConfig
 
         with tempfile.TemporaryDirectory() as root:
             instance = self.saved_configuration(root)
@@ -648,7 +649,11 @@ with tempfile.TemporaryDirectory() as root:
                 "AGENT_SECURITY_DECISION_MODEL_ENABLED": "true",
                 "AGENT_SECURITY_DECISION_MODEL_PROVIDER": "openrouter",
             })
-            self.assertEqual(draft_problems(instance), [])
+            with patch("assistant_agent.openrouter_policy.require_zdr_eligibility",
+                       wraps=require_zdr_eligibility) as eligibility:
+                self.assertEqual(draft_problems(instance), [])
+            speech_call = next(call for call in eligibility.call_args_list if call.kwargs.get("scoped"))
+            self.assertEqual(speech_call.args[2], speech_settings(AppConfig({}))[0])
 
     def test_existing_configuration_picker_retains_unedited_settings_and_pending_secrets(self):
         import questionary

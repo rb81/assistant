@@ -61,7 +61,7 @@ ADVANCED_SETTINGS = {
     "Task limits": (
         ("AGENT_LIMITS_MAX_ITERATIONS_PER_TASK", "agent.limits.max_iterations_per_task", "Maximum iterations per task", 50, int, 1),
         ("AGENT_LIMITS_MAX_TOKENS_PER_TASK", "agent.limits.max_tokens_per_task", "Maximum tokens per task", 1000000, int, 1),
-        ("AGENT_LLM_MAX_TOKENS_PER_CALL", "agent.llm.max_tokens_per_call", "Maximum output tokens per model call", 4096, int, 1),
+        ("AGENT_LLM_MAX_TOKENS_PER_CALL", "agent.llm.max_tokens_per_call", "Maximum output tokens per model call, including reasoning", 8192, int, 1),
         ("AGENT_SUPERVISOR_MAX_TASK_DURATION_MINUTES", "agent.supervisor.max_task_duration_minutes", "Maximum task duration (minutes)", 60, int, 1),
     ),
     "Email behavior": (
@@ -2718,6 +2718,11 @@ def draft_problems(instance):
             current = current.setdefault(part, {})
         current[leaf] = values[name]
     routing_config = AppConfig(routing_values)
+    from .reasoning import validate_config as validate_reasoning_config
+    try:
+        validate_reasoning_config(routing_config)
+    except ValueError as exc:
+        problem("models", str(exc))
     from .openrouter_policy import require_zdr_eligibility
     model_service_enabled = values.get("AGENT_MODEL_SERVICE_ENABLED", instance.defaults.get("agent.model_service.enabled", False))
     if str(model_service_enabled).lower() in {"true", "1", "yes", "on"}:
@@ -2737,7 +2742,8 @@ def draft_problems(instance):
     ):
         try:
             require_zdr_eligibility(
-                routing_config, "openrouter", str(routing_config.get("agent.tts.model", "") or ""),
+                routing_config, "openrouter",
+                str(routing_config.get("agent.tts.model") or "mistralai/voxtral-mini-tts-3-0"),
                 scoped=True,
             )
         except ValueError as error:

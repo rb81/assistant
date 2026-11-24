@@ -55,6 +55,15 @@ def test_openrouter_discovery_warns_without_attestations_or_hiding_zdr_models(mo
     assert "does not block" in result["warning"]
 
 
+def test_discovery_without_a_legacy_url_uses_the_shipped_openrouter_endpoint():
+    with patch("assistant_agent.model_service.OpenRouterModels.models",
+               return_value=[{"id": "example/model"}]) as models:
+        result = discover_models(AppConfig({}))
+    assert result["provider"] == "openrouter"
+    assert result["models"] == [{"id": "example/model", "name": "example/model"}]
+    models.assert_called_once()
+
+
 def test_openrouter_discovery_does_not_require_database_dependencies():
     code = """
 import sys

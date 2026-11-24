@@ -150,10 +150,19 @@ Contacts are deliberately separate from memory records.
 
 - `reminder_create`
 - `reminder_list`
+- `reminder_read`
 - `reminder_update`
 - `reminder_cancel`
 
 Recurrence supports `hour|day|week|month` with interval and anchor-day logic.
+
+`reminder_list` defaults to 10 compact summaries, including status, schedule,
+object version and a bounded task preview. Follow `next_offset` while `has_more`
+is true before claiming a complete listing. Read only relevant full instructions
+with `reminder_read(reminder_id)`; `include_details=true` retains the full-row
+listing option. Offset pagination is not a snapshot: concurrent insertions or
+rescheduling may change pages. Use a fresh review when the schedule changes.
+Neither listing nor reading authorizes execution, cancellation or rescheduling.
 
 `reminder_create` requires `execution`:
 
@@ -242,6 +251,9 @@ never disclose host start URLs. See [calendar providers](calendar-providers.md).
 
 - `context_search` — semantic search across memories, jobs, reminders, inbound/outbound emails, and contacts; accepts `recent_only=true` to limit to last 7 days
 - `job_search` — search past job history by query and status
+- `job_list` — enumerate tasks without a keyword; defaults to queued, running,
+  waiting and needs_review. Follow `next_before_id` until `complete=true`.
+  New jobs arriving after the first page are outside that ID-cursor review.
 - `job_read` — read a past job's full details by ID
 
 ## Web and Fusion Tools

@@ -112,28 +112,33 @@ class Supervisor:
             """,
             (job_id,),
         )
-        failure_tool = ""
-        failure_count = 0
+        resolved = set()
+        counts = {}
         for row in rows:
-            if self.failure_resolution_event(row):
+            output = row.get("output_data") or {}
+            tool = row["tool_name"] or "unknown"
+            if row["event_type"] == "tool_result":
+                if output.get("status") == "not_executed":
+                    continue
+                if not output.get("error"):
+                    resolved.add(tool)
+                    continue
+            elif self.failure_resolution_event(row):
                 return ""
-            if row["event_type"] != "error":
+            if row["event_type"] != "error" and not output.get("error"):
                 continue
-            tool_name = row["tool_name"] or "unknown"
-            if not failure_tool:
-                failure_tool = tool_name
-            if tool_name != failure_tool:
-                return ""
-            failure_count += 1
-            if failure_count >= 3:
-                return "Tool %s failed three times without recovery" % failure_tool
+            if tool in resolved:
+                continue
+            counts[tool] = counts.get(tool, 0) + 1
+            if counts[tool] >= 3:
+                return "Tool %s failed three times without recovery" % tool
         return ""
 
     def failure_resolution_event(self, row: dict[str, Any]) -> bool:
         event_type = row.get("event_type")
         output = row.get("output_data") or {}
         if event_type == "tool_result":
-            return True
+            return not output.get("error") and output.get("status") != "not_executed"
         if event_type == "status_change":
             status = str(output.get("status") or "")
             reason = str(output.get("reason") or "")

@@ -80,7 +80,12 @@ agent:
     zdr_verified_providers: []
     zdr_verified_models: []
     temperature: 0.2
-    max_tokens_per_call: 4096
+    # Total generated tokens, including reasoning and the visible answer.
+    max_tokens_per_call: 8192
+    reasoning:
+      mode: auto
+      effort: low
+      max_tokens: 2048
     openrouter_api_key:
     openai_api_key:
     anthropic_api_key:
@@ -94,18 +99,38 @@ agent:
     naming:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     routing:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     summarization:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     memory:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     research:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     research_search:
       provider: openrouter
       fallbacks: []
@@ -117,6 +142,10 @@ agent:
     development:
       provider:
       fallbacks: []
+      reasoning:
+        mode: provider_default
+        effort: low
+        max_tokens: 2048
     speech:
       provider: openrouter
 
@@ -137,9 +166,11 @@ agent:
 
   naming:
     model: openai/gpt-4.1-mini
+    max_tokens_per_call: 1024
 
   routing:
     model: openai/gpt-4.1-mini
+    max_tokens_per_call: 2048
     timeout_seconds: 20
     fallback_continue_minutes: 180
 
@@ -158,6 +189,8 @@ agent:
     # Fraction of a limit at which the agent starts wrapping up.
     limit_approach_factor: 0.80
     rate_limit_backoff_seconds: 30
+    repeated_tool_result_limit: 3
+    incomplete_response_limit: 2
     poll_interval_seconds: 60
 
   task_agent:

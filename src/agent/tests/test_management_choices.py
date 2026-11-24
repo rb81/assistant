@@ -18,6 +18,21 @@ def backend():
     )
 
 
+def test_reasoning_settings_share_catalog_metadata_with_terminal_controls():
+    from assistant_agent.settings_schema import catalog
+    from assistant_agent.management_api import configuration_groups, setting_presentation
+    fields = {item["env"]: item for item in catalog()}
+    task = fields["AGENT_LLM_REASONING_MODE"]
+    assert task["metadata"]["enum"] == ["auto", "provider_default", "off", "effort", "budget"]
+    specs = {spec.key: (group, spec) for group, (_, group_specs) in configuration_groups().items()
+             for spec in group_specs}
+    assert setting_presentation(*specs[task["env"]])[1] == "Task reasoning"
+    naming = fields["AGENT_MODEL_ROUTES_NAMING_REASONING_MODE"]
+    assert setting_presentation(*specs[naming["env"]])[1] == "Naming reasoning"
+    widget = OptionField("auto", task["metadata"]["enum"], task["metadata"]["choice_labels"])
+    assert widget.text == "auto" and "budget" in widget.available_choices
+
+
 def test_provider_lists_use_configured_accounts_and_disabled_providers_can_be_reenabled():
     metadata = provider_choices_metadata(backend())
     assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openrouter", "openai", "anthropic"]

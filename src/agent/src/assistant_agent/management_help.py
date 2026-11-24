@@ -542,11 +542,14 @@ FIELD_HELP = {
                                                      "and attendees from detail-reading tools. On permits reading "
                                                      "those details; it does not grant editing or deletion rights.",
     "AGENT_LIMITS_MAX_ITERATIONS_PER_TASK": "Maximum model/tool-loop iterations for one task. Lower values limit "
-                                            "runaway work but may stop complex tasks before they finish.",
+                                            "runaway work but may stop complex tasks before they finish. "
+                                            "Retries and resumes share the same cumulative limit.",
     "AGENT_LIMITS_MAX_TOKENS_PER_TASK": "Token-use ceiling for one task. Tokens are pieces of model input/output, "
-                                       "not dollars; prices vary by provider and model.",
+                                       "not dollars; prices vary by provider and model. Reported usage accumulates across retries and resumes.",
     "AGENT_LLM_MAX_TOKENS_PER_CALL": "Maximum output tokens requested in each task-model response. "
-                                     "Lower limits can truncate long answers or tool arguments.",
+                                     "Includes thinking and the visible answer. A supported thinking-token budget must leave "
+                                     "room within this cap for the answer. Lower caps can truncate tool arguments. "
+                                     "The runtime never silently increases this limit.",
     "AGENT_SUPERVISOR_MAX_TASK_DURATION_MINUTES": "Elapsed task duration after which the supervisor treats a "
                                                  "running task as overdue. This is a watchdog threshold, "
                                                  "not an undo of external actions.",

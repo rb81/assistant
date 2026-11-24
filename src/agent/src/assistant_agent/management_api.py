@@ -34,6 +34,7 @@ from .management_contracts import (
     ConversationsResponse, TaskActivityResponse, TaskDeletionPreviewResponse, TaskMessagesResponse, TaskSummaryResponse,
     ClientAcknowledgmentRequest, ClientAcknowledgmentResponse, ClientHistoryResponse, ClientPollResponse,
     DomainReadRequest, READ_SERVICE_REQUESTS, StructuredConfigurationResponse, ModelSettingsResponse, SettingChoicesResponse,
+    ProviderModelCatalogResponse,
 )
 from . import settings_schema
 from .config import AppConfig
@@ -174,7 +175,7 @@ CATALOG_GROUPS = {
     "identity": ("Email message identity", "email", "How outgoing email message identifiers are formed."),
     "database": ("Database connection", None,
                  "Where services find PostgreSQL. Change only when running an external database."),
-    "llm": ("Generation & sampling", None, "Sampling settings applied to ordinary task models."),
+    "llm": ("Generation & reasoning", None, "Output capacity, sampling, and optional reasoning for task models."),
     "routing": ("Routing & fallback", None, "Which model screens and routes incoming requests, and fallback timing."),
     "limits": ("Prompt & history limits", None, "Conversation history, prompt size, summarization, and retry pacing for tasks."),
     "task_agent": ("Task worker", None, "How often the task worker checks for queued work."),
@@ -272,6 +273,9 @@ def setting_presentation(group, spec):
     model_section = (item.get("metadata") or {}).get("model_section")
     if model_section:
         section = model_section.replace("_", " ").title()
+    if ".reasoning." in item.get("path", ""):
+        route = item["path"].split(".")[2] if item["path"].startswith("agent.model_routes.") else "task"
+        section = route.title() + " reasoning"
     if group == "providers":
         section = next((title for title, keys in AI_PROVIDER_FIELDS.items() if spec.key in keys), "General")
     elif group == "provider-privacy":
@@ -1572,7 +1576,7 @@ def create_app(root, token, service=None):
     def model_settings_v2():
         return service.model_settings()
 
-    @app.get("/v2/configuration/models")
+    @app.get("/v2/configuration/models", response_model=ProviderModelCatalogResponse)
     def model_catalog_v2(provider: str | None = Query(default=None)):
         from .llm_catalog import ModelCatalogError
 

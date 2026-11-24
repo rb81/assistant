@@ -32,6 +32,15 @@ class FakeDatabase:
 
 
 class SupervisorRepeatedFailureTest(unittest.TestCase):
+    def test_deferrals_and_unrelated_success_do_not_resolve_tool_errors(self):
+        rows = [
+            {"event_type": "tool_result", "tool_name": "file_read", "output_data": {"content": "ok"}},
+            {"event_type": "tool_result", "tool_name": "web_fetch", "output_data": {"status": "not_executed"}},
+            *[{"event_type": "tool_result", "tool_name": "web_fetch", "output_data": {"error": "denied"}}
+              for _ in range(3)],
+        ]
+        self.assertIn("web_fetch failed three times", self.supervisor_for(rows).repeated_failure(1))
+
     def supervisor_for(self, rows: list[dict[str, Any]]) -> Supervisor:
         return Supervisor(FakeDatabase(rows), AppConfig({"agent": {}}))  # type: ignore[arg-type]
 

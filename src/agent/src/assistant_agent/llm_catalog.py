@@ -10,7 +10,8 @@ import urllib.request
 
 from .config import AppConfig
 from .llm_providers import (
-    PROVIDER_CREDENTIALS, provider_base_url, provider_credential_name, provider_for, provider_is_disabled,
+    PROVIDER_CREDENTIALS, PROVIDER_DEFAULT_URLS, provider_base_url, provider_credential_name, provider_for,
+    provider_is_disabled,
 )
 from .openrouter_policy import SAFETY_RETENTION_WARNING, is_openrouter_url, require_zdr
 from .secret_store import read_secret
@@ -157,7 +158,7 @@ def _gateway_models(request):
 
 
 def discover_models(config: AppConfig, provider_id=None, *, credential_reader=None):
-    base_url = str(config.get("agent.llm.base_url", "")).rstrip("/")
+    base_url = str(config.get("agent.llm.base_url", PROVIDER_DEFAULT_URLS["openrouter"]) or "").rstrip("/")
     if provider_id:
         provider = str(provider_id).strip().lower()
         if provider not in PROVIDER_CREDENTIALS:
@@ -183,7 +184,9 @@ def discover_models(config: AppConfig, provider_id=None, *, credential_reader=No
             raise ModelCatalogError(str(exc)) from exc
         return {
             "provider": provider,
-            "models": [{"id": model["id"], "name": model.get("name") or model["id"]} for model in models],
+            "models": [{"id": model["id"], "name": model.get("name") or model["id"],
+                        **({"reasoning": model["reasoning"]} if isinstance(model.get("reasoning"), dict) else {})}
+                       for model in models],
             "zdr_only": zdr,
             "warning": SAFETY_RETENTION_WARNING,
         }

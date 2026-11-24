@@ -59,6 +59,19 @@ class ToolResultCache:
             LOGGER.exception("failed to cache tool result", extra={"job_id": job_id, "tool_name": tool_name})
             return result
 
+    def model_result(self, job_id: int, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+        if tool_name in {"job_list", "reminder_list"} and len(compact_json(result).encode("utf-8")) <= 8192:
+            return result
+        cached = self.cache_result(job_id, tool_name, result)
+        if not cached.get("cached_output_path"):
+            return cached
+        reduced = self.redact_result(tool_name, cached)
+        reduced["retrieval"] = (
+            "The full result is stored at cached_output_path. Use file_read with bounded "
+            "offset/max_bytes to retrieve omitted details. Omitted lists are not empty lists."
+        )
+        return reduced
+
     def should_cache(self, tool_name: str, result: dict[str, Any]) -> bool:
         if not self.enabled() or not isinstance(result, dict):
             return False

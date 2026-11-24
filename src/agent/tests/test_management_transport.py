@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -321,8 +322,14 @@ def test_lazy_instructions_do_not_block_terminal_navigation():
     asyncio.run(scenario())
 
 
+@pytest.fixture
+def socket_directory():
+    with tempfile.TemporaryDirectory(prefix="asock-") as directory:
+        yield Path(directory)
+
+
 @pytest.mark.parametrize("arguments", [[], ["management", "health"], ["config", "check"]])
-def test_container_client_has_only_readonly_connection_mount(tmp_path, arguments):
+def test_container_client_has_only_readonly_connection_mount(tmp_path, socket_directory, arguments):
     root = tmp_path / "install with spaces"
     (root / "src/scripts").mkdir(parents=True)
     (root / "data").mkdir()
@@ -332,7 +339,7 @@ def test_container_client_has_only_readonly_connection_mount(tmp_path, arguments
     tools = tmp_path / "bin"
     tools.mkdir()
     log = tmp_path / "docker.jsonl"
-    daemon = tmp_path / "docker.sock"
+    daemon = socket_directory / "docker.sock"
     with socket.socket(socket.AF_UNIX) as listener:
         listener.bind(str(daemon))
         (tools / "docker").write_text(

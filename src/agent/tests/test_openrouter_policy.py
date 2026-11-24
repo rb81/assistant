@@ -87,6 +87,7 @@ def test_safety_retention_warns_without_blocking_worker_startup(role, worker, ca
     config = AppConfig({"agent": {
         "llm": {"base_url": "https://openrouter.ai/api/v1", "model": "primary",
                 "fallback_model": "fallback", "zdr_only": True},
+        "deep_research": {"model": "primary"},
         "search": {"primary_provider": "exa", "exa_enabled": True, "openrouter_enabled": False},
         "email": {"smtp_host": "mail.example.org", "smtp_from": "assistant@example.org"},
         "admin": {"email": "owner@example.org"},

@@ -85,7 +85,10 @@ def test_llm_provider_errors_over_tls(tmp_path, responses, expected_models):
                           side_effect=lambda request, timeout: open_https_request(request, timeout, client_tls)):
                 client = LlmClient(config, timeout_seconds=5)
                 if responses[-1] == 200:
-                    assert client.chat([{"role": "user", "content": "Synthetic test"}], []) == {"choices": []}
+                    result = client.chat([{"role": "user", "content": "Synthetic test"}], [])
+                    assert result["choices"] == []
+                    assert result["_request_metadata"]["attempted_model"] == expected_models[-1]
+                    assert result["_request_metadata"]["fallback"] == (len(expected_models) > 1)
                 else:
                     with pytest.raises(RuntimeError, match=f"HTTP {responses[-1]}"):
                         client.chat([{"role": "user", "content": "Synthetic test"}], [])
@@ -247,21 +250,18 @@ class BuildPromptContextTest(unittest.TestCase):
                 read_secret.assert_not_called()
 
     def test_llm_payload_contains_fresh_clock_for_research_or_resumed_requests(self) -> None:
-        config = AppConfig({"agent": {"app": {"timezone": "Asia/Dubai"}}})
-        client = LlmClient.__new__(LlmClient)
-        client.config = config
-        client.provider = "openrouter"
-        client.base_url = "https://example.invalid"
-        client.api_key = "test-key"
-        client.temperature = None
-        client.max_tokens = None
-        client.timeout_seconds = 1
-        client.request_observer = None
+        config = AppConfig({"agent": {
+            "app": {"timezone": "Asia/Dubai"},
+            "llm": {"model": "test-model", "reasoning": {"mode": "provider_default"}},
+        }})
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"{}"
         clock = {"timezone": "Asia/Dubai", "utc": "2026-10-08T20:00:00+00:00", "local": "2026-10-09T00:00:00+04:00"}
-        with patch("assistant_agent.prompt_context.current_time_context", return_value=clock), patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
-            client._chat_with_model("test-model", [{"role": "system", "content": "Research rules"}, {"role": "user", "content": "Schedule tomorrow"}], [])
+        with patch("assistant_agent.prompt_context.current_time_context", return_value=clock), \
+                patch("assistant_agent.llm_client.read_secret", return_value="test-key"), \
+                patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
+            client = LlmClient(config, timeout_seconds=1)
+            client.chat([{"role": "system", "content": "Research rules"}, {"role": "user", "content": "Schedule tomorrow"}], [])
         payload = json.loads(send.call_args.args[0].data)
         self.assertIn(clock["local"], payload["messages"][0]["content"])
         self.assertIn(clock["timezone"], payload["messages"][1]["content"])

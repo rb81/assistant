@@ -317,6 +317,28 @@ class SettingChoicesResponse(BaseModel):
     warnings: list[str]
 
 
+class ModelReasoningCapabilities(BaseModel):
+    """Advertised capability hints, never proof of a provider-enforced thinking cap."""
+    supported_efforts: list[str] | None = None
+    supports_max_tokens: bool = False
+    mandatory: bool = False
+    default_effort: str | None = None
+    default_enabled: bool | None = None
+
+
+class ProviderModel(BaseModel):
+    id: str
+    name: str
+    reasoning: ModelReasoningCapabilities | None = None
+
+
+class ProviderModelCatalogResponse(BaseModel):
+    provider: str
+    models: list[ProviderModel]
+    zdr_only: bool
+    warning: str | None = None
+
+
 class ConfigurationPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

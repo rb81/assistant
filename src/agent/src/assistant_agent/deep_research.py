@@ -180,6 +180,7 @@ class DeepResearchAgent:
             if "WEB.SEARCH" in skills:
                 execution_job["_research_skills"][0].activate(skills["WEB.SEARCH"], "event")
         max_iterations = self.config.get_int("agent.deep_research.max_iterations", 30)
+        incomplete_responses = 0
 
         for _iteration in range(max_iterations):
             if not self.still_owns_run(run):
@@ -196,7 +197,22 @@ class DeepResearchAgent:
                 guidance = execution_job["_research_skills"][0].messages(skills, [], admin=False)
                 if guidance:
                     active_messages = messages[:1] + [guidance] + messages[1:]
-            response = llm.chat(active_messages, tools)
+            if context_agent.prompt_char_count(active_messages) + len(compact_json(tools)) > context_agent.context_char_limit():
+                self.fail_run(run, "Research prompt and tool schemas exceed the context safety limit")
+                return
+            try:
+                response = llm.chat(active_messages, tools)
+                if (not isinstance(response, dict) or not isinstance(response.get("choices"), list)
+                        or not response["choices"] or not isinstance(response["choices"][0], dict)
+                        or not isinstance(response["choices"][0].get("message"), dict)):
+                    raise ValueError("Research model returned an invalid response")
+            except (RuntimeError, ValueError, OSError) as exc:
+                from .llm_client import LlmRequestError
+                self.log_event(run["id"], "error", output_data={"error": str(exc)})
+                if isinstance(exc, LlmRequestError) and exc.status_code in {429, 503, 529}:
+                    raise
+                self.fail_run(run, "Research model request cannot safely continue: %s" % exc)
+                return
             duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             choice = response["choices"][0]
             response_message = choice["message"]
@@ -205,13 +221,31 @@ class DeepResearchAgent:
             self.log_event(
                 run["id"],
                 "llm_response",
-                output_data=response_message,
+                output_data={**response_message, "_llm": {
+                    **(response.get("_request_metadata") or {}), "finish_reason": choice.get("finish_reason"),
+                }},
                 tokens_used=token_data,
                 duration_ms=duration_ms,
             )
             self.prune_tool_results(messages)
 
             tool_calls = response_message.get("tool_calls") or []
+            if choice.get("finish_reason") in {"content_filter", "error"}:
+                self.fail_run(run, "Research provider refused or failed the response; tools were not executed")
+                return
+            if choice.get("finish_reason") == "length" or (
+                    not tool_calls and not context_agent.message_content_text(response_message.get("content"))):
+                incomplete_responses += 1
+                context_agent.close_open_tool_calls(messages)
+                if incomplete_responses >= self.config.get_int("agent.limits.incomplete_response_limit", 2):
+                    self.fail_run(run, "Research model returned repeated empty or truncated output")
+                    return
+                messages.append({"role": "user", "content": (
+                    "Your output was empty or truncated; its tool calls were not executed. "
+                    "Return a concise tool call within the existing output cap; do not repeat completed actions."
+                )})
+                continue
+            incomplete_responses = 0
             if not tool_calls:
                 messages.append(
                     {
@@ -468,7 +502,7 @@ class DeepResearchAgent:
         notify_admin_job_failure(self.db, self.config, paused, "needs_review", reason, "security_screening")
 
     def prepare_tool_result_for_model(self, job_id: int, name: str, result: dict[str, Any]) -> dict[str, Any]:
-        return self.tool_result_cache.cache_result(job_id, name, result)
+        return self.tool_result_cache.model_result(job_id, name, result)
 
     def redact_tool_result_for_storage(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
         return self.tool_result_cache.redact_result(name, result)

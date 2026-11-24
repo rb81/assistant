@@ -1,7 +1,9 @@
 """Provider-specific HTTP and message-format adapters for task-agent models."""
 import base64
+import copy
 import json
 import re
+import uuid
 from urllib.parse import quote, urlsplit
 
 from .transport_security import validate_https_url
@@ -71,7 +73,7 @@ def provider_base_url(config, provider):
     """Return a validated endpoint for one provider without changing global route selection."""
     if provider in PROVIDER_DEFAULT_URLS:
         endpoint = str(config.get("agent.providers.%s_base_url" % provider) or PROVIDER_DEFAULT_URLS[provider]).rstrip("/")
-        configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+        configured = str(config.get("agent.llm.base_url") or "").rstrip("/")
         if (config.get("agent.model_routes") is None
                 and endpoint == PROVIDER_DEFAULT_URLS[provider] and configured
                 and (urlsplit(configured).hostname or "").lower() == urlsplit(endpoint).hostname):
@@ -92,7 +94,7 @@ def provider_base_url(config, provider):
                 raise ValueError("Cloudflare endpoint account ID does not match the configured account ID")
             account_id = endpoint_account
         if not account_id and config.get("agent.model_routes") is None:
-            configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+            configured = str(config.get("agent.llm.base_url") or "").rstrip("/")
             parsed = urlsplit(configured)
             parts = parsed.path.strip("/").split("/")
             if (parsed.hostname or "").lower() == "api.cloudflare.com" and len(parts) >= 5:
@@ -108,7 +110,7 @@ def provider_base_url(config, provider):
     if provider == "openai-compatible":
         configured = str(config.get("agent.providers.openai_compatible_base_url", "") or "").strip()
         if not configured and config.get("agent.model_routes") is None:
-            legacy = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
+            legacy = str(config.get("agent.llm.base_url") or "").rstrip("/")
             if provider_for(config, legacy) == "openai-compatible":
                 configured = legacy
         if not configured:
@@ -148,11 +150,11 @@ def validate_provider_url(provider, base_url):
 
 
 def route_fallbacks(config, route, primary_provider):
-    """Return ordered explicit provider:model candidates, including the legacy task fallback."""
+    """Return explicit candidates; an absent legacy fallback does not enable one."""
     fallbacks = config.get_list("agent.model_routes.%s.fallbacks" % route)
     if fallbacks or route != "task" or config.get("agent.model_routes") is not None:
         return fallbacks
-    legacy = str(config.get("agent.llm.fallback_model", "") or "").strip()
+    legacy = str(config.get("agent.llm.fallback_model") or "").strip()
     return ["%s:%s" % (primary_provider, legacy)] if legacy else []
 
 
@@ -286,12 +288,16 @@ def _anthropic_request(payload):
         elif role in ("user", "assistant"):
             blocks = _anthropic_content(content)
             if role == "assistant":
-                if isinstance(blocks, str):
-                    blocks = [{"type": "text", "text": blocks}] if blocks else []
-                blocks.extend(
-                    {"type": "tool_use", "id": tool_id, "name": name, "input": arguments}
-                    for tool_id, name, arguments in _tool_calls(message)
-                )
+                state = message.get("_provider_state") or {}
+                if state.get("provider") == "anthropic":
+                    blocks = copy.deepcopy(state["content"])
+                else:
+                    if isinstance(blocks, str):
+                        blocks = [{"type": "text", "text": blocks}] if blocks else []
+                    blocks.extend(
+                        {"type": "tool_use", "id": tool_id, "name": name, "input": arguments}
+                        for tool_id, name, arguments in _tool_calls(message)
+                    )
             messages.append({"role": role, "content": blocks})
         else:
             raise ValueError("Unsupported message role for Claude")
@@ -304,6 +310,16 @@ def _anthropic_request(payload):
         result["system"] = "\n\n".join(system)
     if payload.get("temperature") is not None:
         result["temperature"] = payload["temperature"]
+    reasoning = payload.get("reasoning") or {}
+    if reasoning.get("enabled") is False:
+        result["thinking"] = {"type": "disabled"}
+    elif "max_tokens" in reasoning:
+        result["thinking"] = {"type": "enabled", "budget_tokens": reasoning["max_tokens"]}
+        result.pop("temperature", None)
+    elif "effort" in reasoning:
+        result["thinking"] = {"type": "adaptive"}
+        result["output_config"] = {"effort": reasoning["effort"]}
+        result.pop("temperature", None)
     tools = []
     for item in payload.get("tools") or []:
         function = item.get("function") if isinstance(item, dict) else None
@@ -324,7 +340,7 @@ def _gemini_parts(content):
     if content is None:
         return []
     if isinstance(content, str):
-        return [{"text": content}]
+        return [{"text": content}] if content else []
     if not isinstance(content, list):
         raise ValueError("Unsupported message content for Gemini")
     parts = []
@@ -356,9 +372,10 @@ def _gemini_request(payload):
                           if isinstance(part.get("text"), str))
         elif role == "tool":
             tool_id = message.get("tool_call_id")
-            name = tool_names.get(tool_id)
-            if not name:
+            matching_call = tool_names.get(tool_id)
+            if not matching_call:
                 raise ValueError("Tool result is missing a matching function call")
+            name, native_id = matching_call
             try:
                 response = json.loads(message.get("content", ""))
             except (TypeError, ValueError):
@@ -366,6 +383,8 @@ def _gemini_request(payload):
             if not isinstance(response, dict):
                 response = {"result": response}
             part = {"functionResponse": {"name": name, "response": response}}
+            if native_id:
+                part["functionResponse"]["id"] = native_id
             if contents and contents[-1]["role"] == "user":
                 contents[-1]["parts"].append(part)
             else:
@@ -373,9 +392,15 @@ def _gemini_request(payload):
         elif role in ("user", "assistant"):
             parts = _gemini_parts(message.get("content", ""))
             if role == "assistant":
-                for tool_id, name, arguments in _tool_calls(message):
-                    tool_names[tool_id] = name
-                    parts.append({"functionCall": {"name": name, "args": arguments}})
+                state = message.get("_provider_state") or {}
+                if state.get("provider") == "gemini":
+                    parts = copy.deepcopy(state["parts"])
+                native_calls = [part["functionCall"] for part in parts if "functionCall" in part]
+                for index, (tool_id, name, arguments) in enumerate(_tool_calls(message)):
+                    native_id = native_calls[index].get("id") if index < len(native_calls) else None
+                    tool_names[tool_id] = (name, native_id)
+                    if state.get("provider") != "gemini":
+                        parts.append({"functionCall": {"name": name, "args": arguments}})
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
         else:
             raise ValueError("Unsupported message role for Gemini")
@@ -387,6 +412,13 @@ def _gemini_request(payload):
         generation["temperature"] = payload["temperature"]
     if payload.get("max_tokens") is not None:
         generation["maxOutputTokens"] = payload["max_tokens"]
+    reasoning = payload.get("reasoning") or {}
+    if reasoning.get("enabled") is False:
+        generation["thinkingConfig"] = {"thinkingBudget": 0}
+    elif "max_tokens" in reasoning:
+        generation["thinkingConfig"] = {"thinkingBudget": reasoning["max_tokens"]}
+    elif "effort" in reasoning:
+        generation["thinkingConfig"] = {"thinkingLevel": reasoning["effort"]}
     if generation:
         request["generationConfig"] = generation
     declarations = []
@@ -403,26 +435,73 @@ def _gemini_request(payload):
     return request
 
 
+def _openai_request(payload):
+    inputs = []
+    for message in payload.get("messages", []):
+        role = message.get("role")
+        state = message.get("_provider_state") or {}
+        if role == "assistant" and state.get("provider") == "openai":
+            inputs.extend(copy.deepcopy(state["output"]))
+        elif role == "tool":
+            inputs.append({"type": "function_call_output", "call_id": message["tool_call_id"],
+                           "output": str(message.get("content") or "")})
+        elif role in {"system", "user", "assistant"}:
+            content = message.get("content")
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if item.get("type") == "text":
+                        parts.append({"type": "output_text" if role == "assistant" else "input_text", "text": item["text"]})
+                    elif item.get("type") == "image_url":
+                        image = item["image_url"]
+                        parts.append({"type": "input_image", "image_url": image["url"] if isinstance(image, dict) else image})
+                    else:
+                        raise ValueError("Unsupported OpenAI Responses input content")
+                content = parts
+            if content:
+                inputs.append({"role": "developer" if role == "system" else role, "content": content})
+            if role == "assistant":
+                inputs.extend({"type": "function_call", "call_id": tool_id, "name": name,
+                               "arguments": json.dumps(arguments)}
+                              for tool_id, name, arguments in _tool_calls(message))
+        else:
+            raise ValueError("Unsupported message role for OpenAI Responses")
+    result = {"model": payload["model"], "input": inputs, "store": False,
+              "max_output_tokens": payload["max_tokens"], "include": ["reasoning.encrypted_content"]}
+    reasoning = payload.get("reasoning") or {}
+    if reasoning:
+        result["reasoning"] = {"effort": "none" if reasoning.get("enabled") is False else reasoning["effort"]}
+    model = payload["model"]
+    if not re.match(r"^(?:o[134](?:-|$)|gpt-[56](?:[.-]|$))", model) and payload.get("temperature") is not None:
+        result["temperature"] = payload["temperature"]
+    if payload.get("tools"):
+        result["tools"] = [{"type": "function", **item["function"]} for item in payload["tools"]]
+        result["tool_choice"] = "auto"
+    return result
+
+
 def build_request(provider, base_url, api_key, payload):
     """Build an authenticated request for one selected provider."""
     root = base_url.rstrip("/")
     headers = {"Content-Type": "application/json"}
     body = payload
-    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare", "cloudflare-gateway"):
+    if provider == "openai":
+        url = root + "/responses"
+        headers["Authorization"] = "Bearer " + api_key
+        body = _openai_request(payload)
+    elif provider in ("openrouter", "openai-compatible", "cloudflare", "cloudflare-gateway"):
         url = root + "/chat/completions"
         headers["Authorization"] = "Bearer " + api_key
+        body = {**payload, "messages": [
+            {key: value for key, value in message.items() if key != "_provider_state"}
+            for message in payload.get("messages", [])
+        ]}
         if provider in {"cloudflare", "cloudflare-gateway"}:
             headers.update({
                 "cf-aig-collect-log": "false",
                 "cf-aig-collect-log-payload": "false",
                 "cf-aig-skip-cache": "true",
             })
-        if provider == "openrouter":
-            body = dict(payload)
-        if provider == "openai" and payload.get("provider"):
-            body = dict(payload)
-        if provider == "openai" and payload.get("store") is None:
-            body["store"] = False
     elif provider == "anthropic":
         url = root + ("/messages" if root.endswith("/v1") else "/v1/messages")
         headers["x-api-key"] = api_key
@@ -445,8 +524,41 @@ def normalize_response(provider, data):
     """Normalize native Messages and Gemini responses to the task-agent chat schema."""
     if not isinstance(data, dict):
         raise ValueError("Model provider returned an invalid response")
-    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare", "cloudflare-gateway"):
+    if provider in ("openrouter", "openai-compatible", "cloudflare", "cloudflare-gateway"):
         return data
+    if provider == "openai":
+        output = data.get("output")
+        if data.get("status") == "failed":
+            raise ValueError("OpenAI response failed: %s" % (data.get("error") or "unknown provider error"))
+        if not isinstance(output, list):
+            raise ValueError("OpenAI returned an invalid Responses API output")
+        text, calls = [], []
+        for item in output:
+            if not isinstance(item, dict):
+                raise ValueError("OpenAI returned an invalid Responses output item")
+            if item.get("type") == "message":
+                text.extend(part["text"] for part in item.get("content", [])
+                            if part.get("type") == "output_text")
+            elif item.get("type") == "function_call":
+                calls.append({"id": item["call_id"], "type": "function",
+                              "function": {"name": item["name"], "arguments": item["arguments"]}})
+        message = {"role": "assistant", "content": "".join(text) or None,
+                   "_provider_state": {"provider": "openai", "output": copy.deepcopy(output)}}
+        if calls:
+            message["tool_calls"] = calls
+        usage = data.get("usage") or {}
+        refusal = any(part.get("type") == "refusal" for item in output if item.get("type") == "message"
+                      for part in item.get("content", []))
+        incomplete = (data.get("incomplete_details") or {}).get("reason")
+        reason = ("content_filter" if refusal or incomplete == "content_filter" else
+                  "length" if data.get("status") == "incomplete" else "tool_calls" if calls else "stop")
+        return {"id": data.get("id"), "model": data.get("model"),
+                "choices": [{"index": 0, "message": message, "finish_reason": reason}],
+                "usage": {"prompt_tokens": usage.get("input_tokens"),
+                          "completion_tokens": usage.get("output_tokens"),
+                          "total_tokens": usage.get("total_tokens", ((usage.get("input_tokens") or 0) +
+                                                   (usage.get("output_tokens") or 0)) if usage else None),
+                          "completion_tokens_details": usage.get("output_tokens_details") or {}}}
     if provider == "anthropic":
         content = data.get("content")
         if not isinstance(content, list):
@@ -465,6 +577,7 @@ def normalize_response(provider, data):
                     "function": {"name": block.get("name", ""), "arguments": json.dumps(block.get("input") or {})},
                 })
         message = {"role": "assistant", "content": "".join(text) or None}
+        message["_provider_state"] = {"provider": "anthropic", "content": copy.deepcopy(content)}
         if calls:
             message["tool_calls"] = calls
         reason = {"tool_use": "tool_calls", "max_tokens": "length"}.get(data.get("stop_reason"), "stop")
@@ -492,28 +605,33 @@ def normalize_response(provider, data):
         for index, part in enumerate(parts):
             if not isinstance(part, dict):
                 continue
-            if isinstance(part.get("text"), str):
+            if isinstance(part.get("text"), str) and not part.get("thought"):
                 text.append(part["text"])
             function = part.get("functionCall")
             if isinstance(function, dict) and isinstance(function.get("name"), str):
                 calls.append({
-                    "id": "gemini-call-%s" % index,
+                    "id": function.get("id") or "gemini-call-%s-%s" % (data.get("responseId") or uuid.uuid4().hex, index),
                     "type": "function",
                     "function": {"name": function["name"], "arguments": json.dumps(function.get("args") or {})},
                 })
         message = {"role": "assistant", "content": "".join(text) or None}
+        message["_provider_state"] = {"provider": "gemini", "parts": copy.deepcopy(parts)}
         if calls:
             message["tool_calls"] = calls
         usage = data.get("usageMetadata") or {}
         finish = candidate.get("finishReason")
-        reason = "tool_calls" if calls else "length" if finish == "MAX_TOKENS" else "stop"
+        reason = ("length" if finish == "MAX_TOKENS" else
+                  "content_filter" if finish in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
+                  else "tool_calls" if calls else "stop")
         return {
             "id": data.get("responseId"), "model": data.get("modelVersion"),
             "choices": [{"index": 0, "message": message, "finish_reason": reason}],
             "usage": {
-                "prompt_tokens": usage.get("promptTokenCount", 0),
-                "completion_tokens": usage.get("candidatesTokenCount", 0),
-                "total_tokens": usage.get("totalTokenCount", 0),
+                "prompt_tokens": usage.get("promptTokenCount"),
+                "completion_tokens": ((usage.get("candidatesTokenCount") or 0) +
+                                      (usage.get("thoughtsTokenCount") or 0)) if usage else None,
+                "total_tokens": usage.get("totalTokenCount"),
+                "completion_tokens_details": {"reasoning_tokens": usage.get("thoughtsTokenCount")},
             },
         }
     raise ValueError("Unsupported model provider: %s" % provider)

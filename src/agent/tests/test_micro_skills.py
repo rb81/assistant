@@ -14,14 +14,15 @@ from assistant_agent.tools import CORE_TOOL_NAMES, HELP_TOOL_NAMES, LOADABLE_TOO
 from test_network_access import db  # noqa: F401
 
 
-def test_catalog_classifies_each_task_tool_and_keeps_feature_text_out_of_base_prompt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("settings", [{}, {"agent": {"skills": {"enabled": True}}}])
+def test_catalog_classifies_each_task_tool_and_keeps_feature_text_out_of_base_prompt(tmp_path, monkeypatch, settings):
     shipped = core_skills()
     bound = [name for skill in shipped.values() for name in skill.tools]
     assert len(set(bound)) == len(bound)
     assert set(bound) == (LOADABLE_TOOL_NAMES | CORE_TOOL_NAMES) - TERMINAL_TOOL_NAMES - HELP_TOOL_NAMES
     (tmp_path / "AGENT.md").write_text("Use a concise style.")
     monkeypatch.setenv("ASSISTANT_CONFIG_DIR", str(tmp_path))
-    prompt = system_prompt(AppConfig({"agent": {"skills": {"enabled": True}}}))
+    prompt = system_prompt(AppConfig(settings))
     assert "Use a concise style." in prompt
     assert "Never search for, read or print API keys" in prompt
     for skill in shipped.values():
@@ -189,6 +190,32 @@ def test_idle_age_survives_resume_without_expiring_event_or_custom_guidance():
         assert custom.body in guidance
 
 
+@pytest.mark.parametrize(("finish", "calls"), [("length", 2), ("content_filter", 1)])
+def test_research_does_not_execute_truncated_or_refused_calls(finish, calls):
+    config = AppConfig({"agent": {"skills": {"enabled": False}, "embeddings": {"enabled": False}}})
+    db = Mock()
+    db.fetch_one.side_effect = [{"id": 13}, {"id": 14}]
+    agent = DeepResearchAgent(db, config)
+    agent.build_messages = Mock(return_value=[{"role": "system", "content": "fixture"}])
+    agent.still_owns_run = Mock(return_value=True)
+    agent.fail_run = Mock()
+    agent.log_event = Mock()
+    agent.handle_tool_call = Mock()
+    llm = Mock()
+    llm.chat.return_value = {"choices": [{"finish_reason": finish, "message": {
+        "role": "assistant", "tool_calls": [{"id": "call", "function": {"name": "file_write", "arguments": "{}"}}],
+    }}]}
+    with patch("assistant_agent.deep_research.search_configured", return_value=True), \
+            patch("assistant_agent.deep_research.LlmClient", return_value=llm), \
+            patch("assistant_agent.deep_research.ToolRuntime"), \
+            patch("assistant_agent.deep_research.research_tools", return_value=[]), \
+            patch.object(TaskAgent, "inject_new_context_if_needed"):
+        agent.process_run({"id": 7, "original_job_id": 13, "execution_job_id": 14})
+    assert llm.chat.call_count == calls
+    agent.fail_run.assert_called_once()
+    agent.handle_tool_call.assert_not_called()
+
+
 @pytest.mark.parametrize("worker", ["task", "research"])
 def test_worker_logs_remaining_calls_after_a_skill_gate_without_dispatch(worker):
     config = AppConfig({"agent": {"skills": {"enabled": True}, "embeddings": {"enabled": False}}})
@@ -213,6 +240,7 @@ def test_worker_logs_remaining_calls_after_a_skill_gate_without_dispatch(worker)
         agent.create_tool_runtime = Mock(return_value=runtime)
         agent.replay_approved_call = Mock()
         agent.task_limits = Mock(return_value=(3, 1000))
+        agent.execution_usage = Mock(return_value={"iterations": 0, "tokens": 0})
         agent.still_owns_job = Mock(side_effect=[True, True, False])
         agent.inject_new_context_if_needed = Mock()
         agent.tools_for_call = Mock(return_value=[])

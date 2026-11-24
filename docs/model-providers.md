@@ -7,6 +7,49 @@ each supported model role in **Models & Workflows**.
 Explicit native providers must use their official hosts; use
 `openai-compatible` for another endpoint.
 
+Native OpenAI uses the Responses API (`/responses`, `store=false`) so modern
+reasoning/tool models can continue with encrypted reasoning items. Anthropic
+thinking blocks and Gemini thought signatures/native function IDs are preserved
+unchanged across tool continuations. Gemini thoughts are not user-visible text.
+OpenRouter and custom compatible endpoints retain Chat Completions transport.
+
+## Reasoning and output capacity
+
+Use **Generation & reasoning** for tasks and the corresponding route's settings
+for naming, routing, summarization, memory, research and development. Settings
+flow from `agent.yaml` through environment overrides, sidecar metadata, the
+Management API, terminal controls and the macOS client. Saving and activating
+remain separate. Model catalogs expose advertised capability hints; availability
+can change and unknown capabilities are not proof of support.
+
+| Mode | Behavior |
+|---|---|
+| Auto (task default) | Use advertised low effort, otherwise a supported fitting thinking-token budget, otherwise record that provider defaults were used. Native providers currently use provider defaults in Auto because the catalog does not advertise their reasoning capabilities. |
+| Provider default | Send no reasoning controls. This is the default for auxiliary routes. |
+| Off | Request disabled reasoning. Mandatory-thinking models cannot honor this; an explicit unsupported request fails visibly rather than silently changing policy. |
+| Effort | Choose minimal/low/medium/high/xhigh/max where supported. Effort is a preference, **not a hard thinking-token cap**. |
+| Token budget | Set a separate maximum only on models/providers advertising or supporting this control. OpenAI exposes effort, not this separate cap. The budget must be below the call's total output allowance; Anthropic also requires at least 1024 thinking tokens. |
+
+Start with **Auto/low** for ordinary tasks. To choose medium/high for difficult
+planning or recovery, select **Selected effort** and the desired effort on the
+appropriate route; changing the effort field does not change Auto's low policy.
+Then benchmark correctness, time, tool errors
+and tokens. Reasoning can improve decisions, but cannot repair contradictory
+schemas, huge tool results or unproductive polling. Do not globally disable it
+or automatically increase token budgets as a response to those harness defects.
+Task settings omitted from a partial configuration also default to Auto;
+explicit Provider default and auxiliary-route defaults remain unchanged.
+When editing YAML directly, quote `"off"` so YAML does not parse it as a boolean.
+
+The task default total output cap increases from 4096 to **8192** tokens:
+reasoning and visible output share it. Naming defaults to 1024 and routing to
+2048, replacing tiny hardcoded allowances that could be consumed by thinking
+before any title/classification appeared. Other auxiliary call caps remain
+separate. No runtime silently raises a cap. In token-budget mode, leave capacity
+for the visible answer/tool arguments; for example, 2048 thinking tokens within
+an 8192 total cap where the model supports it. Native explicit settings still
+depend on the selected model accepting its provider's API controls.
+
 | Provider | API base URL | Credential | Example model ID |
 |---|---|---|---|
 | OpenRouter | `https://openrouter.ai/api/v1` | `AGENT_LLM_OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |

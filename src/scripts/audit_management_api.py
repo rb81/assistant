@@ -344,6 +344,7 @@ MODEL_TOOL_REQUIREMENTS = {
     "deep_research_request": ("research.start",),
     "deep_research_status": ("research.read",),
     "job_search": ("task.list",),
+    "job_list": ("task.list",),
     "job_read": ("task.read",),
 }
 MODEL_TOOL_REQUIREMENTS.update({
@@ -364,7 +365,7 @@ AGENT_MEDIATED_TOOLS = {
     "file_append", "file_convert", "file_copy", "file_delete", "file_list", "file_move", "file_read",
     "file_search", "file_semantic_search", "file_write", "get_tool_specs", "help_search", "help_topic",
     "llm_service", "memory_forget", "memory_remember", "memory_search", "memory_update",
-    "network_access_request", "reminder_cancel", "reminder_create", "reminder_list", "reminder_update",
+    "network_access_request", "reminder_cancel", "reminder_create", "reminder_list", "reminder_read", "reminder_update",
     "request_input", "request_limit_increase", "runtime_capabilities", "script_approval_request",
     "skill_list", "skill_search", "skill_load", "skill_save",
     "script_development_review", "telegram_send", "text_to_speech", "web_fetch", "web_search", "workstream_attach",

@@ -395,6 +395,8 @@ class ToolRuntime:
         except (TypeError, ValueError):
             requested_limit = configured_limit
         limit = min(max(requested_limit, 1), configured_limit)
+        if self.is_tool_cache_path(target):
+            limit = min(limit, 8192)
         try:
             clean_offset = max(int(offset or 0), 0)
         except (TypeError, ValueError):
@@ -410,6 +412,7 @@ class ToolRuntime:
             "content": data.decode("utf-8", errors="replace"),
             "offset": clean_offset,
             "bytes_read": len(data),
+            "read_limit_bytes": limit,
             "next_offset": next_offset,
             "size_bytes": size_bytes,
             "truncated": next_offset < size_bytes,
@@ -1490,7 +1493,7 @@ class ToolRuntime:
         if row is None:
             return None
         result = dict(row)
-        if isinstance(self.db, Database) and result.get("object_id") is not None:
+        if isinstance(self.db, Database) and result.get("object_id") is not None and "object_version" not in result:
             version = self.db.fetch_one(
                 "SELECT version FROM workstream_objects WHERE id = %s",
                 (result["object_id"],),
@@ -1586,6 +1589,31 @@ class ToolRuntime:
             "linked_reminder": linked_reminder,
         }
 
+    def job_list(self, statuses: Optional[list[str]] = None, before_id: Optional[int] = None,
+                 limit: int = 10) -> dict[str, Any]:
+        allowed = {"queued", "running", "waiting", "completed", "failed", "needs_review", "cancelled"}
+        statuses = ["queued", "running", "waiting", "needs_review"] if statuses is None else statuses
+        if not isinstance(statuses, list) or not statuses or any(
+            not isinstance(status, str) or status not in allowed for status in statuses
+        ):
+            raise ToolError("statuses must be a nonempty array of valid job statuses")
+        if before_id is not None and (type(before_id) is not int or before_id <= 0):
+            raise ToolError("before_id must be a positive job ID")
+        size = self._bounded_limit(limit, default=10, maximum=50)
+        rows = self.db.fetch_all(
+            """SELECT id, thread_id, left(task_summary, 301) AS task_summary, status,
+                      jsonb_build_object('final_response', left(metadata->>'final_response', 200)) AS metadata,
+                      created_at, completed_at
+               FROM jobs WHERE deleted_at IS NULL AND status = ANY(%s)
+                 AND (%s::bigint IS NULL OR id < %s)
+               ORDER BY id DESC LIMIT %s""",
+            (statuses, before_id, before_id, size + 1),
+        )
+        page = rows[:size]
+        more = len(rows) > size
+        return {"jobs": [self._compact_job_result(row) for row in page], "has_more": more,
+                "next_before_id": page[-1]["id"] if more else None, "complete": not more}
+
     def workstream_attach(self, kind: str, key: str) -> dict[str, Any]:
         from .workstreams import WorkstreamStore
         job = self.db.fetch_one("SELECT workstream_id FROM jobs WHERE id = %s", (self.job["id"],))
@@ -1616,7 +1644,8 @@ class ToolRuntime:
         final_response = str(metadata.get("final_response") or "")[:200]
         return {
             "id": row["id"],
-            "task_summary": row.get("task_summary"),
+            "task_summary": str(row.get("task_summary") or "")[:300],
+            "task_summary_truncated": len(str(row.get("task_summary") or "")) > 300,
             "status": row.get("status"),
             "final_response_preview": final_response if final_response else None,
             "created_at": str(row.get("created_at") or ""),
@@ -1962,34 +1991,65 @@ class ToolRuntime:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
 
-    def reminder_list(self, status: Optional[str] = None, limit: int = 20) -> dict[str, Any]:
+    def reminder_list(self, status: Optional[str] = None, limit: int = 10,
+                      offset: int = 0, include_details: bool = False) -> dict[str, Any]:
         allowed_statuses = {"scheduled", "queued", "completed", "failed", "cancelled"}
-        max_rows = self._bounded_limit(limit, default=20, maximum=100)
+        max_rows = self._bounded_limit(limit, default=10, maximum=100)
+        if type(offset) is not int or offset < 0 or type(include_details) is not bool:
+            raise ToolError("offset must be nonnegative and include_details must be a boolean")
         clean_status = str(status or "").strip().lower()
         if clean_status and clean_status not in allowed_statuses:
             raise ToolError("invalid reminder status")
+        columns = "*" if include_details else (
+            "id, left(title, 160) AS title, length(title) > 160 AS title_truncated, "
+            "left(task, 161) AS task, status, run_at, job_id, object_id, "
+            "recurrence_unit, recurrence_interval, priority, "
+            "(SELECT version FROM workstream_objects WHERE id = reminders.object_id) AS object_version"
+        )
         if clean_status:
             rows = self.db.fetch_all(
-                """
-                SELECT *
+                f"""
+                SELECT {columns}
                 FROM reminders
                 WHERE status = %s
                 ORDER BY run_at ASC, id ASC
-                LIMIT %s
+                LIMIT %s OFFSET %s
                 """,
-                (clean_status, max_rows),
+                (clean_status, max_rows + 1, offset),
             )
         else:
             rows = self.db.fetch_all(
-                """
-                SELECT *
+                f"""
+                SELECT {columns}
                 FROM reminders
                 ORDER BY run_at ASC, id ASC
-                LIMIT %s
+                LIMIT %s OFFSET %s
                 """,
-                (max_rows,),
+                (max_rows + 1, offset),
             )
-        return {"reminders": [self._reminder_result(row) for row in rows]}
+        items = []
+        for row in rows[:max_rows]:
+            if include_details:
+                items.append(self._reminder_result(row))
+                continue
+            item = {key: row.get(key) for key in (
+                "id", "title", "title_truncated", "status", "run_at", "job_id", "object_id", "object_version",
+                "recurrence_unit", "recurrence_interval", "priority",
+            )}
+            item["task_preview"] = str(row.get("task") or "")[:160]
+            item["task_truncated"] = len(str(row.get("task") or "")) > 160
+            items.append(self._reminder_result(item))
+        more = len(rows) > max_rows
+        return {"reminders": items, "has_more": more, "complete": not more,
+                "next_offset": offset + max_rows if more else None}
+
+    def reminder_read(self, reminder_id: int) -> dict[str, Any]:
+        if type(reminder_id) is not int or reminder_id <= 0:
+            raise ToolError("reminder_id must be a positive integer")
+        row = self.db.fetch_one("SELECT * FROM reminders WHERE id = %s", (reminder_id,))
+        if row is None:
+            raise ToolError("reminder not found")
+        return {"reminder": self._reminder_result(row)}
 
     def reminder_update(
         self,
@@ -2748,6 +2808,7 @@ class ToolRuntime:
             "contact_delete": self.contact_delete,
             "reminder_create": self.reminder_create,
             "reminder_list": self.reminder_list,
+            "reminder_read": self.reminder_read,
             "reminder_update": self.reminder_update,
             "reminder_cancel": self.reminder_cancel,
 
@@ -2781,6 +2842,7 @@ class ToolRuntime:
             "dropbox_delete": self.dropbox_delete,
             "context_search": self.context_search,
             "job_search": self.job_search,
+            "job_list": self.job_list,
             "job_read": self.job_read,
             "workstream_list": self.workstream_list,
             "workstream_read": self.workstream_read,
@@ -3378,12 +3440,14 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
         "type": "function",
         "function": {
             "name": "reminder_list",
-            "description": "List scheduled, queued, completed, failed, or cancelled reminders.",
+            "description": "List compact reminder summaries. Follow next_offset until complete before claiming to list all reminders. Use reminder_read for full instructions.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "status": {"type": "string", "enum": ["scheduled", "queued", "completed", "failed", "cancelled"]},
-                    "limit": {"type": "integer", "default": 20},
+                    "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "include_details": {"type": "boolean", "default": False},
                 },
             },
         },
@@ -3794,7 +3858,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                     "already_delivered": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Set true only when the complete result was successfully delivered to the requester for this request and no meaningful update remains. Runtime verification is required. Supply only summary and omit response.",
+                        "description": "Set true only when a channel tool successfully delivered the complete result to the requester for this request and no meaningful update remains. Plain assistant text and internal reasoning are not delivery. Runtime verification is required. Supply only summary and omit response.",
                     },
                     "deliver_update": {
                         "type": "boolean",
@@ -3862,7 +3926,7 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Keyword search query."},
-                    "status": {"type": "string", "enum": ["completed", "failed", "pending", "processing"], "description": "Optional status filter."},
+                    "status": {"type": "string", "enum": ["queued", "running", "waiting", "completed", "failed", "needs_review", "cancelled"], "description": "Optional status filter. Use job_list to enumerate pending tasks without a keyword."},
                     "limit": {"type": "integer", "default": 10, "description": "Maximum results to return."},
                 },
                 "required": ["query"],
@@ -3889,6 +3953,23 @@ FUNCTION_TOOLS = ZOOM_FUNCTION_TOOLS + DROPBOX_FUNCTION_TOOLS + TELEGRAM_FUNCTIO
 FUNCTION_TOOLS.append(MODEL_SERVICE_TOOL)
 FUNCTION_TOOLS.append(TEXT_TO_SPEECH_TOOL)
 FUNCTION_TOOLS.extend([
+    {"type": "function", "function": {
+        "name": "job_list",
+        "description": "Enumerate tasks without a keyword. Defaults to queued, running, waiting and needs_review. Follow next_before_id until complete; job_read retrieves details.",
+        "parameters": {"type": "object", "properties": {
+            "statuses": {"type": "array", "items": {"type": "string", "enum": [
+                "queued", "running", "waiting", "completed", "failed", "needs_review", "cancelled",
+            ]}},
+            "before_id": {"type": "integer", "minimum": 1},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "reminder_read", "description": "Read full instructions and current version of one reminder.",
+        "parameters": {"type": "object", "properties": {
+            "reminder_id": {"type": "integer", "minimum": 1},
+        }, "required": ["reminder_id"]},
+    }},
     {"type": "function", "function": {
         "name": "help_search",
         "description": "Search documentation bundled with this running build. Returns bounded sections with topic IDs and a revision. Use for architecture, tools, approvals and sandbox restrictions instead of reading documentation files.",
@@ -3939,11 +4020,11 @@ CALENDAR_TOOL_NAMES = {
 }
 MEMORY_TOOL_NAMES = {"memory_remember", "memory_search", "memory_update", "memory_forget"}
 CONTACT_TOOL_NAMES = {"contact_search", "contact_read", "contact_create", "contact_update", "contact_delete"}
-REMINDER_TOOL_NAMES = {"reminder_create", "reminder_list", "reminder_update", "reminder_cancel"}
+REMINDER_TOOL_NAMES = {"reminder_create", "reminder_list", "reminder_read", "reminder_update", "reminder_cancel"}
 DEEP_RESEARCH_REQUEST_TOOL_NAMES = {"deep_research_request"}
 DEEP_RESEARCH_STATUS_TOOL_NAMES = {"deep_research_status"}
 DEEP_RESEARCH_TOOL_NAMES = DEEP_RESEARCH_REQUEST_TOOL_NAMES | DEEP_RESEARCH_STATUS_TOOL_NAMES
-CONTEXT_TOOL_NAMES = {"context_search", "job_search", "job_read", "workstream_attach", "workstream_list", "workstream_read"}
+CONTEXT_TOOL_NAMES = {"context_search", "job_search", "job_list", "job_read", "workstream_attach", "workstream_list", "workstream_read"}
 ASYNC_REQUEST_TOOL_NAMES = DEEP_RESEARCH_REQUEST_TOOL_NAMES
 TERMINAL_TOOL_NAMES = {"task_complete", "task_failed", "request_input"}
 CORE_TOOL_NAMES = TERMINAL_TOOL_NAMES | {"email_send"}
@@ -4119,6 +4200,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "contact_delete": "Delete a contact by ID.",
         "reminder_create": "Schedule a future notification, agent task or pre-approved script run.",
         "reminder_list": "List reminders.",
+        "reminder_read": "Read one reminder's full instructions.",
         "reminder_update": "Update a scheduled reminder.",
         "reminder_cancel": "Cancel a reminder.",
 
@@ -4142,6 +4224,7 @@ def tool_catalog(config: AppConfig, job: Optional[dict[str, Any]] = None) -> str
         "calendar_delete_event": "Delete an assistant-managed calendar event via the provider API.",
         "context_search": "Semantic search across supported data sources (jobs, reminders, emails, memories, contacts).",
         "job_search": "Search past jobs by keyword with optional status filter.",
+        "job_list": "Enumerate pending tasks with pagination, without a keyword.",
         "job_read": "Read full details of a past job by ID.",
         "workstream_attach": "Adopt a contact or file into this workstream without transferring ownership.",
         "workstream_list": "Discover workstreams by title and ID.",

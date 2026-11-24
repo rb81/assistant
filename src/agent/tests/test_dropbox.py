@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from conftest import complete_model_settings
 from assistant_agent.config import AppConfig
 from assistant_agent.dropbox_provider import DropboxClient, DropboxError, authorization, content_hash, exchange_code, remote_path
 
@@ -594,6 +595,7 @@ class DropboxSetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
             instance.values = {"AGENT_LLM_MODEL": "model", "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1"}
+            complete_model_settings(instance.values, "model")
             instance.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
             instance.save()
             paths = [Path(root) / "data" / name for name in (".env", ".compose-secrets.yaml", ".secrets/state.json")]
@@ -611,6 +613,7 @@ class DropboxSetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             instance = Installation(root)
             instance.values = {"AGENT_LLM_MODEL": "model", "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1", "AGENT_DROPBOX_ENABLED": "true"}
+            complete_model_settings(instance.values, "model")
             instance.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
             with self.assertRaisesRegex(SetupError, "AGENT_DROPBOX_CLIENT_ID"):
                 validate_draft(instance)

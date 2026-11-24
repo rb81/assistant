@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 from .config import AppConfig, app_display_name, app_referer_url
 from .prompt_context import refresh_request_context
 from .secret_store import read_secret
+from .reasoning import configure as configure_reasoning
 from .transport_security import open_https_request, validate_https_url
 from .openrouter_policy import apply_routing_policy, is_openrouter_url, require_zdr_eligibility
 from .llm_providers import (
@@ -71,7 +72,7 @@ class LlmClient:
             return self._chat_with_model(self.model, messages, tools)
         except _TransientLlmError as exc:
             if not self.allow_fallback:
-                raise RuntimeError(str(exc)) from exc
+                raise LlmRequestError(str(exc), status_code=exc.status_code) from exc
             fallback_specs = (
                 route_fallbacks(self.config, self.route, self.provider)
                 if self.route else route_fallbacks(self.config, "task", self.provider)
@@ -98,7 +99,7 @@ class LlmClient:
                     )
                 except _TransientLlmError as fallback_exc:
                     last_error = fallback_exc
-            raise RuntimeError(str(last_error)) from last_error
+            raise LlmRequestError(str(last_error), status_code=last_error.status_code) from last_error
 
     @staticmethod
     def _api_key(provider: str) -> str:
@@ -123,8 +124,9 @@ class LlmClient:
             else self.config.get_float("agent.llm.temperature", 0.2),
             "max_tokens": self.max_tokens
             if self.max_tokens is not None
-            else self.config.get_int("agent.llm.max_tokens_per_call", 4096),
+            else self.config.get_int("agent.llm.max_tokens_per_call", 8192),
         }
+        reasoning = configure_reasoning(self.config, provider, model, self.route, payload)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -154,18 +156,35 @@ class LlmClient:
         )
         try:
             with open_https_request(request, timeout=self.timeout_seconds) as response:
-                return normalize_response(provider, json.loads(response.read().decode("utf-8")))
+                body = response.read(8 * 1024 * 1024 + 1)
+                if len(body) > 8 * 1024 * 1024:
+                    raise LlmRequestError("Model response exceeded the 8 MiB safety limit; request charge is uncertain")
+                result = normalize_response(provider, json.loads(body.decode("utf-8")))
+                result["_request_metadata"] = {
+                    "provider": provider, "requested_model": self.model, "attempted_model": model,
+                    "fallback": model != self.model or provider != self.provider, "actual_model": result.get("model"),
+                    "route": self.route, "output_token_cap": payload["max_tokens"], "reasoning": reasoning,
+                }
+                return result
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             msg = "LLM request failed with HTTP %s: %s" % (exc.code, detail)
             if exc.code in {400, 404} and is_openrouter_url(base_url) and self.config.get_list("agent.llm.allowed_providers"):
                 msg += " Check the allowed OpenRouter providers, model availability, and ZDR settings."
             if exc.code in _RETRYABLE_HTTP_CODES:
-                raise _TransientLlmError(msg) from exc
-            raise RuntimeError(msg) from exc
+                raise _TransientLlmError(msg, status_code=exc.code) from exc
+            raise LlmRequestError(msg, status_code=exc.code) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError("LLM request failed: %s" % exc) from exc
+            raise LlmRequestError("LLM transport failed; charge may be uncertain: %s" % exc) from exc
+        except (TimeoutError, OSError) as exc:
+            raise LlmRequestError("LLM transport interrupted; charge may be uncertain: %s" % exc) from exc
 
 
-class _TransientLlmError(Exception):
+class LlmRequestError(RuntimeError):
+    def __init__(self, message, *, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _TransientLlmError(LlmRequestError):
     """Raised for HTTP errors that are transient (rate limit, overload) and worth retrying."""

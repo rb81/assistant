@@ -286,6 +286,42 @@ class FakeContactDatabase:
 
 
 class ToolWebSearchAndReminderTest(unittest.TestCase):
+    def test_projects_have_bounded_keyword_free_task_pages(self):
+        database = MagicMock()
+        database.fetch_all.side_effect = [
+            [{"id": 3, "task_summary": "x" * 301, "status": "waiting"},
+             {"id": 2, "task_summary": "next", "status": "queued"}],
+            [{"id": 2, "task_summary": "next", "status": "queued"}],
+        ]
+        runtime = ToolRuntime(database, AppConfig({}), {"id": 7})
+        first = runtime.job_list(limit=1)
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["next_before_id"], 3)
+        self.assertTrue(first["jobs"][0]["task_summary_truncated"])
+        self.assertEqual(len(first["jobs"][0]["task_summary"]), 300)
+        last = runtime.job_list(before_id=first["next_before_id"], limit=1)
+        self.assertTrue(last["complete"])
+        self.assertIsNone(last["next_before_id"])
+        with self.assertRaises(ToolError):
+            runtime.job_list(statuses=["pending"])
+
+    def test_reminder_pages_omit_large_instructions_and_detail_read_preserves_version(self):
+        database = MagicMock()
+        database.fetch_all.return_value = [
+            {"id": 1, "title": "Reminder", "task": "x" * 161, "object_version": 7},
+            {"id": 2, "task": "next"},
+        ]
+        database.fetch_one.return_value = {"id": 1, "task": "x" * 50000, "object_version": 7}
+        runtime = ToolRuntime(database, AppConfig({}), {"id": 7})
+        page = runtime.reminder_list(limit=1)
+        self.assertEqual(page["next_offset"], 1)
+        self.assertNotIn("task", page["reminders"][0])
+        self.assertTrue(page["reminders"][0]["task_truncated"])
+        self.assertEqual(page["reminders"][0]["object_version"], 7)
+        detail = runtime.reminder_read(1)["reminder"]
+        self.assertEqual(len(detail["task"]), 50000)
+        self.assertEqual(detail["object_version"], 7)
+
     def test_contact_tools_are_loadable_without_optional_services(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = AppConfig({"agent": {"filesystem": {"shared_root": temp_dir, "require_mount": False}}})

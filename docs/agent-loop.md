@@ -3,6 +3,54 @@
 This page summarizes task-agent job execution, state transitions, and pause/resume
 behavior.
 
+## End-to-end chain
+
+| Stage | Work and boundaries |
+|---|---|
+| Intake | Email, Telegram, authenticated Management API/client requests, or due reminders establish the requester and reply route. Authentication and permissions come from trusted channel state, not model claims. |
+| Preprocessing | Extract and screen incoming content. The request router uses a separate model/reasoning policy, read-only searches and a deadline; failure uses logged deterministic routing. Routing happens before a task exists and is not included in its token ceiling. |
+| Queue and claim | Persist the request/job, associate its workstream, then claim it under a worker lock. Retries retain the same job and lifetime counters. |
+| Naming and context | Name tasks/conversations within their own output cap. Assemble current instructions, requester context, relevant memory, prior effects and checkpoints. Naming and task-triggered summarization usage is logged against the task. |
+| Skills and inference | Start with core/discovery tools. Load relevant guidance/specifications, retain guidance across related calls, and expire idle guidance. Include tool schemas in the context safety limit; persist compaction instead of repeatedly summarizing the same history. |
+| Tool execution | Check ownership/new requester context, parse calls, enforce approvals and execute sequentially. Large cacheable results become bounded previews and retrieval pointers; compact listing pages stay inline. Listing tasks/reminders does not authorize executing them. |
+| Pause and recovery | Input, approval and asynchronous work checkpoint the conversation and loaded tools. Budget, repeated unchanged evidence, incomplete output or unsafe-to-retry model errors pause for review. Explicit transient HTTP failures may follow configured fallback/retry policy; uncertain transport failures do not. |
+| Completion | Verify required outcomes and actual delivery. Route the user-visible answer once, then record the short internal completion summary and run enabled memory stewardship under its separate service policy. A failed or uncertain send is not successful completion. |
+
+Reasoning does not grant permissions, replace verification, or make status
+polling productive. See [model providers](model-providers.md#reasoning-and-output-capacity)
+for route-specific controls and [model performance testing](model-performance-testing.md)
+for isolated, paid comparisons.
+
+## Execution limits and diagnostics
+
+Model/tool-loop requests and reported token usage accumulate over the job's
+retries and resumes. An admin override is a **new absolute lifetime ceiling**,
+not a fresh allowance. Increase it beyond usage already incurred to permit work.
+Checks run before inference and after each response, including empty responses,
+before any returned tools execute. A response can exceed the remaining token
+allowance because its input/output usage is known only after inference; this is
+not a provider billing cap. Missing usage cannot be reconstructed reliably.
+Pre-task routing, embeddings and post-task/background memory services are not
+covered by that task-loop ceiling; their own service limits and provider spending
+controls still matter.
+
+The default task output allowance is 8192 tokens, shared by reasoning and visible
+output. It is never automatically increased. Two consecutive empty or
+length-limited responses pause for review by default. A third repeated unchanged
+read/error warns; a fourth pauses, even if discovery calls intervene. Changing
+arguments/results counts as progress; successful mutations and skill deferrals
+are not classified as repeated reads.
+
+Request/response logs expose requested, attempted and actual model, provider,
+fallback use, reasoning policy/decision, output cap, finish reason, timing and
+reported usage. Auxiliary task-model services have separate log events. Native
+reasoning/signature state is retained for continuations and checkpoints, not
+presented as the visible answer. Checkpoints remain sensitive conversation data.
+Cache-file reads are capped at 8192 bytes and return an explicit next offset,
+preventing one full-file read from restoring the original oversized result.
+Budget stops checkpoint without launching another summarization or memory
+consolidation request.
+
 ## Job Statuses
 
 `jobs.status` can be:
@@ -54,7 +102,8 @@ Each iteration:
 ## Completion and Terminal Rules
 
 `task_complete.summary` is one brief internal outcome sentence (roughly 20 words
-or fewer), not a full reply or a message to the user. Communicate the result once:
+or fewer), not a full reply or a message to the user. Plain assistant text and
+internal reasoning are drafts, not delivered replies. Communicate the result once:
 
 - If the result has not been delivered, include the actual answer in `response`.
   Automatically routed jobs deliver it through `ReplyRouter`; failed or uncertain

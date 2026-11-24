@@ -424,6 +424,6 @@ def tool_status(config: AppConfig) -> dict[str, Any]:
         "limits": {
             "max_iterations_per_task": config.get_int("agent.limits.max_iterations_per_task", 50),
             "max_tokens_per_task": config.get_int("agent.limits.max_tokens_per_task", 1000000),
-            "max_tokens_per_call": config.get_int("agent.llm.max_tokens_per_call", 4096),
+            "max_tokens_per_call": config.get_int("agent.llm.max_tokens_per_call", 8192),
         },
     }

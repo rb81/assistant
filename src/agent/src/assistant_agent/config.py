@@ -112,7 +112,10 @@ def load_config() -> AppConfig:
             value = raw_value
         _set_nested(values, path_name, value)
 
-    return AppConfig(values)
+    config = AppConfig(values)
+    from .reasoning import validate_config
+    validate_config(config)
+    return config
 
 
 def _clean_config_text(config: AppConfig, path: str, default: str) -> str:

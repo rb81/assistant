@@ -2,6 +2,52 @@
 
 ## Unreleased: Server and client management refresh
 
+- Model execution now has optional, route-specific reasoning controls, advertised
+  capability hints, reviewed API/TUI/macOS settings and explicit finish-reason,
+  provider/model, fallback, timing and usage diagnostics. Effort is not a hard
+  thinking-token cap; supported token budgets share the total output allowance.
+- **Changed defaults:** task output capacity is 8192 (formerly 4096); configurable
+  naming/routing caps are 1024/2048 instead of hardcoded 60-120/800. Existing
+  overrides remain effective. Auto is the task reasoning default; auxiliary
+  routes retain provider defaults. Caps never increase automatically at runtime.
+  Partial configurations missing the task reasoning policy also use Auto.
+  The setup wizard now uses the same 8192-token default, including reasoning.
+  Missing skill settings enable guidance as shipped, and model discovery without
+  a legacy URL uses the shipped OpenRouter endpoint. Optional legacy URL/fallback
+  lookups remain explicit and do not enable unrequested fallback models.
+  Speech configuration validation now uses the same default model as synthesis.
+- **Changed recovery:** task iteration/reported-token limits are cumulative across
+  retries and resumes. Admin overrides are absolute lifetime ceilings. Two
+  consecutive empty/truncated outputs and repeated unchanged evidence stop for
+  review. Deterministic model errors and uncertain transport failures no longer
+  enter automatic task retry loops. Explicit transient fallback policy remains.
+  Limit stops checkpoint without additional memory/summarization inference.
+- Large cacheable tool results now reach the model as bounded pointers/previews,
+  not the full cached payload. Small compact listing pages remain inline.
+  `job_list` supports keyword-free paginated task review; `job_search` advertises
+  only accepted statuses. `reminder_list` now defaults to compact pages of 10;
+  callers needing full rows must request details or use new `reminder_read`.
+  Review skills explicitly paginate and do not execute listed work.
+- Native OpenAI switches to Responses API. Native Anthropic/Gemini preserve
+  reasoning/signature state; Gemini hides internal thoughts and preserves native
+  call IDs. Native model support still requires provider/model validation.
+- An isolated candidate-harness benchmark can be uploaded as one script and use
+  saved OpenRouter credentials without deployment, database access, or live
+  integrations. It compares task/reminder review and reasoning policies under
+  finite limits; real model/judge requests incur charges. No cross-model success
+  is asserted before running it.
+- Benchmark detail-read fixtures now support advertised task/reminder reads and
+  bounded cached-file retrieval using absolute or shared-root-relative paths,
+  with cache-scope checks. Missing-fixture errors are reported separately,
+  and valid fenced judge JSON is accepted without weakening grade validation.
+  Internal drafts are not treated as delivered replies when judging.
+  Runtime guidance also explicitly distinguishes drafts from confirmed delivery.
+- Settings audits and model-route, delivery-diagnostic, setup and terminal test
+  fixtures are aligned with current contracts. Terminal socket fixtures use
+  short private paths, independent of checkout/test-directory length.
+  Administration test clients include the supported `httpx2` transport rather
+  than using Starlette's deprecated compatibility path.
+
 - Tool-bound skill guidance stays active across related calls and expires after
   two unused model turns, reducing repeated skill-gate deferrals. Task and research
   activity logs now include every remaining call skipped after a skill gate.

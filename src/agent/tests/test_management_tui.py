@@ -22,6 +22,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.widgets import Checkbox
 
+from conftest import complete_model_settings
 from assistant_agent.management import GROUPS, Management
 from assistant_agent.management_api import configuration_groups
 from assistant_agent.management_help import GROUP_HELP, credential_help, field_help, page_help
@@ -266,6 +267,7 @@ def test_keyboard_model_edit_review_and_save_preserves_other_fields_and_existing
         instance = Installation(root)
         instance.values.update(AGENT_IDENTITY_NAME="Assistant", AGENT_APP_TIMEZONE="UTC", AGENT_LLM_MODEL="old-model",
                                AGENT_LLM_BASE_URL="https://openrouter.ai/api/v1")
+        complete_model_settings(instance.values, "old-model")
         instance.secret_values.update(AGENT_DATABASE_PASSWORD="database-password", AGENT_LLM_OPENROUTER_API_KEY="existing-key")
         instance.state["setup_complete"] = True
         instance.prompt_copy = b"Ask for approval before taking external actions."
@@ -438,7 +440,7 @@ def test_native_security_form_exposes_and_stages_development_supervisor_settings
             key = "AGENT_SECURITY_DEVELOPMENT_MODEL"
             assert ui.form[key].text == ""
             ui.app.layout.focus(ui.form[key])
-            assert "OpenRouter model ID" in ui.context_topic()[1]
+            assert "development route's provider" in ui.context_topic()[1]
             ui.form[key].text = "openai/gpt-sol-6.1"
             ui.form["AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES"].text = "15"
             ui.form["AGENT_SECURITY_DEVELOPMENT_MAX_RUNS"].text = "8"
@@ -657,6 +659,7 @@ def test_first_run_native_forms_review_and_confirm_save_persist_without_running_
             await asyncio.sleep(0.05)
             ui.go("Form:models")
             ui.form["AGENT_LLM_MODEL"].text = "chosen-model"
+            complete_model_settings(ui.backend.values, "chosen-model")
             ui.go("Form:providers")
             ui.form["AGENT_LLM_OPENROUTER_API_KEY"].text = "PRIVATE-MODEL-KEY"
             ui.go("Form:catalog:database")

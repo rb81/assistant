@@ -125,7 +125,7 @@ def recommendation_keyword_match(query: str, query_terms: set[str], skill: Skill
 
 
 def enabled(config) -> bool:
-    return config.get_bool("agent.skills.enabled", False)
+    return config.get_bool("agent.skills.enabled", True)
 
 
 class SkillStore:

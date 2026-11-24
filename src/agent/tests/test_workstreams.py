@@ -845,6 +845,7 @@ def test_research_worker_preserves_completed_effects_and_defers_stale_calls(stor
     )
     store.config.values["agent"]["filesystem"]["require_mount"] = False
     store.config.values["agent"]["memory"] = {"steward": {"enabled": False}}
+    store.config.values["agent"]["skills"] = {"enabled": True}
     store.db.update_job_status(source["id"], "waiting")
     run = store.db.for_job(source["id"]).fetch_one(
         """INSERT INTO deep_research_runs(original_job_id, original_thread_id, title, research_question)
@@ -862,8 +863,10 @@ def test_research_worker_preserves_completed_effects_and_defers_stale_calls(stor
         return result
 
     def response(messages, tools):
-        if model.chat.call_count == 1:
-            if interrupt == "cancel":
+        if model.chat.call_count <= 2:
+            if model.chat.call_count == 2:
+                assert any("not_executed" in str(item.get("content")) for item in messages)
+            if model.chat.call_count == 2 and interrupt == "cancel":
                 store.db.update_job_status(source["id"], "cancelled")
             calls = [
                 {"id": path, "function": {"name": "file_write",
@@ -883,6 +886,7 @@ def test_research_worker_preserves_completed_effects_and_defers_stale_calls(stor
         model = llm.return_value
         model.chat.side_effect = response
         assert DeepResearchAgent(store.db, store.config).run_once()
+        assert model.chat.call_count == (2 if interrupt == "cancel" else 3)
     root = Path(store.config.get("agent.filesystem.shared_root"))
     assert (root / "first.txt").exists() == (interrupt != "cancel")
     assert (root / "second.txt").exists() == (interrupt is None)

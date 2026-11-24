@@ -42,7 +42,8 @@ def review_email(payload, config=None):
 
             response = LlmClient(
                 config, model=config.get("agent.naming.model", "openai/gpt-4.1-mini"),
-                max_tokens=120, timeout_seconds=15, allow_fallback=False, route="naming",
+                max_tokens=config.get_int("agent.naming.max_tokens_per_call", 1024),
+                timeout_seconds=15, allow_fallback=False, route="naming",
             ).chat([
                 {"role": "system", "content": (
                     "Summarize this email request in one or two short sentences. "

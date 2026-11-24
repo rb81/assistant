@@ -153,7 +153,7 @@ def test_cloudflare_rejects_non_base_api_urls(provider):
 
 
 @pytest.mark.parametrize(("provider", "base_url", "model", "expected_url", "header"), [
-    ("openai", "https://api.openai.com/v1", "gpt-4.1", "https://api.openai.com/v1/chat/completions",
+    ("openai", "https://api.openai.com/v1", "gpt-4.1", "https://api.openai.com/v1/responses",
      "Authorization"),
     ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-6", "https://api.anthropic.com/v1/messages",
      "x-api-key"),
@@ -169,6 +169,7 @@ def test_native_provider_request_routing(provider, base_url, model, expected_url
     config = AppConfig({"agent": {"llm": {"provider": provider, "base_url": base_url, "model": model}}})
     response = MagicMock()
     response_body = {
+        "openai": b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}',
         "anthropic": b'{"content":[{"type":"text","text":"ok"}]}',
         "gemini": b'{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}',
     }.get(provider, b'{"choices":[{"message":{"content":"ok"}}]}')
@@ -253,7 +254,7 @@ def test_gemini_tools_are_translated_and_normalized():
 
 
 def test_openai_sets_store_false_and_cloudflare_disables_gateway_payload_storage():
-    payload = {"model": "gpt-4.1", "messages": []}
+    payload = {"model": "gpt-4.1", "messages": [], "max_tokens": 256}
     _, _, body = build_request("openai", "https://api.openai.com/v1", "key", payload)
     assert json.loads(body)["store"] is False
     _, headers, _ = build_request(
@@ -281,12 +282,12 @@ def test_explicit_model_route_uses_its_selected_provider():
         "model_routes": {"task": {"provider": "openai", "fallbacks": []}},
     }})
     response = MagicMock()
-    response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+    response.__enter__.return_value.read.return_value = b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}'
     with patch("assistant_agent.llm_client.read_secret", return_value="openai-key"), \
             patch("assistant_agent.llm_client.refresh_request_context", side_effect=lambda messages, _: messages), \
             patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
         LlmClient(config, route="task").chat([{"role": "user", "content": "hello"}], [])
-    assert send.call_args.args[0].full_url == "https://api.openai.com/v1/chat/completions"
+    assert send.call_args.args[0].full_url == "https://api.openai.com/v1/responses"
 
 
 def test_explicit_cross_provider_fallbacks_are_ordered_and_disabled_providers_block():

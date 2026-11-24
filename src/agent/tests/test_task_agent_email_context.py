@@ -480,7 +480,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         self.assertEqual(job["metadata"]["title"], "Female Voice Note")
         self.assertEqual(job["task_summary"], "Create a female voice note and send it on Telegram")
         self.assertEqual(llm.call_args.kwargs, {
-            "model": "example/cheap", "max_tokens": 60, "timeout_seconds": 15, "allow_fallback": False,
+            "model": "example/cheap", "max_tokens": 1024, "timeout_seconds": 15, "allow_fallback": False,
             "route": "naming",
         })
 
@@ -593,6 +593,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
         agent.admin_review_resume_messages = MagicMock(return_value=[])
         agent.initial_tool_names = MagicMock(return_value=set())
         agent.task_limits = MagicMock(return_value=(5, 20))
+        agent.execution_usage = MagicMock(return_value={"iterations": 0, "tokens": 0})
         agent.still_owns_job = MagicMock(return_value=True)
         agent.inject_new_context_if_needed = MagicMock()
         agent.messages_for_call = MagicMock(return_value=[])
@@ -679,6 +680,7 @@ class TaskAgentEmailContextTest(unittest.TestCase):
                     "filesystem": {"shared_root": temp_dir.name},
                     "projects": {"enabled": False},
                     "deep_research": {"enabled": False},
+                    "skills": {"enabled": False},
                 }
             }
         )
