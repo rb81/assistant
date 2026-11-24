@@ -1717,7 +1717,7 @@ def interactive(options):
             "OpenAI-compatible": ("openai-compatible", previous_url, "", "", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"),
         }
         by_id = {entry[0]: name for name, entry in provider_options.items()}
-        configured = instance.values.get("AGENT_LLM_PROVIDER", "auto")
+        configured = instance.values.get("AGENT_MODEL_ROUTES_TASK_PROVIDER") or instance.values.get("AGENT_LLM_PROVIDER", "auto")
         try:
             inferred = provider_for(instance.defaults, previous_url)
         except ValueError:
@@ -1728,6 +1728,11 @@ def interactive(options):
                                                   default=default_provider))
         provider, default_url, default_model, default_fallback, credential_name = provider_options[provider_name]
         instance.values["AGENT_LLM_PROVIDER"] = provider
+        instance.values["AGENT_MODEL_ROUTES_TASK_PROVIDER"] = provider
+        for route in ("TASK", "NAMING", "ROUTING", "SUMMARIZATION", "MEMORY", "RESEARCH", "DEVELOPMENT"):
+            key = "AGENT_MODEL_ROUTES_" + route + "_PROVIDER"
+            if instance.values.get(key, "").strip().lower() in {"", "auto", "inherit"}:
+                instance.values[key] = provider
         enabled = AppConfig({"enabled": instance.values.get(
             "AGENT_PROVIDERS_ENABLED", instance.defaults.get("agent.providers.enabled"))}).get_list("enabled")
         if provider not in enabled:
@@ -1736,11 +1741,20 @@ def interactive(options):
         disabled = AppConfig({"disabled": instance.values.get(
             "AGENT_PROVIDERS_DISABLED", instance.defaults.get("agent.providers.disabled"))}).get_list("disabled")
         instance.values["AGENT_PROVIDERS_DISABLED"] = ",".join(item for item in disabled if item != provider)
-        instance.values["AGENT_LLM_BASE_URL"] = previous_url if provider == "openai-compatible" else default_url
-        text("AGENT_LLM_BASE_URL", "Model API base URL", default_url)
+        endpoint_provider = "cloudflare" if provider == "cloudflare-gateway" else provider
+        endpoint_key = "AGENT_PROVIDERS_" + endpoint_provider.upper().replace("-", "_") + "_BASE_URL"
+        text(endpoint_key, "Model API base URL", previous_url if provider == "openai-compatible" else default_url)
         credential(credential_name)
         text("AGENT_LLM_MODEL", "Primary model identifier", default_model)
-        text("AGENT_LLM_FALLBACK_MODEL", "Fallback model identifier (optional)", default_fallback)
+        if not instance.state.get("setup_complete"):
+            for key in ("AGENT_NAMING_MODEL", "AGENT_ROUTING_MODEL", "AGENT_LIMITS_SUMMARIZATION_MODEL",
+                        "AGENT_MEMORY_STEWARD_MODEL", "AGENT_DEEP_RESEARCH_MODEL",
+                        "AGENT_SECURITY_DEVELOPMENT_MODEL"):
+                if not instance.values.get(key):
+                    instance.values[key] = instance.values["AGENT_LLM_MODEL"]
+        if not instance.values.get("AGENT_MODEL_ROUTES_TASK_FALLBACKS"):
+            fallback = answer(questionary.text("Task fallback model identifier (optional)", default=default_fallback)).strip()
+            instance.values["AGENT_MODEL_ROUTES_TASK_FALLBACKS"] = ("%s:%s" % (provider, fallback)) if fallback else ""
         instance.values["AGENT_SEARCH_ENABLED"] = str(provider == "openrouter").lower()
         if provider != "openrouter":
             instance.values["AGENT_FUSION_ENABLED"] = "false"
@@ -1791,7 +1805,8 @@ def interactive(options):
             text("AGENT_IDENTITY_EMAIL", "Assistant email identity", instance.values.get("AGENT_EMAIL_SMTP_FROM", ""))
             console.print("Admin requests use a separate, ten-minute OTP/hash email confirmation. No signing key is needed. "
                           "Mail from senders that are not accepted is moved to the quarantine folder unread.")
-        instance.values["AGENT_DEEP_RESEARCH_ENABLED"] = str(enabled and "openrouter.ai" in instance.values.get("AGENT_LLM_BASE_URL", "")).lower()
+        instance.values["AGENT_DEEP_RESEARCH_ENABLED"] = str(
+            enabled and instance.values.get("AGENT_SEARCH_ENABLED", "false") == "true").lower()
         instance.values.setdefault("AGENT_HEARTBEAT_ADMIN_DIGEST_INTERVAL_HOURS", str(
             instance.defaults.get("agent.heartbeat.admin_digest_interval_hours", 0)))
 
@@ -2506,10 +2521,9 @@ def prompt_development_security(instance, answer, confirm, console):
 
     console.print("Development sessions always use an independent, tool-free supervisor unless script YOLO is "
                   "explicitly enabled. The supervisor reviews the entire source version against your approved brief. "
-                  "Leave the model blank to use your agent model, provider and existing credential. Enter an "
-                  "OpenRouter provider/model ID to select another model using AGENT_LLM_OPENROUTER_API_KEY. Presets are not used.")
+                  "Select its provider in model routes and enter a model ID for that provider. Presets are not used.")
     for name, label, default in (
-        ("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID (blank = agent model)", ""),
+        ("AGENT_SECURITY_DEVELOPMENT_MODEL", "Development supervisor model ID", ""),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES", "Maximum development session duration (minutes)", "30"),
         ("AGENT_SECURITY_DEVELOPMENT_MAX_RUNS", "Maximum development session runs", "20"),
     ):
@@ -2780,28 +2794,15 @@ def draft_problems(instance):
                 raise ValueError
         except ValueError:
             problem(section, "Check the port number for " + name)
-    base_url = values.get("AGENT_LLM_BASE_URL", instance.defaults.get("agent.llm.base_url") or "")
     model = values.get("AGENT_LLM_MODEL", instance.defaults.get("agent.llm.model"))
-    try:
-        if not model or not str(model).strip():
-            raise RuntimeError
-        validate_https_url(base_url, "Model API URL")
-        if any(char.isspace() for char in base_url):
-            raise RuntimeError
-    except RuntimeError:
-        problem("models", "A model and valid HTTPS model API URL without credentials are required")
+    if not model or not str(model).strip():
+        problem("models", "A task model is required")
     supported_providers = set(PROVIDER_CREDENTIALS)
-    for path in ("agent.providers.enabled", "agent.providers.disabled", "agent.providers.priority"):
+    for path in ("agent.providers.enabled", "agent.providers.disabled"):
         configured = routing_config.get_list(path)
         if len(configured) != len(set(configured)) or any(item not in supported_providers for item in configured):
             problem("models", "%s must contain distinct supported provider IDs" % path)
-    try:
-        provider = provider_for(routing_config, base_url)
-    except ValueError as error:
-        problem("models", str(error))
-        provider = "openrouter"
-    required = {"AGENT_DATABASE_PASSWORD": "models",
-                provider_credential_name(provider, instance.secret_values.get): "models"}
+    required = {"AGENT_DATABASE_PASSWORD": "models"}
     model_routes = {
         "task": "agent.llm.model",
         "naming": "agent.naming.model",
@@ -2844,7 +2845,8 @@ def draft_problems(instance):
         required.setdefault(credential, "models")
         model = str(routing_config.get(model_path, "") or "").strip()
         if not model:
-            model = str(routing_config.get("agent.llm.model", "") or "").strip()
+            problem("models", "Select a model for the %s route" % route)
+            continue
         try:
             require_zdr_eligibility(routing_config, route_id, model)
         except ValueError as error:
@@ -2947,7 +2949,7 @@ def draft_problems(instance):
         provider = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_PROVIDER", "openrouter") or "openrouter"
         decision_model = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_MODEL")
         decision_model = decision_model or getattr(SCREENING_PROVIDERS.get(provider), "model", "")
-        if provider_is_disabled(routing_config, provider):
+        if provider in PROVIDER_CREDENTIALS and provider_is_disabled(routing_config, provider):
             problem("security", "Decision model provider %s is disabled" % provider)
         url = security_value(instance, "AGENT_SECURITY_DECISION_MODEL_URL")
         if provider not in PROVIDER_CHOICES:

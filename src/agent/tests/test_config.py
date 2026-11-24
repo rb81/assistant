@@ -204,7 +204,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.get("agent.identity.name"), "Agent")
         self.assertEqual(config.get("agent.identity.email"), "agent@acme.example")
 
-    def test_blank_string_env_does_not_override_config(self) -> None:
+    def test_blank_model_override_is_explicit_but_other_blank_values_are_ignored(self) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config_file:
             config_file.write("agent:\n  llm:\n    model: anthropic/claude-sonnet-4.6\n  app:\n    timezone: UTC\n")
             config_file.flush()
@@ -221,7 +221,7 @@ class ConfigTest(unittest.TestCase):
             ):
                 config = load_config()
 
-        self.assertEqual(config.get("agent.llm.model"), "anthropic/claude-sonnet-4.6")
+        self.assertEqual(config.get("agent.llm.model"), "")
         self.assertEqual(config.get("agent.app.timezone"), "UTC")
 
     def test_calendar_env_overrides(self) -> None:

@@ -3,8 +3,7 @@
 The task-agent LLM client supports provider-native APIs as well as OpenRouter
 and custom OpenAI-compatible endpoints. Configure credentials and provider
 controls in **Providers & Privacy**, then choose a provider and its model for
-each supported model role in **Models & Workflows**. `AGENT_LLM_PROVIDER=auto`
-preserves existing installations and detects providers from their API hosts.
+each supported model role in **Models & Workflows**.
 Explicit native providers must use their official hosts; use
 `openai-compatible` for another endpoint.
 
@@ -33,7 +32,7 @@ Gateway discovers third-party chat models from Cloudflare's unified catalog;
 Workers AI lists Cloudflare-hosted models. Availability and retention depend on
 the exact model and service.
 
-Each provider block has an **Enabled** toggle in both clients. On allows model
+Each provider block has an enable toggle in both clients. On allows model
 requests and fallbacks once that provider's credentials and setup are complete;
 off blocks them without deleting credentials. New providers start disabled.
 On upgrade, selected providers and fallbacks remain enabled unless previously
@@ -53,16 +52,22 @@ provider does not select it for any model route or bypass privacy requirements.
    Gateway log payloads and caching, but do not disable Logpush or billing
    metadata.
 
+Keep the Cloudflare API endpoint at its default
+`https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1`; Assistant
+substitutes the account ID and adds `/chat/completions`. You can also paste
+Cloudflare's account-specific `/ai/run` URL: Assistant converts it to the
+OpenAI-compatible endpoint because `/ai/run` uses a different request format.
+
 Cloudflare resolves a gateway's stored default provider keys before Unified
 Billing. To use Cloudflare-managed credentials, remove applicable default BYOK
 keys and verify the account configuration; Assistant cannot inspect it. Workers
 AI requests use the gateway's configured Workers AI billing mode.
 
-Selector ordering, hosting-provider restrictions and ZDR verification use
-selection lists, not comma-separated text editors. macOS lists are searchable;
-ordered selections have move controls.
+Hosting-provider restrictions and ZDR verification use selection lists, not
+comma-separated text editors. macOS lists are searchable; ordered fallbacks
+have move controls.
 In the terminal, use Space to select entries and Ctrl-Up / Ctrl-Down to reorder
-priority and fallback lists. Use **Load choices** after selecting a route's
+fallback lists. Use **Load choices** after selecting a route's
 provider; **Keep draft** before moving between settings pages. Saved choices
 that disappear from discovery stay visible until you remove or replace them.
 
@@ -75,8 +80,9 @@ fresh list. OpenRouter's public catalog remains separate and does not require
 the server credential.
 
 Each task, naming, routing, summarization, memory, research, and development
-route can select an enabled provider independently. Routes marked **inherit**
-use the configured default. A route's ordered `provider:model` fallbacks are
+route selects an enabled provider independently. During upgrade, inherited
+providers and models are saved as explicit choices, preserving their current
+values. A route's ordered `provider:model` fallbacks are
 tried only after transient rate-limit or overload responses; they do not
 silently substitute a model when a selected provider cannot run it. Model
 discovery in the settings UI is scoped to the provider selected for that role.

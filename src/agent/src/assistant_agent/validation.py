@@ -5,7 +5,7 @@ from typing import Any
 from .config import AppConfig, agent_email, database_url
 from .time_utils import default_timezone
 from .secret_store import read_secret
-from .llm_providers import provider_credential_name, provider_for, provider_is_disabled, route_provider
+from .llm_providers import parse_model_reference, provider_credential_name, provider_is_disabled, route_fallbacks, route_provider
 from .openrouter_policy import require_zdr_eligibility
 
 
@@ -47,12 +47,18 @@ def is_set(value: Any) -> bool:
 
 
 def has_model_api_key(config: AppConfig) -> bool:
-    provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
-    return is_set(read_secret(provider_credential_name(provider, read_secret)))
+    try:
+        provider = route_provider(config, "task")
+        return is_set(read_secret(provider_credential_name(provider, read_secret)))
+    except ValueError:
+        return False
 
 
 def uses_openrouter(config: AppConfig) -> bool:
-    return provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))) == "openrouter"
+    try:
+        return route_provider(config, "task") == "openrouter"
+    except ValueError:
+        return False
 
 
 def openrouter_configured(config: AppConfig) -> bool:
@@ -199,30 +205,30 @@ def validate_role_config(role: str, config: AppConfig) -> list[str]:
         except ValueError as exc:
             errors.append("Development supervisor: %s" % exc)
 
-    deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron") and config.get_bool("agent.deep_research.enabled", True)
+    deep_research_role_enabled = role in ("deep-research-agent", "deep-research-cron", "all") and config.get_bool("agent.deep_research.enabled", True)
     heartbeat_role_enabled = role in ("heartbeat", "heartbeat-cron") and config.get_bool("agent.heartbeat.enabled", True)
     model_required = role in ("task-agent", "all") or deep_research_role_enabled or heartbeat_role_enabled
-    if model_required and uses_openrouter(config) and not openrouter_configured(config):
-        errors.append("%s uses OpenRouter and requires AGENT_LLM_OPENROUTER_API_KEY" % role)
-
     if model_required:
-        provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
-        credential_name = provider_credential_name(provider, read_secret)
-        if not is_set(read_secret(credential_name)):
-            errors.append("%s requires %s for the selected %s provider" % (role, credential_name, provider))
-
-    if model_required and not is_set(config.get("agent.llm.model")):
-        errors.append("%s requires agent.llm.model" % role)
-    if model_required and config.get_bool("agent.llm.zdr_only", False):
-        models = [config.get("agent.llm.model"), config.get("agent.llm.fallback_model")]
-        for model in models:
-            if not model:
-                continue
+        routes = [("task", "agent.llm.model")]
+        if deep_research_role_enabled:
+            routes.append(("research", "agent.deep_research.model"))
+        for route, path in routes:
             try:
-                provider = provider_for(config, str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1")))
-                require_zdr_eligibility(config, provider, str(model))
+                provider = route_provider(config, route)
+                credential_name = provider_credential_name(provider, read_secret)
+                if not is_set(read_secret(credential_name)):
+                    errors.append("%s requires %s for the selected %s provider" % (role, credential_name, provider))
+                model = config.get(path)
+                if not is_set(model):
+                    errors.append("%s requires %s" % (role, path))
+                elif config.get_bool("agent.llm.zdr_only", False):
+                    require_zdr_eligibility(config, provider, str(model))
+                if config.get_bool("agent.llm.zdr_only", False):
+                    for fallback in route_fallbacks(config, route, provider):
+                        fallback_provider, fallback_model = parse_model_reference(fallback)
+                        require_zdr_eligibility(config, fallback_provider, fallback_model)
             except ValueError as exc:
-                errors.append("%s" % exc)
+                errors.append(str(exc))
 
     if role in ("task-agent", "all") and config.get_bool("agent.search.enabled", True) and not search_configured(config):
         errors.append("Web search is enabled but no search provider is available")

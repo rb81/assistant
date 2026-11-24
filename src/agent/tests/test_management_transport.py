@@ -118,6 +118,7 @@ def test_tui_model_overview_keeps_saved_values_and_links_existing_editors(tmp_pa
         service.close()
 
 def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(tmp_path):
+    from test_management import configured_model_values
     server_root = tmp_path / "server"
     (server_root / "src/config").mkdir(parents=True)
     shutil.copyfile(ROOT / "src/config/agent.yaml", server_root / "src/config/agent.yaml")
@@ -180,6 +181,8 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             assert backend.values["AGENT_PROVIDERS_OPENROUTER_ENABLED"] == "true"
         backend.stage("identity", {"AGENT_IDENTITY_NAME": "API-managed assistant"})
         backend.stage("providers", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key"})
+        backend.values.update({key: value for key, value in configured_model_values().items()
+                               if key != "AGENT_PROVIDERS_ENABLED"})
         database_group = next(group for group, (_, fields) in backend.groups.items()
                               if any(field.key == "AGENT_DATABASE_PASSWORD" for field in fields))
         backend.stage(database_group, {"AGENT_DATABASE_PASSWORD": "safe-test-database-password"})

@@ -162,7 +162,9 @@ class DeepResearchAgent:
 
         llm = LlmClient(
             self.config,
-            model=self.config.get("agent.deep_research.model") or self.config.get("agent.llm.model"),
+            model=(self.config.get("agent.deep_research.model")
+                   if self.config.get("agent.model_routes") is not None
+                   else self.config.get("agent.deep_research.model") or self.config.get("agent.llm.model")),
             timeout_seconds=self.config.get_int("agent.deep_research.timeout_seconds", 180),
             route="research",
         )

@@ -37,9 +37,9 @@ class LlmClient:
         route: Optional[str] = None,
     ):
         self.config = config
-        self.route = route
-        if route:
-            self.provider = route_provider(config, route)
+        self.route = route or ("task" if config.get("agent.model_routes") is not None else None)
+        if self.route:
+            self.provider = route_provider(config, self.route)
             route_url = provider_base_url(config, self.provider)
         else:
             legacy_url = str(config.get("agent.llm.base_url", "https://openrouter.ai/api/v1"))
@@ -53,7 +53,12 @@ class LlmClient:
         validate_https_url(self.base_url, "Model API base URL")
         validate_provider_url(self.provider, self.base_url)
         self.api_key = self._api_key(self.provider)
-        self.model = model or config.get("agent.llm.model", "anthropic/claude-sonnet-4.6")
+        if config.get("agent.model_routes") is not None:
+            self.model = config.get("agent.llm.model") if self.route == "task" and model is None else model
+            if not isinstance(self.model, str) or not self.model.strip():
+                raise ValueError("Select a model for the %s route" % self.route)
+        else:
+            self.model = model or config.get("agent.llm.model", "anthropic/claude-sonnet-4.6")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds or 180

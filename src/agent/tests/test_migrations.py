@@ -219,3 +219,107 @@ class ProviderOptInMigrationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             overrides, _ = parse_environment((data / "overrides.env").read_text())
             self.assertEqual(overrides["AGENT_PROVIDERS_ENABLED"], "openai")
+
+
+EXPLICIT_ROUTES = Path(__file__).resolve().parents[3] / "migrations/004-explicit-model-routes.py"
+
+
+@unittest.skipUnless(EXPLICIT_ROUTES.exists(), "migration has been retired")
+class ExplicitModelRoutesMigrationTest(unittest.TestCase):
+    def run_migration(self, data):
+        env = dict(os.environ, ASSISTANT_DEFAULTS_DIR=str(DEFAULTS.parent))
+        return subprocess.run([sys.executable, str(EXPLICIT_ROUTES), str(data)],
+                              capture_output=True, text=True, env=env)
+
+    def test_inherited_routes_are_snapshotted_without_changing_explicit_routes(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text(
+                "AGENT_LLM_PROVIDER=auto\nAGENT_LLM_BASE_URL=https://api.openai.com/v1\n"
+                "AGENT_LLM_MODEL=gpt-4.1\nAGENT_PROVIDERS_DISABLED=anthropic\n")
+            (data / "overrides.env").write_text(
+                "AGENT_MODEL_ROUTES_NAMING_PROVIDER=anthropic\n"
+                "AGENT_MODEL_ROUTES_TASK_FALLBACKS=gemini:example\n"
+                "AGENT_SECURITY_DEVELOPMENT_MODEL=custom-model\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            contents = (data / "overrides.env").read_text()
+            overrides, _ = parse_environment(contents)
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_PROVIDER"], "openai")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_RESEARCH_PROVIDER"], "openai")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_NAMING_PROVIDER"], "anthropic")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_FALLBACKS"], "gemini:example")
+            self.assertEqual(overrides["AGENT_DEEP_RESEARCH_MODEL"], "gpt-4.1")
+            self.assertEqual(overrides["AGENT_SECURITY_DEVELOPMENT_MODEL"], "custom-model")
+            self.assertEqual(self.run_migration(data).returncode, 0)
+            self.assertEqual((data / "overrides.env").read_text(), contents)
+
+    def test_fresh_install_is_not_assigned_legacy_routes(self):
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".install-initializing").write_text("assistant-initial-install\n")
+            (data / ".env").write_text("AGENT_LLM_PROVIDER=openrouter\n")
+            self.assertEqual(self.run_migration(data).returncode, 0)
+            self.assertFalse((data / "overrides.env").exists())
+
+    def test_legacy_fallback_keeps_the_existing_task_route_provider(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text(
+                "AGENT_LLM_PROVIDER=openrouter\n"
+                "AGENT_MODEL_ROUTES_TASK_PROVIDER=openai\n"
+                "AGENT_LLM_FALLBACK_MODEL=gpt-4.1-mini\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_FALLBACKS"], "openai:gpt-4.1-mini")
+
+    def test_legacy_endpoint_is_preserved_in_the_provider_settings(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text(
+                "AGENT_LLM_PROVIDER=openai\n"
+                "AGENT_LLM_BASE_URL=https://api.openai.com/custom/v1\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_PROVIDERS_OPENAI_BASE_URL"], "https://api.openai.com/custom/v1")
+
+    def test_blank_model_override_preserves_the_old_shipped_default(self):
+        from assistant_agent.setup import parse_environment
+        import yaml
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / "overrides.env").write_text("AGENT_NAMING_MODEL=''\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            expected = yaml.safe_load(DEFAULTS.read_text())["agent"]["naming"]["model"]
+            self.assertEqual(overrides["AGENT_NAMING_MODEL"], expected)
+
+    def test_cloudflare_account_migration_respects_the_explicit_account(self):
+        from assistant_agent.setup import parse_environment
+        for configured_account in ("", "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID=actual\n"):
+            with self.subTest(configured_account=configured_account), tempfile.TemporaryDirectory() as root:
+                data = Path(root) / "data"
+                data.mkdir()
+                (data / ".env").write_text(
+                    "AGENT_LLM_PROVIDER=cloudflare\n"
+                    "AGENT_LLM_BASE_URL=https://api.cloudflare.com/client/v4/accounts/legacy/ai/run\n"
+                    + configured_account)
+                result = self.run_migration(data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                overrides, _ = parse_environment((data / "overrides.env").read_text())
+                if configured_account:
+                    self.assertNotIn("AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID", overrides)
+                else:
+                    self.assertEqual(overrides["AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID"], "legacy")
+                self.assertNotIn("AGENT_PROVIDERS_CLOUDFLARE_BASE_URL", overrides)

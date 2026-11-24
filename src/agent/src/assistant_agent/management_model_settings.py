@@ -1,7 +1,5 @@
 """Read-only model overview derived from the shared settings snapshot."""
 from . import settings_schema
-from .config import AppConfig
-from .llm_providers import provider_for
 from .security_screening import PROVIDERS, DEFAULT_PROVIDER
 
 
@@ -13,7 +11,8 @@ def overview(configuration, state):
     for descriptor in settings_schema.model_sections():
         selected = []
         for original in fields.values():
-            if original["metadata"].get("model_section") != descriptor["id"]:
+            if (original["metadata"].get("hidden")
+                    or original["metadata"].get("model_section") != descriptor["id"]):
                 continue
             field = dict(original)
             value = field["value"]
@@ -50,15 +49,7 @@ def overview(configuration, state):
         provider_key = settings_schema.derived_env_name(descriptor["provider"]) if descriptor.get("provider") else None
         provider = fields[provider_key]["value"] if provider_key else descriptor.get("provider_url", "")
         if provider in {"", "inherit", "auto"}:
-            global_provider = fields.get("AGENT_LLM_PROVIDER", {}).get("value", "auto")
-            global_url = fields.get("AGENT_LLM_BASE_URL", {}).get("value", "")
-            try:
-                provider = provider_for(
-                    AppConfig({"agent": {"llm": {"provider": global_provider, "base_url": global_url}}}),
-                    global_url,
-                )
-            except ValueError:
-                provider = "Not configured"
+            provider = "Not configured"
         available_keys = {field["key"] for field in selected}
         selection_keys = [settings_schema.derived_env_name(path) for path in descriptor.get("selectors", [])
                           if settings_schema.derived_env_name(path) in available_keys]
@@ -81,7 +72,7 @@ def overview(configuration, state):
             "provider": provider or "Not configured",
             "enabled": fields[enabled_key]["value"] == "true" if enabled_key else None,
             "summary_keys": [settings_schema.derived_env_name(path) for path in descriptor.get("summary", [])
-                             if settings_schema.derived_env_name(path) in fields],
+                             if settings_schema.derived_env_name(path) in available_keys],
             "selection_keys": selection_keys,
             "related_settings": list(related_settings.values()),
             "settings": selected,

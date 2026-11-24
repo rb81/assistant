@@ -35,13 +35,15 @@ def provider_credential_name(provider, available):
 
 
 def route_provider(config, route):
-    """Resolve a route's provider, preserving the legacy task-provider setting."""
+    """Resolve an explicitly selected route provider."""
     selected_path = "agent.model_routes.%s.provider" % route
-    selected = str(config.get(selected_path, "inherit") or "inherit").strip().lower()
-    if selected in {"", "inherit", "auto"}:
+    selected = str(config.get(selected_path, "") or "").strip().lower()
+    if config.get("agent.model_routes") is None:
         base_url = str(config.get("agent.llm.base_url", PROVIDER_DEFAULT_URLS["openrouter"]) or "")
         provider = provider_for(config, base_url)
     else:
+        if selected in {"", "inherit", "auto"}:
+            raise ValueError("Select an explicit model provider for route %s" % route)
         if selected not in PROVIDER_CREDENTIALS:
             raise ValueError("Unsupported model provider for route %s: %s" % (route, selected))
         provider = selected
@@ -70,7 +72,8 @@ def provider_base_url(config, provider):
     if provider in PROVIDER_DEFAULT_URLS:
         endpoint = str(config.get("agent.providers.%s_base_url" % provider) or PROVIDER_DEFAULT_URLS[provider]).rstrip("/")
         configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
-        if (endpoint == PROVIDER_DEFAULT_URLS[provider] and configured
+        if (config.get("agent.model_routes") is None
+                and endpoint == PROVIDER_DEFAULT_URLS[provider] and configured
                 and (urlsplit(configured).hostname or "").lower() == urlsplit(endpoint).hostname):
             endpoint = configured
         validate_provider_url(provider, endpoint)
@@ -79,7 +82,16 @@ def provider_base_url(config, provider):
         if provider == "cloudflare-gateway":
             cloudflare_gateway_id(config)
         account_id = str(config.get("agent.providers.cloudflare_account_id", "") or "").strip()
-        if not account_id:
+        template = str(config.get("agent.providers.cloudflare_base_url") or
+                       "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1")
+        template_path = urlsplit(template).path
+        account_match = re.fullmatch(r"/client/v4/accounts/([^/]+)/ai/(?:v1|run)/?", template_path)
+        if account_match and account_match.group(1) != "{account_id}":
+            endpoint_account = account_match.group(1)
+            if account_id and endpoint_account != account_id:
+                raise ValueError("Cloudflare endpoint account ID does not match the configured account ID")
+            account_id = endpoint_account
+        if not account_id and config.get("agent.model_routes") is None:
             configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
             parsed = urlsplit(configured)
             parts = parsed.path.strip("/").split("/")
@@ -87,14 +99,15 @@ def provider_base_url(config, provider):
                 account_id = parts[3]
         if not account_id:
             raise ValueError("Cloudflare Workers AI requires an account ID")
-        template = str(config.get("agent.providers.cloudflare_base_url") or
-                       "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1")
         endpoint = template.replace("{account_id}", quote(account_id, safe="")).rstrip("/")
+        parsed = urlsplit(endpoint)
+        if re.fullmatch(r"/client/v4/accounts/[^/]+/ai/run", parsed.path):
+            endpoint = parsed._replace(path=parsed.path.removesuffix("/run") + "/v1").geturl()
         validate_provider_url(provider, endpoint)
         return endpoint
     if provider == "openai-compatible":
         configured = str(config.get("agent.providers.openai_compatible_base_url", "") or "").strip()
-        if not configured:
+        if not configured and config.get("agent.model_routes") is None:
             legacy = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
             if provider_for(config, legacy) == "openai-compatible":
                 configured = legacy
@@ -124,6 +137,12 @@ def validate_provider_url(provider, base_url):
         raise ValueError("OpenRouter provider requires an https://openrouter.ai API URL")
     if provider in native_hosts and host != native_hosts[provider]:
         raise ValueError("%s provider requires the official %s API host" % (provider, native_hosts[provider]))
+    if provider in {"cloudflare", "cloudflare-gateway"} and not re.fullmatch(
+            r"/client/v4/accounts/[^/]+/ai/v1/?", urlsplit(base_url).path):
+        raise ValueError(
+            "Cloudflare model API URL must end in /client/v4/accounts/<account_id>/ai/v1 "
+            "or /ai/run. Use the default endpoint template."
+        )
     if provider == "openai-compatible" and host == "openrouter.ai":
         raise ValueError("OpenRouter URLs must use the OpenRouter provider policy")
 
@@ -131,7 +150,7 @@ def validate_provider_url(provider, base_url):
 def route_fallbacks(config, route, primary_provider):
     """Return ordered explicit provider:model candidates, including the legacy task fallback."""
     fallbacks = config.get_list("agent.model_routes.%s.fallbacks" % route)
-    if fallbacks or route != "task":
+    if fallbacks or route != "task" or config.get("agent.model_routes") is not None:
         return fallbacks
     legacy = str(config.get("agent.llm.fallback_model", "") or "").strip()
     return ["%s:%s" % (primary_provider, legacy)] if legacy else []

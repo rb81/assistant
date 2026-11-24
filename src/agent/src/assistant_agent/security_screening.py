@@ -22,7 +22,7 @@ from typing import Any, Optional
 from .config import AppConfig, app_display_name, app_referer_url
 from .secret_store import read_secret
 from .transport_security import open_https_request, validate_https_url
-from .llm_providers import provider_is_disabled
+from .llm_providers import PROVIDER_CREDENTIALS, provider_is_disabled
 from .openrouter_policy import apply_routing_policy, require_zdr_eligibility
 
 
@@ -199,7 +199,7 @@ class DecisionClient:
         provider = decision_provider(config)
         if provider not in PROVIDERS:
             raise DecisionError("unsupported decision model provider: %s" % provider)
-        if provider_is_disabled(config, provider):
+        if provider in PROVIDER_CREDENTIALS and provider_is_disabled(config, provider):
             raise DecisionError("decision model provider %s is disabled" % provider)
         spec = PROVIDERS[provider]
         self.provider = provider

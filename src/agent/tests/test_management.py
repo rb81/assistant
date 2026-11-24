@@ -17,6 +17,18 @@ from assistant_agent.setup_privileges import authorization_handler, terminal_aut
 from test_network_access import db  # noqa: F401
 
 
+def configured_model_values():
+    values = {"AGENT_MODEL_ROUTES_" + route + "_PROVIDER": "openrouter"
+              for route in ("TASK", "NAMING", "ROUTING", "SUMMARIZATION", "MEMORY",
+                            "RESEARCH", "DEVELOPMENT", "RESEARCH_SEARCH", "WEB_SEARCH")}
+    values.update(dict.fromkeys(
+        ("AGENT_NAMING_MODEL", "AGENT_ROUTING_MODEL", "AGENT_LIMITS_SUMMARIZATION_MODEL",
+         "AGENT_MEMORY_STEWARD_MODEL", "AGENT_DEEP_RESEARCH_MODEL", "AGENT_SECURITY_DEVELOPMENT_MODEL",
+         "AGENT_DEEP_RESEARCH_SEARCH_MODEL", "AGENT_SEARCH_MODEL"), "model"))
+    values["AGENT_PROVIDERS_ENABLED"] = "openrouter"
+    return values
+
+
 def configured(root):
     installation = Installation(root)
     installation.values = {
@@ -24,6 +36,7 @@ def configured(root):
         "AGENT_LLM_BASE_URL": "https://openrouter.ai/api/v1",
         "COMPOSE_PROFILES": "custom", "UNRELATED": "preserve",
         "AGENT_SECURITY_EMAIL_AUTHENTICATION_ENABLED": "false",
+        **configured_model_values(),
     }
     installation.secret_values = {"AGENT_DATABASE_PASSWORD": "database-password", "AGENT_LLM_OPENROUTER_API_KEY": "model-key"}
     installation.prompt_copy = b"Ask for approval before external actions."
@@ -108,8 +121,8 @@ def test_native_security_form_persists_development_supervisor_settings():
                 assert reopened.value(spec) == values[spec.key]
         values["AGENT_SECURITY_DEVELOPMENT_MODEL"] = ""
         reopened.stage("security", values)
-        reopened.save()
-        assert Installation(root).values["AGENT_SECURITY_DEVELOPMENT_MODEL"] == ""
+        with pytest.raises(SetupError, match="Select a model for the development route"):
+            reopened.save()
 
 
 def test_save_validates_the_entire_draft_and_preserves_files_on_failure():
@@ -128,6 +141,7 @@ def test_failed_first_save_preserves_the_saved_snapshot_and_keeps_the_draft():
         backend = management(root)
         backend.accepted = True
         backend.values.update(AGENT_LLM_MODEL="model", AGENT_LLM_BASE_URL="https://openrouter.ai/api/v1")
+        backend.values.update(configured_model_values())
         backend.credentials.update(AGENT_DATABASE_PASSWORD="database-password", AGENT_LLM_OPENROUTER_API_KEY="model-key")
         backend.instructions = b"Ask for approval before external actions."
         backend.dirty = True
@@ -783,10 +797,6 @@ def test_native_boolean_fields_preserve_supported_enabled_values_and_profiles(en
 
 
 @pytest.mark.parametrize("group, values, section, fragment", [
-    ("models", {"AGENT_LLM_BASE_URL": "https://["}, "models", "valid HTTPS"),
-    ("models", {"AGENT_LLM_BASE_URL": "https://"}, "models", "valid HTTPS"),
-    ("models", {"AGENT_LLM_BASE_URL": "https://api.example.com:invalid/v1"}, "models", "valid HTTPS"),
-    ("models", {"AGENT_LLM_BASE_URL": "https://api.example.com?key=private"}, "models", "valid HTTPS"),
     ("security", {"AGENT_SECURITY_DECISION_MODEL_ENABLED": "true", "AGENT_SECURITY_DECISION_MODEL_URL": "https://["},
      "security", "HTTPS URL"),
     ("transcription", {"AGENT_TRANSCRIPTION_ENABLED": "true", "AGENT_TRANSCRIPTION_LANGUAGE": "fr"}, "transcription", "auto, en or ar"),
@@ -804,6 +814,19 @@ def test_each_native_form_reports_invalid_input_without_crashing_review(group, v
         backend.stage(group, fields)
         assert any(key == section and fragment in message for key, message in backend.problems())
         with pytest.raises(SetupError, match=fragment):
+            backend.save()
+
+
+@pytest.mark.parametrize("endpoint", ["https://[", "https://", "https://openrouter.ai:invalid/v1",
+                                      "https://openrouter.ai/v1?key=private"])
+def test_invalid_selected_provider_endpoint_blocks_save(endpoint):
+    with tempfile.TemporaryDirectory() as root:
+        configured(root)
+        backend = management(root)
+        backend.values["AGENT_PROVIDERS_OPENROUTER_BASE_URL"] = endpoint
+        assert any(section == "models" and "valid HTTPS" in message
+                   for section, message in backend.problems())
+        with pytest.raises(SetupError, match="valid HTTPS"):
             backend.save()
 
 

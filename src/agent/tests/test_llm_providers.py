@@ -85,6 +85,73 @@ def test_native_provider_endpoint_controls_reject_insecure_or_wrong_provider_url
         provider_base_url(AppConfig({"agent": {"providers": {"openai_base_url": endpoint}}}), "openai")
 
 
+@pytest.mark.parametrize("provider", ["cloudflare", "cloudflare-gateway"])
+def test_cloudflare_accepts_run_url_as_chat_api_base(provider):
+    config = AppConfig({"agent": {"providers": {
+        "cloudflare_account_id": "example",
+        "cloudflare_base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run",
+    }}})
+    assert provider_base_url(config, provider) == "https://api.cloudflare.com/client/v4/accounts/example/ai/v1"
+
+
+def test_explicit_routes_do_not_use_the_legacy_endpoint():
+    config = AppConfig({"agent": {
+        "llm": {"base_url": "https://api.openai.com/legacy"},
+        "model_routes": {"task": {"provider": "openai"}},
+    }})
+    assert provider_base_url(config, "openai") == "https://api.openai.com/v1"
+
+
+def test_explicit_route_does_not_inherit_the_task_model():
+    config = AppConfig({"agent": {
+        "llm": {"model": "task-model"},
+        "model_routes": {"naming": {"provider": "openai"}},
+    }})
+    with patch("assistant_agent.llm_client.read_secret", return_value="token"):
+        with pytest.raises(ValueError, match="Select a model for the naming route"):
+            LlmClient(config, model="", route="naming")
+
+
+@pytest.mark.parametrize("provider", ["cloudflare", "cloudflare-gateway"])
+def test_cloudflare_accepts_account_specific_run_url(provider):
+    endpoint = "https://api.cloudflare.com/client/v4/accounts/example/ai/run"
+    config = AppConfig({"agent": {"providers": {"cloudflare_base_url": endpoint}}})
+    assert provider_base_url(config, provider) == "https://api.cloudflare.com/client/v4/accounts/example/ai/v1"
+    config.values["agent"]["providers"]["cloudflare_account_id"] = "other"
+    with pytest.raises(ValueError, match="does not match"):
+        provider_base_url(config, provider)
+
+
+@pytest.mark.parametrize("provider", ["cloudflare", "cloudflare-gateway"])
+def test_cloudflare_run_url_sends_openai_chat_request(provider):
+    config = AppConfig({"agent": {
+        "llm": {"model": "example/model"},
+        "model_routes": {"task": {"provider": provider}},
+        "providers": {"cloudflare_base_url": "https://api.cloudflare.com/client/v4/accounts/example/ai/run",
+                      "cloudflare_gateway_id": "gateway"},
+    }})
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+    with patch("assistant_agent.llm_client.read_secret", return_value="token"), \
+            patch("assistant_agent.llm_client.refresh_request_context", side_effect=lambda messages, _: messages), \
+            patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
+        LlmClient(config).chat([{"role": "user", "content": "hello"}], [])
+    request = send.call_args.args[0]
+    assert request.full_url == "https://api.cloudflare.com/client/v4/accounts/example/ai/v1/chat/completions"
+    assert json.loads(request.data)["model"] == "example/model"
+    assert request.get_header("Cf-aig-gateway-id") == ("gateway" if provider == "cloudflare-gateway" else None)
+
+
+@pytest.mark.parametrize("provider", ["cloudflare", "cloudflare-gateway"])
+def test_cloudflare_rejects_non_base_api_urls(provider):
+    config = AppConfig({"agent": {"providers": {
+        "cloudflare_account_id": "example",
+        "cloudflare_base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions",
+    }}})
+    with pytest.raises(ValueError, match=r"/ai/v1.*?/ai/run"):
+        provider_base_url(config, provider)
+
+
 @pytest.mark.parametrize(("provider", "base_url", "model", "expected_url", "header"), [
     ("openai", "https://api.openai.com/v1", "gpt-4.1", "https://api.openai.com/v1/chat/completions",
      "Authorization"),

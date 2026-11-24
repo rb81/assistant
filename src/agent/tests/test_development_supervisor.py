@@ -242,6 +242,20 @@ class DevelopmentSupervisorTest(unittest.TestCase):
             errors = validate_role_config("task-agent", config)
         self.assertNotIn("Development supervisor model overrides require AGENT_LLM_OPENROUTER_API_KEY", errors)
 
+    def test_role_validation_checks_the_fallback_provider_zdr_policy(self):
+        from assistant_agent.validation import validate_role_config
+        config = AppConfig({"agent": {
+            "llm": {"model": "primary", "zdr_only": True},
+            "model_routes": {"task": {"provider": "openrouter", "fallbacks": ["gemini:example"]},
+                             "development": {"provider": "openrouter"}},
+            "security": {"development": {"model": "supervisor"}},
+            "search": {"enabled": False}, "fusion": {"enabled": False},
+        }})
+        with patch("assistant_agent.validation.database_url", return_value="database-url"), \
+                patch("assistant_agent.validation.read_secret", return_value="key"):
+            errors = validate_role_config("task-agent", config)
+        self.assertTrue(any("Gemini Developer API" in error for error in errors))
+
     def test_startup_logs_full_script_yolo_warning_only_when_enabled(self):
         from assistant_agent import main
         for enabled in (False, True):

@@ -114,7 +114,7 @@ class ApiManagementBackend:
         metadata = self.field_metadata.get(key, {})
         values = {**self.values, **(form_values or {})}
         provider = values.get(metadata.get("provider_key"), "")
-        if provider in {"", "auto", "inherit"}:
+        if not metadata.get("provider_key") and provider in {"", "auto", "inherit"}:
             provider = values.get("AGENT_LLM_PROVIDER", "")
         if metadata.get("choices_source") == "models" and provider not in {"", "auto", "inherit"}:
             resource += "&provider=" + quote(provider, safe="")

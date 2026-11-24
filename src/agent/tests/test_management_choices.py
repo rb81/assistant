@@ -22,7 +22,7 @@ def test_provider_lists_use_configured_accounts_and_disabled_providers_can_be_re
     metadata = provider_choices_metadata(backend())
     assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openrouter", "openai", "anthropic"]
     assert metadata["AGENT_LLM_ZDR_VERIFIED_PROVIDERS"]["choices"] == ["openai", "anthropic"]
-    assert metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["inherit", "openrouter", "openai"]
+    assert metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["openrouter", "openai"]
     assert metadata["AGENT_TTS_MODEL"]["choices_source"] == "models"
 
 
@@ -31,6 +31,15 @@ def test_custom_endpoint_does_not_activate_with_an_unrelated_openrouter_key():
     item.values["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL"] = "https://example.com/v1"
     item.credentials = {"AGENT_LLM_OPENROUTER_API_KEY": "fixture"}
     assert provider_choices_metadata(item)["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openrouter"]
+
+
+def test_migrated_custom_route_can_use_its_legacy_credential():
+    item = backend()
+    item.values.update(AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL="https://example.com/v1",
+                       AGENT_MODEL_ROUTES_TASK_PROVIDER="openai-compatible",
+                       AGENT_PROVIDERS_ENABLED="openai-compatible")
+    item.credentials = {"AGENT_LLM_OPENROUTER_API_KEY": "fixture"}
+    assert provider_choices_metadata(item)["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["openai-compatible"]
 
 
 def test_gateway_is_a_separately_enabled_provider_with_shared_cloudflare_credentials():
@@ -44,12 +53,12 @@ def test_gateway_is_a_separately_enabled_provider_with_shared_cloudflare_credent
     assert "cloudflare-gateway" in metadata["AGENT_LLM_ZDR_VERIFIED_PROVIDERS"]["choices"]
 
 
-def test_provider_selectors_follow_saved_priority_without_changing_routes():
+def test_provider_selectors_ignore_legacy_priority():
     item = backend()
     item.values["AGENT_PROVIDERS_PRIORITY"] = "openai,openrouter"
     metadata = provider_choices_metadata(item)
-    assert metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["inherit", "openai", "openrouter"]
-    assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openai", "openrouter", "anthropic"]
+    assert metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"] == ["openrouter", "openai"]
+    assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openrouter", "openai", "anthropic"]
 
 
 def test_terminal_provider_toggle_updates_draft_selectors_without_losing_saved_selection():

@@ -121,6 +121,8 @@ def configuration_errors(config: AppConfig) -> list[str]:
     }:
         errors.append("agent.security.script_yolo must be a boolean")
     model = config.get("agent.security.development.model", "")
+    if config.get("agent.model_routes") is not None and (not isinstance(model, str) or not model.strip()):
+        errors.append("Development supervisor requires a selected model")
     if not isinstance(model, str) or (
         model.strip() and (
             not re.fullmatch(r"[a-zA-Z0-9@][a-zA-Z0-9@._:/-]*", model.strip())

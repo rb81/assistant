@@ -137,10 +137,12 @@ settings:
     label: Require Zero Data Retention routing
     description: "Use OpenRouter's ZDR routing and model catalog without manual verification allowlists. Safety Retention may still be permitted by account privacy settings or a guardrail; this is a warning, not a setup, startup or usage blocker. Direct providers require verified accounts and exact models; Gemini Developer API and custom OpenAI-compatible providers are not eligible. Hosted tools have separate data policies; other providers may have additional eligibility limits."
   agent.llm.provider:
-    label: Default model provider
+    hidden: true
+    label: Legacy model provider
     enum: [auto, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
     description: "Select the native API protocol. Auto-detect preserves existing installations; custom OpenAI-compatible endpoints use their own URL and credential."
   agent.llm.base_url:
+    hidden: true
     label: Legacy provider URL
   agent.llm.allowed_providers:
     selection: multiple
@@ -169,7 +171,7 @@ settings:
     label: Enabled providers
     description: "Provider IDs explicitly enabled through their provider blocks."
   agent.providers.priority:
-    selection: ordered
+    hidden: true
     type: list
     label: Provider selection order
     description: "Order configured providers in provider selectors. It does not silently change a model route; choose an explicit provider and model or configure provider:model fallbacks."
@@ -194,7 +196,7 @@ settings:
     description: "Gemini Developer API endpoint. The standard endpoint is already configured."
   agent.providers.cloudflare_base_url:
     label: API endpoint
-    description: "Workers AI endpoint template. Assistant substitutes your Cloudflare account ID. This is not an AI Gateway endpoint; its catalog does not include third-party Gateway models."
+    description: "Shared Workers AI and AI Gateway endpoint. Assistant inserts the account ID and uses the OpenAI-compatible /ai/v1/chat/completions endpoint. Cloudflare's /ai/run URL is also accepted and converted."
   agent.providers.cloudflare_account_id:
     label: Cloudflare account ID
     description: "Cloudflare account ID shared by Workers AI and AI Gateway. Verify Gateway and account-level Logpush controls separately."
@@ -203,48 +205,48 @@ settings:
     description: "AI Gateway ID for Unified Billing. Uses the shared Cloudflare account ID and API token; Workers AI does not need to be enabled. Stored default provider keys take precedence over Unified Billing."
   agent.model_routes.task.provider:
     label: Task provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider for ordinary task responses. Inherit uses the configured default provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider for ordinary task responses."
   agent.model_routes.task.fallbacks:
     type: list
     label: Task fallbacks
     description: "Ordered provider:model pairs tried only after transient failures, for example openai:gpt-4.1-mini."
   agent.model_routes.naming.provider:
     label: Naming provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used for task and workstream titles; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used for task and workstream titles."
   agent.model_routes.naming.fallbacks:
     type: list
     label: Naming fallbacks
     description: "Ordered provider:model pairs tried only after transient failures."
   agent.model_routes.routing.provider:
     label: Request-routing provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used to classify incoming requests; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used to classify incoming requests."
   agent.model_routes.routing.fallbacks:
     type: list
     label: Request-routing fallbacks
     description: "Ordered provider:model pairs tried only after transient failures."
   agent.model_routes.summarization.provider:
     label: Summarization provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used to summarize conversation history; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used to summarize conversation history."
   agent.model_routes.summarization.fallbacks:
     type: list
     label: Summarization fallbacks
     description: "Ordered provider:model pairs tried only after transient failures."
   agent.model_routes.memory.provider:
     label: Memory provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used for memory stewardship; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used for memory stewardship."
   agent.model_routes.memory.fallbacks:
     type: list
     label: Memory fallbacks
     description: "Ordered provider:model pairs tried only after transient failures."
   agent.model_routes.research.provider:
     label: Research provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used for deep-research reasoning; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used for deep-research reasoning."
   agent.model_routes.research.fallbacks:
     type: list
     label: Research fallbacks
@@ -271,8 +273,8 @@ settings:
     description: "Multi-model fusion currently uses OpenRouter's fusion tool."
   agent.model_routes.development.provider:
     label: Development-session provider
-    enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
-    description: "Provider used by the development supervisor; inherit uses the default model provider."
+    enum: [openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]
+    description: "Provider used by the development supervisor."
   agent.model_routes.development.fallbacks:
     type: list
     label: Development-session fallbacks
@@ -282,9 +284,10 @@ settings:
     enum: [openrouter]
     description: "Only providers with a compatible speech-generation adapter are selectable."
   agent.llm.fallback_model:
+    hidden: true
     model_blank_label: No fallback model
   agent.naming.model:
-    model_inherits: agent.llm.model
+    description: "Model used for task and workstream titles."
   agent.identity.name:
     label: Assistant name
     description: "The name your assistant uses in conversations and communications."
@@ -325,7 +328,7 @@ settings:
     model_blank_label: Provider default
     model_blank_source: provider_default
   agent.security.development.model:
-    model_inherits: agent.llm.model
+    description: "Select the model used by the development supervisor."
   agent.database.password:
     secret: true
   agent.database.url:
@@ -430,7 +433,6 @@ settings:
 
   # Routing
   agent.routing.model:
-    model_inherits: agent.llm.model
     label: Request routing model
     description: "Model used to decide whether incoming requests start new work or continue a conversation. Choose an available model; routing adds provider calls and cost."
   agent.routing.timeout_seconds:
@@ -448,7 +450,6 @@ settings:
     label: Prompt size limit
     description: "Character threshold that triggers model-based history compaction. Lower for smaller context windows; summarization can lose details and adds model calls."
   agent.limits.summarization_model:
-    model_inherits: agent.llm.model
     label: History summary model
     description: "Model used to compact older task history when prompts grow too large. Choose one that preserves important details; summarization uses provider tokens."
   agent.limits.summarization_max_tokens:
@@ -759,9 +760,8 @@ settings:
 
   # Deep research
   agent.deep_research.model:
-    model_inherits: agent.llm.model
     label: Deep research model
-    description: "Model used by the deep-research worker; blank reuses the main task model. Research may make many calls, so consider model cost as well as reasoning quality."
+    description: "Model used by the deep-research worker. Research may make many calls, so consider model cost as well as reasoning quality."
   agent.deep_research.search_model:
     label: Research web search model
     description: "Model used for web-search calls within deep research. Choose a supported search-capable model; each search can incur provider charges."

@@ -58,7 +58,7 @@ agent:
     enabled: []
     # Retained for compatibility with existing explicit exclusions.
     disabled: []
-    # Optional ordering in provider selectors; this does not change model routes.
+    # Legacy selector ordering; retained for compatibility with saved overrides.
     priority: []
     openrouter_base_url: https://openrouter.ai/api/v1
     openai_base_url: https://api.openai.com/v1
@@ -89,22 +89,22 @@ agent:
 
   model_routes:
     task:
-      provider: inherit
+      provider:
       fallbacks: []
     naming:
-      provider: inherit
+      provider:
       fallbacks: []
     routing:
-      provider: inherit
+      provider:
       fallbacks: []
     summarization:
-      provider: inherit
+      provider:
       fallbacks: []
     memory:
-      provider: inherit
+      provider:
       fallbacks: []
     research:
-      provider: inherit
+      provider:
       fallbacks: []
     research_search:
       provider: openrouter
@@ -115,7 +115,7 @@ agent:
     fusion:
       provider: openrouter
     development:
-      provider: inherit
+      provider:
       fallbacks: []
     speech:
       provider: openrouter

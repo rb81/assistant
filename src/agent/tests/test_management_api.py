@@ -918,12 +918,13 @@ def test_provider_enable_controls_preserve_saved_state_credentials_and_runtime_p
         config = service._model_configuration(draft)
         assert not provider_is_disabled(config, "anthropic")
         assert provider_is_disabled(config, "gemini")
-        assert draft.values["AGENT_PROVIDERS_DISABLED"] == "openai,gemini"
+        assert draft.values["AGENT_PROVIDERS_DISABLED"] == "openai"
+        assert "gemini" not in draft.values["AGENT_PROVIDERS_ENABLED"].split(",")
         assert not changes.keys() & draft.values.keys(), "Controls must not create parallel persisted policy"
         assert draft.credentials == installation.secret_values
         draft.save()
         reopened = service.backend()
-        assert reopened.values["AGENT_PROVIDERS_DISABLED"] == "openai,gemini"
+        assert reopened.values["AGENT_PROVIDERS_DISABLED"] == "openai"
         assert reopened.credentials == installation.secret_values
     finally:
         service.close()
@@ -989,11 +990,16 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
         assert current["value_state"] == "saved" and current["read_only"]
         assert current["activation_tracked"] and current["pending_activation"]
         fields = [field for section in current["sections"] for field in section["settings"]]
+        for section in current["sections"]:
+            section_keys = {field["key"] for field in section["settings"]}
+            assert set(section["summary_keys"]) <= section_keys
+            assert set(section["selection_keys"]) <= section_keys
         keys = [field["key"] for field in fields]
         assert len(keys) == len(set(keys))
-        assert set(keys) == {item["env"] for item in catalog() if item["metadata"].get("model_section")}
+        assert set(keys) == {item["env"] for item in catalog()
+                             if item["metadata"].get("model_section") and not item["metadata"].get("hidden")}
         assert {
-            "AGENT_LLM_MODEL", "AGENT_LLM_FALLBACK_MODEL", "AGENT_ROUTING_MODEL", "AGENT_NAMING_MODEL",
+            "AGENT_LLM_MODEL", "AGENT_ROUTING_MODEL", "AGENT_NAMING_MODEL",
             "AGENT_LIMITS_SUMMARIZATION_MODEL", "AGENT_SECURITY_DECISION_MODEL_MODEL",
             "AGENT_SECURITY_DEVELOPMENT_MODEL", "AGENT_DEEP_RESEARCH_MODEL", "AGENT_DEEP_RESEARCH_SEARCH_MODEL",
             "AGENT_FUSION_ANALYSIS_MODELS", "AGENT_FUSION_MODEL", "AGENT_SEARCH_MODEL", "AGENT_EMBEDDINGS_MODEL",
@@ -1004,10 +1010,9 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
         assert "agent_yaml" not in current and "instructions" not in current
         fields = {field["key"]: field for field in fields}
         assert fields["AGENT_LLM_MODEL"]["pending_activation"]
-        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["display_value"] == "example/primary"
-        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["value_source"] == "inherited"
-        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["pending_activation"]
-        assert fields["AGENT_SECURITY_DEVELOPMENT_MODEL"]["inherited_from"] == "AGENT_LLM_MODEL"
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["display_value"] == "model"
+        assert fields["AGENT_DEEP_RESEARCH_MODEL"]["value_source"] == "configured"
+        assert fields["AGENT_SECURITY_DEVELOPMENT_MODEL"]["display_value"] == "model"
         assert fields["AGENT_FUSION_ANALYSIS_MODELS"]["display_value"] == "Provider-selected models"
         assert fields["AGENT_SECURITY_DECISION_MODEL_MODEL"]["display_value"] == "perplexity/pplx-decider-v1.2"
         assert fields["AGENT_LLM_OPENROUTER_API_KEY"]["display_value"] == "Configured"
@@ -1015,7 +1020,7 @@ def test_model_settings_overview_is_complete_revision_bound_and_secret_safe(tmp_
         sections = {section["id"]: section for section in current["sections"]}
         assert sections["task"]["selection_keys"] == [
             "AGENT_MODEL_ROUTES_TASK_PROVIDER", "AGENT_LLM_MODEL",
-            "AGENT_LLM_FALLBACK_MODEL", "AGENT_MODEL_ROUTES_TASK_FALLBACKS",
+            "AGENT_MODEL_ROUTES_TASK_FALLBACKS",
         ]
         assert sections["speech"]["selection_keys"] == ["AGENT_MODEL_ROUTES_SPEECH_PROVIDER", "AGENT_TTS_MODEL"]
         assert sections["tools"]["selection_keys"] == []
@@ -1129,8 +1134,8 @@ def test_model_settings_overview_updates_inheritance_provider_defaults_and_activ
         assert fields["AGENT_DEEP_RESEARCH_MODEL"]["display_value"] == "example/research"
         assert fields["AGENT_DEEP_RESEARCH_MODEL"]["value_source"] == "configured"
         for key in ("AGENT_ROUTING_MODEL", "AGENT_NAMING_MODEL", "AGENT_LIMITS_SUMMARIZATION_MODEL"):
-            assert fields[key]["display_value"] == "model"
-            assert fields[key]["value_source"] == "inherited"
+            assert fields[key]["display_value"] == "Not configured"
+            assert fields[key]["value_source"] == "unset"
         assert fields["AGENT_SECURITY_DECISION_MODEL_MODEL"]["display_value"] == "pplx-decider-latest"
         assert fields["AGENT_SECURITY_DECISION_MODEL_URL"]["display_value"] == "https://api.perplexity.ai/v1/decisions"
         assert all(field["pending_activation"] for field in fields.values())
@@ -1171,6 +1176,7 @@ def test_v2_approval_settings_share_a_safety_page(tmp_path):
 
 
 def test_v2_configuration_preview_is_revision_checked_and_secret_safe(tmp_path):
+    from test_management import configured_model_values
     (tmp_path / "src/config").mkdir(parents=True)
     (tmp_path / "data").mkdir()
     (tmp_path / "src/config/agent.yaml").write_text(
@@ -1188,6 +1194,7 @@ def test_v2_configuration_preview_is_revision_checked_and_secret_safe(tmp_path):
             "AGENT_IDENTITY_NAME": " New assistant ",
             "AGENT_DATABASE_PASSWORD": "new-database-password-value",
             "AGENT_LLM_OPENROUTER_API_KEY": "new-private-key-value",
+            **configured_model_values(),
         },
         "instructions": "Updated instructions",
         "acknowledge": True,

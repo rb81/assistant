@@ -27,14 +27,14 @@ def configured_providers(backend):
     custom_url = spec_values.get("AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL") or \
         backend.installation.defaults.get("agent.providers.openai_compatible_base_url")
     custom_credentials = ("AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY", "AGENT_LLM_OPENAI_API_KEY")
-    if custom_url and any(backend.credentials.get(name) for name in custom_credentials):
+    legacy_custom_route = any(
+        key.startswith("AGENT_MODEL_ROUTES_") and key.endswith("_PROVIDER")
+        and value == "openai-compatible" for key, value in spec_values.items()
+    )
+    if custom_url and (any(backend.credentials.get(name) for name in custom_credentials)
+                       or (legacy_custom_route and backend.credentials.get("AGENT_LLM_OPENROUTER_API_KEY"))):
         providers.append("openai-compatible")
-    priority = spec_values.get("AGENT_PROVIDERS_PRIORITY")
-    if priority is None:
-        priority = backend.installation.defaults.get_list("agent.providers.priority")
-    if isinstance(priority, str):
-        priority = [item.strip() for item in priority.split(",") if item.strip()]
-    return sorted(providers, key=lambda provider: priority.index(provider) if provider in priority else len(priority))
+    return providers
 
 
 def provider_choices_metadata(backend):
@@ -67,7 +67,7 @@ def provider_choices_metadata(backend):
         key = item["env"]
         if key == "AGENT_LLM_PROVIDER" or (key.startswith("AGENT_MODEL_ROUTES_") and key.endswith("_PROVIDER")):
             allowed = item["metadata"].get("enum", [])
-            result[key] = {"selection": "single", "choices": [value for value in ("auto", "inherit", *active)
+            result[key] = {"selection": "single", "choices": [value for value in ("auto", *active)
                                                                if value in allowed],
                            "choice_labels": {**AI_PROVIDERS, "auto": "Automatic (legacy endpoint)",
                                              "inherit": "Use default provider"}}

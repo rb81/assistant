@@ -165,14 +165,13 @@ Unpinnable dependency graphs require final one-time admin approval instead.
 Configuration under `agent.security.development`:
 
 ```yaml
-model: ""
+model: "YOUR_MODEL_ID"
 max_minutes: 30
 max_runs: 20
 ```
 
-Leave `model` blank to use the configured agent provider/model through a separate invocation.
-To choose a different model, enter its OpenRouter ID, such as
-`openai/gpt-sol-6.1`; this uses `AGENT_LLM_OPENROUTER_API_KEY` and needs no preset.
+Select the development route's provider and enter a model ID available from it.
+For example, OpenRouter uses IDs such as `openai/gpt-sol-6.1`.
 Presets and the literal `default` are not accepted as model IDs.
 Configure this in **`./run.sh` → Settings → Safety & screening → Development supervisor model ID**,
 or run `./run.sh --section security`.

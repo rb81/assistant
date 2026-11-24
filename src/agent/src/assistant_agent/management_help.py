@@ -99,7 +99,7 @@ PAGE_HELP = {
     "Settings": "Configure identity, model access, safety, search and instructions. Credentials, maintenance "
                 "and recovery have separate controls. Form changes stay in your draft until reviewed and saved.",
     "Settings:assistant": "Set identity, timezone, standing instructions and everyday assistant behavior.",
-    "Settings:providers": "Configure AI providers, credentials, priority, and provider-level privacy controls.",
+    "Settings:providers": "Configure AI providers, credentials, and provider-level privacy controls.",
     "Settings:models": "Choose a provider and available model for each task. Explicit fallbacks can use another provider.",
     "Settings:knowledge": "Configure search, web reading, semantic retrieval, memory and workspace indexing.",
     "Settings:connections": "Configure optional accounts and channels. Saved credentials do not verify connectivity.",
@@ -375,9 +375,7 @@ FIELD_HELP = {
     "COMPOSE_PROJECT_NAME": "Compose project name that identifies this installation's containers and "
                             "resources. It is not editable in-band; changing it externally can orphan "
                             "existing resources rather than migrate them.",
-    "AGENT_SECURITY_DEVELOPMENT_MODEL": "Leave blank to reuse the agent model, provider and credential. "
-                                            "Otherwise enter an OpenRouter model ID such as openai/gpt-sol-6.1; "
-                                            "this requires an OpenRouter API key under Models & access. "
+    "AGENT_SECURITY_DEVELOPMENT_MODEL": "Select a model available through the development route's provider. "
                                             "Presets are not used. The supervisor uses its own tool-free instructions "
                                             "and does not fall back to another model.",
     "AGENT_SECURITY_DEVELOPMENT_MAX_MINUTES": "Positive integer limiting the duration an administrator may authorize "
@@ -397,8 +395,8 @@ FIELD_HELP = {
     "AGENT_LLM_PROVIDER": "Provider protocol: OpenAI-compatible chat API, OpenAI, Anthropic, Gemini, or Cloudflare. "
                           "Auto-detect preserves existing installations.",
     "AGENT_LLM_BASE_URL": "Legacy HTTPS URL used for automatic provider detection and existing endpoint overrides. "
-                          "Native providers have prefilled endpoints in their own provider sections. Changing the "
-                          "default provider updates this value automatically. Do not include credentials or query strings.",
+                          "Native providers have prefilled endpoints in their own provider sections. "
+                          "Do not include credentials or query strings.",
     "AGENT_LLM_MODEL": "Provider model identifier used for ordinary tasks, for example anthropic/claude-sonnet-4.6 "
                       "on OpenRouter. It must be available to your configured provider account.",
     "AGENT_LLM_FALLBACK_MODEL": "Alternative model used when the primary model cannot complete a request. "

@@ -84,7 +84,10 @@ def load_config() -> AppConfig:
         if not raw_value.strip():
             if env_name == "AGENT_EMBEDDINGS_DIMENSIONS":
                 _set_nested(values, path_name, None)
-            elif env_name == "AGENT_SECURITY_DEVELOPMENT_MODEL":
+            elif env_name in {"AGENT_LLM_MODEL", "AGENT_NAMING_MODEL", "AGENT_ROUTING_MODEL",
+                              "AGENT_LIMITS_SUMMARIZATION_MODEL", "AGENT_MEMORY_STEWARD_MODEL",
+                              "AGENT_DEEP_RESEARCH_MODEL", "AGENT_SECURITY_DEVELOPMENT_MODEL",
+                              "AGENT_DEEP_RESEARCH_SEARCH_MODEL", "AGENT_SEARCH_MODEL"}:
                 _set_nested(values, path_name, "")
             elif env_name in {"AGENT_SEARCH_ALLOWED_DOMAINS", "AGENT_SEARCH_EXCLUDED_DOMAINS",
                               "AGENT_SANDBOX_NETWORK_ALLOWED_HOSTS", "AGENT_PROVIDERS_DISABLED",

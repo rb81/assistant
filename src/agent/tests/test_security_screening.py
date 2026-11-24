@@ -91,6 +91,19 @@ class EmailAuthenticationTest(unittest.TestCase):
 
 
 class TranslatorTest(unittest.TestCase):
+    def test_independent_decision_provider_does_not_require_model_provider_opt_in(self):
+        from assistant_agent.security_screening import DecisionClient
+        config = AppConfig({"agent": {
+            "providers": {"enabled": ["openrouter"]},
+            "security": {"decision_model": {"provider": "perplexity"}},
+        }})
+        with patch("assistant_agent.security_screening.read_secret", return_value="decision-key"):
+            self.assertEqual(DecisionClient(config).provider, "perplexity")
+        config.values["agent"]["security"]["decision_model"]["provider"] = "openai"
+        with patch("assistant_agent.security_screening.read_secret", return_value="decision-key"):
+            with self.assertRaisesRegex(DecisionError, "disabled"):
+                DecisionClient(config)
+
     def test_system_one_and_openai_formats_round_trip(self):
         questions = questions_for("scripts")
         system_one = SystemOneTranslator().request("jev-latest", {"command": ["ls"]}, questions)
