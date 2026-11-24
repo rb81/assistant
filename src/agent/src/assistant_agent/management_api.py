@@ -220,13 +220,15 @@ AI_PROVIDER_FIELDS = {
     "OpenAI": ["AGENT_PROVIDERS_OPENAI_BASE_URL", "AGENT_LLM_OPENAI_API_KEY"],
     "Anthropic": ["AGENT_PROVIDERS_ANTHROPIC_BASE_URL", "AGENT_LLM_ANTHROPIC_API_KEY"],
     "Gemini": ["AGENT_PROVIDERS_GEMINI_BASE_URL", "AGENT_LLM_GEMINI_API_KEY"],
-    "Cloudflare": ["AGENT_PROVIDERS_CLOUDFLARE_BASE_URL", "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID",
-                   "AGENT_LLM_CLOUDFLARE_API_KEY"],
-    "Cloudflare AI Gateway": ["AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ID"],
+    "Cloudflare": ["AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID", "AGENT_LLM_CLOUDFLARE_API_KEY",
+                   "AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ID", "AGENT_PROVIDERS_CLOUDFLARE_BASE_URL"],
     "OpenAI Compatible": ["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"],
 }
 for key, provider in PROVIDER_ENABLE_SETTINGS.items():
-    AI_PROVIDER_FIELDS[AI_PROVIDERS[provider]].insert(0, key)
+    if provider == "cloudflare-gateway":
+        AI_PROVIDER_FIELDS["Cloudflare"].insert(1, key)
+    else:
+        AI_PROVIDER_FIELDS[AI_PROVIDERS[provider]].insert(0, key)
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
     "AGENT_SEARCH_PRIMARY_PROVIDER": ("openrouter", "exa"),
@@ -322,6 +324,14 @@ def setting_presentation(group, spec):
     if spec.key in PROVIDER_ENABLE_SETTINGS:
         explanation = ("Allow this provider for model requests and fallbacks when its setup is complete. "
                        "Turning it off keeps saved credentials. Review and apply changes to activate them.")
+        if spec.key == "AGENT_PROVIDERS_CLOUDFLARE_ENABLED":
+            label = "Enable Workers AI"
+            explanation = ("Enable Cloudflare-hosted Workers AI models. AI Gateway has its own toggle; "
+                           "both use the Cloudflare account ID and API token below.")
+        elif spec.key == "AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ENABLED":
+            label = "Enable AI Gateway"
+            explanation = ("Enable third-party models through Cloudflare AI Gateway. It uses the same "
+                           "Cloudflare account ID and API token below; Workers AI does not need to be enabled.")
     if provider and explanation:
         # The provider is already clear from the section or account heading.
         explanation = re.sub(r"^(?:Google|Outlook|Zoho): ", "", explanation)

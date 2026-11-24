@@ -197,10 +197,10 @@ settings:
     description: "Workers AI endpoint template. Assistant substitutes your Cloudflare account ID. This is not an AI Gateway endpoint; its catalog does not include third-party Gateway models."
   agent.providers.cloudflare_account_id:
     label: Cloudflare account ID
-    description: "Account ID used to build the Workers AI API URL. Verify AI Gateway and account-level Logpush controls separately."
+    description: "Cloudflare account ID shared by Workers AI and AI Gateway. Verify Gateway and account-level Logpush controls separately."
   agent.providers.cloudflare_gateway_id:
     label: Gateway ID
-    description: "AI Gateway ID for Unified Billing. Configure the Cloudflare account ID and API token in the Workers AI block. Stored default provider keys take precedence over Unified Billing."
+    description: "AI Gateway ID for Unified Billing. Uses the shared Cloudflare account ID and API token; Workers AI does not need to be enabled. Stored default provider keys take precedence over Unified Billing."
   agent.model_routes.task.provider:
     label: Task provider
     enum: [inherit, openrouter, openai, anthropic, gemini, cloudflare, cloudflare-gateway, openai-compatible]

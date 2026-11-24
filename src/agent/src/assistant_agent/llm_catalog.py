@@ -18,6 +18,7 @@ from .transport_security import open_https_request, validate_https_url
 
 
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
+MAX_GATEWAY_CATALOG_BYTES = 64 * 1024 * 1024
 MAX_MODELS = 1000
 _cache_lock = threading.Lock()
 _catalog_cache = {}
@@ -27,16 +28,16 @@ class ModelCatalogError(RuntimeError):
     """A provider model catalog could not be loaded safely."""
 
 
-def _read_catalog(request):
+def _read_catalog(request, *, max_bytes=MAX_CATALOG_BYTES):
     try:
         with open_https_request(request, timeout=30) as response:
-            raw = response.read(MAX_CATALOG_BYTES + 1)
+            raw = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         raise ModelCatalogError("Provider model discovery failed (HTTP %s)" % exc.code) from exc
     except (urllib.error.URLError, OSError) as exc:
         raise ModelCatalogError("Provider model discovery failed: %s" % exc) from exc
-    if len(raw) > MAX_CATALOG_BYTES:
-        raise ModelCatalogError("Provider model catalog exceeds the 2 MiB limit")
+    if len(raw) > max_bytes:
+        raise ModelCatalogError("Provider model catalog exceeds the %d MiB limit" % (max_bytes // (1024 * 1024)))
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeError) as exc:
@@ -133,19 +134,25 @@ def _gateway_models(request):
     rows = []
     for page in range(1, MAX_MODELS // 100 + 2):
         url = request.full_url.replace("page=1&per_page=100", "page=%d&per_page=100" % page)
-        data = _read_catalog(urllib.request.Request(url, headers=dict(request.header_items()), method="GET"))
+        data = _read_catalog(urllib.request.Request(url, headers=dict(request.header_items()), method="GET"),
+                             max_bytes=MAX_GATEWAY_CATALOG_BYTES)
         result, info = data.get("result"), data.get("result_info")
         if (data.get("success") is not True or not isinstance(result, list) or not isinstance(info, dict)
                 or type(info.get("total_count")) is not int or info["total_count"] < 0
                 or info["total_count"] > MAX_MODELS):
             raise ModelCatalogError("Cloudflare returned an invalid AI Gateway model catalog")
-        rows.extend(result)
+        if not all(isinstance(row, dict) for row in result):
+            raise ModelCatalogError("Provider returned an invalid model entry")
+        rows.extend({key: row.get(key) for key in ("model_id", "name", "displayName", "task", "request_formats")}
+                    for row in result)
         if len(rows) > info["total_count"]:
             raise ModelCatalogError("Cloudflare returned an inconsistent AI Gateway model catalog")
         if len(rows) == info["total_count"]:
             return _models({"result": rows}, "cloudflare-gateway")
         if not result:
             raise ModelCatalogError("Cloudflare returned an incomplete AI Gateway model catalog")
+        # Do not retain the previous page's model schemas while fetching the next.
+        del data, result
     raise ModelCatalogError("Cloudflare AI Gateway model catalog exceeds the model limit")
 
 

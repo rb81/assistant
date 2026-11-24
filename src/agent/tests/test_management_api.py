@@ -862,8 +862,7 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert set(groups) == {item["group"] for item in result["settings"]}
     provider_fields = [item for item in result["settings"] if item["group"] == "providers"]
     assert {item["metadata"]["section"] for item in provider_fields} == {
-        "General", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "Cloudflare", "Cloudflare AI Gateway",
-        "OpenAI Compatible",
+        "General", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "Cloudflare", "OpenAI Compatible",
     }
     assert all(item["metadata"]["section"] != "Task" for item in provider_fields)
     for provider in ("OPENROUTER", "OPENAI", "ANTHROPIC", "GEMINI", "CLOUDFLARE"):
@@ -881,13 +880,20 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert settings["AGENT_PROVIDERS_DISABLED"]["metadata"]["hidden"] is True
     for provider, section in {
         "openrouter": "OpenRouter", "openai": "OpenAI", "anthropic": "Anthropic",
-        "gemini": "Gemini", "cloudflare": "Cloudflare", "cloudflare-gateway": "Cloudflare AI Gateway",
+        "gemini": "Gemini", "cloudflare": "Cloudflare", "cloudflare-gateway": "Cloudflare",
         "openai-compatible": "OpenAI Compatible",
     }.items():
         control = settings["AGENT_PROVIDERS_" + provider.upper().replace("-", "_") + "_ENABLED"]
-        assert control["label"] == "Enabled" and control["boolean"]
+        expected_label = {"cloudflare": "Enable Workers AI", "cloudflare-gateway": "Enable AI Gateway"}.get(
+            provider, "Enabled")
+        assert control["label"] == expected_label and control["boolean"]
         assert control["metadata"]["section"] == section
         assert control["metadata"]["provider_enablement"] == provider
+    for key in ("AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID", "AGENT_LLM_CLOUDFLARE_API_KEY",
+                "AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ID"):
+        assert settings[key]["metadata"]["section"] == "Cloudflare"
+    assert "Workers AI does not need to be enabled" in settings[
+        "AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ENABLED"]["metadata"]["help"]
 
 
 def test_provider_enable_controls_preserve_saved_state_credentials_and_runtime_policy(tmp_path):

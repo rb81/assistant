@@ -18,18 +18,20 @@ Explicit native providers must use their official hosts; use
 | Cloudflare AI Gateway | Same Cloudflare account endpoint | `AGENT_LLM_CLOUDFLARE_API_KEY` | `openai/gpt-4.1` |
 | OpenAI-compatible | Your HTTPS API base URL | `AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY` | Provider-specific |
 
-**AI providers** contains a separate block for each provider, like Calendar's
-provider blocks. Native endpoint URLs are prefilled; Cloudflare substitutes
+**AI providers** groups provider settings into blocks, like Calendar's provider
+blocks. Native endpoint URLs are prefilled; Cloudflare substitutes
 your account ID into its prefilled Workers AI URL. Only custom OpenAI-compatible
 services require you to supply an endpoint. Their dedicated credential is
 separate from OpenAI's; existing installations keep using their old saved key
 until a dedicated one is set. The legacy shared URL is an advanced migration
 setting, not a required setup step for native providers.
 
-Workers AI and AI Gateway are separate providers. AI Gateway discovers
-third-party chat models from Cloudflare's unified catalog; Workers AI lists
-Cloudflare-hosted models. Availability and retention depend on the exact model
-and service.
+Workers AI and AI Gateway share a Cloudflare account ID and API token and appear
+in the same settings block. They are separate model routes with independent
+enable switches: AI Gateway does not require Workers AI to be enabled. AI
+Gateway discovers third-party chat models from Cloudflare's unified catalog;
+Workers AI lists Cloudflare-hosted models. Availability and retention depend on
+the exact model and service.
 
 Each provider block has an **Enabled** toggle in both clients. On allows model
 requests and fallbacks once that provider's credentials and setup are complete;
@@ -43,9 +45,10 @@ provider does not select it for any model route or bypass privacy requirements.
 
 1. In Cloudflare, create or select a gateway, enable authentication, and load
    [Unified Billing credits](https://developers.cloudflare.com/ai-gateway/features/unified-billing/).
-2. In the Cloudflare provider block, save the account ID and a Cloudflare API
-   token with Workers AI access. In the AI Gateway block, enter the gateway ID
-   and enable it. Save and apply, then select AI Gateway and a model for a role.
+2. In the Cloudflare block, save the account ID and a Cloudflare API token with
+   Workers AI access. Enter the gateway ID and enable AI Gateway; the Workers
+   AI switch can remain off. Save and apply, then select AI Gateway and a model
+   for a role.
 3. Check gateway logging, caching and Logpush settings. Request headers disable
    Gateway log payloads and caching, but do not disable Logpush or billing
    metadata.

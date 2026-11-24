@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -137,6 +138,23 @@ def test_gateway_discovery_lists_chat_models_across_catalog_pages():
     assert [model["id"] for model in models] == ["anthropic/claude", "openai/gpt-4.1"]
     assert "page=2" in read.call_args.args[0].full_url
     assert read.call_args.args[0].get_header("Authorization") == "Bearer token"
+
+
+def test_gateway_discovery_accepts_catalog_pages_larger_than_two_mib():
+    response = {
+        "success": True, "result_info": {"total_count": 1}, "result": [{
+            "model_id": "openai/gpt-4.1", "task": "Text Generation",
+            "schema": "x" * (2 * 1024 * 1024),
+        }],
+    }
+    config = AppConfig({"agent": {
+        "llm": {"base_url": "https://api.cloudflare.com/client/v4/accounts/large-catalog/ai/v1"},
+        "providers": {"cloudflare_account_id": "large-catalog"},
+    }})
+    with patch("assistant_agent.llm_catalog.open_https_request",
+               return_value=io.BytesIO(json.dumps(response).encode())):
+        result = discover_models(config, provider_id="cloudflare-gateway", credential_reader=lambda _: "fixture")
+    assert [model["id"] for model in result["models"]] == ["openai/gpt-4.1"]
 
 
 def test_gateway_discovery_rejects_incomplete_catalog():
