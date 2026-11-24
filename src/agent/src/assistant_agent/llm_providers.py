@@ -7,13 +7,14 @@ from urllib.parse import quote, urlsplit
 from .transport_security import validate_https_url
 
 
-PROVIDERS = ("auto", "openrouter", "openai", "anthropic", "gemini", "cloudflare", "openai-compatible")
+PROVIDERS = ("auto", "openrouter", "openai", "anthropic", "gemini", "cloudflare", "cloudflare-gateway", "openai-compatible")
 PROVIDER_CREDENTIALS = {
     "openrouter": "AGENT_LLM_OPENROUTER_API_KEY",
     "openai": "AGENT_LLM_OPENAI_API_KEY",
     "anthropic": "AGENT_LLM_ANTHROPIC_API_KEY",
     "gemini": "AGENT_LLM_GEMINI_API_KEY",
     "cloudflare": "AGENT_LLM_CLOUDFLARE_API_KEY",
+    "cloudflare-gateway": "AGENT_LLM_CLOUDFLARE_API_KEY",
     "openai-compatible": "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY",
 }
 PROVIDER_DEFAULT_URLS = {
@@ -50,7 +51,18 @@ def route_provider(config, route):
 
 
 def provider_is_disabled(config, provider):
-    return provider in {item.strip().lower() for item in config.get_list("agent.providers.disabled")}
+    disabled = {item.strip().lower() for item in config.get_list("agent.providers.disabled")}
+    enabled = config.get("agent.providers.enabled")
+    if enabled is not None:
+        return provider not in {item.strip().lower() for item in config.get_list("agent.providers.enabled")} or provider in disabled
+    return provider in disabled
+
+
+def cloudflare_gateway_id(config):
+    value = str(config.get("agent.providers.cloudflare_gateway_id", "default") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value):
+        raise ValueError("Cloudflare AI Gateway requires a valid gateway ID")
+    return value
 
 
 def provider_base_url(config, provider):
@@ -63,7 +75,9 @@ def provider_base_url(config, provider):
             endpoint = configured
         validate_provider_url(provider, endpoint)
         return endpoint
-    if provider == "cloudflare":
+    if provider in {"cloudflare", "cloudflare-gateway"}:
+        if provider == "cloudflare-gateway":
+            cloudflare_gateway_id(config)
         account_id = str(config.get("agent.providers.cloudflare_account_id", "") or "").strip()
         if not account_id:
             configured = str(config.get("agent.llm.base_url", "") or "").rstrip("/")
@@ -104,6 +118,7 @@ def validate_provider_url(provider, base_url):
         "anthropic": "api.anthropic.com",
         "gemini": "generativelanguage.googleapis.com",
         "cloudflare": "api.cloudflare.com",
+        "cloudflare-gateway": "api.cloudflare.com",
     }
     if provider == "openrouter" and host != "openrouter.ai":
         raise ValueError("OpenRouter provider requires an https://openrouter.ai API URL")
@@ -143,6 +158,7 @@ def provider_for(config, base_url):
         "anthropic": "api.anthropic.com",
         "gemini": "generativelanguage.googleapis.com",
         "cloudflare": "api.cloudflare.com",
+        "cloudflare-gateway": "api.cloudflare.com",
     }
     if configured != "auto":
         if host == "openrouter.ai" and configured != "openrouter":
@@ -373,10 +389,10 @@ def build_request(provider, base_url, api_key, payload):
     root = base_url.rstrip("/")
     headers = {"Content-Type": "application/json"}
     body = payload
-    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare"):
+    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare", "cloudflare-gateway"):
         url = root + "/chat/completions"
         headers["Authorization"] = "Bearer " + api_key
-        if provider == "cloudflare":
+        if provider in {"cloudflare", "cloudflare-gateway"}:
             headers.update({
                 "cf-aig-collect-log": "false",
                 "cf-aig-collect-log-payload": "false",
@@ -410,7 +426,7 @@ def normalize_response(provider, data):
     """Normalize native Messages and Gemini responses to the task-agent chat schema."""
     if not isinstance(data, dict):
         raise ValueError("Model provider returned an invalid response")
-    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare"):
+    if provider in ("openrouter", "openai", "openai-compatible", "cloudflare", "cloudflare-gateway"):
         return data
     if provider == "anthropic":
         content = data.get("content")

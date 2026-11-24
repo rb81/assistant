@@ -56,6 +56,9 @@ def _models(data, provider):
     elif provider == "cloudflare":
         rows = data.get("result")
         key = "name"
+    elif provider == "cloudflare-gateway":
+        rows = data.get("result")
+        key = "model_id"
     else:
         raise ModelCatalogError("Unsupported provider model catalog")
     if not isinstance(rows, list) or len(rows) > MAX_MODELS:
@@ -76,6 +79,15 @@ def _models(data, provider):
                 continue
         if provider == "cloudflare" and not identifier.startswith("@cf/"):
             continue
+        if provider == "cloudflare-gateway":
+            formats = row.get("request_formats")
+            if row.get("task") != "Text Generation":
+                continue
+            if formats is not None and (not isinstance(formats, list)
+                                        or not all(isinstance(item, str) for item in formats)):
+                raise ModelCatalogError("Cloudflare returned invalid model request formats")
+            if formats is not None and "chat-completions" not in formats:
+                continue
         seen.add(identifier)
         result.append({"id": identifier, "name": str(row.get("displayName") or row.get("name") or identifier)})
     return sorted(result, key=lambda model: (model["name"].casefold(), model["id"]))
@@ -95,7 +107,7 @@ def _request(provider, base_url, api_key):
     elif provider == "gemini":
         url = root + ("/models?pageSize=1000" if root.endswith("/v1beta") else "/v1beta/models?pageSize=1000")
         headers["x-goog-api-key"] = api_key
-    elif provider == "cloudflare":
+    elif provider in {"cloudflare", "cloudflare-gateway"}:
         if (parsed.hostname or "").lower() != "api.cloudflare.com":
             raise ModelCatalogError("Cloudflare model discovery requires the official Cloudflare API host")
         parts = parsed.path.strip("/").split("/")
@@ -104,10 +116,10 @@ def _request(provider, base_url, api_key):
         account_id = parts[3]
         if not account_id or account_id in {".", ".."}:
             raise ModelCatalogError("Cloudflare account ID is missing from the Workers AI URL")
-        url = (
-            "https://api.cloudflare.com/client/v4/accounts/%s/ai/models/search?page=1&per_page=1000"
-            % urllib.parse.quote(account_id, safe="")
-        )
+        path = ("models/search?page=1&per_page=1000" if provider == "cloudflare"
+                else "catalog/models?page=1&per_page=100")
+        url = "https://api.cloudflare.com/client/v4/accounts/%s/ai/%s" % (
+            urllib.parse.quote(account_id, safe=""), path)
         headers["Authorization"] = "Bearer " + api_key
     else:
         raise ModelCatalogError("Model discovery is unavailable for the selected provider")
@@ -115,6 +127,26 @@ def _request(provider, base_url, api_key):
     validate_https_url(urllib.parse.urlunsplit(endpoint._replace(query="", fragment="")),
                        "Provider model discovery URL")
     return urllib.request.Request(url, headers=headers, method="GET")
+
+
+def _gateway_models(request):
+    rows = []
+    for page in range(1, MAX_MODELS // 100 + 2):
+        url = request.full_url.replace("page=1&per_page=100", "page=%d&per_page=100" % page)
+        data = _read_catalog(urllib.request.Request(url, headers=dict(request.header_items()), method="GET"))
+        result, info = data.get("result"), data.get("result_info")
+        if (data.get("success") is not True or not isinstance(result, list) or not isinstance(info, dict)
+                or type(info.get("total_count")) is not int or info["total_count"] < 0
+                or info["total_count"] > MAX_MODELS):
+            raise ModelCatalogError("Cloudflare returned an invalid AI Gateway model catalog")
+        rows.extend(result)
+        if len(rows) > info["total_count"]:
+            raise ModelCatalogError("Cloudflare returned an inconsistent AI Gateway model catalog")
+        if len(rows) == info["total_count"]:
+            return _models({"result": rows}, "cloudflare-gateway")
+        if not result:
+            raise ModelCatalogError("Cloudflare returned an incomplete AI Gateway model catalog")
+    raise ModelCatalogError("Cloudflare AI Gateway model catalog exceeds the model limit")
 
 
 def discover_models(config: AppConfig, provider_id=None, *, credential_reader=None):
@@ -153,7 +185,7 @@ def discover_models(config: AppConfig, provider_id=None, *, credential_reader=No
     if zdr:
         if provider == "gemini":
             raise ModelCatalogError("Gemini Developer API does not provide strict Zero Data Retention")
-        if provider not in {"openai", "anthropic", "cloudflare"}:
+        if provider not in {"openai", "anthropic", "cloudflare", "cloudflare-gateway"}:
             raise ModelCatalogError("Strict Zero Data Retention blocks this provider")
         if provider not in config.get_list("agent.llm.zdr_verified_providers"):
             raise ModelCatalogError("Verify the provider account and add it to the verified ZDR provider list")
@@ -178,7 +210,7 @@ def discover_models(config: AppConfig, provider_id=None, *, credential_reader=No
             raise
         except RuntimeError as exc:
             raise ModelCatalogError(str(exc)) from exc
-        models = _models(_read_catalog(request), provider)
+        models = _gateway_models(request) if provider == "cloudflare-gateway" else _models(_read_catalog(request), provider)
         with _cache_lock:
             if len(_catalog_cache) >= 64:
                 oldest = min(_catalog_cache, key=lambda item: _catalog_cache[item][0])
@@ -190,6 +222,9 @@ def discover_models(config: AppConfig, provider_id=None, *, credential_reader=No
     warning = None
     if provider == "cloudflare":
         warning = "Verify AI Gateway logging, caching, and Logpush settings; request headers do not disable Logpush."
+    elif provider == "cloudflare-gateway":
+        warning = ("Stored default provider keys take precedence over Unified Billing. "
+                   "Verify managed credentials, model eligibility, Gateway logging, caching, and Logpush settings.")
     elif zdr and provider in {"openai", "anthropic"}:
         warning = "Verify that this account and each selected model remain eligible for strict ZDR."
     return {"provider": provider, "models": models, "zdr_only": zdr, "warning": warning}

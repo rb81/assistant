@@ -503,6 +503,19 @@ def test_invalid_provider_enable_controls_do_not_partially_stage_changes(tmp_pat
     assert not backend.dirty
 
 
+def test_unchanged_opt_in_controls_do_not_pin_disabled_providers(tmp_path):
+    from assistant_agent.management_api import configuration_groups
+
+    configured(tmp_path)
+    backend = management(tmp_path)
+    backend.installation.defaults.values.setdefault("agent", {}).setdefault("providers", {})["enabled"] = []
+    before = dict(backend.values)
+    specs = configuration_groups()["providers"][1]
+    backend.stage_fields(specs, {spec.key: backend.value(spec) for spec in specs})
+    assert backend.values == before
+    assert not backend.dirty
+
+
 def test_provider_enable_controls_read_yaml_defaults_and_accept_legacy_writes(tmp_path):
     from assistant_agent.management import Field
 

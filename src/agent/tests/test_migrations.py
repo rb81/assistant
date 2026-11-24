@@ -161,3 +161,61 @@ class ShippedAgentYamlMigrationTest(unittest.TestCase):
             self.assertNotIn("hunter2", result.stdout + result.stderr)
             self.assertTrue((data / "config/agent.yaml").exists())
             self.assertFalse((data / "overrides.env").exists())
+
+
+PROVIDER_OPT_IN = Path(__file__).resolve().parents[3] / "migrations/003-provider-opt-in.py"
+
+
+@unittest.skipUnless(PROVIDER_OPT_IN.exists(), "migration has been retired")
+class ProviderOptInMigrationTest(unittest.TestCase):
+    def run_migration(self, data):
+        env = dict(os.environ, ASSISTANT_DEFAULTS_DIR=str(DEFAULTS.parent))
+        return subprocess.run([sys.executable, str(PROVIDER_OPT_IN), str(data)],
+                              capture_output=True, text=True, env=env)
+
+    def test_selected_routes_and_fallbacks_are_preserved_and_exclusions_remain(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text(
+                "AGENT_LLM_PROVIDER=openai\nAGENT_LLM_BASE_URL=https://api.openai.com/v1\n"
+                "AGENT_MODEL_ROUTES_NAMING_PROVIDER=anthropic\n"
+                "AGENT_MODEL_ROUTES_TASK_FALLBACKS=gemini:example\n"
+                "AGENT_PROVIDERS_DISABLED=gemini\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(set(overrides["AGENT_PROVIDERS_ENABLED"].split(",")),
+                             {"openai", "anthropic", "openrouter"})
+            saved = (data / "overrides.env").read_text()
+            self.assertEqual(self.run_migration(data).returncode, 0)
+            self.assertEqual((data / "overrides.env").read_text(), saved)
+
+    def test_fresh_install_and_existing_enablement_are_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".install-initializing").write_text("assistant-initial-install\n")
+            (data / ".env").write_text("AGENT_LLM_PROVIDER=openrouter\n")
+            self.assertEqual(self.run_migration(data).returncode, 0)
+            self.assertFalse((data / "overrides.env").exists())
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / "overrides.env").write_text("AGENT_PROVIDERS_ENABLED=anthropic\n")
+            self.assertEqual(self.run_migration(data).returncode, 0)
+            self.assertEqual((data / "overrides.env").read_text(), "AGENT_PROVIDERS_ENABLED=anthropic\n")
+
+    def test_inactive_default_openrouter_routes_do_not_enable_it(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text(
+                "AGENT_LLM_PROVIDER=openai\nAGENT_LLM_BASE_URL=https://api.openai.com/v1\n"
+                "AGENT_SEARCH_ENABLED=false\nAGENT_DEEP_RESEARCH_ENABLED=false\nAGENT_FUSION_ENABLED=false\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_PROVIDERS_ENABLED"], "openai")

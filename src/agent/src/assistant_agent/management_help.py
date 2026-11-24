@@ -408,13 +408,15 @@ FIELD_HELP = {
                           "block installation, startup or usage. Direct providers require verified accounts and models. "
                           "Gemini Developer API and custom OpenAI-compatible routes are blocked. "
                           "Hosted tools have separate data policies; other providers may have additional eligibility limits.",
-    "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "Comma-separated provider accounts whose retention controls you verified "
-                                        "(openai, anthropic, cloudflare). OpenRouter does not require an entry. "
-                                        "This is an administrator attestation; account settings cannot be inspected by this app. For Cloudflare, "
-                                        "verify AI Gateway logging, caching and Logpush settings.",
-    "AGENT_LLM_ZDR_VERIFIED_MODELS": "Exact model allowlist in provider:model format, for example openai:gpt-4.1. "
-                                     "Required for direct providers, not OpenRouter. Only add models whose ZDR "
-                                     "eligibility you verified for the configured account.",
+    "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "Select direct-provider accounts only after verifying their retention "
+                                        "controls. This is your attestation; Assistant cannot verify the account. "
+                                        "OpenRouter uses its own ZDR routing and is not included. For Cloudflare, "
+                                        "verify AI Gateway logging, caching and Logpush settings. For AI Gateway, "
+                                        "also verify Unified Billing uses Cloudflare-managed credentials and no "
+                                        "default BYOK key takes precedence.",
+    "AGENT_LLM_ZDR_VERIFIED_MODELS": "Select each exact direct-provider model whose ZDR eligibility you have "
+                                     "verified for your account. In ZDR-only mode, direct requests are blocked unless "
+                                     "both the account and model are selected. OpenRouter does not use this list.",
     "AGENT_LLM_OPENROUTER_API_KEY": "OpenRouter credential for OpenRouter model access and optional preset or speech tools. "
                           "Create it in your provider account; set account-level spending limits there.",
     "AGENT_LLM_OPENAI_API_KEY": "Credential for the native OpenAI API. Custom OpenAI-compatible endpoints have a separate credential.",
@@ -423,7 +425,7 @@ FIELD_HELP = {
     "AGENT_WEB_FETCH_MANAGED_TOKEN": "Locally generated credential for the managed web page reader.",
     "AGENT_LLM_ANTHROPIC_API_KEY": "Anthropic API credential used with the native Claude Messages API.",
     "AGENT_LLM_GEMINI_API_KEY": "Google AI Studio Gemini Developer API key. This route cannot satisfy strict ZDR.",
-    "AGENT_LLM_CLOUDFLARE_API_KEY": "Cloudflare API token for Workers AI; use a token scoped to the required account and AI permissions.",
+    "AGENT_LLM_CLOUDFLARE_API_KEY": "Cloudflare API token shared by Workers AI and AI Gateway; scope it to the required account and Workers AI permissions.",
     "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY": "Credential for the custom OpenAI-compatible endpoint, separate from native OpenAI.",
     "AGENT_DATABASE_PASSWORD": "Password for the bundled PostgreSQL database. Generate one only for a fresh install. "
                          "For existing data, use its current password; change it through Credentials to coordinate rotation.",

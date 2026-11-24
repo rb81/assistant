@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +54,26 @@ def test_openrouter_discovery_warns_without_attestations_or_hiding_zdr_models(mo
     assert "does not block" in result["warning"]
 
 
+def test_openrouter_discovery_does_not_require_database_dependencies():
+    code = """
+import sys
+from unittest.mock import patch
+class BlockDatabase:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "psycopg" or fullname.startswith("psycopg."):
+            raise ModuleNotFoundError("database dependency unavailable")
+sys.meta_path.insert(0, BlockDatabase())
+from assistant_agent.config import AppConfig
+from assistant_agent.llm_catalog import discover_models
+config = AppConfig({"agent": {"llm": {"base_url": "https://openrouter.ai/api/v1"}}})
+with patch("assistant_agent.model_service.OpenRouterModels.models",
+           return_value=[{"id": "example/model"}]):
+    result = discover_models(config, provider_id="openrouter")
+assert result["models"][0]["id"] == "example/model"
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_strict_model_discovery_rejects_unverified_and_non_zdr_providers():
     with pytest.raises(ModelCatalogError, match="does not provide strict"):
         discover_models(catalog_config(
@@ -95,6 +117,36 @@ def test_cloudflare_discovery_returns_only_workers_ai_models_and_gateway_warning
         "@cf/meta/llama-3.1-8b-instruct", "@cf/mistral/model",
     ]
     assert "Logpush" in result["warning"]
+
+
+def test_gateway_discovery_lists_chat_models_across_catalog_pages():
+    from assistant_agent.llm_catalog import _gateway_models
+    request = _request("cloudflare-gateway", "https://api.cloudflare.com/client/v4/accounts/example/ai/v1", "token")
+    pages = [
+        {"success": True, "result_info": {"total_count": 3}, "result": [
+            {"model_id": "openai/gpt-4.1", "name": "GPT-4.1", "task": "Text Generation",
+             "request_formats": ["chat-completions"]},
+            {"model_id": "image/model", "task": "Text-to-Image"},
+        ]},
+        {"success": True, "result_info": {"total_count": 3}, "result": [
+            {"model_id": "anthropic/claude", "name": "Claude", "task": "Text Generation"},
+        ]},
+    ]
+    with patch("assistant_agent.llm_catalog._read_catalog", side_effect=pages) as read:
+        models = _gateway_models(request)
+    assert [model["id"] for model in models] == ["anthropic/claude", "openai/gpt-4.1"]
+    assert "page=2" in read.call_args.args[0].full_url
+    assert read.call_args.args[0].get_header("Authorization") == "Bearer token"
+
+
+def test_gateway_discovery_rejects_incomplete_catalog():
+    from assistant_agent.llm_catalog import _gateway_models
+    request = _request("cloudflare-gateway", "https://api.cloudflare.com/client/v4/accounts/example/ai/v1", "token")
+    with patch("assistant_agent.llm_catalog._read_catalog", return_value={
+        "success": True, "result_info": {"total_count": 1}, "result": [],
+    }):
+        with pytest.raises(ModelCatalogError, match="incomplete"):
+            _gateway_models(request)
 
 
 def test_native_catalog_requests_use_provider_auth_and_gemini_capability_filtering():

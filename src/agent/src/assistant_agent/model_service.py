@@ -9,8 +9,6 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from psycopg.types.json import Jsonb
-
 from .config import app_display_name, app_referer_url
 from .model_resources import ModelServiceError, ModelToolResources, ProviderRejected, validate_media
 from .secret_store import read_secret

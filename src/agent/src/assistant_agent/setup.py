@@ -1712,6 +1712,8 @@ def interactive(options):
                                      "gemini-2.5-flash", "", "AGENT_LLM_GEMINI_API_KEY"),
             "Cloudflare Workers AI": ("cloudflare", "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
                                       "@cf/meta/llama-3.1-8b-instruct", "", "AGENT_LLM_CLOUDFLARE_API_KEY"),
+            "Cloudflare AI Gateway": ("cloudflare-gateway", "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
+                                      "openai/gpt-4.1", "", "AGENT_LLM_CLOUDFLARE_API_KEY"),
             "OpenAI-compatible": ("openai-compatible", previous_url, "", "", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"),
         }
         by_id = {entry[0]: name for name, entry in provider_options.items()}
@@ -1726,6 +1728,14 @@ def interactive(options):
                                                   default=default_provider))
         provider, default_url, default_model, default_fallback, credential_name = provider_options[provider_name]
         instance.values["AGENT_LLM_PROVIDER"] = provider
+        enabled = AppConfig({"enabled": instance.values.get(
+            "AGENT_PROVIDERS_ENABLED", instance.defaults.get("agent.providers.enabled"))}).get_list("enabled")
+        if provider not in enabled:
+            enabled.append(provider)
+        instance.values["AGENT_PROVIDERS_ENABLED"] = ",".join(enabled)
+        disabled = AppConfig({"disabled": instance.values.get(
+            "AGENT_PROVIDERS_DISABLED", instance.defaults.get("agent.providers.disabled"))}).get_list("disabled")
+        instance.values["AGENT_PROVIDERS_DISABLED"] = ",".join(item for item in disabled if item != provider)
         instance.values["AGENT_LLM_BASE_URL"] = previous_url if provider == "openai-compatible" else default_url
         text("AGENT_LLM_BASE_URL", "Model API base URL", default_url)
         credential(credential_name)
@@ -2781,7 +2791,7 @@ def draft_problems(instance):
     except RuntimeError:
         problem("models", "A model and valid HTTPS model API URL without credentials are required")
     supported_providers = set(PROVIDER_CREDENTIALS)
-    for path in ("agent.providers.disabled", "agent.providers.priority"):
+    for path in ("agent.providers.enabled", "agent.providers.disabled", "agent.providers.priority"):
         configured = routing_config.get_list(path)
         if len(configured) != len(set(configured)) or any(item not in supported_providers for item in configured):
             problem("models", "%s must contain distinct supported provider IDs" % path)

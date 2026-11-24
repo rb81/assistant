@@ -15,6 +15,7 @@ Explicit native providers must use their official hosts; use
 | Anthropic Claude | `https://api.anthropic.com` | `AGENT_LLM_ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | Gemini Developer API | `https://generativelanguage.googleapis.com/v1beta` | `AGENT_LLM_GEMINI_API_KEY` | `gemini-2.5-flash` |
 | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/<account-id>/ai/v1` | `AGENT_LLM_CLOUDFLARE_API_KEY` | `@cf/meta/llama-3.1-8b-instruct` |
+| Cloudflare AI Gateway | Same Cloudflare account endpoint | `AGENT_LLM_CLOUDFLARE_API_KEY` | `openai/gpt-4.1` |
 | OpenAI-compatible | Your HTTPS API base URL | `AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY` | Provider-specific |
 
 **AI providers** contains a separate block for each provider, like Calendar's
@@ -25,11 +26,34 @@ separate from OpenAI's; existing installations keep using their old saved key
 until a dedicated one is set. The legacy shared URL is an advanced migration
 setting, not a required setup step for native providers.
 
+Workers AI and AI Gateway are separate providers. AI Gateway discovers
+third-party chat models from Cloudflare's unified catalog; Workers AI lists
+Cloudflare-hosted models. Availability and retention depend on the exact model
+and service.
+
 Each provider block has an **Enabled** toggle in both clients. On allows model
 requests and fallbacks once that provider's credentials and setup are complete;
-off blocks them without deleting credentials. Existing disabled-provider choices
-carry over automatically. Review, save, and apply changes as usual. Enabling a
+off blocks them without deleting credentials. New providers start disabled.
+On upgrade, selected providers and fallbacks remain enabled unless previously
+disabled; the migration runs during installation or `server start`. Review,
+save, and apply changes as usual. Enabling a
 provider does not select it for any model route or bypass privacy requirements.
+
+### Cloudflare AI Gateway
+
+1. In Cloudflare, create or select a gateway, enable authentication, and load
+   [Unified Billing credits](https://developers.cloudflare.com/ai-gateway/features/unified-billing/).
+2. In the Cloudflare provider block, save the account ID and a Cloudflare API
+   token with Workers AI access. In the AI Gateway block, enter the gateway ID
+   and enable it. Save and apply, then select AI Gateway and a model for a role.
+3. Check gateway logging, caching and Logpush settings. Request headers disable
+   Gateway log payloads and caching, but do not disable Logpush or billing
+   metadata.
+
+Cloudflare resolves a gateway's stored default provider keys before Unified
+Billing. To use Cloudflare-managed credentials, remove applicable default BYOK
+keys and verify the account configuration; Assistant cannot inspect it. Workers
+AI requests use the gateway's configured Workers AI billing mode.
 
 Selector ordering, hosting-provider restrictions and ZDR verification use
 selection lists, not comma-separated text editors. macOS lists are searchable;
@@ -84,6 +108,11 @@ make this policy stricter.
   Requests disable AI Gateway request logging, payload logging, and caching
   where supported. These headers do not disable Logpush; verify Gateway and
   account-level logging, caching, and Logpush settings separately.
+- **Cloudflare AI Gateway:** attest the Gateway account and each exact model
+  only after confirming Cloudflare-managed Unified Billing credentials, model
+  ZDR eligibility, and Gateway/Logpush privacy settings. A stored default BYOK
+  key takes precedence and is not covered by Cloudflare's Unified Billing ZDR
+  guarantee. Assistant cannot verify these settings.
 - **Custom OpenAI-compatible endpoints:** are not verifiable by this policy
   and are blocked in strict mode.
 

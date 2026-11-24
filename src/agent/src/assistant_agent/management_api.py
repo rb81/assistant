@@ -41,6 +41,7 @@ from .management_operations import OperationManager
 from .management_events import EventBuffer
 from .secret_store import is_secret_name
 from .management_help import FIELD_HELP, GROUP_HELP
+from .security_screening import PROVIDER_CHOICES as SCREENING_PROVIDER_CHOICES
 from .setup import (
     PublicSetupError, SetupError, atomic_write, installation_lock, overrides_problems, parse_environment,
     read_regular, render_environment, setup_failure_message,
@@ -210,7 +211,8 @@ ADVANCED_GROUP_PARENTS = {
 CALENDAR_PROVIDERS = {"GOOGLE": "Google", "OUTLOOK": "Microsoft Outlook", "ZOHO": "Zoho"}
 AI_PROVIDERS = {
     "openrouter": "OpenRouter", "openai": "OpenAI", "anthropic": "Anthropic",
-    "gemini": "Gemini", "cloudflare": "Cloudflare", "openai-compatible": "OpenAI Compatible",
+    "gemini": "Gemini", "cloudflare": "Cloudflare", "cloudflare-gateway": "Cloudflare AI Gateway",
+    "openai-compatible": "OpenAI Compatible",
 }
 AI_PROVIDER_FIELDS = {
     "OpenRouter": ["AGENT_PROVIDERS_OPENROUTER_BASE_URL", "AGENT_LLM_OPENROUTER_API_KEY",
@@ -220,6 +222,7 @@ AI_PROVIDER_FIELDS = {
     "Gemini": ["AGENT_PROVIDERS_GEMINI_BASE_URL", "AGENT_LLM_GEMINI_API_KEY"],
     "Cloudflare": ["AGENT_PROVIDERS_CLOUDFLARE_BASE_URL", "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID",
                    "AGENT_LLM_CLOUDFLARE_API_KEY"],
+    "Cloudflare AI Gateway": ["AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ID"],
     "OpenAI Compatible": ["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"],
 }
 for key, provider in PROVIDER_ENABLE_SETTINGS.items():
@@ -227,6 +230,7 @@ for key, provider in PROVIDER_ENABLE_SETTINGS.items():
 SETTING_CHOICES = {
     "AGENT_APPROVALS_CHANNEL": ("email", "telegram", "both", "client"),
     "AGENT_SEARCH_PRIMARY_PROVIDER": ("openrouter", "exa"),
+    "AGENT_SECURITY_DECISION_MODEL_PROVIDER": SCREENING_PROVIDER_CHOICES,
     "AGENT_ZOOM_AUTH_MODE": ("s2s", "oauth"),
 }
 CHOICE_LABELS = {
@@ -436,9 +440,10 @@ def configuration_groups():
         "AGENT_LLM_PROVIDER", "AGENT_LLM_BASE_URL", "AGENT_LLM_ALLOWED_PROVIDERS",
         "AGENT_LLM_OPENROUTER_API_KEY", "AGENT_LLM_OPENAI_API_KEY",
         "AGENT_LLM_ANTHROPIC_API_KEY", "AGENT_LLM_GEMINI_API_KEY",
-        "AGENT_LLM_CLOUDFLARE_API_KEY", "AGENT_PROVIDERS_DISABLED",
+        "AGENT_LLM_CLOUDFLARE_API_KEY", "AGENT_PROVIDERS_DISABLED", "AGENT_PROVIDERS_ENABLED",
         "AGENT_PROVIDERS_PRIORITY", "AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL",
         "AGENT_PROVIDERS_CLOUDFLARE_ACCOUNT_ID",
+        "AGENT_PROVIDERS_CLOUDFLARE_GATEWAY_ID",
     }
     privacy_keys = {
         "AGENT_LLM_ZDR_ONLY", "AGENT_LLM_ZDR_VERIFIED_PROVIDERS",
@@ -458,7 +463,7 @@ def configuration_groups():
         specs[:] = retained
     provider_fields.extend(groups.pop("catalog:providers", ("", []))[1])
     provider_fields.extend(Field(key, "Enabled", "true", boolean=True) for key in PROVIDER_ENABLE_SETTINGS)
-    order = ["AGENT_LLM_PROVIDER", "AGENT_PROVIDERS_DISABLED", "AGENT_PROVIDERS_PRIORITY",
+    order = ["AGENT_LLM_PROVIDER", "AGENT_PROVIDERS_ENABLED", "AGENT_PROVIDERS_DISABLED", "AGENT_PROVIDERS_PRIORITY",
              *[key for keys in AI_PROVIDER_FIELDS.values() for key in keys], "AGENT_LLM_BASE_URL"]
     provider_fields.sort(key=lambda spec: order.index(spec.key) if spec.key in order else len(order))
     groups["providers"] = ("AI providers", provider_fields)
@@ -744,6 +749,9 @@ class ManagementService:
         for key, spec in specs.items():
             path = catalog.get(key, {}).get("path")
             if not path or spec.secret:
+                continue
+            if (key == "AGENT_PROVIDERS_ENABLED" and key not in backend.values
+                    and backend.installation.defaults.get(path) is None):
                 continue
             target = values
             parts = path.split(".")

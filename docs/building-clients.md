@@ -78,10 +78,10 @@ snapshot; do not make users enter a shared URL to select a native provider.
 Each provider block includes a boolean `AGENT_PROVIDERS_<PROVIDER>_ENABLED`
 management control, identified by `metadata.provider_enablement`. Submit its
 `"true"` or `"false"` value through the normal reviewed settings API. These
-controls project the existing `AGENT_PROVIDERS_DISABLED` storage setting; they
-are not additional environment overrides. Saved choices and credentials are
-preserved. Honor `metadata.hidden` in editors and search; the legacy availability
-list remains in snapshots and accepts writes for older clients.
+controls project `AGENT_PROVIDERS_ENABLED` and the legacy
+`AGENT_PROVIDERS_DISABLED` exclusions; they are not additional environment
+overrides. Saved choices and credentials are preserved. Honor `metadata.hidden`
+in editors and search. Providers absent from the enabled list are disabled.
 
 Render `metadata.selection` values `single`, `multiple`, and `ordered` as
 selection controls. Local options and display labels are in `choices` and

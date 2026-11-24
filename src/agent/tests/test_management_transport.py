@@ -160,12 +160,13 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.location.route = "Form:providers"
             ui.render()
             enable = ui.form["AGENT_PROVIDERS_GEMINI_ENABLED"]
-            assert enable.checked
+            assert not enable.checked
             assert enable.control in ui.control_topics
             assert ui.form["AGENT_PROVIDERS_DISABLED"].control not in ui.control_topics
-            enable.checked = False
+            enable.checked = True
+            ui.form["AGENT_PROVIDERS_OPENROUTER_ENABLED"].checked = True
             ui.keep_draft()
-            assert backend.payload()["values"]["AGENT_PROVIDERS_GEMINI_ENABLED"] == "false"
+            assert backend.payload()["values"]["AGENT_PROVIDERS_GEMINI_ENABLED"] == "true"
             ui.location.route = "Form:catalog:search"
             ui.render()
             preferred = ui.form["AGENT_SEARCH_PRIMARY_PROVIDER"]
@@ -175,6 +176,8 @@ def test_tui_backend_uses_server_catalog_and_api_for_configuration_and_actions(t
             ui.form["AGENT_SEARCH_EXA_ENABLED"].checked = True
             ui.keep_draft()
             assert backend.values["AGENT_SEARCH_PRIMARY_PROVIDER"] == "exa"
+            assert backend.values["AGENT_PROVIDERS_GEMINI_ENABLED"] == "true"
+            assert backend.values["AGENT_PROVIDERS_OPENROUTER_ENABLED"] == "true"
         backend.stage("identity", {"AGENT_IDENTITY_NAME": "API-managed assistant"})
         backend.stage("providers", {"AGENT_LLM_OPENROUTER_API_KEY": "test-provider-key"})
         database_group = next(group for group, (_, fields) in backend.groups.items()

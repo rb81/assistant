@@ -4,9 +4,6 @@ import binascii
 import uuid
 from decimal import Decimal, InvalidOperation
 
-from psycopg.types.json import Jsonb
-
-
 MEDIA_TYPES = {
     "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
     "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mpeg": ".mp3",
@@ -66,6 +63,8 @@ class ModelToolResources:
                 "remaining_usd": float(max(Decimal(0), amount - row["spent"]))}
 
     def reserve(self, preset):
+        from psycopg.types.json import Jsonb
+
         if self.budget()["unresolved_requests"]:
             from .tts import TextToSpeech
             TextToSpeech(self.runtime).reconcile()
@@ -89,6 +88,8 @@ class ModelToolResources:
         return call_id
 
     def settle(self, call_id, status, usage=None, generation_id=None, *, conn=None):
+        from psycopg.types.json import Jsonb
+
         database = conn if conn is not None else self.db
         cost = None
         if usage is not None and usage.get("cost") is not None:

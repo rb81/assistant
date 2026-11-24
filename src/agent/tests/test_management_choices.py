@@ -33,6 +33,17 @@ def test_custom_endpoint_does_not_activate_with_an_unrelated_openrouter_key():
     assert provider_choices_metadata(item)["AGENT_PROVIDERS_DISABLED"]["choices"] == ["openrouter"]
 
 
+def test_gateway_is_a_separately_enabled_provider_with_shared_cloudflare_credentials():
+    item = backend()
+    item.credentials = {"AGENT_LLM_CLOUDFLARE_API_KEY": "fixture"}
+    item.values["AGENT_PROVIDERS_ENABLED"] = "cloudflare-gateway"
+    metadata = provider_choices_metadata(item)
+    assert metadata["AGENT_PROVIDERS_DISABLED"]["choices"] == ["cloudflare", "cloudflare-gateway"]
+    assert "cloudflare-gateway" in metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"]
+    assert "cloudflare" not in metadata["AGENT_MODEL_ROUTES_TASK_PROVIDER"]["choices"]
+    assert "cloudflare-gateway" in metadata["AGENT_LLM_ZDR_VERIFIED_PROVIDERS"]["choices"]
+
+
 def test_provider_selectors_follow_saved_priority_without_changing_routes():
     item = backend()
     item.values["AGENT_PROVIDERS_PRIORITY"] = "openai,openrouter"
@@ -69,10 +80,12 @@ def test_terminal_provider_toggle_updates_draft_selectors_without_losing_saved_s
 def test_cloudflare_attestation_choices_exclude_unsupported_partner_routes():
     item = backend()
     item.credentials = {"AGENT_LLM_CLOUDFLARE_API_KEY": "fixture"}
+    item.values["AGENT_PROVIDERS_DISABLED"] = "cloudflare-gateway"
     with patch("assistant_agent.management_choices.discover_models", return_value={"models": [
         {"id": "@cf/example/model", "name": "Workers AI"}, {"id": "partner/model", "name": "Partner"},
     ]}):
-        result = setting_choices(AppConfig({}), item, "AGENT_LLM_ZDR_VERIFIED_MODELS")
+        result = setting_choices(AppConfig({"agent": {"providers": {"disabled": ["cloudflare-gateway"]}}}),
+                                 item, "AGENT_LLM_ZDR_VERIFIED_MODELS")
     assert result["choices"] == ["cloudflare:@cf/example/model"]
 
 

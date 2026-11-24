@@ -184,7 +184,13 @@ class Management:
             return ""
         if spec.key in PROVIDER_ENABLE_SETTINGS:
             disabled = self.value(Field("AGENT_PROVIDERS_DISABLED", "Provider availability"))
-            return str(PROVIDER_ENABLE_SETTINGS[spec.key] not in {
+            provider = PROVIDER_ENABLE_SETTINGS[spec.key]
+            enabled = self.value(Field("AGENT_PROVIDERS_ENABLED", "Enabled providers"))
+            has_enabled = ("AGENT_PROVIDERS_ENABLED" in self.values or
+                           self.installation.defaults.get("agent.providers.enabled") is not None)
+            return str((not has_enabled or provider in {
+                item.strip().lower() for item in enabled.split(",")
+            }) and provider not in {
                 item.strip().lower() for item in disabled.split(",")
             }).lower()
         if spec.key in self.values:
@@ -212,21 +218,34 @@ class Management:
     def stage_fields(self, specs, values):
         changes = []
         disabled_key = "AGENT_PROVIDERS_DISABLED"
+        enabled_key = "AGENT_PROVIDERS_ENABLED"
         original_disabled = self.value(Field(disabled_key, "Provider availability"))
         original_list = AppConfig({"disabled": original_disabled.lower()}).get_list("disabled")
         disabled = AppConfig({"disabled": values.get(disabled_key, original_disabled).lower()}).get_list("disabled")
+        original_enabled = self.value(Field(enabled_key, "Enabled providers"))
+        original_enabled_list = AppConfig({"enabled": original_enabled.lower()}).get_list("enabled")
+        enabled = AppConfig({"enabled": values.get(enabled_key, original_enabled).lower()}).get_list("enabled")
+        has_enabled = (enabled_key in self.values or
+                       self.installation.defaults.get("agent.providers.enabled") is not None or
+                       (enabled_key in values and values[enabled_key] != original_enabled))
         for spec in specs:
             value = values[spec.key] if spec.secret else values[spec.key].strip()
-            if spec.key == disabled_key:
+            if spec.key in {disabled_key, enabled_key}:
                 continue
             if spec.key in PROVIDER_ENABLE_SETTINGS:
                 if value not in {"true", "false"}:
                     raise PublicSetupError("Provider Enabled controls must be true or false.")
+                if value == self.value(spec):
+                    continue
                 provider = PROVIDER_ENABLE_SETTINGS[spec.key]
                 if value == "true":
                     disabled = [item for item in disabled if item != provider]
+                    if has_enabled and provider not in enabled:
+                        enabled.append(provider)
                 elif provider not in disabled:
                     disabled.append(provider)
+                if value == "false":
+                    enabled = [item for item in enabled if item != provider]
                 continue
             if spec.secret:
                 if value:
@@ -239,6 +258,8 @@ class Management:
                 changes.append((spec.secret, spec.key, value))
         if disabled != original_list:
             changes.append((False, disabled_key, ",".join(disabled)))
+        if has_enabled and enabled != original_enabled_list:
+            changes.append((False, enabled_key, ",".join(enabled)))
         for secret, key, value in changes:
             target = self.credentials if secret else self.values
             if target.get(key) != value:

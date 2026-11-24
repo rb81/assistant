@@ -49,7 +49,8 @@ fi
 
 case "$IMAGE" in assistant-management:local|assistant-management:update-*) LOCAL_IMAGE=1 ;; *) LOCAL_IMAGE=0 ;; esac
 if [ "$LOCAL_IMAGE" = 1 ]; then
-    if [ "${1:-}" = server ] && [ "${2:-start}" = start ]; then
+    if { [ "${1:-}" = server ] && [ "${2:-start}" = start ]; } \
+            || { [ "${1:-}" = management ] && [ "${2:-}" = serve ]; }; then
         printf '%s\n' 'Building the management image (the first build may take several minutes)...'
         docker build --progress=plain --build-arg "ASSISTANT_REVISION=$ASSISTANT_REVISION" \
             -t "$IMAGE" -f "$ROOT/src/management/Dockerfile" "$ROOT"
@@ -61,6 +62,13 @@ elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     docker pull "$IMAGE"
 fi
 export ASSISTANT_MANAGEMENT_IMAGE="$IMAGE"
+if { [ "${1:-}" = server ] && [ "${2:-start}" = start ]; } \
+        || { [ "${1:-}" = management ] && [ "${2:-}" = serve ]; }; then
+    for migration in "$ROOT"/migrations/*.sh; do
+        [ -f "$migration" ] || continue
+        sh "$migration" "$ROOT/data"
+    done
+fi
 SOCKET_GROUP=$(stat -c '%g' "$SOCKET" 2>/dev/null || stat -f '%g' "$SOCKET")
 NETWORK=bridge
 if [ "${1:-}" != server ] && ! { [ "${1:-}" = management ] && [ "${2:-}" = serve ]; } \

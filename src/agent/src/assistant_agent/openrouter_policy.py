@@ -32,7 +32,7 @@ def require_zdr_eligibility(config, provider: str, model: str, *, scoped=False) 
         return
     if provider == "gemini":
         raise ValueError("Gemini Developer API does not provide strict zero data retention")
-    if provider not in {"openai", "anthropic", "cloudflare"}:
+    if provider not in {"openai", "anthropic", "cloudflare", "cloudflare-gateway"}:
         raise ValueError("Provider %s is not verified for strict zero data retention" % provider)
     verified_providers = config.get_list("agent.llm.zdr_verified_providers")
     verified_models = config.get_list("agent.llm.zdr_verified_models")

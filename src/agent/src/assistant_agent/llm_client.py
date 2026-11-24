@@ -46,6 +46,8 @@ class LlmClient:
             if not base_url:
                 validate_https_url(legacy_url, "Model API base URL")
             self.provider = provider_for(config, legacy_url)
+            if provider_is_disabled(config, self.provider):
+                raise ValueError("Model provider %s is disabled" % self.provider)
             route_url = base_url or provider_base_url(config, self.provider)
         self.base_url = str(base_url or route_url).rstrip("/")
         validate_https_url(self.base_url, "Model API base URL")
@@ -131,6 +133,9 @@ class LlmClient:
             "Content-Type": "application/json",
             **provider_headers,
         }
+        if provider == "cloudflare-gateway":
+            from .llm_providers import cloudflare_gateway_id
+            headers["cf-aig-gateway-id"] = cloudflare_gateway_id(self.config)
         if provider == "openrouter":
             headers.update({
                 "HTTP-Referer": app_referer_url(self.config),

@@ -6,7 +6,61 @@ import pytest
 from assistant_agent.config import AppConfig
 from assistant_agent.llm_client import LlmClient, _TransientLlmError
 from assistant_agent.llm_providers import build_request, normalize_response, provider_for
-from assistant_agent.llm_providers import provider_base_url, provider_credential_name
+from assistant_agent.llm_providers import provider_base_url, provider_credential_name, provider_is_disabled
+
+
+def test_provider_enablement_is_opt_in_when_enabled_list_is_present():
+    config = AppConfig({"agent": {"providers": {"enabled": ["openai"], "disabled": ["anthropic"]}}})
+    assert not provider_is_disabled(config, "openai")
+    assert provider_is_disabled(config, "anthropic")
+    assert provider_is_disabled(config, "a-new-provider")
+    assert not provider_is_disabled(AppConfig({}), "openai"), "Legacy configurations remain compatible"
+    config.values["agent"]["llm"] = {"provider": "openai", "base_url": "https://api.openai.com/v1"}
+    config.values["agent"]["providers"]["enabled"] = []
+    with pytest.raises(ValueError, match="disabled"):
+        LlmClient(config)
+
+
+def test_gateway_request_uses_cloudflare_token_gateway_id_and_privacy_headers():
+    config = AppConfig({"agent": {
+        "llm": {"provider": "cloudflare-gateway",
+                "base_url": "https://api.cloudflare.com/client/v4/accounts/example/ai/v1",
+                "model": "openai/gpt-4.1"},
+        "providers": {"cloudflare_account_id": "example", "cloudflare_gateway_id": "private-gateway"},
+    }})
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+    with patch("assistant_agent.llm_client.read_secret", return_value="token"), \
+            patch("assistant_agent.llm_client.refresh_request_context", side_effect=lambda messages, _: messages), \
+            patch("assistant_agent.llm_client.open_https_request", return_value=response) as send:
+        LlmClient(config).chat([{"role": "user", "content": "hello"}], [])
+    request = send.call_args.args[0]
+    assert request.full_url == "https://api.cloudflare.com/client/v4/accounts/example/ai/v1/chat/completions"
+    assert request.get_header("Cf-aig-gateway-id") == "private-gateway"
+    assert request.get_header("Cf-aig-collect-log") == "false"
+    assert json.loads(request.data)["model"] == "openai/gpt-4.1"
+
+
+def test_gateway_zdr_requires_account_and_exact_model_attestation():
+    config = AppConfig({"agent": {
+        "llm": {"provider": "cloudflare-gateway", "zdr_only": True,
+                "base_url": "https://api.cloudflare.com/client/v4/accounts/example/ai/v1"},
+        "providers": {"cloudflare_account_id": "example"},
+    }})
+    with patch("assistant_agent.llm_client.read_secret", return_value="token"), \
+            patch("assistant_agent.llm_client.open_https_request") as send:
+        with pytest.raises(ValueError, match="account retention controls"):
+            LlmClient(config).chat([], [])
+        send.assert_not_called()
+        config.values["agent"]["llm"]["zdr_verified_providers"] = ["cloudflare-gateway"]
+        with pytest.raises(ValueError, match="retention eligibility"):
+            LlmClient(config).chat([], [])
+        send.assert_not_called()
+        config.values["agent"]["llm"]["zdr_verified_models"] = ["cloudflare-gateway:anthropic/claude-sonnet-4.6"]
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+        send.return_value = response
+        assert LlmClient(config).chat([], [])["choices"][0]["message"]["content"] == "ok"
 
 
 def test_provider_sections_use_their_own_endpoints_and_preserve_legacy_custom_keys():

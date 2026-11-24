@@ -54,7 +54,9 @@ agent:
     url:
 
   providers:
-    # Configured credentials activate a provider unless it is explicitly disabled.
+    # Providers require explicit enablement, even when credentials are configured.
+    enabled: []
+    # Retained for compatibility with existing explicit exclusions.
     disabled: []
     # Optional ordering in provider selectors; this does not change model routes.
     priority: []
@@ -63,6 +65,7 @@ agent:
     anthropic_base_url: https://api.anthropic.com
     gemini_base_url: https://generativelanguage.googleapis.com/v1beta
     cloudflare_base_url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+    cloudflare_gateway_id: default
     openai_compatible_base_url:
     openai_compatible_api_key:
     cloudflare_account_id:

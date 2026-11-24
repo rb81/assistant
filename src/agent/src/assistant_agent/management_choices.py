@@ -42,7 +42,8 @@ def provider_choices_metadata(backend):
     from .management_api import AI_PROVIDERS
 
     configured = configured_providers(backend)
-    verified = [provider for provider in configured if provider in {"openai", "anthropic", "cloudflare"}]
+    verified = [provider for provider in configured
+                if provider in {"openai", "anthropic", "cloudflare", "cloudflare-gateway"}]
     result = {
         key: {"choices": values, "choice_labels": AI_PROVIDERS}
         for key, values in {
@@ -55,7 +56,13 @@ def provider_choices_metadata(backend):
     if disabled is None:
         disabled = backend.installation.defaults.get("agent.providers.disabled", [])
     disabled = disabled.split(",") if isinstance(disabled, str) else disabled
-    active = [provider for provider in configured if provider not in disabled]
+    enabled = backend.values.get("AGENT_PROVIDERS_ENABLED")
+    if enabled is None:
+        enabled = backend.installation.defaults.get("agent.providers.enabled")
+    if isinstance(enabled, str):
+        enabled = [item.strip() for item in enabled.split(",") if item.strip()]
+    active = [provider for provider in configured if provider not in disabled and
+              (enabled is None or provider in enabled)]
     for item in settings_schema.catalog():
         key = item["env"]
         if key == "AGENT_LLM_PROVIDER" or (key.startswith("AGENT_MODEL_ROUTES_") and key.endswith("_PROVIDER")):
@@ -101,7 +108,8 @@ def setting_choices(config, backend, key, provider_id=None):
     choices, labels, warnings = [], {}, []
     providers = configured_providers(backend)
     if attestation:
-        providers = [provider for provider in providers if provider in {"openai", "anthropic", "cloudflare"}]
+        providers = [provider for provider in providers
+                     if provider in {"openai", "anthropic", "cloudflare", "cloudflare-gateway"}]
         # Account/model attestation must be possible before strict routing is enabled.
         values = copy.deepcopy(config.values)
         values.setdefault("agent", {}).setdefault("llm", {})["zdr_only"] = False

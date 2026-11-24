@@ -862,7 +862,8 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert set(groups) == {item["group"] for item in result["settings"]}
     provider_fields = [item for item in result["settings"] if item["group"] == "providers"]
     assert {item["metadata"]["section"] for item in provider_fields} == {
-        "General", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "Cloudflare", "OpenAI Compatible",
+        "General", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "Cloudflare", "Cloudflare AI Gateway",
+        "OpenAI Compatible",
     }
     assert all(item["metadata"]["section"] != "Task" for item in provider_fields)
     for provider in ("OPENROUTER", "OPENAI", "ANTHROPIC", "GEMINI", "CLOUDFLARE"):
@@ -872,11 +873,16 @@ def test_v2_configuration_exposes_settings_and_only_redacted_credentials(tmp_pat
     assert settings["AGENT_LLM_ANTHROPIC_API_KEY"]["label"] == "Anthropic API key"
     assert settings["AGENT_PROVIDERS_OPENAI_COMPATIBLE_API_KEY"]["metadata"]["section"] == "OpenAI Compatible"
     assert settings["AGENT_LLM_ZDR_VERIFIED_MODELS"]["metadata"]["selection"] == "multiple"
+    assert settings["AGENT_SECURITY_DECISION_MODEL_PROVIDER"]["metadata"]["choices"] == [
+        "openrouter", "perplexity", "jev", "clef", "openai", "custom",
+    ]
+    assert "Comma-separated" not in settings["AGENT_LLM_ZDR_VERIFIED_PROVIDERS"]["metadata"]["help"]
     assert settings["AGENT_MODEL_ROUTES_TASK_FALLBACKS"]["metadata"]["selection"] == "ordered"
     assert settings["AGENT_PROVIDERS_DISABLED"]["metadata"]["hidden"] is True
     for provider, section in {
         "openrouter": "OpenRouter", "openai": "OpenAI", "anthropic": "Anthropic",
-        "gemini": "Gemini", "cloudflare": "Cloudflare", "openai-compatible": "OpenAI Compatible",
+        "gemini": "Gemini", "cloudflare": "Cloudflare", "cloudflare-gateway": "Cloudflare AI Gateway",
+        "openai-compatible": "OpenAI Compatible",
     }.items():
         control = settings["AGENT_PROVIDERS_" + provider.upper().replace("-", "_") + "_ENABLED"]
         assert control["label"] == "Enabled" and control["boolean"]
@@ -1050,6 +1056,7 @@ def test_provider_model_catalog_is_authenticated_and_keeps_credentials_server_si
         "AGENT_LLM_ZDR_ONLY": "true",
         "AGENT_LLM_ZDR_VERIFIED_PROVIDERS": "openai",
         "AGENT_LLM_ZDR_VERIFIED_MODELS": "openai:gpt-4.1",
+        "AGENT_PROVIDERS_ENABLED": "openai,openrouter",
     })
     installation.secret_values["AGENT_LLM_OPENAI_API_KEY"] = "private-model-key"
     installation.save()
@@ -1204,7 +1211,9 @@ def test_v2_catalog_settings_preview_save_and_reload(tmp_path):
     (tmp_path / "src/config").mkdir(parents=True)
     for name in ("agent.yaml", "agent.schema.yaml", "AGENT.md.example"):
         (tmp_path / "src/config" / name).write_bytes((source / name).read_bytes())
-    configured(tmp_path)
+    installation = configured(tmp_path)
+    installation.values["AGENT_PROVIDERS_ENABLED"] = "openrouter"
+    installation.save()
     client = TestClient(create_app(tmp_path, TOKEN))
     headers = {"Host": "127.0.0.1", "Authorization": "Bearer " + TOKEN}
     settings_response = client.get("/v2/configuration", headers=headers)
