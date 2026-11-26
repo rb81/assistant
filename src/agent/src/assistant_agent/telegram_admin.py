@@ -465,13 +465,14 @@ class TelegramAdmin:
         value = row["value"]
         def display_summary():
             payload = value["payload"]
-            if payload.get("kind") not in {"email", "screened_email"}:
+            if payload.get("kind") not in {"email", "screened_email", "quarantined_email"}:
                 return value["summary"]
             from .email_review import review_card, review_email
 
             review = payload.get("review") or review_email(payload)
             return review_card(review, screened=payload["kind"] == "screened_email",
-                               screening=review.get("screening") or "")
+                               screening=review.get("screening") or "",
+                               quarantined=payload["kind"] == "quarantined_email")
 
         def decide(decision, instruction=""):
             from .management_approvals import decide_channel_approval
@@ -496,7 +497,10 @@ class TelegramAdmin:
             return
         expired = datetime.fromisoformat(value["expires"]) <= datetime.now(timezone.utc)
         if expired and action != "renew":
-            self.send(sender, "This approval expired; the task is still paused.",
+            message = ("This approval expired; the message remains quarantined."
+                       if value["payload"].get("kind") in {"screened_email", "quarantined_email"}
+                       else "This approval expired; the task is still paused.")
+            self.send(sender, message,
                       [[("Request fresh approval", "ap:%s:renew" % callback_id)]])
             return
         network = value["payload"].get("kind") == "network"
@@ -556,8 +560,21 @@ class TelegramAdmin:
                 job = self.job(sender, payload["job_id"])
                 if job["status"] != "needs_review" or str(job["updated_at"]) != payload["version"]:
                     raise ValueError("Task changed. Open its status to request a current approval.")
-            service.request("renew:" + secrets.token_hex(12), payload, value["summary"])
-            self.send(sender, "Fresh approval sent.")
+            if payload["kind"] in {"quarantined_email", "screened_email"}:
+                from .quarantine import blocked, payload_sender, sender_lock
+                source = "renew:" + row["key"].removeprefix("email-approval:")
+                address = payload_sender(payload)
+                with sender_lock(self.db, address):
+                    if blocked(self.db, address):
+                        raise ValueError("This sender is blacklisted.")
+                    sent = service.request(
+                        source, payload, value["summary"],
+                        ttl_minutes=self.config.get_int("agent.security.decision_model.approval_ttl_minutes", 1440),
+                    )
+                self.send(sender, "Fresh approval sent." if sent else "A fresh approval was already requested.")
+            else:
+                service.request("renew:" + secrets.token_hex(12), payload, value["summary"])
+                self.send(sender, "Fresh approval sent.")
         elif action == "review" and network:
             from .email_approvals import network_keyboard
             text = value["summary"].split("\n\nDetails:", 1)[0][:1800]
@@ -573,7 +590,9 @@ class TelegramAdmin:
         elif action == "review":
             self.send(sender, telegram_approval_summary(display_summary()),
                       [[(button["text"], button["callback_data"]) for button in row]
-                       for row in approval_keyboard(callback_id, value["payload"])])
+                       for row in approval_keyboard(callback_id, value["payload"], self.config)])
+        elif action == "blacklist" and value["payload"].get("kind") in {"quarantined_email", "screened_email"}:
+            self.send(sender, decide("blacklist"), [[("Back", "ui:home:0")]])
         elif action == "deny" and not network:
             self.send(sender, decide("deny"), [[("Back", "ui:home:0")]])
         elif action == "ok" and not network:

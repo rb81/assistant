@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from contextlib import contextmanager
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
@@ -278,7 +279,13 @@ class FakeIngestDatabase:
     def __init__(self) -> None:
         self.inserted: list[tuple[Any, ...]] = []
 
+    @contextmanager
+    def connect(self):
+        yield MagicMock()
+
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[dict[str, Any]]:
+        if "SELECT value FROM runtime_state" in sql:
+            return None
         if "SELECT id, is_actionable FROM emails" in sql:
             return None
         if "SELECT id, task_summary FROM jobs" in sql or "FROM outbound_email_logs" in sql:

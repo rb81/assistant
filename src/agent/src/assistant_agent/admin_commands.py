@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import shlex
 from datetime import datetime, timezone
 from email.message import Message
@@ -31,6 +32,9 @@ HELP = """Admin commands (subject line):
 /admin permissions block-host|unblock-host HOST
 /admin permissions revoke-grant GRANT_ID
 /admin permissions remove-legacy RULE_ID
+/admin quarantine blacklist
+/admin quarantine unblock EMAIL
+/admin quarantine renew QUARANTINE_ID
 Memory update text and review instructions go in the message body.
 """
 
@@ -108,6 +112,61 @@ class AdminCommands:
         elif command == "permissions":
             from .script_permissions import management
             result = management(self.db, self.config, args, confirmed)
+        elif command == "quarantine" and args == ["blacklist"]:
+            result = self.db.fetch_all(
+                "SELECT value->>'address' AS address FROM runtime_state WHERE key LIKE %s ORDER BY address LIMIT %s",
+                ("quarantine-blacklist:%", limit),
+            )
+        elif command == "quarantine" and len(args) == 2 and args[0] == "unblock":
+            from .quarantine import blacklist_key, lock_key
+            address = args[1].strip().lower()
+            if not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+", address):
+                raise ValueError("A single email address is required.")
+            if not confirmed:
+                return "This action requires confirmation. Reply to its approval email, or use the local CLI with --yes."
+            with self.db.connect() as conn:
+                cursors = conn.execute(
+                    "SELECT key FROM runtime_state WHERE key LIKE 'quarantine-cursor:%%' ORDER BY key"
+                ).fetchall()
+                for cursor in cursors:
+                    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (cursor["key"],))
+                conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key(address),))
+                result = conn.execute("DELETE FROM runtime_state WHERE key = %s RETURNING value", (blacklist_key(address),)).fetchone()
+                if result:
+                    conn.execute(
+                        """UPDATE runtime_state SET value = jsonb_set(value, '{last_uid}', '0'::jsonb)
+                           WHERE key LIKE 'quarantine-cursor:%%'"""
+                    )
+            if not result:
+                raise ValueError("That sender is not blacklisted.")
+            result = {"unblocked": address}
+        elif command == "quarantine" and len(args) == 2 and args[0] == "renew":
+            identifier = args[1].lower()
+            if not re.fullmatch(r"[a-f0-9]{64}", identifier):
+                raise ValueError("A full quarantine ID is required.")
+            if not confirmed:
+                return "This action requires confirmation. Reply to its approval email, or use the local CLI with --yes."
+            row = self.db.fetch_one(
+                """SELECT key,value,updated_at FROM runtime_state
+                   WHERE key LIKE 'email-approval:%%' AND value->'payload'->>'quarantine_id' = %s
+                   ORDER BY updated_at DESC LIMIT 1""", (identifier,),
+            )
+            if not row:
+                raise ValueError("No retained quarantine approval was found for that ID.")
+            from .management_approvals import _configured_admin, _valid_pending
+            from .quarantine import blocked, sender_lock
+            digest, pending = _valid_pending(row, _configured_admin(self.config))
+            if datetime.fromisoformat(pending["expires"]) > datetime.now(timezone.utc):
+                raise ValueError("The current quarantine approval has not expired.")
+            payload = pending["payload"]
+            with sender_lock(self.db, payload["sender"]):
+                if blocked(self.db, payload["sender"]):
+                    raise ValueError("The sender is blacklisted.")
+                sent = EmailApprovals(self.db, self.config).request(
+                    "renew:" + digest, payload, "Quarantined email requires review.",
+                    ttl_minutes=self.config.get_int("agent.security.decision_model.approval_ttl_minutes", 1440),
+                )
+            result = {"status": "sent" if sent else "already_requested"}
         elif command == "reminders" and not args:
             result = self.db.fetch_all("SELECT id, title, task, run_at, status, recurrence_unit, recurrence_interval FROM reminders ORDER BY run_at NULLS LAST, id LIMIT %s", (limit,))
         elif command in {"cancel", "reminder-cancel", "review", "requeue"} and len(args) == 1:

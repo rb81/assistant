@@ -530,7 +530,7 @@ class ApprovalDecisionOperation(BaseModel):
     approval_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     version: str = Field(min_length=1, max_length=128)
     decision: Literal["approve", "deny", "approve_once", "approve_always",
-                      "block_once", "block_always", "cancel_job"]
+                      "block_once", "block_always", "cancel_job", "blacklist"]
     instruction: str = Field(default="", max_length=20000)
     confirmed: Literal[True]
 

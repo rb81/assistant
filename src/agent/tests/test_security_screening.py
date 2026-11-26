@@ -300,7 +300,8 @@ class InboundIngestTest(unittest.TestCase):
         result, _, notify, request = self.ingest(downloader, raw, MALICIOUS)
         self.assertTrue(result.quarantine)
         request.assert_not_called()
-        notify.assert_called_once()
+        notify.assert_not_called()
+        assert any(call.args[0].startswith("quarantine-malicious:") for call in downloader.db.set_state.call_args_list)
 
     def test_yolo_processes_possibly_malicious_mail_but_still_rejects_malicious(self):
         downloader = self.downloader({"allow_possibly_malicious": True, "decision_model": {"enabled": True}})
@@ -313,12 +314,14 @@ class InboundIngestTest(unittest.TestCase):
 
     def test_admin_mail_is_screened_but_approved_reingest_skips_screening(self):
         downloader = self.downloader({"decision_model": {"enabled": True}, "email_authentication": {"enabled": False}})
-        with patch("assistant_agent.email_approvals.admin_sender", return_value=True):
+        with patch("assistant_agent.email_approvals.admin_sender", return_value=True), \
+                patch("assistant_agent.quarantine_scan._malicious_notice") as security_notice:
             result, screen, notify, request = self.ingest(downloader, message(sender=ADMIN).as_bytes(), MALICIOUS)
         self.assertTrue(result.quarantine)
         screen.assert_called_once()
         request.assert_not_called()
-        notify.assert_called_once()
+        notify.assert_not_called()
+        security_notice.assert_called_once()
         result, screen, _, _ = self.ingest(downloader, message().as_bytes(), MALICIOUS, security_approved="ok", approved_thread_id="thread")
         self.assertEqual(result, "stored")
         screen.assert_not_called()

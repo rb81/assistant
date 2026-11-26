@@ -25,9 +25,9 @@ from .email_disclosure import strip_disclosure_html, strip_disclosure_text
 from .imap_utils import imap_mailbox_arg, imap_status_ok
 from .polling import poll_interval_seconds, run_poll_loop
 from .requests import IncomingRequest, RequestService
-from .request_router import RequestRouter
+from .request_router import RequestRouter, RoutingDecision
 from .security_screening import (
-    NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin,
+    MALICIOUS, NOT_MALICIOUS, POSSIBLY_MALICIOUS, SecurityScreener, inbound_email_state, notify_admin,
     screening_excerpt, screening_thread_context,
 )
 from .threading import normalize_subject, parse_addresses, parse_reference_header, safe_filename, safe_message_segment
@@ -183,7 +183,10 @@ class EmailDownloader:
         for _ in range(10):
             if not process_one(self.db, self):
                 break
-        return self.sync_once()
+        inserted = self.sync_once()
+        from .quarantine_scan import scan
+        scan(self.db, self.config)
+        return inserted
 
     def sync_once(self) -> int:
         host = self.config.get("agent.email.imap_host")
@@ -296,6 +299,38 @@ class EmailDownloader:
         self, raw_bytes: bytes, folder: str = "INBOX", *,
         approved_instruction: Optional[str] = None, approved_thread_id: Optional[str] = None,
         approved_review: Optional[dict[str, Any]] = None, security_approved: Optional[str] = None,
+        quarantine_approved: bool = False,
+    ) -> IngestResult:
+        from .quarantine import blocked, privileged_message, sender, sender_lock
+
+        message = email.message_from_bytes(raw_bytes)
+        address = sender(message)
+        if not address:
+            LOGGER.warning("quarantined email with an absent or ambiguous sender")
+            return IngestResult(inserted=False, queued=False,
+                                message_id=message_id_for(raw_bytes, message, message_id_domain(self.config)),
+                                quarantine=True)
+        with sender_lock(self.db, address):
+            if blocked(self.db, address):
+                LOGGER.info("quarantined email from a blacklisted sender")
+                return IngestResult(inserted=False, queued=False,
+                                    message_id=message_id_for(raw_bytes, message, message_id_domain(self.config)),
+                                    quarantine=True)
+            if quarantine_approved and privileged_message(message, self.config):
+                raise ValueError("Administrative or ambiguous email cannot be released from quarantine.")
+            if quarantine_approved:
+                approved_thread_id = "quarantine:" + hashlib.sha256(raw_bytes).hexdigest()
+            return self._ingest_raw(
+                raw_bytes, folder, approved_instruction=approved_instruction, approved_thread_id=approved_thread_id,
+                approved_review=approved_review, security_approved=security_approved,
+                quarantine_approved=quarantine_approved,
+            )
+
+    def _ingest_raw(
+        self, raw_bytes: bytes, folder: str = "INBOX", *,
+        approved_instruction: Optional[str] = None, approved_thread_id: Optional[str] = None,
+        approved_review: Optional[dict[str, Any]] = None, security_approved: Optional[str] = None,
+        quarantine_approved: bool = False,
     ) -> IngestResult:
         parsed = email.message_from_bytes(raw_bytes)
         message_id = json_safe(message_id_for(raw_bytes, parsed, message_id_domain(self.config)))
@@ -306,7 +341,7 @@ class EmailDownloader:
         subject = json_safe(decode_mime_header(parsed.get("Subject")) or "")
         from .admin_commands import AdminCommands, is_admin_subject
         from .email_approvals import EmailApprovals, admin_sender, approval_reply, reply_instruction, reply_text
-        fresh = approved_instruction is None and security_approved is None
+        fresh = approved_instruction is None and security_approved is None and not quarantine_approved
         configured_admin = str(self.config.get("agent.admin.email") or "").strip().lower()
         claims_admin = bool(configured_admin) and configured_admin in {
             address.lower() for address in parse_addresses(parsed.get("From"))
@@ -384,7 +419,7 @@ class EmailDownloader:
         if approved_thread_id is None and deleted_reply_workstream is not None:
             thread_id = message_id
         acceptance = self.acceptance_context(from_addresses, thread_id)
-        actionable = bool(acceptance["reasons"])
+        actionable = bool(acceptance["reasons"]) or quarantine_approved
         if fresh and not actionable:
             LOGGER.info("quarantined email %s from a sender that is not accepted", message_id)
             return IngestResult(inserted=False, queued=False, message_id=message_id, quarantine=True)
@@ -419,16 +454,19 @@ class EmailDownloader:
             known_reply = bool(
                 confirm_new and reply_thread and self.sender_has_conversation_history(reply_thread, from_addresses)
             )
-            decision = RequestRouter(self.db, self.config).route(
-                IncomingRequest(
-                    "email", message_id, message_id, from_addresses[0] if from_addresses else "unknown",
-                    message_id, body_text, attachments=attachments, metadata={"subject": subject},
-                ),
-                reply_thread_id=reply_thread,
-                reply_context={"in_reply_to": in_reply_to, "references": references}
-                if in_reply_to or references else None,
-                admin_authenticated=approved_instruction is not None,
-            )
+            if quarantine_approved:
+                decision = RoutingDecision(thread_id, "new", "Message-scoped quarantine release")
+            else:
+                decision = RequestRouter(self.db, self.config).route(
+                    IncomingRequest(
+                        "email", message_id, message_id, from_addresses[0] if from_addresses else "unknown",
+                        message_id, body_text, attachments=attachments, metadata={"subject": subject},
+                    ),
+                    reply_thread_id=reply_thread,
+                    reply_context={"in_reply_to": in_reply_to, "references": references}
+                    if in_reply_to or references else None,
+                    admin_authenticated=approved_instruction is not None,
+                )
             thread_id = decision.thread_id
             routing_metadata = decision.metadata()
             continuation = bool(
@@ -588,6 +626,15 @@ class EmailDownloader:
                 return quarantined
             except Exception as exc:
                 LOGGER.warning("could not request approval for held email %s (%s); rejecting it", message_id, exc)
+        if result.level == MALICIOUS:
+            identity = hashlib.sha256(raw_bytes).hexdigest()
+            self.db.set_state("quarantine-malicious:" + identity, {"screening": result.summary()})
+            from .quarantine_scan import _malicious_notice
+            try:
+                _malicious_notice(self.db, self.config, "quarantine-notice:" + identity, parsed, identity, result.summary())
+            except RuntimeError as exc:
+                LOGGER.warning("Malicious email notice deferred to quarantine scan (%s)", type(exc).__name__)
+            return quarantined
         LOGGER.warning("rejected email %s: %s", message_id, result.summary())
         notify_admin(
             self.db, self.config, "Assistant rejected an inbound email",

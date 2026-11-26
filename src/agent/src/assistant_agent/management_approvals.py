@@ -27,7 +27,7 @@ _APPROVAL_KEY = re.compile(r"^email-approval:([a-f0-9]{64})$")
 _REFERENCE_KEY = "management-approval-ref:"
 _MAX_LIST_LIMIT = 100
 _MAX_LIST_OFFSET = 1_000_000
-_SUPPORTED_KINDS = {"permission", "network", "review", "command", "email", "screened_email"}
+_SUPPORTED_KINDS = {"permission", "network", "review", "command", "email", "screened_email", "quarantined_email"}
 _PERMISSION_DECISIONS = {
     "approve_once": "Approve once",
     "approve_always": "Approve always",
@@ -96,8 +96,8 @@ def _stored_action(db, config, payload: dict[str, Any]) -> tuple[dict[str, Any],
         }
         return action, {}
 
-    if kind in {"email", "screened_email"}:
-        action = _email_action(payload)
+    if kind in {"email", "screened_email", "quarantined_email"}:
+        action = _email_action(payload, config)
         return action, {}
 
     if kind == "permission":
@@ -268,7 +268,7 @@ def _decode_part(part: Any) -> str:
         return data.decode("utf-8", errors="replace")
 
 
-def _email_action(payload: dict[str, Any]) -> dict[str, Any]:
+def _email_action(payload: dict[str, Any], config) -> dict[str, Any]:
     try:
         raw = base64.b64decode(payload["raw"], validate=True)
         message = BytesParser(policy=policy.default).parsebytes(raw)
@@ -298,23 +298,27 @@ def _email_action(payload: dict[str, Any]) -> dict[str, Any]:
             item["content_base64"] = base64.b64encode(content).decode("ascii")
         parts.append(item)
 
-    action_type = "screened_email_release" if payload.get("kind") == "screened_email" else "email_ingestion"
+    from .quarantine import blacklist_eligible
+    quarantined = payload.get("kind") in {"screened_email", "quarantined_email"}
+    action_type = "screened_email_release" if payload.get("kind") in {"screened_email", "quarantined_email"} else "email_ingestion"
     from .email_review import review_email
 
     return {
         "type": action_type,
         "effect": (
             "Release this quarantined email for processing."
-            if payload.get("kind") == "screened_email" else
+            if payload.get("kind") in {"screened_email", "quarantined_email"} else
             "Ingest this email and process it as an administrator-originated request."
         ),
         "folder": payload.get("folder", ""),
+        **({"quarantine_id": payload.get("quarantine_id")} if quarantined else {}),
         "thread_id": payload.get("thread_id", ""),
         "existing_job": _json_value(payload.get("job")),
         "review": payload.get("review") or review_email(payload),
         "headers": headers,
         "parts": parts,
-        "decision_options": ["approve", "deny"],
+        "decision_options": (["approve", "deny", "blacklist"] if quarantined and blacklist_eligible(payload, config)
+                             else ["approve", "deny"]),
     }
 
 
@@ -573,6 +577,14 @@ def list_approvals(
 
 def _decision_instruction(kind: str, decision: str, instruction: str, *, channel_feedback: bool = False) -> tuple[str, bool]:
     instruction = str(instruction or "").strip()
+    if kind == "quarantined_email":
+        if decision not in {"approve", "deny", "blacklist"} or instruction:
+            raise ValueError("Choose approve, reject or blacklist without additional instructions.")
+        return "", decision != "approve"
+    if kind == "screened_email" and decision == "blacklist":
+        if instruction:
+            raise ValueError("Feedback is not accepted with blacklist.")
+        return "", True
     if kind == "permission":
         item = _PERMISSION_DECISIONS.get(decision)
         if not item:
@@ -602,11 +614,24 @@ def _apply_decision(tx, config, digest, pending, action, decision, instruction, 
         pending["payload"]["kind"], decision, instruction, channel_feedback=actor != "admin",
     )
     kind = pending["payload"]["kind"]
+    if kind in {"quarantined_email", "screened_email"} and decision == "approve":
+        from .quarantine import blocked, lock_key, payload_sender
+        address = payload_sender(pending["payload"])
+        if kind == "quarantined_email" and (not address or address != pending["payload"].get("sender")):
+            raise ValueError("The reviewed sender is invalid.")
+        if address:
+            tx.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key(address),))
+            if blocked(tx, address):
+                raise ValueError("This sender is blacklisted; this message cannot be approved.")
     consumed = EmailApprovals(tx, config)._consume(
         digest, pending["otp_hash"], denied=denied or (kind == "permission" and decision == "deny"),
     )
     _delete_references(tx, "email-approval:" + digest)
-    if not denied and kind in {"email", "screened_email"}:
+    if kind in {"quarantined_email", "screened_email"} and decision == "blacklist":
+        from .quarantine import blacklist
+        blacklist(tx, config, consumed)
+        return "Sender blacklisted. The message remains quarantined.", None
+    if not denied and kind in {"email", "screened_email", "quarantined_email"}:
         from .approved_email_execution import enqueue
 
         return enqueue(tx, digest, pending, instruction_text), None
@@ -692,6 +717,9 @@ def decide_channel_approval(db, config, digest, decision, instruction="", *, act
                 decision = {"block": "block_once", "blockall": "block_always", "cancel": "cancel_job"}.get(choice)
                 if decision is None:
                     raise ValueError("Start the reply with BLOCK ONCE, BLOCK ALWAYS or CANCEL JOB.")
+            elif kind in {"quarantined_email", "screened_email"}:
+                from .quarantine import decision_from_email
+                decision, instruction = decision_from_email(instruction), ""
             else:
                 decision = "approve"
                 if kind == "command" and instruction:

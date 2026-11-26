@@ -61,9 +61,10 @@ def review_email(payload, config=None):
     return review
 
 
-def review_card(review, *, screened=False, screening=""):
+def review_card(review, *, screened=False, screening="", quarantined=False):
     label = "AI-generated summary" if review.get("summary_source") == "ai" else "Summary"
     lines = [
+        "Quarantined email: review before release." if quarantined else
         "Security-held email: review before release." if screened else
         "Confirm you sent this email before processing.",
         "%s: %s" % (label, review["summary"]),

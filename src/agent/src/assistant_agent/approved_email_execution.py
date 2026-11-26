@@ -75,6 +75,7 @@ def process_one(db, downloader):
             approved_thread_id=payload["thread_id"],
             approved_instruction=value["instruction"] if payload["kind"] == "email" else None,
             security_approved=value["instruction"] if payload["kind"] == "screened_email" else None,
+            quarantine_approved=payload["kind"] == "quarantined_email",
             approved_review=current if current and current["status"] == "needs_review" else None,
         )
     except Exception as exc:

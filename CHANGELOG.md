@@ -2,6 +2,9 @@
 
 ## Unreleased: Server and client management refresh
 
+- Review existing and new quarantined mail through email, Telegram, or the
+  management client; release once, reject, or blacklist the sender. Security
+  rejects remain quarantined, with administrative notices and bounded recovery.
 - Rename the displayed naming model setting to **Short-task model**, and explain
   its use for titles and email approval summaries. Configuration keys are unchanged.
 - Clarify that expired task-review approvals can be renewed through Telegram's

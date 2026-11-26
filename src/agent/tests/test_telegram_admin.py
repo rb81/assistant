@@ -90,6 +90,29 @@ def test_email_confirmation_button_processes_request_without_second_review(ui, m
     assert ui.client.call.call_args.args[1]["text"] == "Task queued."
 
 
+def test_quarantine_telegram_buttons_apply_the_selected_decision(ui):
+    message = EmailMessage()
+    message["From"] = "person@example.com"
+    message["Subject"] = "Hello"
+    message.set_content("Test")
+    payload = {"kind": "quarantined_email", "raw": base64.b64encode(message.as_bytes()).decode(),
+               "sender": "person@example.com"}
+    with patch("assistant_agent.telegram.TelegramClient") as telegram, \
+            patch("assistant_agent.llm_client.LlmClient") as llm:
+        llm.return_value.chat.return_value = {"choices": [{"message": {"content": "A test."}}]}
+        EmailApprovals(ui.db, ui.config).request("quarantine:test", payload, "Review")
+    pending = ui.db.set_state.call_args_list[0].args[1]
+    sent = telegram.return_value.call.call_args.args[1]
+    buttons = [button for row in sent["reply_markup"]["inline_keyboard"] for button in row]
+    assert {button["text"] for button in buttons} == {"Approve", "Reject", "Blacklist sender", "Details"}
+    _, callback, action = next(button for button in buttons if button["text"] == "Blacklist sender")["callback_data"].split(":")
+    with patch.object(EmailApprovals, "telegram_pending", return_value={"key": "email-approval:" + "d" * 64, "value": pending}), \
+            patch("assistant_agent.management_approvals.decide_channel_approval", return_value="Sender blacklisted") as decide:
+        ui.approval("123", callback, action)
+    decide.assert_called_once_with(ui.db, ui.config, "d" * 64, "blacklist", "",
+                                   actor="telegram-admin", callback_id=callback, sender="123")
+
+
 def test_email_approval_inbox_review_offers_direct_confirmation(ui):
     pending = {"payload": {"kind": "email", "review": {"summary": "Summary unavailable", "summary_source": "unavailable",
                                                           "sender": "admin@example.com", "subject": "Script Testing",

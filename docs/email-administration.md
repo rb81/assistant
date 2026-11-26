@@ -236,12 +236,33 @@ every historical occurrence of its underlying fact.
 ## Security screening approvals
 
 If [decision-model screening](security.md#email-and-action-screening) holds an
-inbound email, it is quarantined and the admin receives the usual OTP
-confirmation. The default expiry is 24 hours
-(`agent.security.decision_model.approval_ttl_minutes`). Approval processes the
-original email once, with reply text added as an admin note; it does not
-authenticate the sender or grant standing approval. Later screening receives
-the prior approval only as message-scoped context.
+inbound email, or an otherwise eligible message is found in the quarantine
+folder, the admin receives a review through the configured approval channel.
+Use **Approve**, **Reject**, or **Blacklist sender**. Approval releases only
+that message and does not authenticate or trust the sender; rejection leaves it
+quarantined. Blacklisting blocks that exact sender address and prevents future
+review requests, but is not an authentication mechanism. A highly malicious
+verdict stays quarantined and generates a notice without a release option.
+Messages with administrative claims, approval credentials, or ambiguous sender
+headers remain in the mailbox for manual inspection.
+An otherwise unaccepted message released from quarantine starts its own
+workstream rather than joining a conversation based on untrusted headers.
+
+For email, put exactly `APPROVE`, `REJECT`, or `BLACKLIST` on the first line
+and retain the original one-use confirmation with its OTP and hash. This also
+applies to previously issued security-held email approvals. The default expiry
+is 24 hours (`agent.security.decision_model.approval_ttl_minutes`). Telegram can
+renew an expired card. For quarantined-message reviews, email the subject
+`/admin quarantine renew QUARANTINE_ID`, using the full ID in the review, and
+confirm that admin command. Retained approvals older than 30 days may no longer
+be available for renewal; inspect the mailbox directly in that case.
+
+To list blocked addresses, use `/admin quarantine blacklist`; to remove one,
+use `/admin quarantine unblock person@example.com`. Both are admin email
+subjects, not Telegram commands. Unblocking requires confirmation and
+rescans the quarantine so previously blocked mail can be reviewed. Delivery
+failures and uncertain sends are logged and are not blindly repeated. Pending
+reviews are also visible through the Management API and client.
 
 A held outbound-email call pauses the job as `needs_review`; review permits
 exactly that call once without increasing execution budgets. Script findings

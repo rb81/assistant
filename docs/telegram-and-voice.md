@@ -207,6 +207,9 @@ means one execution. Other approvals show request context and buttons;
 safety-check holds offer **Approve once**, and execution-limit reviews offer
 **Resume task**. **Deny & cancel task** cancels the paused task but does not undo
 completed actions. Email confirmations offer **Confirm & start** and **Deny**.
+Quarantined email reviews offer **Approve**, **Reject**, and, for an eligible
+sender, **Blacklist sender**. Expired quarantine cards can request a fresh
+approval; blacklisting applies to the sender address, not authenticated identity.
 Approvals are administrator-only, expiring, single-use, and bound to the task
 version.
 

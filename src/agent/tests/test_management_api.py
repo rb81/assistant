@@ -1178,7 +1178,7 @@ def test_v2_approval_settings_share_a_safety_page(tmp_path):
     assert naming["group"] == "catalog:routing"
     assert naming["metadata"]["level"] == "advanced"
     assert naming["metadata"]["section"] == "Short tasks"
-    assert naming["metadata"]["label"] == "Short-task model"
+    assert naming["label"] == "Short-task model"
 
 
 def test_v2_configuration_preview_is_revision_checked_and_secret_safe(tmp_path):

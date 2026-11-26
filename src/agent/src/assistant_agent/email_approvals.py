@@ -208,7 +208,17 @@ def permission_keyboard(callback: str, payload: dict) -> list:
     return rows
 
 
-def approval_keyboard(callback: str, payload: dict) -> list:
+def approval_keyboard(callback: str, payload: dict, config=None) -> list:
+    if payload.get("kind") in {"quarantined_email", "screened_email"} and config is not None:
+        from .quarantine import blacklist_eligible
+        rows = [
+            [{"text": "Approve", "callback_data": "ap:%s:ok" % callback},
+             {"text": "Reject", "callback_data": "ap:%s:deny" % callback}],
+        ]
+        if blacklist_eligible(payload, config):
+            rows.append([{"text": "Blacklist sender", "callback_data": "ap:%s:blacklist" % callback}])
+        rows.append([{"text": "Details", "callback_data": "ap:%s:details" % callback}])
+        return rows
     return [
         [{"text": "Confirm & start" if payload.get("kind") == "email" else
                   "Resume task" if payload.get("kind") == "review" and not payload.get("security_action") else
@@ -334,7 +344,7 @@ class EmailApprovals:
         if not claimed:
             return False
         try:
-            if payload.get("kind") in {"email", "screened_email"}:
+            if payload.get("kind") in {"email", "screened_email", "quarantined_email"}:
                 from .email_review import review_card, review_email
 
                 review = payload.get("review") or review_email(payload, self.config)
@@ -344,9 +354,14 @@ class EmailApprovals:
                         (line.partition(":")[2].strip() for line in summary.splitlines()
                          if line.startswith("Screening:")), review.get("screening") or "",
                     )
+                elif payload["kind"] == "quarantined_email":
+                    screening = payload.get("screening") or ""
                 review = {**review, "screening": screening}
                 payload = {**payload, "review": review}
-                summary = review_card(review, screened=payload["kind"] == "screened_email", screening=screening)
+                summary = review_card(review, screened=payload["kind"] == "screened_email", screening=screening,
+                                      quarantined=payload["kind"] == "quarantined_email")
+                if payload["kind"] == "quarantined_email" and payload.get("quarantine_id"):
+                    summary += "\nQuarantine ID: " + payload["quarantine_id"]
         except Exception:
             self.db.execute("DELETE FROM runtime_state WHERE key = %s AND value->>'status' = 'sending'", (source_key,))
             raise
@@ -404,7 +419,7 @@ class EmailApprovals:
                     for identifier in admins:
                         sent = client.call("sendMessage", {
                             "chat_id": identifier, "text": title + "\n\nChoose below. Expires in %s minutes." % ttl_minutes,
-                            "reply_markup": {"inline_keyboard": keyboard or approval_keyboard(callback, payload)},
+                            "reply_markup": {"inline_keyboard": keyboard or approval_keyboard(callback, payload, self.config)},
                         }, sending=True)
                         if payload.get("job_id"):
                             record_task_message(self.db, self.config, payload["job_id"], identifier, sent["message_id"])
@@ -422,6 +437,11 @@ class EmailApprovals:
                         from .validation import smtp_configured
                         if not admin or not smtp_configured(self.config):
                             raise ValueError("Email approval fallback requires AGENT_ADMIN_EMAIL and SMTP configuration")
+                    quarantine_instructions = ""
+                    if payload.get("kind") in {"quarantined_email", "screened_email"}:
+                        from .quarantine import blacklist_eligible
+                        choices = "APPROVE, REJECT or BLACKLIST" if blacklist_eligible(payload, self.config) else "APPROVE or REJECT"
+                        quarantine_instructions = "Put %s on the first line and keep this original message quoted." % choices
                     body = (
                         permission_email_body(payload, summary, token, digest, pending["expires"], ttl_minutes,
                                               email_body_details)
@@ -429,6 +449,8 @@ class EmailApprovals:
                         "%s\nOTP: %s\nRequest hash: %s\nExpires: %s\n\n%s\n\n%s" % (
                             MARKER, token, digest, pending["expires"],
                             NETWORK_EMAIL_INSTRUCTIONS if payload.get("kind") == "network" else
+                            quarantine_instructions
+                            if payload.get("kind") in {"quarantined_email", "screened_email"} else
                             "Reply with this original message to confirm once. Add guidance above it if needed.\n"
                             "Review the requested action below before confirming.",
                             summary[:20000],

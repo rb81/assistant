@@ -1453,7 +1453,9 @@ class ManagementApp:
         if approval.get("actionable") and approval.get("approval_id") and approval.get("version"):
             labels = {"approve": "Approve", "deny": "Deny", "approve_once": "Allow once",
                       "approve_always": "Allow this script version", "block_once": "Block once",
-                      "block_always": "Block always", "cancel_job": "Cancel task"}
+                      "block_always": "Block always", "cancel_job": "Cancel task", "blacklist": "Blacklist sender"}
+            if approval.get("kind") in {"screened_email", "quarantined_email"}:
+                labels["deny"] = "Reject"
             for decision in action.get("decision_options", []):
                 if decision in labels:
                     buttons.append(self.action(

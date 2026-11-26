@@ -343,14 +343,20 @@ not replying on an open job's thread, and not a recipient of mail the assistant
 sent on that thread) is moved to the quarantine folder
 without storing an email record. The folder is `AGENT_EMAIL_IMAP_QUARANTINE_FOLDER`
 (default `Quarantine`, created if missing). Rejected and held mail goes there
-too. The task agent does not receive
-it unless an administrator approves held mail. Screening itself sends accepted
-task email content, including admin email, to the decision provider; held mail is retained in the pending
-approval payload, and notices can include a content preview. Quarantine is not
-a promise that no copy is stored or sent externally. If a move fails, the error
+too. The downloader also scans existing and newly quarantined mail in bounded
+batches using IMAP UIDs and UIDVALIDITY, without moving or marking it read.
+Eligible messages receive a message-scoped review. The decision model screens
+them when enabled; a malicious verdict or configured reject-on-error keeps the
+message quarantined without an approval and sends a security notice. If screening
+is disabled, the review says so; it cannot detect malicious messages.
+Administrator-address claims, control messages, approval credentials and
+ambiguous sender headers require direct inspection rather than release.
+Screening and AI summaries send message content to their configured model
+providers; held mail is retained in the pending approval payload. Quarantine is
+not a promise that no copy is stored or sent externally. If a move fails, the error
 is logged and the message stays in the inbox; the polling cursor still advances.
-The downloader fetches with `RFC822`, not `BODY.PEEK`, so unread status is not
-preserved reliably.
+The downloader fetches with `BODY.PEEK`; the normal inbox path marks processed
+messages as read.
 
 ### Admin sender authentication (SPF/DKIM)
 

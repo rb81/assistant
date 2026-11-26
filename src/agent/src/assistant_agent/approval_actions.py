@@ -12,7 +12,7 @@ def deny_approval(db, payload, *, actor="admin"):
             raise ValueError("This task has changed. Request a fresh approval from its status card.")
         db.log_event(payload["job_id"], "status_change", output_data={"reason": "%s denied approval" % actor})
         return "Request denied. Task cancelled; completed actions were not undone."
-    if payload["kind"] in {"email", "screened_email", "command"}:
+    if payload["kind"] in {"email", "screened_email", "quarantined_email", "command"}:
         return "Request denied. Nothing was approved or executed."
     raise ValueError("Unknown approval action")
 

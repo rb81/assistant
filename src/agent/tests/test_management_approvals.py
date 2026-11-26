@@ -442,6 +442,303 @@ def email_bytes():
     return message.as_bytes()
 
 
+def quarantined_bytes(identifier="q1", sender="person@example.com", subject="Hello", body="Please review this."):
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = "assistant@example.com"
+    message["Subject"] = subject
+    message["Message-ID"] = "<%s@example.com>" % identifier
+    message.set_content(body)
+    return message.as_bytes()
+
+
+def quarantine_payload(raw):
+    return {"kind": "quarantined_email", "raw": base64.b64encode(raw).decode(),
+            "folder": "Quarantine", "thread_id": "<q1@example.com>",
+            "sender": "person@example.com", "screening": "not_malicious"}
+
+
+def test_quarantine_rejects_control_characters_in_sender():
+    from email import message_from_bytes
+    from assistant_agent.quarantine import sender
+
+    assert sender(message_from_bytes(b"From: person\x00@example.com\n\nBody")) is None
+
+
+def test_quarantine_notifies_on_existing_message_id(db, config):
+    from assistant_agent.quarantine_scan import review_message
+
+    fetch_one = db.fetch_one
+
+    def find_existing(query, params=()):
+        if query.startswith("SELECT id FROM emails WHERE message_id"):
+            return {"id": 1}
+        return fetch_one(query, params)
+
+    with patch.object(db, "fetch_one", side_effect=find_existing), \
+            patch("assistant_agent.quarantine_scan._notice") as notice, \
+            patch("assistant_agent.email_approvals.EmailApprovals.request") as request:
+        review_message(db, config, quarantined_bytes(), "Quarantine")
+    notice.assert_called_once()
+    request.assert_not_called()
+
+
+def test_quarantine_blacklist_prevents_other_pending_approvals_and_new_messages(db, config):
+    from assistant_agent.admin_commands import AdminCommands
+    from assistant_agent.quarantine import blocked
+    from assistant_agent.quarantine_scan import review_message
+    from assistant_agent.email_ingest import EmailDownloader
+
+    raw = quarantined_bytes()
+    create_pending(db, config, quarantine_payload(raw), "quarantine-one")
+    first = single_approval(db, config)
+    assert first["action"]["decision_options"] == ["approve", "deny", "blacklist"]
+    create_pending(db, config, quarantine_payload(quarantined_bytes("q2")), "quarantine-two")
+    decide_approval(db, config, first["approval_id"], first["version"], "blacklist")
+    assert blocked(db, "person@example.com")
+    assert EmailDownloader(db, config).ingest_raw(quarantined_bytes("new")).quarantine
+    remaining = single_approval(db, config)
+    with pytest.raises(ValueError, match="blacklisted"):
+        decide_approval(db, config, remaining["approval_id"], remaining["version"], "approve")
+    with patch("assistant_agent.email_approvals.send_admin_email") as send:
+        review_message(db, config, quarantined_bytes("q3"), "Quarantine")
+        send.assert_not_called()
+    decide_approval(db, config, remaining["approval_id"], remaining["version"], "deny")
+    assert not db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")
+    db.set_state("quarantine-cursor:example", {"uidvalidity": "1", "last_uid": 7})
+    command = "/admin quarantine unblock person@example.com"
+    assert "requires confirmation" in AdminCommands(db, config).execute(command)
+    assert "unblocked" in AdminCommands(db, config).execute(command, confirmed=True)
+    assert not blocked(db, "person@example.com")
+    assert db.get_state("quarantine-cursor:example")["last_uid"] == 0
+
+
+def test_quarantine_approval_is_message_scoped_and_never_grants_admin_authority(db, config, tmp_path):
+    from assistant_agent.approved_email_execution import process_one
+    from assistant_agent.email_ingest import EmailDownloader
+
+    raw = quarantined_bytes()
+    thread_id = "quarantine:" + hashlib.sha256(raw).hexdigest()
+    config.values["agent"]["artifacts"] = {"raw_root": str(tmp_path)}
+    create_pending(db, config, quarantine_payload(raw))
+    approval = single_approval(db, config)
+    decide_approval(db, config, approval["approval_id"], approval["version"], "approve")
+    downloader = EmailDownloader(db, config)
+    with patch.object(downloader, "acceptance_context", return_value={"reasons": []}), \
+            patch.object(downloader, "process_artifacts"), \
+            patch("assistant_agent.request_router.RequestRouter.route") as route:
+        assert process_one(db, downloader)
+        route.assert_not_called()
+    request = db.fetch_one("SELECT metadata FROM request_messages WHERE external_id = %s", ("<q1@example.com>",))
+    assert request is not None
+    job = db.fetch_one("SELECT metadata FROM jobs WHERE thread_id = %s", (thread_id,))
+    assert job["metadata"]["admin_authenticated"] is False
+    assert db.fetch_one("SELECT value FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")["value"]["status"] == "succeeded"
+    with pytest.raises(ValueError, match="cannot be released"):
+        downloader.ingest_raw(quarantined_bytes("spoof", sender="admin@example.com"), quarantine_approved=True)
+    with pytest.raises(ValueError, match="cannot be released"):
+        downloader.ingest_raw(quarantined_bytes("command", subject="/admin status"), quarantine_approved=True)
+
+
+def test_quarantine_email_reply_requires_explicit_one_use_decision(db, config):
+    from assistant_agent.management_approvals import decide_channel_approval
+
+    create_pending(db, config, quarantine_payload(quarantined_bytes()))
+    row = db.fetch_one("SELECT key,value FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    digest, otp_hash = row["key"].removeprefix("email-approval:"), row["value"]["otp_hash"]
+    for instruction in ("", "yes", "APPROVE\nBLACKLIST"):
+        with pytest.raises(ValueError, match="APPROVE"):
+            decide_channel_approval(db, config, digest, None, instruction, actor="admin-email", otp_hash=otp_hash)
+    assert db.get_state(row["key"])
+    result = decide_channel_approval(db, config, digest, None, "REJECT", actor="admin-email", otp_hash=otp_hash)
+    assert "denied" in result.lower()
+    with pytest.raises(ValueError):
+        decide_channel_approval(db, config, digest, None, "APPROVE", actor="admin-email", otp_hash=otp_hash)
+
+
+def test_quarantine_competing_decisions_consume_only_once(db, config):
+    create_pending(db, config, quarantine_payload(quarantined_bytes()))
+    approval = single_approval(db, config)
+
+    def decide(choice):
+        try:
+            return decide_approval(db, config, approval["approval_id"], approval["version"], choice)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(decide, ["approve", "blacklist"]))
+    assert sum(result is not None for result in results) == 1
+    queued = db.fetch_one("SELECT count(*) AS n FROM runtime_state WHERE key LIKE 'approved-email-execution:%%'")["n"]
+    blocked = db.fetch_one("SELECT count(*) AS n FROM runtime_state WHERE key LIKE 'quarantine-blacklist:%%'")["n"]
+    assert queued + blocked == 1
+
+
+def test_legacy_screened_email_supports_blacklist_and_explicit_email_decisions(db, config):
+    from assistant_agent.management_approvals import decide_channel_approval
+
+    raw = quarantined_bytes()
+    payload = {"kind": "screened_email", "raw": base64.b64encode(raw).decode(),
+               "folder": "INBOX", "thread_id": "<q1@example.com>"}
+    create_pending(db, config, payload)
+    approval = single_approval(db, config)
+    assert approval["action"]["decision_options"] == ["approve", "deny", "blacklist"]
+    row = db.fetch_one("SELECT key,value FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    digest, otp_hash = row["key"].removeprefix("email-approval:"), row["value"]["otp_hash"]
+    with pytest.raises(ValueError, match="APPROVE"):
+        decide_channel_approval(db, config, digest, None, "", actor="admin-email", otp_hash=otp_hash)
+    assert "blacklisted" in decide_channel_approval(
+        db, config, digest, None, "BLACKLIST", actor="admin-email", otp_hash=otp_hash,
+    )
+
+
+def test_expired_quarantine_approval_can_be_renewed_once_by_confirmed_admin_command(db, config):
+    from assistant_agent.admin_commands import AdminCommands
+
+    class PastDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) - timedelta(days=2)
+
+    raw = quarantined_bytes()
+    identifier = hashlib.sha256(raw).hexdigest()
+    payload = {**quarantine_payload(raw), "quarantine_id": identifier}
+    with patch("assistant_agent.email_approvals.datetime", PastDatetime), \
+            patch("assistant_agent.email_approvals.send_admin_email"):
+        EmailApprovals(db, config).request("quarantine:" + identifier, payload, "Review", ttl_minutes=10)
+    command = "/admin quarantine renew " + identifier
+    assert "requires confirmation" in AdminCommands(db, config).execute(command)
+    with patch("assistant_agent.email_approvals.send_admin_email") as send:
+        assert '"sent"' in AdminCommands(db, config).execute(command, confirmed=True)
+        with pytest.raises(ValueError, match="has not expired"):
+            AdminCommands(db, config).execute(command, confirmed=True)
+        assert send.call_count == 1
+
+
+def test_quarantine_backlog_scans_in_batches_and_uidvalidity_rescan_deduplicates(db, config):
+    from assistant_agent.quarantine_scan import scan
+
+    class Mailbox:
+        validity = b"1"
+        messages = {str(n).encode(): quarantined_bytes("q%s" % n) for n in range(1, 8)}
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def login(self, *args): return "OK", []
+        def select(self, *args, **kwargs): return "OK", []
+        def response(self, name): return name, [self.validity]
+        def uid(self, command, *args):
+            if command == "search":
+                return "OK", [b" ".join(self.messages)]
+            assert command == "fetch" and args[1] == "(BODY.PEEK[])"
+            return "OK", [(b"message", self.messages[args[0]])]
+
+    config.values["agent"]["email"] = {
+        "imap_host": "mail.example.com", "imap_username": "test", "imap_password": "dummy",
+    }
+    with patch("assistant_agent.quarantine_scan.imaplib.IMAP4_SSL", Mailbox), \
+            patch("assistant_agent.email_approvals.send_admin_email") as send:
+        scan(db, config)
+        assert send.call_count == 5
+        scan(db, config)
+        assert send.call_count == 7
+        Mailbox.validity = b"2"
+        scan(db, config)
+        scan(db, config)
+        assert send.call_count == 7
+    assert db.fetch_one("SELECT count(*) AS n FROM runtime_state WHERE key LIKE 'email-approval:%%'")["n"] == 7
+
+
+def test_quarantine_backlog_retries_failed_items_without_starving_later_messages(db, config):
+    from assistant_agent.quarantine_scan import scan
+    from assistant_agent.email_approvals import EmailApprovals
+
+    class Mailbox:
+        messages = {str(n).encode(): quarantined_bytes("q%s" % n) for n in range(1, 4)}
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def login(self, *args): return "OK", []
+        def select(self, *args, **kwargs): return "OK", []
+        def response(self, name): return name, [b"1"]
+        def uid(self, command, *args):
+            return ("OK", [b" ".join(self.messages)]) if command == "search" else ("OK", [(b"message", self.messages[args[0]])])
+
+    config.values["agent"]["email"] = {
+        "imap_host": "mail.example.com", "imap_username": "test", "imap_password": "dummy",
+    }
+    original = EmailApprovals.request
+    failures = [True]
+    def request(service, source_id, payload, *args, **kwargs):
+        if failures and b"<q1@example.com>" in base64.b64decode(payload["raw"]):
+            failures.pop()
+            raise RuntimeError("temporary")
+        return original(service, source_id, payload, *args, **kwargs)
+
+    with patch("assistant_agent.quarantine_scan.imaplib.IMAP4_SSL", Mailbox), \
+            patch("assistant_agent.email_approvals.EmailApprovals.request", request), \
+            patch("assistant_agent.email_approvals.send_admin_email") as send:
+        scan(db, config)
+        assert send.call_count == 2
+        db.execute("""UPDATE runtime_state SET value = value - 'retry_at'
+                      WHERE key LIKE 'quarantine-item:%%'""")
+        scan(db, config)
+        assert send.call_count == 3
+    assert not db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'quarantine-item:%%'")
+
+
+def test_quarantine_malicious_and_privileged_messages_never_create_approvals(db, config):
+    from assistant_agent.quarantine_scan import review_message
+    from assistant_agent.security_screening import MALICIOUS, ScreeningResult
+
+    config.values["agent"]["security"]["decision_model"] = {"enabled": True}
+    config.values["agent"]["email"] = {"smtp_host": "smtp.example.com"}
+    with patch("assistant_agent.quarantine_scan.SecurityScreener.screen",
+               return_value=ScreeningResult(MALICIOUS, "test verdict")), \
+            patch("assistant_agent.quarantine_scan.send_admin_email") as notice, \
+            patch("assistant_agent.email_approvals.send_admin_email") as approval:
+        review_message(db, config, quarantined_bytes(), "Quarantine")
+        review_message(db, config, quarantined_bytes(), "Quarantine")
+        review_message(db, config, quarantined_bytes("spoof", sender="admin@example.com"), "Quarantine")
+        review_message(db, config, quarantined_bytes("credentials", body="OTP: " + "A" * 32), "Quarantine")
+        review_message(db, config, quarantined_bytes("command", subject="=?utf-8?q?/admin_status?="), "Quarantine")
+        review_message(db, config, quarantined_bytes("header-token", subject="OTP: " + "A" * 32), "Quarantine")
+        assert notice.call_count == 5
+        approval.assert_not_called()
+    assert not db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+    db.execute("DELETE FROM runtime_state WHERE key LIKE 'quarantine-notice:%%'")
+    with patch("assistant_agent.quarantine_scan.SecurityScreener.screen") as screen, \
+            patch("assistant_agent.quarantine_scan.send_admin_email"):
+        review_message(db, config, quarantined_bytes(), "Quarantine")
+    screen.assert_not_called()
+    assert not db.fetch_one("SELECT key FROM runtime_state WHERE key LIKE 'email-approval:%%'")
+
+
+@pytest.mark.parametrize("mode", ["email", "telegram", "both", "client"])
+def test_quarantine_security_notice_uses_configured_channel_without_retrying_uncertain_send(db, config, mode):
+    from assistant_agent.quarantine_scan import _notice
+
+    config.values["agent"].update({
+        "approvals": {"channel": mode},
+        "telegram": {"allowed_user_ids": ["123"], "recipients": {"admin@example.com": 123}},
+    })
+    with patch("assistant_agent.quarantine_scan.send_admin_email") as send, \
+            patch("assistant_agent.telegram.TelegramClient") as telegram, \
+            patch("assistant_agent.client_channels.ClientChannels.notice") as client:
+        _notice(db, config, "quarantine-notice:test", "Test", "No credentials")
+        _notice(db, config, "quarantine-notice:test", "Test", "No credentials")
+    assert send.call_count == (1 if mode in {"email", "both"} else 0)
+    assert telegram.return_value.call.call_count == (1 if mode in {"telegram", "both"} else 0)
+    assert client.call_count == (1 if mode == "client" else 0)
+
+    with patch("assistant_agent.quarantine_scan.send_admin_email", side_effect=OSError("unavailable")) as failed:
+        config.values["agent"]["approvals"]["channel"] = "email"
+        _notice(db, config, "quarantine-notice:failure", "Test", "No credentials")
+        _notice(db, config, "quarantine-notice:failure", "Test", "No credentials")
+        assert failed.call_count == 1
+    assert db.get_state("quarantine-notice:failure")["status"] == "delivery_uncertain"
+
+
 @pytest.mark.parametrize(
     ("kind", "expected_type"),
     [

@@ -139,6 +139,28 @@ def test_approval_inbox_uses_summary_and_keeps_original_optional(tmp_path):
     asyncio.run(scenario())
 
 
+def test_quarantine_review_offers_reject_and_blacklist(tmp_path):
+    async def scenario():
+        async with running(tmp_path) as (ui, _pipe):
+            approval = {
+                "approval_id": "a" * 32, "version": "version", "kind": "quarantined_email",
+                "status": "pending", "actionable": True,
+                "action": {"type": "screened_email_release",
+                           "decision_options": ["approve", "deny", "blacklist"],
+                           "review": {"summary": "Review", "sender": "person@example.com",
+                                      "subject": "Hello", "date": "Today", "attachments": []}},
+            }
+            ui.go("Approval", approval)
+            labels = {action.label for action in ui.actions}
+            assert {"Approve", "Reject", "Blacklist sender"} <= labels
+            with patch.object(ui.backend, "decide_approval", create=True) as decide:
+                ui.confirm_action = Mock()
+                next(action.handler for action in ui.actions if action.label == "Blacklist sender")()
+                ui.confirm_action.call_args.args[3]()
+                decide.assert_called_once_with(approval, "blacklist")
+    asyncio.run(scenario())
+
+
 def test_legacy_email_approval_fields_fall_back_to_headers_and_attachment_names():
     from assistant_agent.management_tui import email_review_fields
 
