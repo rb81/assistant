@@ -83,6 +83,8 @@ class NotificationDedupeTest(unittest.TestCase):
 
         self.assertIn("confirmation in this notification", body)
         self.assertIn("Both limits will be increased by 20%.", body)
+        self.assertIn("Telegram /menu → Needs attention → Job #11 → Resend approval", body)
+        self.assertIn("email /admin review 11 as the subject", body)
         self.assertNotIn("dashboard", body.lower())
         self.assertNotIn("localhost", body)
 

@@ -211,7 +211,8 @@ def _body(db: Database, config: AppConfig, job: dict[str, Any], status: str, rea
              if (job.get("metadata") or {}).get("security_pending_action") else
              "  • Both limits will be increased by %s%%." % increase_pct),
             "  • Keep the original confirmation quoted; add no text to approve without instructions.",
-            "  • If it expires, request a fresh confirmation from /menu or send /admin review %s." % job["id"],
+            "  • If it expires, use Telegram /menu → Needs attention → Job #%s → Resend approval,"
+            " or email /admin review %s as the subject." % (job["id"], job["id"]),
         ])
     else:
         lines.extend([

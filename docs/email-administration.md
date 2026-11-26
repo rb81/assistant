@@ -130,8 +130,10 @@ commands. Signatures and quoted history are excluded from that guidance.
 The configured admin sender and a valid one-use OTP/hash are required. The
 server executes the stored action and original content, not a changed subject
 or reply thread. Expired, mismatched, changed-target, automated, or duplicate
-approvals fail closed. Use `/admin review JOB_ID` to request a fresh review
-after expiry. Email approval replies missing the original OTP/hash are
+approvals fail closed. To request a fresh review after expiry, use Telegram
+**/menu → Needs attention → the job → Resend approval**, or send an admin
+email with `/admin review JOB_ID` as its subject. `/admin` is not a Telegram
+command. Email approval replies missing the original OTP/hash are
 quarantined, not treated as new admin tasks. If a task has no deliverable
 requester address, it is paused before admin confirmation is generated.
 

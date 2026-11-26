@@ -2,6 +2,8 @@
 
 ## Unreleased: Server and client management refresh
 
+- Clarify that expired task-review approvals can be renewed through Telegram's
+  menu or an admin email subject; `/admin review` is not a Telegram command.
 - Fix auxiliary model calls failing before inference because task logs rejected
   `model_service_request`. A new database migration permits the event on existing
   installations; fresh installs use the corrected schema. Existing logs and
