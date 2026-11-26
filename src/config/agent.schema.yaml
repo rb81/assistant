@@ -346,7 +346,8 @@ settings:
     hidden: true
     model_blank_label: No fallback model
   agent.naming.model:
-    description: "Model used for task and workstream titles."
+    label: Short-task model
+    description: "Model for task and workstream titles, email approval summaries, and other short tasks."
   agent.identity.name:
     label: Assistant name
     description: "The name your assistant uses in conversations and communications."

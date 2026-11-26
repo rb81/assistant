@@ -81,7 +81,7 @@ authority, script/host permission, limit increases, or safety-hold clearance.
 
 For a fresh admin task email, Telegram offers **Confirm & start**. The notice
 shows the sender, subject, email-header date, attachments and a short,
-explicitly labeled AI summary from the configured naming model. The email is
+explicitly labeled AI summary from the configured short-task model. The email is
 untrusted input; the summary is not authoritative. If the model fails, the
 notice says the summary is unavailable. The client and terminal approval
 inboxes can display the original text. This confirmation grants no script

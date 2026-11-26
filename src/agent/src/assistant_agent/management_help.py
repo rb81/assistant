@@ -602,8 +602,8 @@ FIELD_HELP = {
     "AGENT_APPROVALS_CHANNEL": "Deliver approval requests by email, Telegram, both, or in the Assistant app. Telegram needs "
                               "a bot token and the admin email mapped to an allowlisted numeric ID. "
                               "Choose a channel you will actually monitor.",
-    "AGENT_NAMING_MODEL": "Model for generating short job and workstream names, not for performing the main "
-                          "task. Use an inexpensive model supported by your provider.",
+    "AGENT_NAMING_MODEL": "Model for short tasks such as job and workstream titles and email approval summaries, "
+                          "not for performing the main task. Use an inexpensive model supported by your provider.",
     "AGENT_DEEP_RESEARCH_ENABLED": "Allow the separate deep-research workflow through supported model access. "
                                     "Research can use multiple tools and provider calls; disabling it does not disable ordinary tasks.",
     "AGENT_DEEP_RESEARCH_MAX_TOOL_CALLS": "Maximum tool calls in a deep-research run. More calls can improve "

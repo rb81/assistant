@@ -9,7 +9,7 @@ Saving settings and applying them to running services are separate steps.
 
 In the terminal, use **Settings > Safety & Approvals > Approvals** for
 approval delivery and the administrator email address. Use **Settings >
-Models & Voice** for the conversation naming model.
+Models & Voice** for the short-task model used for titles and email summaries.
 
 Open a section directly when needed:
 

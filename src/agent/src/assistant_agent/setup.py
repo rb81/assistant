@@ -96,7 +96,7 @@ ADVANCED_SETTINGS = {
     ),
     "Approvals and names": (
         ("AGENT_APPROVALS_CHANNEL", "agent.approvals.channel", "Approval delivery: email, telegram, both, or client", "email", str, None),
-        ("AGENT_NAMING_MODEL", "agent.naming.model", "Inexpensive model for job and workstream names", "openai/gpt-4.1-mini", str, None),
+        ("AGENT_NAMING_MODEL", "agent.naming.model", "Short-task model for titles and email summaries", "openai/gpt-4.1-mini", str, None),
     ),
     "Research and notifications": (
         ("AGENT_DEEP_RESEARCH_ENABLED", "agent.deep_research.enabled", "Enable deep research? (requires supported model access)", True, bool, None),
@@ -2255,7 +2255,7 @@ def advanced_value_error(setting, value):
     if name == "AGENT_APPROVALS_CHANNEL" and value not in {"email", "telegram", "both", "client"}:
         return "Approval delivery must be email, telegram, both or client"
     if name == "AGENT_NAMING_MODEL" and not str(value).strip():
-        return "Naming model must not be blank"
+        return "Short-task model must not be blank"
     if name in {"AGENT_TTS_MODEL", "AGENT_TTS_VOICE"} and not str(value).strip():
         return "Speech model and voice must not be blank"
     if kind is bool:

@@ -1177,7 +1177,8 @@ def test_v2_approval_settings_share_a_safety_page(tmp_path):
     naming = next(item for item in response.json()["settings"] if item["key"] == "AGENT_NAMING_MODEL")
     assert naming["group"] == "catalog:routing"
     assert naming["metadata"]["level"] == "advanced"
-    assert naming["metadata"]["section"] == "Conversation naming"
+    assert naming["metadata"]["section"] == "Short tasks"
+    assert naming["metadata"]["label"] == "Short-task model"
 
 
 def test_v2_configuration_preview_is_revision_checked_and_secret_safe(tmp_path):

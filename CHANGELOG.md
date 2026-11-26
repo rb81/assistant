@@ -2,6 +2,8 @@
 
 ## Unreleased: Server and client management refresh
 
+- Rename the displayed naming model setting to **Short-task model**, and explain
+  its use for titles and email approval summaries. Configuration keys are unchanged.
 - Clarify that expired task-review approvals can be renewed through Telegram's
   menu or an admin email subject; `/admin review` is not a Telegram command.
 - Fix auxiliary model calls failing before inference because task logs rejected

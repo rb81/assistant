@@ -83,7 +83,7 @@ apply at request time.
 | `agent.memory.steward.model` | Memory consolidation and recall |
 | `agent.search.model` | `web_search` function tool |
 | `agent.deep_research.search_model` | Deep-research search model |
-| `agent.naming.model` | Job/workstream names; defaults to `openai/gpt-4.1-mini`, 15-second timeout, no fallback |
+| `agent.naming.model` | Short tasks including job/workstream names and email approval summaries; defaults to `openai/gpt-4.1-mini`, 15-second timeout, no fallback |
 
 Other HTTP errors and network failures do not trigger the task-model fallback.
 

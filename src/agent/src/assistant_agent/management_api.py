@@ -283,7 +283,7 @@ def setting_presentation(group, spec):
     if spec.key == "AGENT_APPROVALS_CHANNEL":
         label = "Approval delivery"
     elif spec.key == "AGENT_NAMING_MODEL":
-        label, section = "Naming model", "Conversation naming"
+        label, section = "Short-task model", "Short tasks"
     elif group == "catalog:search" and spec.key in {
         "AGENT_SEARCH_OPENROUTER_ENABLED", "AGENT_SEARCH_EXA_ENABLED",
         "AGENT_SEARCH_PRIMARY_PROVIDER", "AGENT_SEARCH_EXA_API_KEY",
