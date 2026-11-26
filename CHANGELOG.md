@@ -2,6 +2,10 @@
 
 ## Unreleased: Server and client management refresh
 
+- Fix auxiliary model calls failing before inference because task logs rejected
+  `model_service_request`. A new database migration permits the event on existing
+  installations; fresh installs use the corrected schema. Existing logs and
+  cumulative token accounting are preserved.
 - Model execution now has optional, route-specific reasoning controls, advertised
   capability hints, reviewed API/TUI/macOS settings and explicit finish-reason,
   provider/model, fallback, timing and usage diagnostics. Effort is not a hard

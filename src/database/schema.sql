@@ -1100,7 +1100,7 @@ CREATE TABLE task_logs (
     tokens_used jsonb,
     duration_ms integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT task_logs_event_type_check CHECK ((event_type = ANY (ARRAY['llm_request'::text, 'llm_response'::text, 'model_service_response'::text, 'tool_call'::text, 'tool_result'::text, 'error'::text, 'timeout'::text, 'status_change'::text, 'supervisor_note'::text])))
+    CONSTRAINT task_logs_event_type_check CHECK ((event_type = ANY (ARRAY['llm_request'::text, 'llm_response'::text, 'model_service_request'::text, 'model_service_response'::text, 'tool_call'::text, 'tool_result'::text, 'error'::text, 'timeout'::text, 'status_change'::text, 'supervisor_note'::text])))
 );
 
 CREATE SEQUENCE task_logs_id_seq
@@ -2559,6 +2559,7 @@ INSERT INTO schema_migrations(filename) VALUES
   ('020_client_channels.sql'),
   ('021_micro_skills.sql'),
   ('022_memory_access_keeps_updated_at.sql'),
-  ('023_web_page_cache.sql');
+  ('023_web_page_cache.sql'),
+  ('024_model_service_request_logs.sql');
 
 SET check_function_bodies = true;

@@ -169,6 +169,42 @@ def test_completion_is_isolated_and_accounts_cost_and_tokens(service):
     assert log["tokens_used"]["total_tokens"] == 15
 
 
+@pytest.mark.parametrize("upgrade", [False, True], ids=["fresh-install", "existing-install"])
+def test_auxiliary_inference_logs_requests_and_preserves_usage(service, upgrade):
+    from assistant_agent.task_agent import TaskAgent
+
+    job = service.runtime.job
+    service.db.log_event(job["id"], "llm_response", tokens_used={"total_tokens": 7})
+    if upgrade:
+        migration_dir = Path(__file__).resolve().parents[1] / "src/assistant_agent/migrations"
+        old_migration = (migration_dir / "010_model_service.sql").read_text()
+        service.db.execute(old_migration[old_migration.index("ALTER TABLE task_logs"):])
+        service.db.execute(
+            "DELETE FROM schema_migrations WHERE filename = '024_model_service_request_logs.sql'"
+        )
+        assert service.db.run_migrations() == ["024_model_service_request_logs.sql"]
+    assert service.db.run_migrations() == []
+
+    agent = TaskAgent(service.db, service.config)
+    agent._active_job = job
+    llm = MagicMock(route="naming", model="test/text")
+    llm.chat.return_value = reply()
+    messages = [{"role": "user", "content": "Name this task"}]
+
+    assert agent.model_service_chat(llm, messages, []) == llm.chat.return_value
+    llm.chat.assert_called_once_with(messages, [])
+    logs = service.db.fetch_all(
+        "SELECT event_type, input_data, tokens_used FROM task_logs WHERE job_id = %s ORDER BY sequence",
+        (job["id"],),
+    )
+    assert [log["event_type"] for log in logs] == [
+        "llm_response", "model_service_request", "model_service_response",
+    ]
+    assert logs[1]["input_data"]["route"] == "naming"
+    assert logs[2]["tokens_used"]["total_tokens"] == 15
+    assert agent.execution_usage(job["id"]) == {"iterations": 0, "tokens": 22}
+
+
 @pytest.mark.parametrize("kwargs", [
     {"payload": {"messages": [{"role": "system", "content": "override"}]}},
     {"payload": {**PROMPT, "tools": []}},
