@@ -247,14 +247,76 @@ class ExplicitModelRoutesMigrationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             contents = (data / "overrides.env").read_text()
             overrides, _ = parse_environment(contents)
-            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_PROVIDER"], "openai")
-            self.assertEqual(overrides["AGENT_MODEL_ROUTES_RESEARCH_PROVIDER"], "openai")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_PROVIDER"], "openai-compatible")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_RESEARCH_PROVIDER"], "openai-compatible")
             self.assertEqual(overrides["AGENT_MODEL_ROUTES_NAMING_PROVIDER"], "anthropic")
             self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_FALLBACKS"], "gemini:example")
             self.assertEqual(overrides["AGENT_DEEP_RESEARCH_MODEL"], "gpt-4.1")
             self.assertEqual(overrides["AGENT_SECURITY_DEVELOPMENT_MODEL"], "custom-model")
             self.assertEqual(self.run_migration(data).returncode, 0)
             self.assertEqual((data / "overrides.env").read_text(), contents)
+
+    def test_legacy_openai_endpoint_keeps_chat_completions_and_credential_fallback(self):
+        from unittest.mock import patch
+        from assistant_agent.config import load_config
+        from assistant_agent.llm_client import LlmClient
+        from assistant_agent.llm_providers import build_request
+        from assistant_agent.setup import parse_environment
+
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            env_content = (
+                "AGENT_LLM_BASE_URL=https://api.openai.com/v1\n"
+                "AGENT_LLM_MODEL=gpt-4.1\n"
+                "AGENT_SEARCH_ENABLED=false\nAGENT_DEEP_RESEARCH_ENABLED=false\nAGENT_FUSION_ENABLED=false\n"
+            )
+            (data / ".env").write_text(env_content)
+            provider_result = ProviderOptInMigrationTest().run_migration(data)
+            self.assertEqual(provider_result.returncode, 0, provider_result.stderr)
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            env, _ = parse_environment(env_content)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_PROVIDERS_ENABLED"], "openai-compatible")
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_PROVIDER"], "openai-compatible")
+            self.assertEqual(overrides["AGENT_PROVIDERS_OPENAI_COMPATIBLE_BASE_URL"], "https://api.openai.com/v1")
+            with patch.dict(os.environ, {**env, **overrides, "AGENT_CONFIG": str(DEFAULTS)}, clear=True), \
+                    patch("assistant_agent.llm_client.read_secret",
+                          side_effect=lambda name: "legacy-key" if name == "AGENT_LLM_OPENROUTER_API_KEY" else None):
+                client = LlmClient(load_config())
+                url, headers, _ = build_request(client.provider, client.base_url, client.api_key,
+                                                {"model": client.model, "messages": []})
+            self.assertEqual(url, "https://api.openai.com/v1/chat/completions")
+            self.assertEqual(headers["Authorization"], "Bearer legacy-key")
+
+    def test_existing_provider_opt_in_migration_enables_legacy_adapter(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            (data / ".migrations").mkdir(parents=True)
+            (data / ".migrations/003-provider-opt-in").write_text("complete\n")
+            (data / ".env").write_text("AGENT_LLM_BASE_URL=https://api.openai.com/v1\n")
+            (data / "overrides.env").write_text("AGENT_PROVIDERS_ENABLED=openai,openrouter\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_MODEL_ROUTES_TASK_PROVIDER"], "openai-compatible")
+            self.assertEqual(set(overrides["AGENT_PROVIDERS_ENABLED"].split(",")),
+                             {"openai", "openrouter", "openai-compatible"})
+
+    def test_explicitly_disabled_legacy_adapter_stays_disabled(self):
+        from assistant_agent.setup import parse_environment
+        with tempfile.TemporaryDirectory() as root:
+            data = Path(root) / "data"
+            data.mkdir()
+            (data / ".env").write_text("AGENT_LLM_BASE_URL=https://api.openai.com/v1\n")
+            (data / "overrides.env").write_text(
+                "AGENT_PROVIDERS_ENABLED=openai\nAGENT_PROVIDERS_DISABLED=openai-compatible\n")
+            result = self.run_migration(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            overrides, _ = parse_environment((data / "overrides.env").read_text())
+            self.assertEqual(overrides["AGENT_PROVIDERS_ENABLED"], "openai")
 
     def test_fresh_install_is_not_assigned_legacy_routes(self):
         with tempfile.TemporaryDirectory() as root:

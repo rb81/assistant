@@ -144,8 +144,11 @@ class SetupTest(unittest.TestCase):
             python = path / "data/.venv-setup/bin/python"
             python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
             python.chmod(0o700)
+            pythonpath = os.pathsep.join(
+                [str(repository / "src/agent/src"), *(entry for entry in sys.path if entry)]
+            )
             environment = dict(os.environ, PYTHON=sys.executable, ASSISTANT_HOST_ADMIN="1",
-                               PYTHONPATH=str(repository / "src/agent/src"))
+                               PYTHONPATH=pythonpath)
             result = subprocess.run(["sh", str(path / "run.sh"), "--help"],
                                     env=environment, stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, check=True)

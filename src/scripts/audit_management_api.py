@@ -311,6 +311,12 @@ ADMIN_REQUIREMENTS = {
     "/admin permissions remove-legacy RULE_ID": ("permissions.legacy.remove",),
 }
 
+CHANNEL_ONLY_ADMIN_COMMANDS = {
+    "/admin quarantine blacklist",
+    "/admin quarantine unblock EMAIL",
+    "/admin quarantine renew QUARANTINE_ID",
+}
+
 TUI_REQUIREMENTS = {
     "apply_credentials": ("credentials.apply",),
     "delete_project": ("project.delete",),
@@ -513,10 +519,13 @@ def admin_commands(requirements=None):
         for match in re.finditer(r"/admin .*?(?=/admin |$)", line):
             command = match.group(0).strip().rstrip("|").strip()
             mapped = ADMIN_REQUIREMENTS.get(command)
-            status = "unclassified" if mapped is None or requirements is None else (
-                "contract_present" if all(requirements.get(name) == "contract_present" for name in mapped)
-                else "missing"
-            )
+            if command in CHANNEL_ONLY_ADMIN_COMMANDS:
+                status = "channel_only"
+            elif mapped is None or requirements is None:
+                status = "unclassified"
+            else:
+                status = ("contract_present" if all(requirements.get(name) == "contract_present" for name in mapped)
+                          else "missing")
             result.append({"command": command, "status": status, "requirements": list(mapped or ())})
     return result
 
@@ -967,7 +976,8 @@ def main():
         print(f"Entry points: {len(report['entry_points'])} candidates; manual classification required")
         command_status = Counter(item["status"] for item in report["admin_commands"])
         print(f"Admin command forms: {command_status['contract_present']} contract-present, "
-              f"{command_status['missing']} missing, {command_status['unclassified']} unclassified")
+              f"{command_status['channel_only']} channel-only, {command_status['missing']} missing, "
+              f"{command_status['unclassified']} unclassified")
         tui_status = Counter(item["status"] for item in report["tui_backend_methods"])
         print(f"TUI backend methods: {tui_status['contract_present']} mapped, "
               f"{tui_status['client_local']} local-only, {tui_status['missing']} missing, "

@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from assistant_agent import settings_schema
 from assistant_agent.config import AppConfig
-from assistant_agent.llm_providers import PROVIDER_CREDENTIALS, PROVIDER_DEFAULT_URLS, provider_for
+from assistant_agent.llm_providers import PROVIDER_CREDENTIALS, PROVIDER_DEFAULT_URLS, legacy_provider_for, provider_for
 from assistant_agent.setup import SetupError, atomic_write, installation_lock, parse_environment, read_regular, render_environment
 
 
@@ -49,10 +49,19 @@ def migrate(data):
             base_url = effective("AGENT_LLM_BASE_URL", "agent.llm.base_url")
             provider = effective("AGENT_LLM_PROVIDER", "agent.llm.provider", "auto")
             try:
-                selected = provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
+                selected = legacy_provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
             except ValueError as error:
                 raise SystemExit("Cannot migrate the existing default model provider: %s" % error) from error
             updates = {}
+            if selected == "openai-compatible" and "AGENT_PROVIDERS_ENABLED" in values:
+                enabled = AppConfig({"items": values["AGENT_PROVIDERS_ENABLED"]}).get_list("items")
+                disabled = AppConfig({"items": values.get("AGENT_PROVIDERS_DISABLED", "")}).get_list("items")
+                enabled_names = {item.lower() for item in enabled}
+                disabled_names = {item.lower() for item in disabled}
+                previous = provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
+                if (previous != selected and previous in enabled_names and previous not in disabled_names
+                        and selected not in enabled_names and selected not in disabled_names):
+                    updates["AGENT_PROVIDERS_ENABLED"] = ",".join([*enabled, selected])
             endpoint_provider = "cloudflare" if selected == "cloudflare-gateway" else selected
             endpoint_key = "AGENT_PROVIDERS_" + endpoint_provider.upper().replace("-", "_") + "_BASE_URL"
             endpoint_path = "agent.providers." + endpoint_provider.replace("-", "_") + "_base_url"

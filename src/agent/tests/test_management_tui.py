@@ -1221,7 +1221,9 @@ def test_native_launcher_opens_in_a_real_terminal_and_quits_without_saving():
         shutil.copy2(repository / "run.sh", root / "run.sh")
         shutil.copy2(repository / "src/scripts/run.sh", root / "src/scripts/run.sh")
         (root / "src/agent/src").symlink_to(repository / "src/agent/src", target_is_directory=True)
-        (root / "data/.venv-setup").symlink_to(sys.prefix, target_is_directory=True)
+        setup_venv = root / "data/.venv-setup"
+        (setup_venv / "bin").mkdir(parents=True)
+        (setup_venv / "bin/python").symlink_to(sys.executable)
         token = ensure_token(root)
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

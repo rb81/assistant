@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from assistant_agent.config import AppConfig
-from assistant_agent.llm_providers import PROVIDER_CREDENTIALS, parse_model_reference, provider_for
+from assistant_agent.llm_providers import PROVIDER_CREDENTIALS, legacy_provider_for, parse_model_reference
 from assistant_agent.setup import SetupError, atomic_write, installation_lock, parse_environment, read_regular, render_environment
 from assistant_agent import settings_schema
 
@@ -32,7 +32,7 @@ def migrate(data):
 
             base_url = value("AGENT_LLM_BASE_URL", "agent.llm.base_url") or config.get("agent.llm.base_url")
             provider = value("AGENT_LLM_PROVIDER", "agent.llm.provider", "auto")
-            primary = provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
+            primary = legacy_provider_for(AppConfig({"agent": {"llm": {"provider": provider}}}), base_url)
             selected = {primary}
             routes = config.get("agent.model_routes", {})
 

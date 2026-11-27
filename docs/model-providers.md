@@ -125,7 +125,12 @@ the server credential.
 Each task, naming, routing, summarization, memory, research, and development
 route selects an enabled provider independently. During upgrade, inherited
 providers and models are saved as explicit choices, preserving their current
-values. A route's ordered `provider:model` fallbacks are
+values. Legacy non-OpenRouter endpoints without an explicit provider retain the
+OpenAI-compatible chat-completions adapter and existing credential fallback.
+If an earlier build already applied the explicit-route migration, it will not
+run again. To restore legacy behavior, enable OpenAI-compatible, set its URL
+to the former shared URL, and select it for each affected route and fallback.
+A route's ordered `provider:model` fallbacks are
 tried only after transient rate-limit or overload responses; they do not
 silently substitute a model when a selected provider cannot run it. Model
 discovery in the settings UI is scoped to the provider selected for that role.

@@ -202,6 +202,15 @@ def provider_for(config, base_url):
     return "openai-compatible"
 
 
+def legacy_provider_for(config, base_url):
+    """Keep the original chat-completions adapter for implicit legacy endpoints."""
+    provider = provider_for(config, base_url)
+    configured = str(config.get("agent.llm.provider", "auto") or "auto").strip().lower()
+    if configured == "auto" and provider != "openrouter":
+        return "openai-compatible"
+    return provider
+
+
 def _image_source(value):
     image = value.get("image_url")
     url = image.get("url") if isinstance(image, dict) else image

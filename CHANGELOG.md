@@ -2,6 +2,9 @@
 
 ## Unreleased: Server and client management refresh
 
+- Preserve the chat-completions adapter and saved credential fallback when
+  upgrading legacy implicit non-OpenRouter model endpoints. Previously migrated
+  installations need to select the OpenAI-compatible provider explicitly.
 - Review existing and new quarantined mail through email, Telegram, or the
   management client; release once, reject, or blacklist the sender. Security
   rejects remain quarantined, with administrative notices and bounded recovery.

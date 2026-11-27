@@ -25,7 +25,13 @@ def test_audit_discovers_catalog_services_and_unclassified_surfaces():
     assert next(row for row in report["services"] if row["name"] == "sandbox-init")["one_shot"]
     assert not next(row for row in report["services"] if row["name"] == "task-agent")["one_shot"]
     assert any("/admin permissions" in row["command"] for row in report["admin_commands"])
-    assert all(row["status"] == "contract_present" for row in report["admin_commands"])
+    assert all(row["status"] in {"contract_present", "channel_only"} for row in report["admin_commands"])
+    for command in (
+        "/admin quarantine blacklist", "/admin quarantine unblock EMAIL", "/admin quarantine renew QUARANTINE_ID",
+    ):
+        row = next(row for row in report["admin_commands"] if row["command"] == command)
+        assert row["status"] == "channel_only"
+        assert row["requirements"] == []
     assert {row["method"] for row in report["tui_backend_methods"]} >= {"request", "save", "lifecycle"}
     assert all(row["status"] in {"contract_present", "client_local"} for row in report["tui_backend_methods"])
     assert all(row["status"] in {"contract_present", "restricted"} for row in report["deployment_variables"])
